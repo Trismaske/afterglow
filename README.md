@@ -132,6 +132,22 @@ mkdir test-media
 AFTERGLOW_MEDIA_DIR=./test-media npm start
 ```
 
+### Building
+
+To create distributable packages:
+
+```bash
+# Build for current platform
+npm run build
+
+# Build for specific platforms
+npm run build:win    # Windows
+npm run build:mac    # macOS
+npm run build:linux  # Linux
+```
+
+Built packages will be available in the `dist` directory.
+
 ## License
 
 See LICENSE file for details.

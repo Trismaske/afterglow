@@ -5,12 +5,50 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["electron", "screensaver", "raw", "photos", "slideshow"],
+  "keywords": [
+    "electron",
+    "screensaver",
+    "raw",
+    "photos",
+    "slideshow"
+  ],
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "electron": "^28.0.0"
+    "electron": "^39.1.1",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.afterglow.screensaver",
+    "productName": "Afterglow",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "renderer.html",
+      "renderer.js",
+      "package.json"
+    ],
+    "win": {
+      "target": ["nsis", "portable"],
+      "icon": "build/icon.ico"
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.entertainment",
+      "icon": "build/icon.icns"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Graphics",
+      "icon": "build/icon.png"
+    }
   }
 }

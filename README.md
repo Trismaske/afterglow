@@ -70,6 +70,15 @@ You can modify the following settings in `main.js`:
 - `slideDuration`: Time in milliseconds to display each image (default: 5000)
 - `videoMaxDuration`: Maximum time in milliseconds to play each video (default: 30000)
 
+### Cache Directory
+
+Converted RAW files are cached in the Electron user data directory:
+- **Linux**: `~/.config/afterglow/cache/`
+- **macOS**: `~/Library/Application Support/afterglow/cache/`
+- **Windows**: `%APPDATA%/afterglow/cache/`
+
+To clear the cache, simply delete the cache directory.
+
 ## How It Works
 
 1. **Scanning**: The application recursively scans the configured media directory for supported files

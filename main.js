@@ -32,6 +32,9 @@ async function createWindow() {
     frame: false,
     backgroundColor: '#000000',
     webPreferences: {
+      // Note: nodeIntegration is enabled for local file access.
+      // This is acceptable for a screensaver app that only loads local content.
+      // Do NOT enable these settings if loading remote/untrusted content.
       nodeIntegration: true,
       contextIsolation: false,
       enableRemoteModule: true,

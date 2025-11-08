@@ -143,3 +143,4 @@ test-media/
 
 # Test helper scripts
 create-test-images.js
+test-scan.js

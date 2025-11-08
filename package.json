@@ -1,0 +1,16 @@
+{
+  "name": "afterglow",
+  "version": "1.0.0",
+  "description": "An Electron based cross platform screensaver app that shows RAW files (with their edits applied from sidecar XMPs) as well as videos (muted) and normal photos.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["electron", "screensaver", "raw", "photos", "slideshow"],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "electron": "^28.0.0"
+  }
+}

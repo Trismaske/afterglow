@@ -18,9 +18,24 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 import type { DuelRecord, PhotoState } from '@afterglow/core';
 import type { LoadedPhoto } from '../lib/media';
 import { sourceLikePattern } from '../lib/sources';
+import type { StateCounts } from '../lib/progress';
 
 /** Max ids per IN (...) chunk — stays under SQLite's bind-parameter limit. */
 const IN_CHUNK = 500;
+
+/**
+ * DB-side photo scope (m0.4 stage 3). Day-keyed queries use the `day`
+ * column (matching the Recent-days rollups exactly); everything else
+ * scopes by `taken_at` range. Both progress pages share the same store
+ * functions through this union.
+ */
+export type PhotoScope = { day: string } | { startMs: number; endMs: number };
+
+function scopeClause(scope: PhotoScope): { sql: string; params: (string | number)[] } {
+  return 'day' in scope
+    ? { sql: 'day = ?', params: [scope.day] }
+    : { sql: 'taken_at BETWEEN ? AND ?', params: [scope.startMs, scope.endMs] };
+}
 
 /**
  * Photo-source roots as an SQL fragment over `photos.uri` (m0.3.1).
@@ -218,6 +233,14 @@ export async function setNeedsEdit(
   );
 }
 
+/**
+ * "Not related — review as single" (m0.4): the photo left its cull group,
+ * so day-progress accounting must stop counting it as "in a group".
+ */
+export async function clearPhotoGroup(db: SQLiteDatabase, assetId: string): Promise<void> {
+  await db.runAsync('UPDATE photos SET group_id = NULL WHERE asset_id = ?', assetId);
+}
+
 /** Manual "mark done" from the edit queue: to_edit → done. */
 export async function markEditDone(db: SQLiteDatabase, assetId: string): Promise<void> {
   await db.runAsync(
@@ -349,34 +372,6 @@ export async function markTrashedDirect(db: SQLiteDatabase, assetId: string): Pr
   );
 }
 
-/**
- * Photos in [startMs, endMs] already handled AND still present in
- * MediaStore — state to_edit or done ('trashed' rows are deliberately
- * excluded: they left MediaStore, so they are not part of the MediaStore
- * count this number gets subtracted from). Feeds the cheap
- * remaining-to-review scope counts (m0.3.1): remaining =
- * max(0, mediaStoreCount - handled). Approximate by design — a done
- * photo deleted outside the app still counts as handled until its row
- * meets an external-delete reconciliation (none exists yet); the exact
- * reviewable set is computed when a session starts.
- */
-export async function countHandledInRange(
-  db: SQLiteDatabase,
-  startMs: number,
-  endMs: number,
-  roots: readonly string[] | null,
-): Promise<number> {
-  const src = sourceClause(roots);
-  const row = await db.getFirstAsync<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM photos
-     WHERE taken_at BETWEEN ? AND ? AND state IN ('to_edit', 'done')${src.sql}`,
-    startMs,
-    endMs,
-    ...src.params,
-  );
-  return row?.n ?? 0;
-}
-
 /** Number of photos waiting in the to-edit queue. */
 export async function countToEdit(db: SQLiteDatabase): Promise<number> {
   const row = await db.getFirstAsync<{ n: number }>(
@@ -385,33 +380,28 @@ export async function countToEdit(db: SQLiteDatabase): Promise<number> {
   return row?.n ?? 0;
 }
 
-/** Per-state counts for one local day, split by cull-group membership. */
-export interface DayStateCounts {
-  /** Rows in the DB for this day, by state. */
-  unreviewedGrouped: number;
-  unreviewedSingle: number;
-  kept: number;
-  toEdit: number;
-  staged: number;
-  trashed: number;
-  done: number;
-  /** All rows for the day (sum of the above + any transient states). */
-  tracked: number;
-}
-
-export async function getDayStateCounts(
+/**
+ * Per-state DB counts for one scope, split by cull-group membership
+ * (StateCounts lives in lib/progress.ts — pure, shared with the
+ * breakdown math). Replaces m0.2's getDayStateCounts and m0.3.1's
+ * countHandledInRange: "handled" = toEdit + done (still in MediaStore;
+ * trashed rows are deliberately separate — they left MediaStore, so
+ * they are not part of the count this gets subtracted from).
+ */
+export async function getStateCountsInScope(
   db: SQLiteDatabase,
-  day: string,
+  scope: PhotoScope,
   roots: readonly string[] | null = null,
-): Promise<DayStateCounts> {
+): Promise<StateCounts> {
+  const where = scopeClause(scope);
   const src = sourceClause(roots);
   const rows = await db.getAllAsync<{ state: PhotoState; grouped: number; n: number }>(
     `SELECT state, (group_id IS NOT NULL) AS grouped, COUNT(*) AS n
-     FROM photos WHERE day = ?${src.sql} GROUP BY state, grouped`,
-    day,
+     FROM photos WHERE ${where.sql}${src.sql} GROUP BY state, grouped`,
+    ...where.params,
     ...src.params,
   );
-  const counts: DayStateCounts = {
+  const counts: StateCounts = {
     unreviewedGrouped: 0,
     unreviewedSingle: 0,
     kept: 0,
@@ -447,6 +437,119 @@ export async function getDayStateCounts(
     }
   }
   return counts;
+}
+
+/** State + group membership per asset (missing rows simply absent). */
+export async function getStateRowsForAssets(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+): Promise<Map<string, { state: PhotoState; grouped: boolean }>> {
+  const out = new Map<string, { state: PhotoState; grouped: boolean }>();
+  for (const ids of chunk(assetIds, IN_CHUNK)) {
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await db.getAllAsync<{ asset_id: string; state: PhotoState; grouped: number }>(
+      `SELECT asset_id, state, (group_id IS NOT NULL) AS grouped
+       FROM photos WHERE asset_id IN (${placeholders})`,
+      ...ids,
+    );
+    for (const row of rows) out.set(row.asset_id, { state: row.state, grouped: !!row.grouped });
+  }
+  return out;
+}
+
+/** One photo row for the progress grids' DB-backed filters. */
+export interface GridPhotoRow {
+  asset_id: string;
+  uri: string;
+  taken_at: number;
+  state: PhotoState;
+  grouped: number;
+}
+
+/** SQL predicate per DB-backed grid filter (see getGridPhotosByFilter). */
+const GRID_FILTER_SQL: Record<'in_group' | 'kept' | 'to_edit' | 'staged' | 'done', string> = {
+  in_group: "state = 'unreviewed' AND group_id IS NOT NULL",
+  kept: "state = 'kept'",
+  to_edit: "state = 'to_edit'",
+  staged: "state IN ('culled', 'confirmed')",
+  // 'trashed' rows also count as done in the summaries, but their files
+  // are gone — no thumbnail to show, so the grid excludes them (the UI
+  // notes how many are hidden).
+  done: "state = 'done'",
+};
+
+/**
+ * One newest-first page of tracked photos in a DB-backed grid filter.
+ * ('all' and 'unreviewed' grids page MediaStore instead — untracked
+ * photos have no DB row to query.) Offset paging is fine here: pages
+ * are small and a shifted row after a state edit only dupes/skips one
+ * grid tile until the next refresh.
+ */
+export async function getGridPhotosByFilter(
+  db: SQLiteDatabase,
+  scope: PhotoScope,
+  roots: readonly string[] | null,
+  filter: keyof typeof GRID_FILTER_SQL,
+  limit: number,
+  offset: number,
+): Promise<GridPhotoRow[]> {
+  const where = scopeClause(scope);
+  const src = sourceClause(roots);
+  return db.getAllAsync<GridPhotoRow>(
+    `SELECT asset_id, uri, taken_at, state, (group_id IS NOT NULL) AS grouped
+     FROM photos WHERE ${where.sql} AND (${GRID_FILTER_SQL[filter]})${src.sql}
+     ORDER BY taken_at DESC, asset_id DESC LIMIT ? OFFSET ?`,
+    ...where.params,
+    ...src.params,
+    limit,
+    offset,
+  );
+}
+
+/**
+ * State editor: send a converged 'done' photo back to the edit queue.
+ * Mirrors the CASE-write semantics everywhere else: entering to_edit
+ * sets the needs_edit flag and records to_edit_at (first entry wins).
+ */
+export async function markDoneToEdit(
+  db: SQLiteDatabase,
+  assetId: string,
+  at: number,
+): Promise<void> {
+  await db.runAsync(
+    `UPDATE photos
+     SET state = 'to_edit', needs_edit = 1, to_edit_at = COALESCE(to_edit_at, ?)
+     WHERE asset_id = ? AND state = 'done'`,
+    at,
+    assetId,
+  );
+}
+
+/**
+ * State editor: un-cull a staged photo OUTSIDE any live session (rows
+ * left 'culled' by an abandoned session). Same outcome as the in-session
+ * cull-list unstage: back to 'kept', or 'to_edit' when the needs-edit
+ * flag is set (m0.2 #8). NEVER call this for a photo in the active
+ * session — that must go through the session (the snapshot would still
+ * delete it at confirm otherwise); the editor UI enforces this by
+ * making active-session photos read-only.
+ */
+export async function unstageCullDirect(
+  db: SQLiteDatabase,
+  assetId: string,
+  at: number,
+): Promise<void> {
+  await db.runAsync(
+    `UPDATE photos
+     SET state = CASE WHEN needs_edit = 1 THEN 'to_edit' ELSE 'kept' END,
+         to_edit_at = CASE
+           WHEN needs_edit = 1 AND to_edit_at IS NULL THEN ?
+           ELSE to_edit_at
+         END
+     WHERE asset_id = ? AND state = 'culled'`,
+    at,
+    assetId,
+  );
 }
 
 export interface DaySummaryRow {
@@ -525,6 +628,48 @@ export async function getAllTimeReclaimedBytes(db: SQLiteDatabase): Promise<numb
     'SELECT SUM(reclaimed_bytes) AS n FROM sessions',
   );
   return row?.n ?? 0;
+}
+
+// ----------------------------------------------------- perceptual hashes
+
+/** Cached dHash for one asset (m0.4, photo_hashes table). */
+export interface PhotoHashRow {
+  asset_id: string;
+  hash: string;
+  mod_time: number;
+}
+
+/** Cached dHashes for the given assets (missing rows simply absent). */
+export async function getPhotoHashes(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+): Promise<Map<string, PhotoHashRow>> {
+  const out = new Map<string, PhotoHashRow>();
+  for (const ids of chunk(assetIds, IN_CHUNK)) {
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await db.getAllAsync<PhotoHashRow>(
+      `SELECT asset_id, hash, mod_time FROM photo_hashes WHERE asset_id IN (${placeholders})`,
+      ...ids,
+    );
+    for (const row of rows) out.set(row.asset_id, row);
+  }
+  return out;
+}
+
+/** Upsert one computed dHash (recomputed when mod_time changes). */
+export async function setPhotoHash(
+  db: SQLiteDatabase,
+  assetId: string,
+  hash: string,
+  modTime: number,
+): Promise<void> {
+  await db.runAsync(
+    `INSERT INTO photo_hashes (asset_id, hash, mod_time) VALUES (?, ?, ?)
+     ON CONFLICT(asset_id) DO UPDATE SET hash = excluded.hash, mod_time = excluded.mod_time`,
+    assetId,
+    hash,
+    modTime,
+  );
 }
 
 /** Store a lazily computed content hash (fallback identity). */

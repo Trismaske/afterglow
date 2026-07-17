@@ -19,9 +19,9 @@ import { countPhotosInRange, deleteAssets } from '../lib/media';
 import { resolveSources, type ResolvedSources } from '../lib/sourceCatalog';
 import { loadReviewablePhotos, SESSION_PHOTO_CAP } from '../lib/reviewLoader';
 import {
-  countHandledInRange,
   countToEdit,
   getDaySummaries,
+  getStateCountsInScope,
   markEditDone,
   markTrashedDirect,
 } from '../db/store';
@@ -29,7 +29,7 @@ import { runEditDetection, type DetectedCopy } from '../lib/detect';
 import { useSession } from '../session/SessionContext';
 import { BigButton } from '../components/BigButton';
 import { StateProgressBar } from '../components/StateProgressBar';
-import { colors, touch } from '../theme';
+import { colors, touch, useTheme } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Home'>;
 
@@ -52,11 +52,16 @@ interface ScopeCounts {
   remaining: number;
   /** DB rows in range already converged (to_edit/done, still in MediaStore). */
   handled: number;
+  /** Fully done for the headline: done + trashed rows (m0.4). */
+  doneTotal: number;
+  /** The scope's true total: MediaStore + trashed rows (they left MediaStore). */
+  grandTotal: number;
 }
 
 export function HomeScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const db = useSQLiteContext();
+  const theme = useTheme();
   const sessionCtx = useSession();
   const [permission, requestPermission] = MediaLibrary.usePermissions({
     granularPermissions: ['photo'],
@@ -73,6 +78,8 @@ export function HomeScreen({ navigation }: Props) {
   const [sources, setSources] = useState<ResolvedSources | null>(null);
   const [hasResumable, setHasResumable] = useState(false);
   const [starting, setStarting] = useState(false);
+  /** Perceptual-hash progress while a session is being built (m0.4). */
+  const [analyzing, setAnalyzing] = useState<{ done: number; total: number } | null>(null);
   const [editCount, setEditCount] = useState(0);
   const [dayRows, setDayRows] = useState<DayRow[] | null>(null);
   const [detectionNotice, setDetectionNotice] = useState<string | null>(null);
@@ -239,20 +246,25 @@ export function HomeScreen({ navigation }: Props) {
           setSources(src);
 
           const range = rangeFor(scope);
-          const [msCount, handled] = await Promise.all([
+          const [msCount, sc] = await Promise.all([
             countPhotosInRange(range.startMs, range.endMs, src.albumIds),
-            countHandledInRange(db, range.startMs, range.endMs, src.roots),
+            getStateCountsInScope(db, { startMs: range.startMs, endMs: range.endMs }, src.roots),
           ]);
+          // "Handled" = to_edit + done rows (still in MediaStore; trashed
+          // rows left it, so they are excluded — m0.3.1 accounting).
+          const handled = sc.toEdit + sc.done;
 
           // All-time gate: ranges nest, so a clear last-year means only
           // the older backlog is left — that's when All time unlocks.
           const year = rollingRange('year1', Date.now());
-          const [msYear, handledYear] = await Promise.all([
+          const [msYear, scYear] = await Promise.all([
             countPhotosInRange(year.startMs, year.endMs, src.albumIds),
-            countHandledInRange(db, year.startMs, year.endMs, src.roots),
+            getStateCountsInScope(db, { startMs: year.startMs, endMs: year.endMs }, src.roots),
           ]);
           if (cancelled) return;
-          const unlocked = allTimeUnlocked(remainingToReview(msYear, handledYear));
+          const unlocked = allTimeUnlocked(
+            remainingToReview(msYear, scYear.toEdit + scYear.done),
+          );
           setAllTimeReady(unlocked);
           if (scope === 'all' && !unlocked) {
             // New photos re-locked the gate while it was selected.
@@ -262,9 +274,11 @@ export function HomeScreen({ navigation }: Props) {
           setCounts({
             remaining: remainingToReview(msCount, handled),
             handled: Math.min(handled, msCount),
+            doneTotal: sc.done + sc.trashed,
+            grandTotal: msCount + sc.trashed,
           });
         } catch {
-          if (!cancelled) setCounts({ remaining: 0, handled: 0 });
+          if (!cancelled) setCounts({ remaining: 0, handled: 0, doneTotal: 0, grandTotal: 0 });
         } finally {
           if (!cancelled) setCountsLoading(false);
         }
@@ -306,10 +320,17 @@ export function HomeScreen({ navigation }: Props) {
           setRefreshTick((t) => t + 1); // counts were stale — refresh them
           return;
         }
-        await sessionCtx.startSession(range.label, range.startMs, range.endMs, reviewable);
+        await sessionCtx.startSession(
+          range.label,
+          range.startMs,
+          range.endMs,
+          reviewable,
+          (done, total) => setAnalyzing({ done, total }),
+        );
         navigation.navigate('Groups');
       } finally {
         setStarting(false);
+        setAnalyzing(null);
       }
     };
     if (hasResumable) {
@@ -326,8 +347,22 @@ export function HomeScreen({ navigation }: Props) {
     }
   }, [counts, starting, hasResumable, sessionCtx, scope, rangeFor, db, navigation]);
 
+  const openProgress = useCallback(() => {
+    // Compute the rolling range at tap time — same convention as reviews.
+    const range = rangeFor(scope);
+    navigation.navigate('Progress', {
+      label: range.label,
+      startMs: range.startMs,
+      endMs: range.endMs,
+    });
+  }, [navigation, rangeFor, scope]);
+
   const scopeLabel = rangeFor(scope).label;
   const capApplies = counts !== null && counts.remaining > SESSION_PHOTO_CAP;
+  const donePctValue =
+    counts && counts.grandTotal > 0
+      ? Math.round((counts.doneTotal / counts.grandTotal) * 100)
+      : null;
 
   return (
     <ScrollView
@@ -337,7 +372,17 @@ export function HomeScreen({ navigation }: Props) {
         { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 },
       ]}
     >
-      <Text style={styles.title}>Afterglow Companion</Text>
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>Afterglow Companion</Text>
+        <Pressable
+          style={styles.gearButton}
+          hitSlop={8}
+          accessibilityLabel="Settings"
+          onPress={() => navigation.navigate('Settings')}
+        >
+          <Text style={styles.gearIcon}>⚙</Text>
+        </Pressable>
+      </View>
       <Text style={styles.subtitle}>Clear your photos down to the keepers.</Text>
 
       {detectionNotice && (
@@ -355,8 +400,8 @@ export function HomeScreen({ navigation }: Props) {
           </Text>
           <BigButton
             label={permission?.canAskAgain === false ? 'Enable photo access in Settings' : 'Allow photo access'}
-            color={colors.accent}
-            textColor="#1a1205"
+            color={theme.accent}
+            textColor={theme.onAccent}
             onPress={() => void requestPermission()}
           />
         </View>
@@ -373,8 +418,8 @@ export function HomeScreen({ navigation }: Props) {
           </Text>
           <BigButton
             label="Resume review"
-            color={colors.accent}
-            textColor="#1a1205"
+            color={theme.accent}
+            textColor={theme.onAccent}
             onPress={() => navigation.navigate('Groups')}
           />
         </View>
@@ -409,14 +454,14 @@ export function HomeScreen({ navigation }: Props) {
               onPress={() => setScope(def.key)}
               style={[
                 styles.scopeChip,
-                active && styles.scopeChipActive,
+                active && { backgroundColor: theme.accent, borderColor: theme.accent },
                 disabled && styles.scopeChipDisabled,
               ]}
             >
               <Text
                 style={[
                   styles.scopeChipText,
-                  active && styles.scopeChipTextActive,
+                  active && { color: theme.onAccent },
                   disabled && styles.scopeChipTextDisabled,
                 ]}
               >
@@ -459,7 +504,30 @@ export function HomeScreen({ navigation }: Props) {
           <Text style={styles.sourceText} numberOfLines={1}>
             Source: <Text style={styles.sourceValue}>{sources?.label ?? '…'}</Text>
           </Text>
-          <Text style={styles.sourceEdit}>Edit ›</Text>
+          <Text style={[styles.sourceEdit, { color: theme.accent }]}>Edit ›</Text>
+        </Pressable>
+      )}
+
+      {permission?.granted && counts && counts.grandTotal > 0 && donePctValue !== null && (
+        <Text style={styles.headline}>
+          {counts.doneTotal} of {counts.grandTotal} done · {donePctValue}%
+        </Text>
+      )}
+
+      {permission?.granted && (
+        <Pressable style={styles.progressRow} onPress={openProgress}>
+          <Text style={styles.progressIcon}>◔</Text>
+          <View style={styles.progressBody}>
+            <Text style={styles.progressTitle}>Progress</Text>
+            <Text style={styles.progressHint}>
+              {counts === null || countsLoading
+                ? `${scopeLabel} · counting…`
+                : counts.grandTotal === 0
+                  ? `${scopeLabel} · no photos yet`
+                  : `${scopeLabel} · ${donePctValue}% done`}
+            </Text>
+          </View>
+          <Text style={[styles.progressChevron, { color: theme.accent }]}>›</Text>
         </Pressable>
       )}
 
@@ -483,7 +551,9 @@ export function HomeScreen({ navigation }: Props) {
           <BigButton
             label={
               starting
-                ? 'Loading photos…'
+                ? analyzing
+                  ? `Analyzing photos… ${analyzing.done}/${analyzing.total}`
+                  : 'Loading photos…'
                 : !counts || counts.remaining === 0
                   ? 'Start culling'
                   : capApplies
@@ -544,7 +614,24 @@ export function HomeScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
   content: { paddingHorizontal: 20, gap: 16 },
-  title: { color: colors.text, fontSize: 28, fontWeight: '800' },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  title: { color: colors.text, fontSize: 28, fontWeight: '800', flexShrink: 1 },
+  gearButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  gearIcon: { color: colors.textDim, fontSize: 22 },
   subtitle: { color: colors.textDim, fontSize: 16, marginBottom: 8 },
   sectionLabel: { color: colors.textDim, fontSize: 13, textTransform: 'uppercase', letterSpacing: 1 },
   card: {
@@ -568,10 +655,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  scopeChipActive: { backgroundColor: colors.accent, borderColor: colors.accent },
   scopeChipDisabled: { opacity: 0.4 },
   scopeChipText: { color: colors.textDim, fontSize: 15, fontWeight: '600' },
-  scopeChipTextActive: { color: '#1a1205' },
   scopeChipTextDisabled: { color: colors.textDim },
   gateHint: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: -8 },
   sourceRow: {
@@ -588,7 +673,23 @@ const styles = StyleSheet.create({
   },
   sourceText: { color: colors.textDim, fontSize: 14, flexShrink: 1 },
   sourceValue: { color: colors.text, fontWeight: '600' },
-  sourceEdit: { color: colors.accent, fontSize: 14, fontWeight: '600' },
+  sourceEdit: { fontSize: 14, fontWeight: '600' },
+  headline: { color: colors.text, fontSize: 17, fontWeight: '700', marginBottom: -6 },
+  progressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: colors.surface,
+    borderRadius: touch.radius,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 14,
+  },
+  progressIcon: { color: colors.keep, fontSize: 22, fontWeight: '700' },
+  progressBody: { flex: 1 },
+  progressTitle: { color: colors.text, fontSize: 16, fontWeight: '700' },
+  progressHint: { color: colors.textDim, fontSize: 13 },
+  progressChevron: { fontSize: 22, fontWeight: '600' },
   customRow: { flexDirection: 'row', gap: 10 },
   dateField: {
     flex: 1,

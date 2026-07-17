@@ -7,7 +7,7 @@ import type { MediaItem } from '@afterglow/core';
 import type { RootStackParamList } from '../navigation';
 import { useSession } from '../session/SessionContext';
 import { BigButton } from '../components/BigButton';
-import { colors, touch } from '../theme';
+import { colors, touch, useTheme } from '../theme';
 import { formatClock } from '../lib/format';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Reconsider'>;
@@ -15,13 +15,15 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Reconsider'>;
 type Verdict = 'culled' | 'kept';
 
 /**
- * Auto-cull hint (m0.3): a bracket just completed and some keepers never
- * won a single duel. One-tap cull or keep for each; anything left
- * undecided simply stays kept. Driven by core's autoCullCandidates()
- * (kept + never won + not the group best, from the duel history).
+ * Auto-cull hint (m0.4 rules): a group just finished and some of its
+ * keepers LOST an explicit compare (and never won one). One-tap cull or
+ * keep for each; anything left undecided simply stays kept. Driven by
+ * core's DeckSession.reconsiderCandidates() — a group finished without
+ * compares never lands here.
  */
 export function ReconsiderScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
+  const theme = useTheme();
   const { groupId } = route.params;
   const { session, groups, reconsiderCull, clearPendingReconsider, needsEdit } = useSession();
 
@@ -29,7 +31,7 @@ export function ReconsiderScreen({ navigation, route }: Props) {
   // the others out from under the user's fingers.
   const [candidates] = useState<MediaItem[]>(() =>
     session
-      ? session.autoCullCandidates(groupId).filter((item) => !needsEdit(item.id))
+      ? session.reconsiderCandidates(groupId).filter((item) => !needsEdit(item.id))
       : [],
   );
   const [keptCount] = useState<number>(() => {
@@ -46,14 +48,14 @@ export function ReconsiderScreen({ navigation, route }: Props) {
 
   const nextStep = useMemo(() => {
     if (!session) return 'CullList' as const;
-    if (session.nextPair()) return 'Duel' as const;
+    if (session.currentGroupId()) return 'Deck' as const;
     if (session.nextSingle()) return 'Singles' as const;
     return 'CullList' as const;
   }, [session]);
 
   const continueLabel =
-    nextStep === 'Duel'
-      ? 'Continue duels'
+    nextStep === 'Deck'
+      ? 'Continue to next group'
       : nextStep === 'Singles'
         ? 'Continue to singles'
         : 'Continue to cull list';
@@ -135,8 +137,8 @@ export function ReconsiderScreen({ navigation, route }: Props) {
         You kept {keptCount} — reconsider {candidates.length === 1 ? 'this one' : `these ${candidates.length}`}?
       </Text>
       <Text style={styles.subtitle}>
-        {candidates.length === 1 ? 'This shot' : 'These shots'} never won a duel. Undecided ones
-        stay kept.
+        {candidates.length === 1 ? 'This shot' : 'These shots'} lost a compare but stayed kept.
+        Undecided ones stay kept.
       </Text>
       <FlatList
         data={candidates}
@@ -147,8 +149,8 @@ export function ReconsiderScreen({ navigation, route }: Props) {
       <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
         <BigButton
           label={continueLabel}
-          color={colors.accent}
-          textColor="#1a1205"
+          color={theme.accent}
+          textColor={theme.onAccent}
           disabled={busyId !== null}
           onPress={() => navigation.replace(nextStep)}
         />

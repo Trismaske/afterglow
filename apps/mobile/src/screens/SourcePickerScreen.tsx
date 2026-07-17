@@ -25,7 +25,7 @@ import {
 } from '../lib/sources';
 import { setSetting } from '../db/store';
 import { BigButton } from '../components/BigButton';
-import { colors, touch } from '../theme';
+import { colors, touch, useTheme } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'SourcePicker'>;
 
@@ -36,6 +36,7 @@ interface Row extends SourceDir {
 
 export function SourcePickerScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
+  const theme = useTheme();
   const db = useSQLiteContext();
   const [rows, setRows] = useState<Row[] | null>(null);
   const [allFolders, setAllFolders] = useState(false);
@@ -126,7 +127,7 @@ export function SourcePickerScreen({ navigation }: Props) {
         </Text>
 
         <Pressable
-          style={[styles.row, allFolders && styles.rowActive]}
+          style={[styles.row, allFolders && { borderColor: theme.accent }]}
           onPress={toggleAll}
         >
           <View style={styles.rowBody}>
@@ -134,7 +135,7 @@ export function SourcePickerScreen({ navigation }: Props) {
             <Text style={styles.rowHint}>every photo on the device</Text>
           </View>
           <Text style={styles.rowCount}>{totalPhotos}</Text>
-          <Text style={[styles.check, allFolders && styles.checkActive]}>
+          <Text style={[styles.check, allFolders && [styles.checkActive, { color: theme.accent }]]}>
             {allFolders ? '✓' : ''}
           </Text>
         </Pressable>
@@ -151,7 +152,7 @@ export function SourcePickerScreen({ navigation }: Props) {
           return (
             <Pressable
               key={row.dir}
-              style={[styles.row, isSelected && styles.rowActive]}
+              style={[styles.row, isSelected && { borderColor: theme.accent }]}
               onPress={() => toggleDir(row.dir)}
             >
               <View style={styles.rowBody}>
@@ -159,11 +160,11 @@ export function SourcePickerScreen({ navigation }: Props) {
                 {row.missing ? (
                   <Text style={styles.rowHint}>no photos found — tap to unselect</Text>
                 ) : included ? (
-                  <Text style={styles.rowIncluded}>included via a parent folder</Text>
+                  <Text style={[styles.rowIncluded, { color: theme.accent }]}>included via a parent folder</Text>
                 ) : null}
               </View>
               {!row.missing && <Text style={styles.rowCount}>{row.photoCount}</Text>}
-              <Text style={[styles.check, (isSelected || included) && styles.checkActive]}>
+              <Text style={[styles.check, (isSelected || included) && [styles.checkActive, { color: theme.accent }]]}>
                 {isSelected ? '✓' : included ? '·' : ''}
               </Text>
             </Pressable>
@@ -174,8 +175,8 @@ export function SourcePickerScreen({ navigation }: Props) {
       <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
         <BigButton
           label={saving ? 'Saving…' : 'Use this source'}
-          color={colors.accent}
-          textColor="#1a1205"
+          color={theme.accent}
+          textColor={theme.onAccent}
           disabled={!valid || saving || rows === null}
           onPress={() => void save()}
         />
@@ -201,13 +202,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
-  rowActive: { borderColor: colors.accent },
   rowBody: { flex: 1 },
   rowTitle: { color: colors.text, fontSize: 15, fontWeight: '600' },
   rowHint: { color: colors.textDim, fontSize: 12 },
-  rowIncluded: { color: colors.accent, fontSize: 12 },
+  rowIncluded: { fontSize: 12 },
   rowCount: { color: colors.textDim, fontSize: 13 },
   check: { width: 22, textAlign: 'center', color: colors.textDim, fontSize: 16 },
-  checkActive: { color: colors.accent, fontWeight: '800' },
+  checkActive: { fontWeight: '800' },
   footer: { paddingHorizontal: 16, paddingTop: 8 },
 });

@@ -2,8 +2,14 @@
 export type RootStackParamList = {
   Home: undefined;
   Groups: undefined;
-  Duel: undefined;
-  /** Auto-cull hint: second pass over a completed group's never-won keepers. */
+  /** Swipe-deck group review (m0.4): page through a group, cull as you go. */
+  Deck: undefined;
+  /**
+   * On-demand A/B flip + synced-zoom compare tool for two deck photos.
+   * The verdict buttons record a compare (DuelRecord-shaped) and may cull.
+   */
+  Compare: { groupId: string; aId: string; bId: string };
+  /** Auto-cull hint: second pass over a group's kept compare-losers. */
   Reconsider: { groupId: string };
   Singles: undefined;
   CullList: undefined;
@@ -12,6 +18,14 @@ export type RootStackParamList = {
   EditQueue: undefined;
   /** Day-scoped inbox-zero progress. `day` is a local "YYYY-MM-DD" key. */
   DayProgress: { day: string };
+  /**
+   * Global progress over the selected scope + source (m0.4): same state
+   * summary / filtered grid / state editor as DayProgress. The range is
+   * computed on Home at tap time (rolling scopes end at "now").
+   */
+  Progress: { label: string; startMs: number; endMs: number };
   /** Photo-source folder picker (m0.3.1): choose which directories feed reviews. */
   SourcePicker: undefined;
+  /** App settings (m0.4): photo source, similarity threshold, version. */
+  Settings: undefined;
 };

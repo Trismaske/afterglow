@@ -69,6 +69,43 @@ export async function pagePhotosInRange(
   }
 }
 
+/** One newest-first page of photos (progress grids, m0.4 stage 3). */
+export interface DescendingPhotoPage {
+  photos: LoadedPhoto[];
+  /** Cursor for the next page; undefined when there is none. */
+  endCursor: string | undefined;
+  hasNext: boolean;
+}
+
+/**
+ * Fetch one page of photos in [startMs, endMs], NEWEST first — the
+ * building block for the progress photo grids' incremental loading
+ * (progressPager.ts merges one such stream per source bucket). `after`
+ * is the previous page's endCursor; undefined starts from the top.
+ */
+export async function fetchPhotoPageDesc(
+  startMs: number,
+  endMs: number,
+  albumId: string | undefined,
+  after: string | undefined,
+  first: number,
+): Promise<DescendingPhotoPage> {
+  const page = await MediaLibrary.getAssetsAsync({
+    first,
+    after,
+    ...(albumId !== undefined ? { album: albumId } : {}),
+    createdAfter: startMs,
+    createdBefore: endMs,
+    mediaType: MediaLibrary.MediaType.photo,
+    sortBy: [[MediaLibrary.SortBy.creationTime, false]],
+  });
+  return {
+    photos: page.assets.map(toLoadedPhoto),
+    endCursor: page.endCursor ?? undefined,
+    hasNext: !!page.hasNextPage && !!page.endCursor,
+  };
+}
+
 /**
  * How many photos MediaStore has in [startMs, endMs] — cheap `first: 1`
  * queries reading PagedInfo.totalCount, no asset paging. `albumIds`

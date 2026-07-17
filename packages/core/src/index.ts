@@ -14,3 +14,5 @@ export * from './mix.js';
 export * from './retrospectives.js';
 export * from './flags.js';
 export * from './cull.js';
+export * from './deck.js';
+export * from './similarity.js';

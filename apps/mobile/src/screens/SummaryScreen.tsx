@@ -8,7 +8,7 @@ import { useSession } from '../session/SessionContext';
 import { getAllTimeReclaimedBytes, getFinishedSessionDays } from '../db/store';
 import { currentStreak, dayKey } from '../lib/dates';
 import { BigButton } from '../components/BigButton';
-import { colors, touch } from '../theme';
+import { colors, touch, useTheme } from '../theme';
 import { formatBytes } from '../lib/format';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Summary'>;
@@ -16,6 +16,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Summary'>;
 /** End-of-session summary: the "done for today" moment. */
 export function SummaryScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
+  const theme = useTheme();
   const db = useSQLiteContext();
   const { session, label, reclaimedBytes, editFlagCount, finishSession, version } = useSession();
   const [finishing, setFinishing] = useState(false);
@@ -110,8 +111,8 @@ export function SummaryScreen({ navigation }: Props) {
       <View style={styles.spacer} />
       <BigButton
         label={finishing ? 'Wrapping up…' : 'Finish'}
-        color={colors.accent}
-        textColor="#1a1205"
+        color={theme.accent}
+        textColor={theme.onAccent}
         disabled={finishing}
         onPress={() => void done()}
       />
@@ -120,9 +121,10 @@ export function SummaryScreen({ navigation }: Props) {
 }
 
 function Stat({ value, label }: { value: string; label: string }) {
+  const theme = useTheme();
   return (
     <View style={styles.stat}>
-      <Text style={styles.statValue}>{value}</Text>
+      <Text style={[styles.statValue, { color: theme.accent }]}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
     </View>
   );
@@ -143,7 +145,7 @@ const styles = StyleSheet.create({
     padding: 18,
     gap: 4,
   },
-  statValue: { color: colors.accent, fontSize: 30, fontWeight: '800' },
+  statValue: { fontSize: 30, fontWeight: '800' },
   statLabel: { color: colors.textDim, fontSize: 13 },
   footnote: { color: colors.textDim, fontSize: 12, marginTop: 10 },
   editNote: { color: colors.edit, fontSize: 14, marginTop: 14, lineHeight: 20 },

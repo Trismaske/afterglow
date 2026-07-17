@@ -323,3 +323,292 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
 10. **Settings storage:** a generic `settings(key, value)` table
     (migration v4) rather than a photo-source-specific table — future
     small settings share it without further migrations.
+
+## m0.4
+
+1. **dHash representation: 16-char lowercase hex string** (core
+   `similarity.ts`), not bigint — serializes to SQLite/JSON with no
+   conversion and `hammingDistance` consumes it directly (per-nibble
+   XOR popcount). Bit convention: 8 rows × 9 cols grid, row-major
+   adjacent comparison, bit = 1 when the RIGHT pixel is strictly
+   brighter, most-significant bit first. `dhash64` accepts any grid
+   shape totalling exactly 64 comparisons (the canonical 9×8 is what
+   the app feeds it).
+2. **Similarity refinement = connected components, chain-linking
+   deliberate.** Within a time cluster, photos whose hashes are ≤
+   threshold apart are edges; refined groups are the connected
+   components, so A~B~C stays one group even when A!~C — a drifting
+   burst (pan, walking subject) is still one moment. Threshold 0 =
+   only bit-identical connect; ≥64 = cluster unchanged.
+3. **Null-hash rule (exact):** a photo whose hash is missing/failed
+   attaches to the component of its nearest-by-timestamp hashed
+   neighbor in the same time cluster (tie → the earlier item); a
+   cluster with no hashes at all stays intact. Consequence: a hash
+   failure can never split a photo out of its time cluster on its own.
+   Failed hashes are NOT cached, so transient read errors retry on the
+   next group build.
+4. **Component ordering is deterministic:** components emerge ordered
+   by their earliest member's position; items keep cluster order;
+   refined clusters reuse the `${timestamp}:${id}` id scheme from
+   clustering.ts, so the component containing the cluster's first item
+   keeps the original cluster id (group ids stay stable when nothing
+   splits).
+5. **Hash pipeline split pure/impure:** expo-image-manipulator (SDK 57
+   context API: `manipulate(uri).resize({width: 9, height: 8})` →
+   `renderAsync()` → `saveAsync({format: JPEG, compress: 1, base64})`,
+   with explicit `release()` on both shared objects) produces a tiny
+   base64 JPEG; everything after base64 is plain TS in
+   `dhashDecode.ts` — hand-rolled base64 decoder (no Buffer in RN,
+   Hermes atob too new to rely on), jpeg-js decode, Rec.601 RGB→luma,
+   box-sampling to 9×8 (tolerates a resizer that returns a larger
+   image) — vitest-covered including JPEG round-trips via jpeg-js's
+   encoder. jpeg-js is a plain npm dep; expo-image-manipulator and
+   expo-constants installed via `npx expo install`.
+6. **Hash cache: `photo_hashes(asset_id PK, hash, mod_time)`
+   (migration v5),** separate from `photos` — hashes exist for photos
+   that never entered a session and survive session resets. Recompute
+   only when MediaStore `modificationTime` ≠ stored `mod_time`
+   (in-place edit). Rows are never aged out (~few MB per 100k photos);
+   rows for deleted assets are just never read.
+7. **Laziness and UI feedback:** hashes are computed at group-building
+   time inside `startSession`, ONLY for photos in multi-photo time
+   clusters (singles never pay), with concurrency 3 (the heavy work is
+   native resizing; JS decodes 9×8 JPEGs in microseconds, so the UI
+   thread breathes between awaits — no extra batching layer was
+   needed). Progress surfaces on the Home start button as "Analyzing
+   photos… n/total"; with the m0.3.1 cap a session hashes ≤ 500
+   photos, cached thereafter.
+8. **Threshold setting:** settings-table key `similarity_threshold`
+   (m0.3.1 key/value table — no migration needed), integer Hamming
+   distance 0–64. Default 12: the classic dHash duplicate cutoff is
+   ~10, but the goal is grouping related shots of a scene, not just
+   duplicates. UI is a 5-step chip control (Strictest 4 / Strict 8 /
+   Normal 12 / Loose 18 / Loosest 26) with per-step hints and a
+   plain-language explainer, not a raw slider — 64 positions are
+   meaningless to users. Parsing accepts any 0–64 integer (forward
+   compatibility); garbage falls back to the default; stored
+   off-step values snap to the nearest chip for display only (ties
+   toward stricter), the stored value itself is what refinement uses.
+   Applies from the next session (documented in the UI).
+9. **There was no gear affordance on Home** (the stage brief assumed
+   one) — m0.3.1 shipped a "Source: … Edit ›" row instead. Added a ⚙
+   button beside the Home title routing to the new Settings screen;
+   the Home source row stays as a direct shortcut, and Settings has
+   its own Photo-source row to the same picker. Settings also shows
+   the app version via expo-constants (`Constants.expoConfig.version`
+   = app.json, single source of truth).
+10. **Refined singleton components join the singles bucket** merged
+    with the time-singletons, re-sorted chronologically (timestamp,
+    then id) so single review stays in shooting order. Group review
+    order likewise stays chronological because refinement preserves
+    cluster order and orders components by earliest member.
+11. **Core stayed additive:** `similarity.ts` is a new module (new
+    exports `dhash64`, `hammingDistance`, `refineClustersBySimilarity`,
+    `DHASH_BITS`, `DHASH_HEX_LENGTH`); bracket `CullSession` and every
+    existing export are untouched. `hammingDistance` throws on
+    malformed/mismatched hashes rather than guessing — a corrupt
+    stored hash should surface, not silently count as similar.
+12. **Swipe deck replaces the duel bracket (core `deck.ts`, new module;
+    `CullSession` stays exported/intact for desktop reuse).**
+    `DeckSession` takes the same `{groups, singles}` input and the same
+    PhotoState machine; per group it holds `memberIds`/`aliveIds`/
+    `cursor`/`complete`/`bestId`. `cull(id)` stages a photo exactly like
+    a duel cull did; `keepRest(groupId)` completes the group and keeps
+    every alive unreviewed member; culling/ejecting the last alive
+    member auto-completes the group. Deck photos stay `unreviewed`
+    until culled or kept by keepRest — merely being swiped past commits
+    nothing. Staging → confirm → trash and the singles flow are
+    byte-for-byte the m0.2 semantics (same screens/store paths).
+13. **Deck snapshots are discriminated (`kind: 'deck'`, version 1) and
+    m0.3.x bracket snapshots are NOT migrated:** `DeckSession.fromJSON`
+    rejects them, and `resumeSession`'s existing corrupt-snapshot catch
+    abandons the in-flight session. Reviewed states in SQLite are the
+    durable truth; per m0.3.1 rules the abandoned session's interim
+    rows are re-reviewed next session. Cursor position is persisted per
+    swipe (fire-and-forget snapshot write — expo-sqlite queues writes
+    in call order), so mid-deck restarts resume on the same photo.
+14. **Compare tool = the m0.3 A/B flip + synced-zoom screen, now
+    on-demand** (`CompareScreen`, route `Compare {groupId, aId, bId}`).
+    The deck's Compare button opens it against the NEXT alive photo
+    (wrapping); long-pressing a thumbnail in the deck's strip compares
+    against that photo instead — both documented here as the chosen
+    "your call" option. Verdicts return to the deck: "★ X is better"
+    records a compare (keptBoth=true, no state change); "✕ Cull X"
+    culls X and records keptBoth=false; "Close — no verdict" records
+    nothing. Compare outcomes reuse the `DuelRecord` shape and land in
+    the same `duels` SQLite table via the unchanged `persistDecision`.
+15. **Reconsider hints now derive from explicit compares only** (per
+    trip feedback): candidates = kept photos that LOST a compare, never
+    won one, and aren't the starred best (`reconsiderCandidates`). A
+    group finished with zero compares never prompts. A compare loser
+    whose cull is later unstaged becomes a candidate again (it is kept
+    and carries a loss) — accepted. The core bracket's
+    `autoCullCandidates` remains for `CullSession` users; the app no
+    longer calls it. `reconsiderCull` now uses core `cullKept()` (the
+    deck model supports kept→culled directly) — the m0.3 snapshot-
+    rewrite escape hatch survives only in the confirm-rollback path.
+16. **markBest is optional and cosmetic-plus-signal:** the ★ toggle
+    stars at most one alive member per group (star lives only in the
+    snapshot, like the bracket's bestId); culling or ejecting the best
+    clears the star. It excludes the photo from reconsider candidacy
+    and highlights its thumbnail; nothing else consumes it yet.
+17. **"Not related — review as single" (`makeSingle`)** removes the
+    photo from the group entirely (memberIds, deck, best star), appends
+    it to the singles queue (reviewed after the pre-existing singles;
+    order = ejection order), and NULLs `photos.group_id` (new store
+    helper `clearPhotoGroup`) so day-progress "in groups" counts stay
+    honest. One tap, no confirm — the photo still gets reviewed, just
+    as a single; there is no un-single in-session.
+18. **Deck cull undo:** a 4 s "UNDO" banner after each deck cull calls
+    core `undoCull(id)` — culled → unreviewed, re-inserted at its
+    original deck position (memberIds order), cursor pointed at it.
+    Only while the group is live; after completion the cull list's
+    tap-to-restore (culled → kept, no deck re-entry) is the path, as
+    before. If culling the last photo completes the group, routing
+    moves on and the banner dies with the screen — cull list covers it.
+19. **Deck UI is a paging FlatList, not a gesture-handler carousel:**
+    horizontal `pagingEnabled` FlatList over the alive photos ("2/3"
+    indicator, thumbnail strip synced to the cursor). Pinch-zoom on the
+    deck was deliberately dropped — it fights the pager's pan gesture —
+    and lives in the Compare tool (the "defer zoom, document" option
+    from the stage brief). Swiping writes the cursor; membership
+    changes (cull/undo/eject) re-align the list to the cursor offset.
+20. **Timestamp precision (deck + compare labels):** seconds always,
+    hand-rolled 24 h `HH:MM:SS` (locale-proof), switching to
+    `HH:MM:SS.mmm` only when adjacent deck photos (or the two compare
+    candidates) share the same wall-clock second AND at least one
+    timestamp carries a nonzero sub-second part — MediaStore
+    creationTime is ms, but second-resolution sources would render a
+    noise ".000" otherwise (`millisNeeded` in `lib/format.ts`,
+    vitest-covered).
+21. **needs-edit stays app-side in the deck world** (m0.2 #1 upheld):
+    the deck/compare ✎ buttons call the existing `toggleNeedsEdit`;
+    core `DeckSession` has no edit concept. Needs-edit-flagged photos
+    are still exempt from reconsider prompts (the user explicitly wants
+    them).
+22. **Day and Global progress share one body** (`components/progress/
+    ProgressView`): state summary (tappable filters) + filtered photo
+    grid + per-photo state editor sheet. DB-side scoping is a
+    `PhotoScope` union: DayProgress keeps the m0.2 `day = ?` column
+    scoping (so its counts match the Recent-days rollups exactly);
+    the Global page — and Home's counts — scope by `taken_at BETWEEN`.
+    `getDayStateCounts` and `countHandledInRange` were replaced by one
+    `getStateCountsInScope` (handled = toEdit + done, byte-identical
+    m0.3.1 accounting); the breakdown math moved to `lib/progress.ts`
+    (pure, vitest-covered).
+23. **Two grid engines, chosen by filter.** In-groups / Kept / To-edit /
+    Staged / Done photos all have SQLite rows, so those filters page the
+    DB directly (`getGridPhotosByFilter`, newest-first LIMIT/OFFSET) —
+    no MediaStore scan to find 3 staged photos in a 5 000-photo scope.
+    "All" and "Unreviewed" must include never-tracked photos, so they
+    page MediaStore newest-first (one cursor stream per source bucket,
+    merged globally-descending by the pure k-way pager in
+    `lib/progressPager.ts`, vitest-covered; memory stays O(buckets ×
+    page)) and join each page against SQLite to classify
+    (`classifyPhotoState`). Grids are newest-first (gallery convention);
+    review order stays oldest-first.
+24. **Trashed rows appear in no grid** — their files are gone, so there
+    is nothing to thumbnail. They still count in the summary's Done
+    number (everything-converges accounting), and the grid label notes
+    "(N trashed — files gone, not shown)" when the Done filter is
+    active.
+25. **State editor transitions are the audited store paths, nothing
+    new:** kept → done (`markKeptDone`), kept → to_edit
+    (`setNeedsEdit(true)`, the m0.2 CASE remap), to_edit → done
+    (`markEditDone`), done → to_edit (new `markDoneToEdit`, keeps the
+    needs_edit / to_edit_at first-entry-wins conventions), staged cull →
+    kept (new `unstageCullDirect`, same outcome as the in-session
+    cull-list unstage incl. the m0.2 #8 to_edit comeback). Unreviewed /
+    untracked / trashed / confirmed are read-only. Every write is
+    state-guarded (`AND state = '…'`), so a stale sheet is a no-op.
+26. **Photos in the ACTIVE session are read-only in the state editor.**
+    Direct DB writes would desync the authoritative session snapshot —
+    e.g. un-culling a staged photo in SQLite would not stop the live
+    session from deleting it at confirm. The session's own screens are
+    the editing surface while a session runs; the sheet says so. An
+    un-cull outside any live session lands on 'kept' (interim state,
+    re-reviewed next session per m0.2 #3 — the sheet can then mark it
+    done manually).
+27. **"Review this day" reuses the custom-range machinery verbatim:**
+    `loadReviewablePhotos` over the day's range + `startSession` with
+    the day label, including Home's replace-unfinished-session confirm
+    and the analyzing-hashes progress label. Enabled while
+    `remainingReviewable = total − done − toEdit > 0` — kept/staged/
+    in-group interim states count as still-reviewable, matching the
+    m0.2 re-review rule.
+28. **Home headline counts "done" strictly:** N = done + trashed rows,
+    M = MediaStore count + trashed rows — to_edit is *handled* but not
+    *done*, so the headline can read 90% while "0 to review" (edit
+    queue still open). Same cheap count queries as m0.3.1 (one
+    MediaStore totalCount pass + one SQL aggregate; no asset lists on
+    Home). The Progress row shows the same percentage and computes the
+    rolling range at tap time; the Global page deliberately has no
+    review CTA (Home's Start culling covers scope-wide reviews).
+29. **Progress-page refresh is whole-page:** a state edit bumps one
+    refresh tick that reloads counts and resets the grid (scroll
+    position included). Simple-correct over clever in-place patching;
+    revisit if editing many photos deep in a grid becomes a real
+    workflow. Back-navigation stays flat: Progress and DayProgress are
+    only ever pushed from Home, and a day review pushes the existing
+    Groups flow (Summary still pops to top).
+
+## m0.4 — theming
+
+1. **Semantic accent tokens, three of them:** `accent` (chips, primary
+   buttons, chevrons/links, best-marker), `onAccent` (text/icons on an
+   accent fill), `accentMuted` (accent sunk 78% toward the background;
+   subtle selected fills like the deck's active Best pill). Success
+   (keep-green), destructive (cull-red) and edit-blue are NOT accent
+   tokens — they stay fixed in the static `colors` object regardless of
+   the chosen accent (danger stays red, the Start-culling / Keep-rest /
+   confirm CTAs stay green). The theme module is `src/theme.tsx`
+   (formerly theme.ts): static `colors`/`touch` plus
+   `ThemeProvider`/`useTheme`; `accent` was REMOVED from `colors` so the
+   compiler found every consumer during migration.
+2. **Derivation is pure and unit-tested** (`src/lib/accentTheme.ts`):
+   `onAccent` by WCAG relative luminance — accents ≥ 0.35 luminance get
+   an 11%-of-accent near-black tint (amber derives #1a1208, visually
+   identical to the old hand-picked #1a1205; the hue whisper is kept on
+   purpose), darker accents get the app's near-white #f2f4f8. All six
+   shipped presets and Material You tone-80 land on the dark-text
+   branch. `accentMuted` = mix(accent, background, 0.78) (amber →
+   #3d301f ≈ old #3d3116). Invalid hex anywhere degrades to amber
+   rather than throwing.
+3. **System palette via a LOCAL Expo module** (`modules/
+   material-you-accent`, Kotlin, Android-only): a synchronous
+   `getSystemAccents()` returning `android.R.color.system_accent1_
+   {200,500,700}` as #rrggbb, `null` below API 31 (SDK_INT < S) or
+   without a context. `expo-module.config.json` declares platforms:
+   ["android"] only — the scaffolded "apple" entry was dropped (no
+   Swift file exists; declaring it would break iOS builds). JS side
+   uses `requireOptionalNativeModule`, so iOS / Expo Go / stale dev
+   clients collapse to `null` = "no dynamic palette" → amber. The app
+   uses `accent200` (tone 80, made for dark surfaces) as the System
+   accent; 500/700 are returned for future use but unused.
+4. **Wallpaper changes apply on next app launch, not live.** The
+   palette is read once per ThemeProvider mount; Android recreates the
+   activity on wallpaper/dynamic-color changes, so a fresh launch
+   re-reads it. No AppState listener — simple-correct, revisit if it
+   ever feels stale.
+5. **Setting: key `accent_color`** in the m0.3.1 settings table, values
+   `system|amber|coral|green|sky|violet|rose`, parsed with fallback to
+   the default `system` on garbage (which itself resolves to amber when
+   the palette is unavailable — always safe to store). Presets: Amber
+   #e8a54b (classic), Coral #ee8570, Green #74c69d, Sky blue #6fb3e8,
+   Violet #a49bef, Rose #e589b4 — all tone-80-ish for the dark UI. The
+   Settings "Accent color" card shows System first (preview swatch =
+   live wallpaper accent; disabled with a hint below Android 12) then
+   the six swatch chips; selection applies live via context re-render
+   and persists immediately.
+6. **No accent flash on launch:** ThemeProvider reads the stored choice
+   with `db.getFirstSync` in the useState initializer (it mounts inside
+   SQLiteProvider, after migrations), so the first frame already has
+   the right accent. The Suspense fallback spinner renders before any
+   provider exists and uses the static amber constant.
+7. **Migration pattern:** accent-dependent StyleSheet entries moved to
+   inline `{ color/backgroundColor/borderColor: theme.accent… }`
+   overrides at the use site (static neutrals stay in StyleSheet);
+   `stateMeta.ts` became `stateMetaFor(accent)` since the in-groups
+   swatch follows the accent. React Navigation's `primary` follows the
+   accent via a ThemedNavigator component. Hardcoded on-accent
+   (#1a1205) and muted (#3d3116) hexes are gone from src/.

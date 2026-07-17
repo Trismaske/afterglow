@@ -3,8 +3,10 @@
  *
  * SQLite is the source of truth for photo state, keyed by MediaStore asset
  * id with a lazy content hash as fallback identity (PLAN.md). The active
- * review session — including mid-bracket duel state — is persisted as a
- * versioned core `CullSession` snapshot so it survives app restarts.
+ * review session — including mid-deck state — is persisted as a versioned
+ * core session snapshot (`DeckSession` since m0.4; the m0.1–m0.3 bracket
+ * `CullSession` before that — those old snapshots are discarded on
+ * resume) so it survives app restarts.
  *
  * Migrations: simple `PRAGMA user_version`-based runner. Each entry in
  * MIGRATIONS moves the schema from version (index) to (index + 1) and runs
@@ -95,6 +97,19 @@ const MIGRATIONS: readonly string[] = [
     CREATE TABLE IF NOT EXISTS settings (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
+    );
+  `,
+  // 4 → 5: m0.4 perceptual-hash cache. One 64-bit dHash (16-char hex, see
+  // @afterglow/core similarity.ts) per MediaStore asset; `mod_time` is the
+  // asset's modificationTime when the hash was computed — a moved mod time
+  // invalidates the entry (the photo was edited in place). Rows are never
+  // aged out: 200k photos ≈ a few MB, and a stale row for a deleted asset
+  // is simply never read again.
+  `
+    CREATE TABLE IF NOT EXISTS photo_hashes (
+      asset_id TEXT PRIMARY KEY,
+      hash     TEXT NOT NULL,
+      mod_time INTEGER NOT NULL
     );
   `,
 ];

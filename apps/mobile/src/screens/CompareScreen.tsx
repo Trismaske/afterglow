@@ -12,10 +12,10 @@ import Animated, {
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { useSession } from '../session/SessionContext';
-import { colors, touch } from '../theme';
-import { formatClock } from '../lib/format';
+import { colors, touch, useTheme } from '../theme';
+import { formatClockPrecise, millisNeeded } from '../lib/format';
 
-type Props = NativeStackScreenProps<RootStackParamList, 'Duel'>;
+type Props = NativeStackScreenProps<RootStackParamList, 'Compare'>;
 
 const MAX_SCALE = 8;
 
@@ -25,32 +25,36 @@ function clamp(value: number, max: number): number {
 }
 
 /**
- * The duel, m0.3 style: full-screen A/B flip compare. Both candidates are
- * rendered stacked in ONE transformed container — tap anywhere flips which
- * is visible (instant, no crossfade: flicker comparison is the point), and
- * pinch/pan zooms BOTH identically because the transform lives on the
- * shared parent (reanimated shared values + gesture-handler).
+ * The on-demand compare tool (m0.4 — the m0.3 duel screen's A/B flip +
+ * synchronized zoom, kept as a tool the deck opens for any two photos).
+ * Both candidates are rendered stacked in ONE transformed container — tap
+ * anywhere flips which is visible (instant, no crossfade: flicker
+ * comparison is the point), and pinch/pan zooms BOTH identically because
+ * the transform lives on the shared parent.
  *
- * The action buttons apply to the photo currently shown:
- *   - "Cull" stages IT for deletion; the hidden one wins the duel.
- *   - "Better" keeps both and advances the visible one.
+ * The verdict buttons apply to the photo currently shown and return to
+ * the deck:
+ *   - "Cull" stages IT for deletion (records a compare, keptBoth=false).
+ *   - "Better" keeps both and records the compare (keptBoth=true) —
+ *     compare losers that stay kept feed the Reconsider hint.
+ *   - "Close" records nothing.
  */
-export function DuelScreen({ navigation }: Props) {
+export function CompareScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
-  const {
-    session,
-    groups,
-    decideDuel,
-    needsEdit,
-    toggleNeedsEdit,
-    version,
-    pendingReconsider,
-  } = useSession();
+  const theme = useTheme();
+  const { aId, bId } = route.params;
+  const { session, recordCompare, compareCull, needsEdit, toggleNeedsEdit } = useSession();
   const [busy, setBusy] = useState(false);
   const [showB, setShowB] = useState(false);
 
-  const pair = useMemo(() => session?.nextPair() ?? null, [session, version]);
-  const pairKey = pair ? `${pair.a.id}:${pair.b.id}` : '';
+  const pair = useMemo(() => {
+    if (!session) return null;
+    try {
+      return { a: session.item(aId), b: session.item(bId) };
+    } catch {
+      return null;
+    }
+  }, [session, aId, bId]);
 
   // --- synchronized zoom state (shared by both stacked images) ----------
   const scale = useSharedValue(1);
@@ -61,19 +65,6 @@ export function DuelScreen({ navigation }: Props) {
   const savedTy = useSharedValue(0);
   const stageW = useSharedValue(0);
   const stageH = useSharedValue(0);
-
-  // New pair → fresh compare: reset zoom and show A.
-  useEffect(() => {
-    scale.value = 1;
-    savedScale.value = 1;
-    tx.value = 0;
-    ty.value = 0;
-    savedTx.value = 0;
-    savedTy.value = 0;
-    setShowB(false);
-    // Shared values are stable refs — only the pair matters here.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pairKey]);
 
   const flip = useCallback(() => setShowB((v) => !v), []);
 
@@ -145,39 +136,38 @@ export function DuelScreen({ navigation }: Props) {
     transform: [{ translateX: tx.value }, { translateY: ty.value }, { scale: scale.value }],
   }));
 
-  // ----------------------------------------------------------- session ---
-  const groupInfo = useMemo(() => {
-    if (!pair) return null;
-    const index = groups.findIndex((g) => g.id === pair.groupId);
-    if (index < 0) return null;
-    const group = groups[index];
-    return { index, total: groups.length, size: group.items.length, start: group.items[0].timestamp };
-  }, [pair, groups]);
-
-  // Route forward: a completed bracket with reconsider candidates first,
-  // then remaining duels, singles, and finally the cull list.
+  // A photo can vanish mid-compare only via external state weirdness —
+  // fall back to the deck rather than rendering a dead screen.
   useEffect(() => {
-    if (!session) return;
-    if (pendingReconsider) {
-      navigation.replace('Reconsider', { groupId: pendingReconsider });
-      return;
-    }
-    if (pair) return;
-    if (session.nextSingle()) navigation.replace('Singles');
-    else navigation.replace('CullList');
-  }, [session, pair, pendingReconsider, navigation]);
+    if (!pair) navigation.goBack();
+  }, [pair, navigation]);
 
-  const decide = useCallback(
-    async (decision: Parameters<typeof decideDuel>[0]) => {
+  const decideBetter = useCallback(
+    async (winnerId: string, loserId: string) => {
       if (busy) return;
       setBusy(true);
       try {
-        await decideDuel(decision);
+        await recordCompare(winnerId, loserId);
+        navigation.goBack();
       } finally {
         setBusy(false);
       }
     },
-    [busy, decideDuel],
+    [busy, recordCompare, navigation],
+  );
+
+  const decideCull = useCallback(
+    async (loserId: string, winnerId: string) => {
+      if (busy) return;
+      setBusy(true);
+      try {
+        await compareCull(loserId, winnerId);
+        navigation.goBack();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, compareCull, navigation],
   );
 
   if (!session || !pair) {
@@ -185,16 +175,18 @@ export function DuelScreen({ navigation }: Props) {
   }
 
   const visible = showB ? pair.b : pair.a;
+  const hidden = showB ? pair.a : pair.b;
   const visibleLabel = showB ? 'B' : 'A';
+
+  // Seconds always; millis when the two candidates share a second and the
+  // data has sub-second resolution (same rule as the deck labels).
+  const needMs = millisNeeded([pair.a.timestamp, pair.b.timestamp].sort((x, y) => x - y));
+  const withMs = needMs[0] || needMs[1];
 
   return (
     <View style={[styles.root, { paddingBottom: insets.bottom + 8 }]}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>
-          {groupInfo
-            ? `Group ${groupInfo.index + 1} of ${groupInfo.total} · ${groupInfo.size} shots · ${formatClock(groupInfo.start)}`
-            : 'Duel'}
-        </Text>
+        <Text style={styles.headerTitle}>Compare</Text>
         <Text style={styles.headerHint}>Tap to flip A/B · pinch to zoom both · decide below.</Text>
       </View>
 
@@ -224,7 +216,7 @@ export function DuelScreen({ navigation }: Props) {
           </Animated.View>
           <View style={styles.abBadge} pointerEvents="none">
             <Text style={styles.abBadgeText}>
-              {visibleLabel} · {formatClock(visible.timestamp)}
+              {visibleLabel} · {formatClockPrecise(visible.timestamp, withMs)}
             </Text>
           </View>
         </View>
@@ -236,10 +228,13 @@ export function DuelScreen({ navigation }: Props) {
             <Pressable
               key={which}
               onPress={() => setShowB(which === 'B')}
-              style={[styles.abChip, visibleLabel === which && styles.abChipActive]}
+              style={[
+                styles.abChip,
+                visibleLabel === which && { backgroundColor: theme.accent, borderColor: theme.accent },
+              ]}
             >
               <Text
-                style={[styles.abChipText, visibleLabel === which && styles.abChipTextActive]}
+                style={[styles.abChipText, visibleLabel === which && { color: theme.onAccent }]}
               >
                 {which}
               </Text>
@@ -264,18 +259,21 @@ export function DuelScreen({ navigation }: Props) {
         <Pressable
           style={[styles.actionButton, styles.cullButton]}
           disabled={busy}
-          onPress={() => void decide({ cull: visible.id })}
+          onPress={() => void decideCull(visible.id, hidden.id)}
         >
           <Text style={styles.actionText}>✕ Cull {visibleLabel}</Text>
         </Pressable>
         <Pressable
           style={[styles.actionButton, styles.betterButton]}
           disabled={busy}
-          onPress={() => void decide({ keepBoth: true, winner: visible.id })}
+          onPress={() => void decideBetter(visible.id, hidden.id)}
         >
           <Text style={styles.actionText}>★ {visibleLabel} is better</Text>
         </Pressable>
       </View>
+      <Pressable style={styles.closeButton} disabled={busy} onPress={() => navigation.goBack()}>
+        <Text style={styles.closeText}>Close — no verdict</Text>
+      </Pressable>
     </View>
   );
 }
@@ -303,7 +301,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
     paddingVertical: 4,
   },
-  abBadgeText: { color: colors.text, fontSize: 13, fontWeight: '700' },
+  abBadgeText: { color: colors.text, fontSize: 13, fontWeight: '700', fontVariant: ['tabular-nums'] },
   subRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   abChips: { flexDirection: 'row', gap: 6 },
   abChip: {
@@ -316,9 +314,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  abChipActive: { backgroundColor: colors.accent, borderColor: colors.accent },
   abChipText: { color: colors.textDim, fontSize: 15, fontWeight: '700' },
-  abChipTextActive: { color: '#1a1205' },
   editTag: {
     backgroundColor: colors.surface,
     borderRadius: 10,
@@ -341,4 +337,14 @@ const styles = StyleSheet.create({
   cullButton: { backgroundColor: colors.cullDim },
   betterButton: { backgroundColor: '#1f3a2a' },
   actionText: { color: colors.text, fontSize: 17, fontWeight: '800' },
+  closeButton: {
+    minHeight: 44,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  closeText: { color: colors.textDim, fontSize: 14, fontWeight: '700' },
 });

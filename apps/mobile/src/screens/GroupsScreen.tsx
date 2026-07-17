@@ -6,7 +6,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { useSession, type GroupInfo } from '../session/SessionContext';
 import { BigButton } from '../components/BigButton';
-import { colors, touch } from '../theme';
+import { colors, touch, useTheme } from '../theme';
 import { formatClock } from '../lib/format';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Groups'>;
@@ -16,10 +16,12 @@ const STRIP_THUMBS = 6;
 /**
  * Overview of the session: cull groups (thumbnail strip + count), the
  * singles bucket, and one big "Continue" button that drives the linear
- * review flow (all duels group-by-group, then singles, then the cull list).
+ * review flow (swipe decks group-by-group, then singles, then the cull
+ * list).
  */
 export function GroupsScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
+  const theme = useTheme();
   const { session, label, groups, singleIds, version } = useSession();
 
   const stats = useMemo(() => {
@@ -32,7 +34,7 @@ export function GroupsScreen({ navigation }: Props) {
 
   const nextStep = useMemo(() => {
     if (!session) return null;
-    if (session.nextPair()) return 'Duel' as const;
+    if (session.currentGroupId()) return 'Deck' as const;
     if (session.nextSingle()) return 'Singles' as const;
     return 'CullList' as const;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -40,21 +42,24 @@ export function GroupsScreen({ navigation }: Props) {
 
   const continueLabel = useMemo(() => {
     if (!session || !stats) return '';
-    if (nextStep === 'Duel') return 'Continue duels';
+    if (nextStep === 'Deck') return 'Review groups';
     if (nextStep === 'Singles') return `Review singles (${stats.singlesPending})`;
     return stats.culled > 0 ? `Review cull list (${stats.culled})` : 'Finish up';
   }, [session, stats, nextStep]);
 
   const renderGroup = useCallback(
     ({ item: group, index }: { item: GroupInfo; index: number }) => {
+      // A group can be emptied entirely via "not related — single".
+      const first = group.items[0];
       return (
         <View style={styles.groupRow}>
           <View style={styles.groupHeader}>
             <Text style={styles.groupTitle}>
-              Group {index + 1} · {group.items.length} shots · {formatClock(group.items[0].timestamp)}
+              Group {index + 1} · {group.items.length} shots
+              {first ? ` · ${formatClock(first.timestamp)}` : ''}
             </Text>
             <Text style={[styles.groupStatus, group.complete && styles.groupStatusDone]}>
-              {group.complete ? 'best picked ✓' : 'pending'}
+              {group.complete ? 'reviewed ✓' : 'pending'}
             </Text>
           </View>
           <View style={styles.strip}>
@@ -62,7 +67,7 @@ export function GroupsScreen({ navigation }: Props) {
               <Image
                 key={item.id}
                 source={{ uri: item.uri }}
-                style={[styles.thumb, item.id === group.bestId && styles.thumbBest]}
+                style={[styles.thumb, item.id === group.bestId && [styles.thumbBest, { borderColor: theme.accent }]]}
                 contentFit="cover"
                 recyclingKey={item.id}
               />
@@ -76,7 +81,7 @@ export function GroupsScreen({ navigation }: Props) {
         </View>
       );
     },
-    [],
+    [theme.accent],
   );
 
   if (!session || !stats) {
@@ -115,8 +120,8 @@ export function GroupsScreen({ navigation }: Props) {
         {nextStep && (
           <BigButton
             label={continueLabel}
-            color={colors.accent}
-            textColor="#1a1205"
+            color={theme.accent}
+            textColor={theme.onAccent}
             onPress={() => navigation.navigate(nextStep)}
           />
         )}
@@ -146,7 +151,7 @@ const styles = StyleSheet.create({
   groupStatusDone: { color: colors.keep },
   strip: { flexDirection: 'row', gap: 6 },
   thumb: { flex: 1, aspectRatio: 1, borderRadius: 8, backgroundColor: colors.surfaceRaised },
-  thumbBest: { borderWidth: 2, borderColor: colors.accent },
+  thumbBest: { borderWidth: 2 },
   thumbMore: { alignItems: 'center', justifyContent: 'center' },
   thumbMoreText: { color: colors.textDim, fontWeight: '700' },
   footer: { paddingTop: 8 },

@@ -1,13 +1,20 @@
 /**
- * Holds the live core CullSession, mirrors every mutation into SQLite
- * (snapshot + changed photo states + duel records), and exposes the review
- * actions to the screens.
+ * Holds the live core DeckSession, mirrors every mutation into SQLite
+ * (snapshot + changed photo states + compare records), and exposes the
+ * review actions to the screens.
  *
- * All bracket/staging logic lives in @afterglow/core — this file only
- * adapts it to React and persistence. The m0.2 additions (needs-edit flags,
- * kept → done convergence) are app-side state layered over the core
- * session: core only knows kept/culled; SQLite is the source of truth for
+ * All deck/staging logic lives in @afterglow/core — this file only adapts
+ * it to React and persistence. m0.4 replaced the pairwise duel bracket
+ * with the swipe deck (core deck.ts; the bracket CullSession remains in
+ * core, unused by the app). The m0.2 additions (needs-edit flags, kept →
+ * done convergence) are app-side state layered over the core session:
+ * core only knows kept/culled; SQLite is the source of truth for
  * to_edit/done (PLAN.md).
+ *
+ * Migration note (m0.3.x → m0.4): an in-flight bracket session's snapshot
+ * fails DeckSession.fromJSON and is abandoned on resume — reviewed states
+ * in SQLite are the durable truth, and per m0.3.1 an abandoned session's
+ * interim rows are re-reviewed next session.
  */
 import React, {
   createContext,
@@ -19,11 +26,11 @@ import React, {
 } from 'react';
 import { useSQLiteContext } from 'expo-sqlite';
 import {
-  CullSession,
+  DeckSession,
   clusterByGap,
   MOMENTS_GAP_MS,
+  refineClustersBySimilarity,
   type Cluster,
-  type DuelDecision,
   type MediaItem,
   type PhotoState,
 } from '@afterglow/core';
@@ -31,13 +38,17 @@ import type { LoadedPhoto } from '../lib/media';
 import { deleteAssets } from '../lib/media';
 import { fileSize, sha256OfFile } from '../lib/hash';
 import { dayKey } from '../lib/dates';
+import { ensureDhashes } from '../lib/similarityHashes';
+import { parseSimilarityThreshold, SIMILARITY_THRESHOLD_KEY } from '../lib/similarityPrefs';
 import {
   abandonActiveSessions,
   addReclaimedBytes,
+  clearPhotoGroup,
   completeSession,
   createSession,
   getActiveSession,
   getNeedsEditAssets,
+  getSetting,
   markKeptDone,
   persistDecision,
   setContentHash,
@@ -52,6 +63,7 @@ export type SingleReviewAction = 'keep' | 'cull' | 'to_edit';
 
 export interface GroupInfo {
   id: string;
+  /** Current members (photos moved out via "not related" have left). */
   items: MediaItem[];
   complete: boolean;
   bestId: string | null;
@@ -66,7 +78,7 @@ export interface ConfirmResult {
 
 interface SessionContextValue {
   /** Null when no session is active. */
-  session: CullSession | null;
+  session: DeckSession | null;
   sessionId: number | null;
   label: string;
   /** Bytes reclaimed so far in this session. */
@@ -80,11 +92,29 @@ interface SessionContextValue {
     rangeStart: number,
     rangeEnd: number,
     photos: readonly LoadedPhoto[],
+    /** Perceptual-hash progress while groups are being built (m0.4). */
+    onHashProgress?: (done: number, total: number) => void,
   ) => Promise<void>;
   /** Restore the persisted active session, if any. Returns true if resumed. */
   resumeSession: () => Promise<boolean>;
   discardActiveSession: () => Promise<void>;
-  decideDuel: (decision: DuelDecision) => Promise<void>;
+  // ------------------------------------------------------- deck actions
+  /** Swipe: persistively move a group's deck cursor. */
+  deckSetCursor: (groupId: string, index: number) => void;
+  /** Cull the photo out of its deck onto the staged cull list. */
+  deckCull: (id: string) => Promise<void>;
+  /** Brief-undo for a deck cull: back into the deck, unreviewed. */
+  deckUndoCull: (id: string) => Promise<void>;
+  /** Finish the group: alive unreviewed members are kept. */
+  keepRest: (groupId: string) => Promise<void>;
+  /** Star/unstar the group's single best. */
+  markBest: (groupId: string, id: string | null) => Promise<void>;
+  /** "Not related — review as single": moves the photo to the singles flow. */
+  makeSingle: (id: string) => Promise<void>;
+  /** Compare tool outcome: winner is better, both stay (records history). */
+  recordCompare: (winnerId: string, loserId: string) => Promise<void>;
+  /** Compare tool outcome: cull the loser (records history + stages cull). */
+  compareCull: (loserId: string, winnerId: string) => Promise<void>;
   decideSingle: (id: string, action: SingleReviewAction) => Promise<void>;
   /** Whether a photo carries the "keeper needs editing" flag. */
   needsEdit: (id: string) => boolean;
@@ -93,17 +123,18 @@ interface SessionContextValue {
   /** How many photos in this session are flagged for editing. */
   editFlagCount: number;
   /**
-   * Group whose bracket just completed with never-won keepers — the Duel
-   * screen routes to the Reconsider (auto-cull hint) screen when set.
-   * In-memory only: lost on app restart (the hint is opportunistic).
+   * Group that just completed with reconsider candidates (kept losers of
+   * explicit compares) — the Deck screen routes to the Reconsider screen
+   * when set. In-memory only: lost on app restart (the hint is
+   * opportunistic).
    */
   pendingReconsider: string | null;
   clearPendingReconsider: () => void;
   /**
    * Second-pass cull from the Reconsider screen: a kept photo goes to the
-   * staged cull list. Core has no kept→culled transition, so this rewrites
-   * the versioned snapshot (the supported escape hatch, same as the
-   * confirm-rollback path). Not a duel — no duel record is written.
+   * staged cull list (core cullKept — the deck model supports kept→culled
+   * directly; no snapshot rewrite needed anymore). Not a compare — no
+   * duel record is written.
    */
   reconsiderCull: (id: string) => Promise<void>;
   unstageCull: (id: string) => Promise<void>;
@@ -115,7 +146,7 @@ interface SessionContextValue {
 
 const SessionContext = createContext<SessionContextValue | null>(null);
 
-function statesOf(session: CullSession): Map<string, PhotoState> {
+function statesOf(session: DeckSession): Map<string, PhotoState> {
   return new Map(Object.entries(session.toJSON().states) as [string, PhotoState][]);
 }
 
@@ -132,10 +163,8 @@ function changedStates(
 
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const db = useSQLiteContext();
-  const sessionRef = useRef<CullSession | null>(null);
+  const sessionRef = useRef<DeckSession | null>(null);
   const lastStatesRef = useRef<Map<string, PhotoState>>(new Map());
-  const groupItemsRef = useRef<{ id: string; items: MediaItem[] }[]>([]);
-  const singleIdsRef = useRef<string[]>([]);
   const needsEditRef = useRef<Set<string>>(new Set());
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [label, setLabel] = useState('');
@@ -144,18 +173,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [pendingReconsider, setPendingReconsider] = useState<string | null>(null);
 
   const bump = useCallback(() => setVersion((v) => v + 1), []);
-
-  /** Rebuild group/single navigation info from a (re)loaded session. */
-  const indexSession = useCallback((session: CullSession) => {
-    const snap = session.toJSON();
-    const byId = new Map(snap.items.map((i) => [i.id, i]));
-    groupItemsRef.current = snap.brackets.map((b) => ({
-      id: b.groupId,
-      items: b.photoIds.map((id) => byId.get(id)!),
-    }));
-    singleIdsRef.current = [...snap.singleIds];
-    lastStatesRef.current = statesOf(session);
-  }, []);
 
   /** Persist a mutation the session just performed. */
   const persist = useCallback(
@@ -183,14 +200,40 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       rangeStart: number,
       rangeEnd: number,
       photos: readonly LoadedPhoto[],
+      onHashProgress?: (done: number, total: number) => void,
     ) => {
       const clusters: Cluster[] = clusterByGap(
         photos.map((p) => p.item),
         { gapMs: CULL_GROUP_GAP_MS },
       );
-      const groups = clusters.filter((c) => c.items.length >= 2);
-      const singles = clusters.filter((c) => c.items.length === 1).map((c) => c.items[0]);
-      const session = CullSession.create({ groups, singles });
+      // m0.4: time clusters are refined by perceptual similarity (dHash)
+      // so visually unrelated quick-succession shots don't share a group.
+      // Hashes are computed lazily — only for photos inside multi-photo
+      // time clusters — and cached in SQLite (similarityHashes.ts).
+      const timeGroups = clusters.filter((c) => c.items.length >= 2);
+      const photoById = new Map(photos.map((p) => [p.item.id, p]));
+      const { hashes } = await ensureDhashes(
+        db,
+        timeGroups.flatMap((c) => c.items).map((i) => photoById.get(i.id)!),
+        onHashProgress,
+      );
+      const threshold = parseSimilarityThreshold(
+        await getSetting(db, SIMILARITY_THRESHOLD_KEY),
+      );
+      const refined = refineClustersBySimilarity(
+        timeGroups,
+        (id) => hashes.get(id) ?? null,
+        threshold,
+      );
+      const groups = refined.filter((c) => c.items.length >= 2);
+      // Singleton components join the singles bucket, chronological order.
+      const singles = [
+        ...clusters.filter((c) => c.items.length === 1),
+        ...refined.filter((c) => c.items.length === 1),
+      ]
+        .map((c) => c.items[0])
+        .sort((a, b) => a.timestamp - b.timestamp || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      const session = DeckSession.create({ groups, singles });
 
       const groupIdByAsset = new Map<string, string>();
       for (const g of groups) for (const item of g.items) groupIdByAsset.set(item.id, g.id);
@@ -210,7 +253,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       });
 
       sessionRef.current = session;
-      indexSession(session);
+      lastStatesRef.current = statesOf(session);
       needsEditRef.current = new Set();
       setSessionId(id);
       setLabel(newLabel);
@@ -218,16 +261,18 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       setPendingReconsider(null);
       bump();
     },
-    [db, indexSession, bump],
+    [db, bump],
   );
 
   const resumeSession = useCallback(async () => {
     const row = await getActiveSession(db);
     if (!row) return false;
     try {
-      const session = CullSession.fromJSON(JSON.parse(row.snapshot));
+      // Bracket-era (m0.3.x) snapshots throw here and are abandoned —
+      // deliberate upgrade behavior, see the module docs.
+      const session = DeckSession.fromJSON(JSON.parse(row.snapshot));
       sessionRef.current = session;
-      indexSession(session);
+      lastStatesRef.current = statesOf(session);
       needsEditRef.current = await getNeedsEditAssets(
         db,
         session.toJSON().items.map((i) => i.id),
@@ -238,11 +283,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       bump();
       return true;
     } catch {
-      // Corrupt snapshot: abandon it rather than dead-ending the app.
+      // Corrupt or pre-deck snapshot: abandon rather than dead-ending.
       await abandonActiveSessions(db, Date.now());
       return false;
     }
-  }, [db, indexSession, bump]);
+  }, [db, bump]);
 
   const discardActiveSession = useCallback(async () => {
     await abandonActiveSessions(db, Date.now());
@@ -255,25 +300,143 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     bump();
   }, [db, bump]);
 
-  const decideDuel = useCallback(
-    async (decision: DuelDecision) => {
+  /** Content-hash fallback identity, computed only for staged culls. */
+  const hashInBackground = useCallback(
+    async (assetId: string) => {
       const session = sessionRef.current;
-      if (!session) throw new Error('decideDuel: no active session');
-      const record = session.decideDuel(decision, Date.now());
-      // Auto-cull hint (m0.3): a completed bracket with keepers that never
-      // won a duel earns a second-pass "reconsider these?" screen. Photos
-      // the user flagged needs-edit are exempt — they explicitly want them.
-      if (session.isGroupComplete(record.groupId)) {
-        const candidates = session
-          .autoCullCandidates(record.groupId)
-          .filter((item) => !needsEditRef.current.has(item.id));
-        if (candidates.length > 0) setPendingReconsider(record.groupId);
+      if (!session) return;
+      let uri: string;
+      try {
+        uri = session.item(assetId).uri;
+      } catch {
+        return;
       }
+      const hash = await sha256OfFile(uri);
+      if (hash) await setContentHash(db, assetId, hash).catch(() => {});
+    },
+    [db],
+  );
+
+  /**
+   * A group just completed — queue the reconsider hint if any kept photo
+   * lost an explicit compare (m0.4 rule; photos the user flagged
+   * needs-edit are exempt — they explicitly want those). A group finished
+   * with zero compares never prompts.
+   */
+  const maybeQueueReconsider = useCallback((groupId: string) => {
+    const session = sessionRef.current;
+    if (!session || !session.isGroupComplete(groupId)) return;
+    const candidates = session
+      .reconsiderCandidates(groupId)
+      .filter((item) => !needsEditRef.current.has(item.id));
+    if (candidates.length > 0) setPendingReconsider(groupId);
+  }, []);
+
+  // ---------------------------------------------------------- deck actions
+
+  const deckSetCursor = useCallback(
+    (groupId: string, index: number) => {
+      const session = sessionRef.current;
+      if (!session) return;
+      const before = session.groupInfo(groupId).cursor;
+      session.setCursor(groupId, index);
+      if (session.groupInfo(groupId).cursor === before) return;
       bump();
-      await persist(record);
-      if (!record.keptBoth) void hashInBackground(record.loserId);
+      // Fire-and-forget: cursor-only snapshot write, nothing user-visible
+      // depends on it landing before the next action (expo-sqlite queues
+      // writes in call order on one connection).
+      void persist();
     },
     [persist, bump],
+  );
+
+  const deckCull = useCallback(
+    async (id: string) => {
+      const session = sessionRef.current;
+      if (!session) throw new Error('deckCull: no active session');
+      const groupId = session.groupsInfo().find((g) => g.aliveIds.includes(id))?.id;
+      session.cull(id); // throws if the id is not in a live deck
+      if (groupId) maybeQueueReconsider(groupId);
+      bump();
+      await persist();
+      void hashInBackground(id);
+    },
+    [persist, bump, maybeQueueReconsider, hashInBackground],
+  );
+
+  const deckUndoCull = useCallback(
+    async (id: string) => {
+      const session = sessionRef.current;
+      if (!session) throw new Error('deckUndoCull: no active session');
+      session.undoCull(id);
+      bump();
+      await persist();
+    },
+    [persist, bump],
+  );
+
+  const keepRest = useCallback(
+    async (groupId: string) => {
+      const session = sessionRef.current;
+      if (!session) throw new Error('keepRest: no active session');
+      session.keepRest(groupId);
+      maybeQueueReconsider(groupId);
+      bump();
+      await persist();
+    },
+    [persist, bump, maybeQueueReconsider],
+  );
+
+  const markBest = useCallback(
+    async (groupId: string, id: string | null) => {
+      const session = sessionRef.current;
+      if (!session) throw new Error('markBest: no active session');
+      session.markBest(groupId, id);
+      bump();
+      await persist();
+    },
+    [persist, bump],
+  );
+
+  const makeSingle = useCallback(
+    async (id: string) => {
+      const session = sessionRef.current;
+      if (!session) throw new Error('makeSingle: no active session');
+      const groupId = session.groupsInfo().find((g) => g.aliveIds.includes(id))?.id;
+      session.makeSingle(id);
+      if (groupId) maybeQueueReconsider(groupId);
+      bump();
+      await persist();
+      // The photo is no longer "in a group" for day-progress accounting.
+      await clearPhotoGroup(db, id).catch(() => {});
+    },
+    [db, persist, bump, maybeQueueReconsider],
+  );
+
+  const recordCompare = useCallback(
+    async (winnerId: string, loserId: string) => {
+      const session = sessionRef.current;
+      if (!session) throw new Error('recordCompare: no active session');
+      const record = session.recordCompare(winnerId, loserId, true, Date.now());
+      bump();
+      await persist(record);
+    },
+    [persist, bump],
+  );
+
+  const compareCull = useCallback(
+    async (loserId: string, winnerId: string) => {
+      const session = sessionRef.current;
+      if (!session) throw new Error('compareCull: no active session');
+      const record = session.recordCompare(winnerId, loserId, false, Date.now());
+      const groupId = record.groupId;
+      session.cull(loserId);
+      maybeQueueReconsider(groupId);
+      bump();
+      await persist(record);
+      void hashInBackground(loserId);
+    },
+    [persist, bump, maybeQueueReconsider, hashInBackground],
   );
 
   const clearPendingReconsider = useCallback(() => setPendingReconsider(null), []);
@@ -281,24 +444,14 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const reconsiderCull = useCallback(
     async (id: string) => {
       const session = sessionRef.current;
-      if (!session || sessionId === null) throw new Error('reconsiderCull: no active session');
-      const snap = session.toJSON();
-      if (snap.states[id] !== 'kept') return; // already culled/edited — nothing to do
-      snap.states[id] = 'culled';
-      const restored = CullSession.fromJSON(snap);
-      sessionRef.current = restored;
-      indexSession(restored); // also refreshes lastStatesRef
+      if (!session) throw new Error('reconsiderCull: no active session');
+      if (session.getState(id) !== 'kept') return; // already culled/edited — nothing to do
+      session.cullKept(id);
       bump();
-      await persistDecision(
-        db,
-        sessionId,
-        JSON.stringify(restored.toJSON()),
-        [[id, 'culled']],
-        Date.now(),
-      );
+      await persist();
       void hashInBackground(id);
     },
-    [db, sessionId, indexSession, bump],
+    [persist, bump, hashInBackground],
   );
 
   const decideSingle = useCallback(
@@ -319,7 +472,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       await persist();
       if (action === 'cull') void hashInBackground(id);
     },
-    [db, persist, bump],
+    [db, persist, bump, hashInBackground],
   );
 
   const needsEdit = useCallback(
@@ -339,21 +492,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       await setNeedsEdit(db, id, !flagged, Date.now());
     },
     [db, bump],
-  );
-
-  /** Content-hash fallback identity, computed only for staged culls. */
-  const hashInBackground = useCallback(
-    async (assetId: string) => {
-      const session = sessionRef.current;
-      if (!session) return;
-      const item = session
-        .toJSON()
-        .items.find((i) => i.id === assetId);
-      if (!item) return;
-      const hash = await sha256OfFile(item.uri);
-      if (hash) await setContentHash(db, assetId, hash).catch(() => {});
-    },
-    [db],
   );
 
   const unstageCull = useCallback(
@@ -397,15 +535,14 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     // snapshot format is the supported escape hatch).
     const snap = session.toJSON();
     for (const id of ids) snap.states[id] = 'culled';
-    const restored = CullSession.fromJSON(snap);
+    const restored = DeckSession.fromJSON(snap);
     sessionRef.current = restored;
-    indexSession(restored);
     bump();
     await persistDecision(db, sessionId, JSON.stringify(restored.toJSON()),
       ids.map((id) => [id, 'culled'] as [string, PhotoState]), Date.now());
     lastStatesRef.current = statesOf(restored);
     return { deleted: false, count: ids.length, bytes };
-  }, [db, sessionId, persist, indexSession, bump]);
+  }, [db, sessionId, persist, bump]);
 
   const finishSession = useCallback(async () => {
     const session = sessionRef.current;
@@ -431,12 +568,18 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const groups: GroupInfo[] = useMemo(() => {
     const session = sessionRef.current;
     if (!session) return [];
-    return groupItemsRef.current.map((g) => ({
+    return session.groupsInfo().map((g) => ({
       id: g.id,
-      items: g.items,
-      complete: session.isGroupComplete(g.id),
-      bestId: session.groupBest(g.id)?.id ?? null,
+      items: g.memberIds.map((id) => session.item(id)),
+      complete: g.complete,
+      bestId: g.bestId,
     }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version]);
+
+  const singleIds: string[] = useMemo(() => {
+    const session = sessionRef.current;
+    return session ? [...session.singles] : [];
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version]);
 
@@ -454,11 +597,18 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       reclaimedBytes,
       version,
       groups,
-      singleIds: singleIdsRef.current,
+      singleIds,
       startSession,
       resumeSession,
       discardActiveSession,
-      decideDuel,
+      deckSetCursor,
+      deckCull,
+      deckUndoCull,
+      keepRest,
+      markBest,
+      makeSingle,
+      recordCompare,
+      compareCull,
       decideSingle,
       needsEdit,
       toggleNeedsEdit,
@@ -476,10 +626,18 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       reclaimedBytes,
       version,
       groups,
+      singleIds,
       startSession,
       resumeSession,
       discardActiveSession,
-      decideDuel,
+      deckSetCursor,
+      deckCull,
+      deckUndoCull,
+      keepRest,
+      markBest,
+      makeSingle,
+      recordCompare,
+      compareCull,
       decideSingle,
       needsEdit,
       toggleNeedsEdit,

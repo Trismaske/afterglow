@@ -7,15 +7,27 @@
  * refuses anything outside the configured media folders.
  */
 
-import { app, BrowserWindow, dialog, ipcMain, net, protocol } from 'electron';
-import { mkdtempSync } from 'node:fs';
+import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'electron';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { shuffled } from '@afterglow/core';
-import { CHANNELS, MEDIA_HOST, MEDIA_SCHEME, toMediaUrl, type Settings } from '../shared/api';
+import { FLAG_TYPES, shuffled, type FlagType } from '@afterglow/core';
+import {
+  CHANNELS,
+  MEDIA_HOST,
+  MEDIA_SCHEME,
+  fromMediaUrl,
+  toMediaUrl,
+  type ItemInfo,
+  type QueueEntry,
+  type Settings,
+} from '../shared/api';
 import { isInsideAny } from './containment';
+import { openFlagStore, type FlagStore } from './flagstore';
+import { getImageDates } from './metadata';
+import { closeQueueWindow, getQueueWindow, isQueueWindow, openQueueWindow } from './queue-window';
 import { isImageFile, scanImages } from './scan';
 import { loadSettings, saveSettings } from './settings';
 
@@ -35,10 +47,11 @@ protocol.registerSchemesAsPrivileged([
   { scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ]);
 
-let settings: Settings = { mediaFolders: [], slideDurationSeconds: 8 };
+let settings: Settings = { mediaFolders: [], slideDurationSeconds: 8, overlayEnabled: true };
 /** realpath()ed media folders — the containment allowlist for the protocol. */
 let mediaRootsReal: string[] = [];
 let mainWindow: BrowserWindow | null = null;
+let flagStore: FlagStore | null = null;
 
 async function refreshMediaRoots(): Promise<void> {
   const roots: string[] = [];
@@ -77,6 +90,39 @@ async function handleMediaRequest(request: Request): Promise<Response> {
   }
 }
 
+/**
+ * Decode a renderer-supplied media URL and verify it points at a real image
+ * inside the configured library (same containment rules as the protocol).
+ * Returns the decoded path, or null for anything suspect.
+ */
+async function libraryPathFromUrl(url: unknown): Promise<string | null> {
+  if (typeof url !== 'string') return null;
+  const filePath = fromMediaUrl(url);
+  if (!filePath || !path.isAbsolute(filePath) || !isImageFile(filePath)) return null;
+  try {
+    const real = await fs.realpath(filePath);
+    return isInsideAny(real, mediaRootsReal) ? filePath : null;
+  } catch {
+    return null;
+  }
+}
+
+function isFlagType(value: unknown): value is FlagType {
+  return typeof value === 'string' && (FLAG_TYPES as readonly string[]).includes(value);
+}
+
+/** Queue-window open/close: tell the slideshow renderer so it can pause exit-on-input. */
+function notifyQueueState(open: boolean): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(CHANNELS.queueState, open);
+  }
+}
+
+/** Push the current queue to the queue window (if open). */
+function pushQueueChanged(entries: QueueEntry[]): void {
+  getQueueWindow()?.webContents.send(CHANNELS.queueChanged, entries);
+}
+
 function registerIpc(): void {
   ipcMain.handle(CHANNELS.getSettings, (): Settings => settings);
 
@@ -109,6 +155,73 @@ function registerIpc(): void {
   // rendererReady is consumed by the smoke harness; a no-op listener keeps
   // normal runs quiet.
   ipcMain.on(CHANNELS.rendererReady, () => {});
+
+  // ---- v0.2: overlay + flag capture ----
+
+  ipcMain.handle(CHANNELS.getItemInfo, async (_event, url: unknown): Promise<ItemInfo | null> => {
+    const filePath = await libraryPathFromUrl(url);
+    if (!filePath) return null;
+    const dates = await getImageDates(filePath);
+    return { path: filePath, ...dates };
+  });
+
+  ipcMain.handle(CHANNELS.setOverlayEnabled, async (_event, enabled: unknown): Promise<Settings> => {
+    settings = { ...settings, overlayEnabled: enabled === true };
+    await saveSettings(app.getPath('userData'), settings);
+    return settings;
+  });
+
+  ipcMain.handle(CHANNELS.flagAdd, async (_event, url: unknown, flagType: unknown): Promise<boolean> => {
+    if (!flagStore || !isFlagType(flagType)) return false;
+    const filePath = await libraryPathFromUrl(url);
+    if (!filePath) return false;
+    return flagStore.add({ path: filePath, flagType, at: Date.now() });
+  });
+
+  ipcMain.handle(CHANNELS.flagRemove, async (_event, url: unknown, flagType: unknown): Promise<boolean> => {
+    if (!flagStore || !isFlagType(flagType)) return false;
+    if (typeof url !== 'string') return false;
+    const filePath = fromMediaUrl(url);
+    if (!filePath) return false;
+    return flagStore.remove(filePath, flagType);
+  });
+
+  ipcMain.on(CHANNELS.openQueue, () => {
+    openQueueWindow(notifyQueueState);
+  });
+
+  // ---- v0.2: queue window (guarded to its own webContents) ----
+
+  ipcMain.handle(CHANNELS.queueList, (event): QueueEntry[] => {
+    if (!flagStore || !isQueueWindow(event.sender)) return [];
+    return flagStore.list();
+  });
+
+  ipcMain.handle(CHANNELS.queueRemove, async (event, filePath: unknown, flagType: unknown): Promise<QueueEntry[]> => {
+    if (!flagStore || !isQueueWindow(event.sender)) return [];
+    if (typeof filePath === 'string' && isFlagType(flagType)) {
+      await flagStore.remove(filePath, flagType);
+    }
+    return flagStore.list();
+  });
+
+  // shell.* only ever runs for paths currently in the flag queue, and only
+  // for the queue window's own webContents.
+  ipcMain.handle(CHANNELS.queueReveal, (event, filePath: unknown): void => {
+    if (!flagStore || !isQueueWindow(event.sender)) return;
+    if (typeof filePath !== 'string' || !flagStore.hasPath(filePath)) return;
+    shell.showItemInFolder(filePath);
+  });
+
+  ipcMain.handle(CHANNELS.queueOpen, async (event, filePath: unknown): Promise<string> => {
+    if (!flagStore || !isQueueWindow(event.sender)) return 'not allowed';
+    if (typeof filePath !== 'string' || !flagStore.hasPath(filePath)) return 'not in the queue';
+    return shell.openPath(filePath);
+  });
+
+  ipcMain.on(CHANNELS.queueClose, (event) => {
+    if (isQueueWindow(event.sender)) closeQueueWindow();
+  });
 }
 
 function createWindow(): BrowserWindow {
@@ -136,30 +249,67 @@ function createWindow(): BrowserWindow {
 /**
  * --smoke: start, load the renderer, and exit 0 within ~3s if the renderer
  * signalled ready with no console errors or load failures; exit 1 otherwise.
+ *
+ * With AFTERGLOW_SMOKE_MEDIA set it also drives the v0.2 capture path:
+ * a simulated E keypress must flag the photo on screen (verified in
+ * flags.json on disk) and a simulated Q keypress must open the queue window
+ * (whose console is watched for errors like the main window's).
  */
 function armSmokeHarness(win: BrowserWindow): void {
   let rendererReady = false;
   let failure: string | null = null;
+  const exercised = Boolean(process.env.AFTERGLOW_SMOKE_MEDIA);
 
   ipcMain.on(CHANNELS.rendererReady, () => {
     rendererReady = true;
   });
 
-  // Electron ≥32 passes a structured event object (level/message fields).
-  win.webContents.on('console-message', (event: { level?: string; message?: string }) => {
-    const level = typeof event?.level === 'string' ? event.level : 'other';
-    const message = typeof event?.message === 'string' ? event.message : '';
-    console.log(`[renderer:${level}] ${message}`);
-    if (level === 'error') failure = failure ?? `renderer console error: ${message}`;
-  });
-  win.webContents.on('did-fail-load', (_e, code, desc) => {
-    failure = failure ?? `did-fail-load: ${code} ${desc}`;
-  });
-  win.webContents.on('render-process-gone', (_e, details) => {
-    failure = failure ?? `render-process-gone: ${details.reason}`;
-  });
+  const watch = (contents: Electron.WebContents, label: string): void => {
+    // Electron ≥32 passes a structured event object (level/message fields).
+    contents.on('console-message', (event: { level?: string; message?: string }) => {
+      const level = typeof event?.level === 'string' ? event.level : 'other';
+      const message = typeof event?.message === 'string' ? event.message : '';
+      console.log(`[${label}:${level}] ${message}`);
+      if (level === 'error') failure = failure ?? `${label} console error: ${message}`;
+    });
+    contents.on('did-fail-load', (_e, code, desc) => {
+      failure = failure ?? `${label} did-fail-load: ${code} ${desc}`;
+    });
+    contents.on('render-process-gone', (_e, details) => {
+      failure = failure ?? `${label} render-process-gone: ${details.reason}`;
+    });
+  };
+  watch(win.webContents, 'renderer');
+  app.on('web-contents-created', (_event, contents) => watch(contents, 'queue-renderer'));
+
+  if (exercised) {
+    // E flags the current photo; Q opens the queue window. Both are show
+    // hotkeys and must NOT exit the app.
+    setTimeout(() => win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'e' }), 1200);
+    setTimeout(() => win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'q' }), 2000);
+  }
+
+  const verifyCapture = (): string | null => {
+    if (!exercised) return null;
+    const entries = flagStore?.list() ?? [];
+    if (entries.length !== 1 || entries[0].flagType !== 'edit') {
+      return `expected exactly one 'edit' flag after simulated E keypress, got ${JSON.stringify(entries)}`;
+    }
+    try {
+      const raw = readFileSync(path.join(app.getPath('userData'), 'flags.json'), 'utf8');
+      const parsed = JSON.parse(raw) as { entries?: unknown[] };
+      if (!Array.isArray(parsed.entries) || parsed.entries.length !== 1) {
+        return `flags.json on disk does not hold the flagged item: ${raw}`;
+      }
+    } catch (err) {
+      return `flags.json was not persisted: ${String(err)}`;
+    }
+    if (!getQueueWindow()) return 'queue window did not open after simulated Q keypress';
+    return null;
+  };
 
   const finish = (): void => {
+    failure = failure ?? verifyCapture();
     if (failure) {
       console.error(`[smoke] FAIL: ${failure}`);
       app.exit(1);
@@ -167,7 +317,11 @@ function armSmokeHarness(win: BrowserWindow): void {
       console.error('[smoke] FAIL: renderer never signalled ready');
       app.exit(1);
     } else {
-      console.log('[smoke] OK: renderer loaded cleanly');
+      console.log(
+        exercised
+          ? '[smoke] OK: renderer loaded cleanly, flag captured + persisted, queue window opened'
+          : '[smoke] OK: renderer loaded cleanly',
+      );
       app.exit(0);
     }
   };
@@ -193,6 +347,10 @@ app.on('window-all-closed', () => {
 void app.whenReady().then(async () => {
   protocol.handle(MEDIA_SCHEME, handleMediaRequest);
   settings = await loadSettings(app.getPath('userData'));
+  flagStore = await openFlagStore(app.getPath('userData'), {
+    onChange: pushQueueChanged,
+    onWarn: (msg, err) => console.warn(`[afterglow] ${msg}`, err),
+  });
   // Smoke runs can point at a fixture folder to exercise the full
   // scan → protocol → crossfade path headlessly.
   if (SMOKE && process.env.AFTERGLOW_SMOKE_MEDIA) {

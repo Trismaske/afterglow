@@ -92,3 +92,56 @@ body.interactive {
 .layer.visible {
   opacity: 1;
 }
+
+/* Path/date overlay: bottom-left, inset for TV overscan, text-shadowed so it
+   stays legible over bright photos without a heavy background box. */
+#overlay {
+  position: fixed;
+  left: 3.5vw;
+  bottom: 3.5vh;
+  max-width: 60vw;
+  pointer-events: none;
+  text-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.9),
+    0 0 12px rgba(0, 0, 0, 0.7);
+  line-height: 1.45;
+}
+
+.overlay-name {
+  font-size: 1.5rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.92);
+  overflow-wrap: anywhere;
+}
+
+.overlay-dir {
+  font-size: 1.05rem;
+  color: rgba(255, 255, 255, 0.55);
+  overflow-wrap: anywhere;
+}
+
+.overlay-date {
+  font-size: 1.05rem;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+/* Flag toast: top-center, fades in/out, never intercepts input. */
+#toast {
+  position: fixed;
+  top: 4vh;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.55rem 1.2rem;
+  font-size: 1.15rem;
+  color: #f2e9dc;
+  background: rgba(20, 16, 12, 0.82);
+  border: 1px solid rgba(242, 233, 220, 0.25);
+  border-radius: 6px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s ease-in-out;
+}
+
+#toast.visible {
+  opacity: 1;
+}

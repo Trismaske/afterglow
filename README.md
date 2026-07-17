@@ -5,9 +5,36 @@ See [PLAN.md](PLAN.md) for the product plan and release roadmap.
 
 ## Afterglow Desktop — quickstart
 
-A fullscreen ambient photo display. v0.1 shows JPEG/PNG/WebP from folders you
+A fullscreen ambient photo display. Shows JPEG/PNG/WebP from folders you
 pick, recursively scanned, shuffled, with crossfade transitions. Any mouse
-movement, click or keypress exits.
+movement, click or keypress exits — except the keys below, which quietly
+capture organization work while you watch (v0.2).
+
+### Keys during the show
+
+| Key | Action | Exits? |
+|---|---|---|
+| **D** | Flag current photo for **delete** (same key again within the toast window undoes) | no |
+| **E** | Flag for **edit** | no |
+| **M** | Flag as **move**/misfiled | no |
+| **R** | Flag for **review** | no |
+| **O** | Toggle the path/date overlay (persisted) | no |
+| **Q** | Open the flag-queue window (Esc or Q closes it) | no |
+| any other key | Exit | yes |
+| mouse move (more than a nudge) / click | Exit | yes |
+
+Flags land in a persistent queue (`flags.json` next to `settings.json`,
+survives restarts). The queue window lists every flagged photo — its file
+name, flag type and when you flagged it — with **Reveal in folder**, **Open**
+(OS default app) and **Remove** per row. The slideshow keeps playing behind
+it, and exit-on-input pauses while the queue window is open so you can reach
+it with the mouse; close it (Esc/Q or the window's close button) to hand
+control back to the show.
+
+The overlay (bottom-left) shows the photo's file name, its folder, and the
+EXIF capture date — or the file's modified date, labeled "(file date)", when
+there is no EXIF. Toggle it with **O**; the default is on
+(`"overlayEnabled"` in `settings.json`).
 
 ### For testers (installers)
 

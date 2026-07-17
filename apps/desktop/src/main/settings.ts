@@ -18,6 +18,7 @@ export const MAX_SLIDE_SECONDS = 3600;
 export const DEFAULT_SETTINGS: Settings = {
   mediaFolders: [],
   slideDurationSeconds: 8,
+  overlayEnabled: true,
 };
 
 /**
@@ -29,6 +30,7 @@ export function normalizeSettings(raw: unknown): Settings {
   const out: Settings = {
     mediaFolders: [...DEFAULT_SETTINGS.mediaFolders],
     slideDurationSeconds: DEFAULT_SETTINGS.slideDurationSeconds,
+    overlayEnabled: DEFAULT_SETTINGS.overlayEnabled,
   };
   if (typeof raw !== 'object' || raw === null) return out;
   const obj = raw as Record<string, unknown>;
@@ -42,6 +44,10 @@ export function normalizeSettings(raw: unknown): Settings {
   const dur = obj.slideDurationSeconds;
   if (typeof dur === 'number' && Number.isFinite(dur)) {
     out.slideDurationSeconds = Math.min(MAX_SLIDE_SECONDS, Math.max(MIN_SLIDE_SECONDS, dur));
+  }
+
+  if (typeof obj.overlayEnabled === 'boolean') {
+    out.overlayEnabled = obj.overlayEnabled;
   }
   return out;
 }

@@ -32,6 +32,14 @@ describe('normalizeSettings', () => {
     expect(s.slideDurationSeconds).toBe(12);
   });
 
+  it('accepts only booleans for overlayEnabled, defaulting to true', () => {
+    expect(normalizeSettings({ overlayEnabled: false }).overlayEnabled).toBe(false);
+    expect(normalizeSettings({ overlayEnabled: true }).overlayEnabled).toBe(true);
+    expect(normalizeSettings({}).overlayEnabled).toBe(true);
+    expect(normalizeSettings({ overlayEnabled: 'yes' }).overlayEnabled).toBe(true);
+    expect(normalizeSettings({ overlayEnabled: 0 }).overlayEnabled).toBe(true);
+  });
+
   it('clamps slide duration and rejects non-finite values', () => {
     expect(normalizeSettings({ slideDurationSeconds: 0 }).slideDurationSeconds).toBe(MIN_SLIDE_SECONDS);
     expect(normalizeSettings({ slideDurationSeconds: 1e9 }).slideDurationSeconds).toBe(MAX_SLIDE_SECONDS);
@@ -47,7 +55,7 @@ describe('normalizeSettings', () => {
 describe('loadSettings / saveSettings', () => {
   it('round-trips through disk', async () => {
     const dir = await tmpDir();
-    const settings = { mediaFolders: ['/photos/one', '/photos/two'], slideDurationSeconds: 15 };
+    const settings = { mediaFolders: ['/photos/one', '/photos/two'], slideDurationSeconds: 15, overlayEnabled: false };
     await saveSettings(dir, settings);
     expect(await loadSettings(dir)).toEqual(settings);
   });
@@ -65,8 +73,8 @@ describe('loadSettings / saveSettings', () => {
 
   it('writes atomically: no temp files left behind, target always valid', async () => {
     const dir = await tmpDir();
-    await saveSettings(dir, { mediaFolders: ['/a'], slideDurationSeconds: 8 });
-    await saveSettings(dir, { mediaFolders: ['/b'], slideDurationSeconds: 10 });
+    await saveSettings(dir, { mediaFolders: ['/a'], slideDurationSeconds: 8, overlayEnabled: true });
+    await saveSettings(dir, { mediaFolders: ['/b'], slideDurationSeconds: 10, overlayEnabled: true });
     const entries = await fs.readdir(dir);
     expect(entries).toEqual([SETTINGS_FILENAME]);
     expect((await loadSettings(dir)).mediaFolders).toEqual(['/b']);
@@ -74,7 +82,7 @@ describe('loadSettings / saveSettings', () => {
 
   it('creates the directory if needed', async () => {
     const dir = path.join(await tmpDir(), 'nested', 'deeper');
-    await saveSettings(dir, { mediaFolders: [], slideDurationSeconds: 8 });
+    await saveSettings(dir, { mediaFolders: [], slideDurationSeconds: 8, overlayEnabled: true });
     expect(await loadSettings(dir)).toEqual(DEFAULT_SETTINGS);
   });
 });

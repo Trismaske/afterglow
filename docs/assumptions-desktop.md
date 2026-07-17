@@ -67,3 +67,64 @@ into `ASSUMPTIONS.md` at the end of the build.
     non-image files are simply never scanned. Unreadable/undecodable images
     are skipped with a console warning and the show advances; if *nothing*
     displayable exists the app shows a message and still exits on input.
+
+## desktop-v0.2
+
+1. **Overlay defaults to ON** (`overlayEnabled: true`). The flag-capture
+   workflow needs the path/date on screen to be useful, and O turns it off
+   instantly (the toggle is persisted to `settings.json` immediately).
+2. **Overlay layout:** file name (prominent), parent directory (dim, full
+   path), and a date line — EXIF `DateTimeOriginal`/`CreateDate` via exifr
+   when present, otherwise the file mtime explicitly labeled "(file date)".
+   Bottom-left, inset ~3.5% for TV overscan, text-shadow instead of a
+   background box. Date formatting is hand-rolled ("17 Jul 2026, 02:31") so
+   it's locale-stable and unit-testable.
+3. **Undo window = toast duration = 4 s**, and undo intent dies with the
+   slide: pressing the same flag key again un-flags only while the *same
+   photo* is still on screen. Once the show advances, the key flags the new
+   photo — otherwise a keypress on the next photo would silently un-flag the
+   previous one.
+4. **Toast on re-flagging an already-queued photo** (e.g. flagged in a past
+   session) still says "Flagged …" — core's addFlag dedupes, so nothing
+   double-enters the queue, and the follow-up press still un-flags.
+5. **Hotkeys (O/Q/D/E/M/R) are active only while the slideshow itself is on
+   screen.** First-run and message screens keep v0.1 behavior (message
+   screens exit on any key). Exemption is enforced both in the key handler
+   and via the arbiter's `isExemptKey` hook (belt and braces).
+6. **Exit-on-input pauses while the queue window is open.** The fullscreen
+   slideshow window still gets mousemove events when unfocused, so traveling
+   the pointer toward the queue window would otherwise kill the app
+   mid-review. The show keeps playing; closing the queue (Esc, Q, or the
+   close button) re-arms exit-on-input. Main notifies the renderer via a
+   `queue-state` push.
+7. **Queue window:** 820×520, always-on-top (floating) so it isn't swallowed
+   by the fullscreen show, own minimal preload (`window.afterglowQueue`),
+   same security posture (contextIsolation+sandbox, CSP, no node). Entries
+   listed newest-first. Full re-render on every change — small window, small
+   queue, simplicity wins.
+8. **shell.\* hardening:** `showItemInFolder`/`openPath` execute only for
+   IPC calls coming from the queue window's own webContents AND for paths
+   currently present in the flag queue; flag add/get-item-info requests
+   validate the media URL and realpath-containment against the configured
+   folders (same rules as the media protocol). Flag *removal* skips the
+   containment check so entries for since-moved files can still be removed.
+9. **flags.json uses core's versioned FlagQueueJSON** (`{version: 1}`),
+   written atomically (temp+rename) with writes serialized on a promise
+   chain; a corrupt file logs a warning and starts an empty queue rather
+   than crashing the show. Malformed entries are dropped individually by
+   core's `flagQueueFromJSON`.
+10. **Overlay metadata is fetched per slide only while the overlay is
+    visible** (one IPC + EXIF parse per slide, nothing when toggled off) and
+    a stale-response guard drops results that arrive after the slide
+    advanced.
+11. **Smoke test now drives the capture path:** with
+    `AFTERGLOW_SMOKE_MEDIA` set, `--smoke` injects a synthetic E keypress
+    (must produce exactly one 'edit' flag, verified in-memory AND re-read
+    from flags.json on disk) and a Q keypress (queue window must open; its
+    console is watched for errors too). Verified locally: exits 0; the
+    first-run smoke (no env) still exits 0.
+12. **Done-when bar** ("flag 10 photos, find and open every one"): flagging
+    is dedup-safe and persisted synchronously before the IPC promise
+    resolves, the queue window lists all entries with Reveal/Open/Remove,
+    and the store round-trips restarts (unit-tested). Open failures surface
+    as console warnings only in v0.2 (no in-window error UI yet).

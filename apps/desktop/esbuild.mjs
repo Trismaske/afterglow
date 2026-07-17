@@ -1,10 +1,12 @@
 /**
- * Build script: three bundles + static renderer assets.
+ * Build script: bundles + static renderer assets.
  *
- *   main     src/main/index.ts     → dist/main/index.js     (cjs, node, electron external)
- *   preload  src/preload/index.ts  → dist/preload/index.js  (cjs, node, electron external)
- *   renderer src/renderer/index.ts → dist/renderer/index.js (iife, browser)
- *   static   src/renderer/*.html|css → dist/renderer/
+ *   main      src/main/index.ts      → dist/main/index.js      (cjs, node, electron external)
+ *   preload   src/preload/index.ts   → dist/preload/index.js   (cjs, node, electron external)
+ *   preload   src/preload/queue.ts   → dist/preload/queue.js   (cjs, node, electron external)
+ *   renderer  src/renderer/index.ts  → dist/renderer/index.js  (iife, browser)
+ *   renderer  src/renderer/queue.ts  → dist/renderer/queue.js  (iife, browser)
+ *   static    src/renderer/*.html|css → dist/renderer/
  */
 
 import * as esbuild from 'esbuild';
@@ -22,33 +24,35 @@ const common = {
   logLevel: 'info',
 };
 
-await esbuild.build({
+/** @type {import('esbuild').BuildOptions} */
+const nodeCjs = {
   ...common,
+  platform: 'node',
+  format: 'cjs',
+  external: ['electron'],
+};
+
+await esbuild.build({
+  ...nodeCjs,
   entryPoints: [join(root, 'src/main/index.ts')],
   outfile: join(root, 'dist/main/index.js'),
-  platform: 'node',
-  format: 'cjs',
-  external: ['electron'],
+});
+
+await esbuild.build({
+  ...nodeCjs,
+  entryPoints: [join(root, 'src/preload/index.ts'), join(root, 'src/preload/queue.ts')],
+  outdir: join(root, 'dist/preload'),
 });
 
 await esbuild.build({
   ...common,
-  entryPoints: [join(root, 'src/preload/index.ts')],
-  outfile: join(root, 'dist/preload/index.js'),
-  platform: 'node',
-  format: 'cjs',
-  external: ['electron'],
-});
-
-await esbuild.build({
-  ...common,
-  entryPoints: [join(root, 'src/renderer/index.ts')],
-  outfile: join(root, 'dist/renderer/index.js'),
+  entryPoints: [join(root, 'src/renderer/index.ts'), join(root, 'src/renderer/queue.ts')],
+  outdir: join(root, 'dist/renderer'),
   platform: 'browser',
   format: 'iife',
 });
 
 mkdirSync(join(root, 'dist/renderer'), { recursive: true });
-for (const asset of ['index.html', 'styles.css']) {
+for (const asset of ['index.html', 'styles.css', 'queue.html', 'queue.css']) {
   copyFileSync(join(root, 'src/renderer', asset), join(root, 'dist/renderer', asset));
 }

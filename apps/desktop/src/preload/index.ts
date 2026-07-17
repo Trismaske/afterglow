@@ -4,7 +4,8 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
-import { CHANNELS, type AfterglowApi, type Settings } from '../shared/api';
+import type { FlagType } from '@afterglow/core';
+import { CHANNELS, type AfterglowApi, type ItemInfo, type Settings } from '../shared/api';
 
 const api: AfterglowApi = {
   getSettings: () => ipcRenderer.invoke(CHANNELS.getSettings) as Promise<Settings>,
@@ -12,6 +13,17 @@ const api: AfterglowApi = {
   getPlaylist: () => ipcRenderer.invoke(CHANNELS.getPlaylist) as Promise<string[]>,
   exit: (reason: string) => ipcRenderer.send(CHANNELS.exit, reason),
   rendererReady: () => ipcRenderer.send(CHANNELS.rendererReady),
+  getItemInfo: (url: string) => ipcRenderer.invoke(CHANNELS.getItemInfo, url) as Promise<ItemInfo | null>,
+  setOverlayEnabled: (enabled: boolean) =>
+    ipcRenderer.invoke(CHANNELS.setOverlayEnabled, enabled) as Promise<Settings>,
+  addFlag: (url: string, flagType: FlagType) =>
+    ipcRenderer.invoke(CHANNELS.flagAdd, url, flagType) as Promise<boolean>,
+  removeFlag: (url: string, flagType: FlagType) =>
+    ipcRenderer.invoke(CHANNELS.flagRemove, url, flagType) as Promise<boolean>,
+  openQueue: () => ipcRenderer.send(CHANNELS.openQueue),
+  onQueueState: (cb: (open: boolean) => void) => {
+    ipcRenderer.on(CHANNELS.queueState, (_event, open: unknown) => cb(open === true));
+  },
 };
 
 contextBridge.exposeInMainWorld('afterglow', api);

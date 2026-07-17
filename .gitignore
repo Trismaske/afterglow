@@ -151,3 +151,6 @@ apps/mobile/ios/
 
 # Electron build output
 apps/desktop/release/
+
+# Expo local module gradle output
+apps/mobile/modules/*/android/build/

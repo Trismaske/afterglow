@@ -1,6 +1,6 @@
 # Afterglow — Product Plan & Roadmap
 
-*Drafted 2026-07-17, after reviewing the Copilot scaffold (see [REVIEW.md](REVIEW.md)) and settling the open product questions.*
+*Drafted 2026-07-17, after reviewing the Copilot scaffold (see [REVIEW.md](REVIEW.md)) and settling the open product questions. Roadmap updated 2026-07-18 to fold in the first tester round — see [docs/Feedback_20260717.md](docs/Feedback_20260717.md) and the response plan [docs/Plan_20260718.md](docs/Plan_20260718.md).*
 
 ## Vision
 
@@ -122,53 +122,67 @@ v0.1 may start as `apps/desktop` + a stub core to keep the deadline; the structu
 
 ## Release roadmap
 
-Two trains. The sequencing respects the deadlines: desktop v0.1 ships first (testers waiting), then the mobile MVP gets the full push before the trip, then trains interleave.
+Two trains. v0.1–v0.4 and m0.1–m0.4 have shipped; the next release on each train packs in the whole 2026-07-17 tester round in one go, and everything after shifts down.
 
 ### Desktop train
 
-**v0.1 — "It's alive" (Days 1–2)**
-Fresh Electron+TS app: fullscreen crossfade slideshow of JPEG/PNG/WebP from user-picked folders (recursive scan), shuffle order, persisted settings (folders, slide duration), exit on mouse-move/key/click, preload+contextBridge security, media served via a custom protocol. CI builds Windows installer + Linux AppImage to a GitHub Release.
-*Done when: a tester downloads the Windows build, picks their Pictures folder, and it runs for an hour without interaction.*
+**Shipped**
+- **v0.1** — fullscreen crossfade slideshow (JPEG/PNG/WebP) from user-picked folders, persisted settings, exit on input, preload+contextBridge security, CI-built Windows/Linux releases.
+- **v0.2** — path/date overlay; D/E/M/R flag capture with persisted queue + queue window.
+- **v0.3** — story engine v1: background EXIF indexing, moments clustering + mix engine from `@afterglow/core`.
+- **v0.4** — muted video (MP4/WebM/MOV) in the rotation, per-video duration cap.
 
-**v0.2 — Overlay + flag capture (fast follow, ~2–3 days after m0.1 ships)**
-Path/date overlay (toggleable). Flag keys D/E/M/R with toast; queue persisted to disk; minimal queue window listing flags with "reveal in folder" / "open" / "remove". This is deliberately cheap — capture first, rich actions later.
-*Done when: you flag 10 photos during a session and can find and open every one afterwards.*
+**v0.5 — Feedback release: control, navigation, screensaver (next)**
+The full tester round in one release:
+- Manual launch opens the **settings screen** with a Start button; a `--show` flag jumps straight into the slideshow. When launched manually, any key/mouse **exits the show back to settings** instead of quitting (`--show`/screensaver mode still quits). Flag and nav keys stay exceptions.
+- **Arrow-key navigation**: ←/→ previous/next photo, ↑ restart current moment, ↓ skip to next moment. Needs a seek API + history back-buffer on the slideshow (today it's fire-and-forget).
+- **Shortcut legend** in the overlay, also shown briefly at show start.
+- **New flags**: **N** = "needs rename", **T** = "needs date fix" (extends core `FLAG_TYPES`, key map, queue UI).
+- **Video cap 0 = play full length** (sentinel in settings clamp + cap timer); cluster-cap range (2–100) surfaced as inline hint text.
+- **OS screensaver/display-sleep suppressed** while the show runs (`powerSaveBlocker`).
+- **Startup**: show the window immediately and start playing from the persisted EXIF index; rescan folders in the background and merge. First pass at the "slow to open" complaint.
+- **"Set as default screensaver" button (Windows)**: the NSIS installer ships a thin `.scr` wrapper that launches the installed app with `--show`; the button registers it via the registry and shows current status. Same app, same settings store — screensaver and app settings stay in sync by construction. Hidden on non-Windows; primary-display-only in screensaver mode for now (full multi-monitor keeps its later slot).
 
-**v0.3 — Story engine v1**
-Background EXIF indexing (`exifr`), persisted index. Moments clustering + mix engine from `@afterglow/core` (now real, shared with mobile). Settings: gap, cluster cap, shuffle↔smart toggle.
-*Done when: a burst of 8 shots plays consecutively instead of scattered across the night.*
+*Done when: a tester lands in settings on launch, steps back two photos with ←, skips a moment with ↓, flags a photo N for rename, escapes back to settings — then clicks the screensaver button, waits out their idle timeout, and Afterglow starts as the system screensaver with their configured settings.*
 
-**v0.4 — Video**
-Muted MP4/WebM/MOV in the rotation, duration cap, honest format documentation.
-
-**v0.5 — The RAW pipeline**
-`execFile`-based `darktable-cli` wrapper (never shell strings); cache keyed on hash(path + XMP mtime + output size); background pre-render queue with concurrency limit that stays ahead of playback; cache size cap + LRU eviction + settings UI. Per-image renderer routing by XMP namespace (`darktable:` vs `crs:`); embedded-preview extraction for the Lightroom tiers, with `Previews.lrdata` catalog extraction as the stretch goal (or v0.5.x follow-up). RAW+JPEG pair de-dup.
+**v0.6 — The RAW pipeline** (was v0.5)
+`execFile`-based `darktable-cli` wrapper (never shell strings); cache keyed on hash(path + XMP mtime + output size); background pre-render queue with concurrency limit that stays ahead of playback; cache size cap + LRU eviction + settings UI. Per-image renderer routing by XMP namespace (`darktable:` vs `crs:`); embedded-preview extraction for the Lightroom tiers, with `Previews.lrdata` catalog extraction as the stretch goal (or v0.6.x follow-up). RAW+JPEG pair de-dup.
 *This is the release where it becomes Afterglow. Budget a real week; it's the hardest engineering in the app.*
 
-**v0.6 — Organizer mode**
-Queue actions (OS trash, move, open in editor). Burst-culling compare UI over the index.
+**v0.7 — Organizer mode** (was v0.6)
+Queue actions (OS trash, move, open in editor — now including rename and date-fix flag actions). Burst-culling compare UI over the index.
 
-**v0.7 — Retrospectives + multi-monitor + polish**
+**v0.8 — Retrospectives + multi-monitor + polish** (was v0.7)
 This-day-in-history and month/year modes; all-displays support; overlay/settings polish.
 
-**v0.8 — Screensaver integration, Windows first**
-Idle-trigger and/or `.scr` wrapper on Windows; then Linux idle hooks; macOS guidance. Auto-update (electron-updater) lands here too.
+**v0.9 — Screensaver: Linux + macOS, auto-update** (Windows shipped in v0.5)
+Linux idle hooks (systemd/X11); macOS hot-corner + launcher guidance (no `.saver` from Electron). Auto-update (electron-updater) lands here too.
 
 **v1.0** — hardening, docs, signing decisions, whatever the testers demanded loudest.
 
 ### Mobile train
 
-**m0.1 — Trip-ready culler with duels (Days 3–7, ships before the trip)**
-Expo dev build (not Expo Go — media permissions need it). Read camera roll for today/yesterday/date-range; time-cluster into cull groups with `@afterglow/core`; **pairwise duel flow** (cull one / keep both & pick better, bracket to a group best, duel outcomes persisted); simple swipe keep/toss for non-group photos; staged cull list → review → one confirmation → batch delete to system trash; session summary. Local state in SQLite keyed by MediaStore ID (+ content hash fallback). Ugly is fine; end-of-day usefulness is the bar.
-*Done when: you can clear a 200-photo day down to keepers in 10 minutes at a hotel.*
+**Shipped**
+- **m0.1** — trip-ready duel culler: time-clustered cull groups, pairwise duels, staged cull → one confirmation → system trash, SQLite state.
+- **m0.2** — the full state machine: `to-edit` in duel and single review, in-app to-edit queue with `ACTION_EDIT`, day-scoped inbox-zero progress.
+- **m0.3 / m0.3.1** — edit detection on app open, auto-cull hints, A/B flip compare + synchronized zoom; review-scope ranges, gated All-time, source folders.
+- **m0.4** — perceptual-similarity grouping (dHash), **swipe-deck group review replacing the duel bracket** (bracket retained in core), progress browsing, Material You theming.
 
-**m0.2 — The full state machine (on/after the trip)**
-`to-edit` flag in both duel and single review; in-app to-edit queue with `ACTION_EDIT` launch and manual mark-done; everything converges to `done`; day-scoped inbox-zero progress view. Plus fixes from real trip use.
+**m0.5 — Feedback release (next)**
+The full tester round in one release:
+- **Editor launch fallback**: `ACTION_EDIT` → `ACTION_VIEW` (Samsung Gallery / default viewer, pencil is one tap away) before ever erroring; drop the confusing "or enable" wording from the remaining error.
+- **Similarity rescaled looser** — identical photos must group at Strictest. New five-step mapping **Strictest 12 · Strict 16 · Normal 20 · Loose 26 · Loosest 32** (old Normal becomes new Strictest; top end stays temporal-proximity-dominant). Plus a **0–64 fine-tune slider** under the chips (chips snap the slider; off-preset = "Custom") and a one-line explainer.
+- **Decisions reversible** until the final cull confirmation (re-decide transitions in core `DeckSession`, chip row on decided photos in the UI).
+- **Session flow freedom**: enter any group in any order, do singles before groups; "Replace unfinished session?" dialog reordered (Continue existing = right-most default, Start new on the left); **starting a new session never discards decisions** (they're committed per-photo to the store); **"End session & apply"** banks all decisions early and jumps to cull confirmation.
+- **New Sessions settings**: max photos per session (default **50**, replacing the hardcoded 500), group-boundary-inclusion switch (cap soft by up to one group), oldest-first/newest-first selector.
+- **Compare fixes**: in 2-photo groups "X is better" marks X best-of-group and offers to cull the other (confirmation with "don't ask again", resettable in Settings); in larger groups "better" visibly stars the best-of-group candidate and feeds Reconsider (with a toast); opponent picking made discoverable ("Compare with…" affordance, not just long-press); compare labels use the photos' **group numbers** instead of A/B.
+- **Custom named review scopes** (e.g. "Japan — Jan 31 to Mar 6"): created from the custom-scope screen, persisted; Settings scope manager to enable/disable/delete and reset to defaults (static `SCOPE_DEFS` moves to the store, seeded from defaults).
+- **Pinch-zoom in group review** — bring Compare's synchronized-zoom gesture into the deck (needs gesture arbitration against the pager).
+- **Gear settings icon** (current reads as an eye/sun); **Source removed from Home** (lives in Settings).
 
-**m0.3 — Detection & compare polish**
-Edit detection on app open (in-place mtime/generation/hash change → auto-done; edited-copy sniffing → prompt keep/cull original). Auto-cull hints from duel history ("never won a duel — reconsider?"). Full-screen A/B flip compare + synchronized pinch-zoom.
+*Done when: a Samsung tester taps Edit and lands in Gallery; two identical photos group on Strictest; a tester does singles first, changes a to-edit photo to cull, ends the session after 3 groups without losing a single decision, creates a "Japan" scope, and pinch-zooms right in group review.*
 
-**m0.4+** — perceptual-similarity grouping, stats/streaks, then evaluate iOS once the Android loop is proven.
+**m0.6+** — stats/streaks, deeper startup/analysis perf, fixes from field use, then evaluate iOS once the Android loop is proven.
 
 ---
 
@@ -177,7 +191,7 @@ Edit detection on app open (in-place mtime/generation/hash change → auto-done;
 - **The 1–2 day desktop window.** Mitigation: v0.1 scope is frozen above; anything else is v0.2. Unsigned Windows builds will trip SmartScreen — tell testers to expect "More info → Run anyway"; code signing is a later cost decision.
 - **The 1-week mobile window.** Expo + `expo-media-library` covers read/delete, but Android photo-permission UX varies by OEM/version. Mitigation: build the walking skeleton (list → group → duel → staged delete) on day 3, iterate daily. The duel mechanic is core and stays; A/B flip and synchronized zoom are the cut lines.
 - **Edit detection is heuristic.** In-place edits (Samsung) are detectable via MediaStore changes; copy-saving editors need name/timestamp sniffing; both can miss. Mitigation: manual mark-done always exists; detection is a convenience layer (m0.3), not a correctness dependency.
-- **darktable-cli throughput** (seconds per 4K render). Mitigation is architectural and non-negotiable: background queue + cache, never convert on the display path (v0.5).
+- **darktable-cli throughput** (seconds per 4K render). Mitigation is architectural and non-negotiable: background queue + cache, never convert on the display path (v0.6).
 - **Lightroom fidelity disappointment.** Mitigation: the tiered messaging above, in-app labels included.
 - **EXIF timestamp quirks** (timezones, missing `DateTimeOriginal`, WhatsApp-stripped files). Mitigation: fall back to file mtime, cluster on local naive time, and treat clustering as best-effort.
 - **HEIC** (default on many phones) doesn't decode in Chromium; fine on Android. Desktop HEIC is a later, deliberate feature — document as unsupported until then.
@@ -186,6 +200,6 @@ Edit detection on app open (in-place mtime/generation/hash change → auto-done;
 
 - Whether desktop flag-queue items should sync anywhere (file in the library? export?) — decide when organizer mode matures.
 - Code signing (Windows cert, macOS notarization) — cost/benefit call before wide distribution.
-- Perceptual-hash similarity (blockhash/pHash in TS vs native) — decide at desktop v0.6 / mobile m0.4.
+- Perceptual-hash similarity (blockhash/pHash in TS vs native) — shipped on mobile as dHash in m0.4; desktop decision moves to v0.7 (organizer burst-culling).
 - What, if anything, should eventually consume full best→worst ranking (day cover photos? desktop show-best-of-burst?). Duel history is stored from m0.1 so the option stays open without extra user effort.
 - Samsung Gallery's in-place edits keep a hidden pre-edit backup ("magic" undo). Worth investigating whether its presence is detectable — it would make edit detection on Samsung devices near-perfect.

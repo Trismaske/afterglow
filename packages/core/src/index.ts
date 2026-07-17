@@ -2,17 +2,15 @@
  * @afterglow/core — shared, pure-TypeScript intelligence for Afterglow
  * Desktop and Afterglow Companion.
  *
- * No filesystem or platform APIs live here. Both apps feed MediaItem[]
+ * No filesystem or platform APIs live here; no Date.now()/Math.random()
+ * defaults — time and randomness are injected. Both apps feed MediaItem[]
  * through their own adapters.
  */
 
-/** A single photo or video, as seen by the core logic. */
-export interface MediaItem {
-  /** Stable identifier (file path on desktop, MediaStore id on Android). */
-  id: string;
-  /** Capture time in ms since epoch (EXIF DateTimeOriginal, or mtime fallback). */
-  timestamp: number;
-  /** Path or content URI — opaque to core. */
-  uri: string;
-  kind: 'photo' | 'video';
-}
+export * from './types.js';
+export * from './rng.js';
+export * from './clustering.js';
+export * from './mix.js';
+export * from './retrospectives.js';
+export * from './flags.js';
+export * from './cull.js';

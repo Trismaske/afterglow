@@ -22,6 +22,9 @@ export function createSwappablePlaylist(initial: Playlist): SwappablePlaylist {
       return delegate.size;
     },
     next: () => delegate.next(),
+    // Forwarded so arrow navigation (v0.5) sees moments once smart order is
+    // in; a delegate without moments (plain shuffle) reports all-singles.
+    clusterOf: (url: string) => delegate.clusterOf?.(url) ?? null,
     swap(next: Playlist) {
       delegate = next;
     },
@@ -79,9 +82,17 @@ export function createSmartPlaylist(
     rng: options.rng,
   });
 
+  // v0.5 arrow navigation: URL → cluster index, so the navigator can tell
+  // where the current moment starts and ends. Singles are simply absent.
+  const clusterByUrl = new Map<string, number>();
+  clusters.forEach((cluster, i) => {
+    for (const item of cluster.items) clusterByUrl.set(item.uri, i);
+  });
+
   return {
     size: mediaItems.length,
     clusterCount: clusters.length,
     next: () => mix.next().uri,
+    clusterOf: (url: string) => clusterByUrl.get(url) ?? null,
   };
 }

@@ -20,7 +20,7 @@ function render(entries: QueueEntry[]): void {
     const empty = document.createElement('p');
     empty.className = 'empty';
     empty.textContent =
-      'Nothing flagged yet. During the show, press D (delete), E (edit), M (move) or R (review) to flag the photo on screen.';
+      'Nothing flagged yet. During the show, press D (delete), E (edit), M (move), R (review), N (rename) or T (date fix) to flag the photo on screen.';
     listEl.appendChild(empty);
     return;
   }

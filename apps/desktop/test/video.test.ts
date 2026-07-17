@@ -76,9 +76,19 @@ describe('createVideoWatch', () => {
     expect(reasons).toEqual([]);
   });
 
-  it('a zero/negative cap still schedules (clamped to 0ms) and fires as cap', () => {
-    const { timers, reasons } = watchWith(-5);
+  it('a zero cap means "play full length" (v0.5): no cap timer at all', () => {
+    const { timers, reasons, watch } = watchWith(0);
+    expect(timers.pendingCount).toBe(0); // nothing scheduled
     timers.fireAll();
-    expect(reasons).toEqual(['cap']);
+    expect(reasons).toEqual([]);
+    watch.ended(); // natural end still advances
+    expect(reasons).toEqual(['ended']);
+  });
+
+  it('a negative cap is treated like 0: uncapped, error still advances', () => {
+    const { timers, reasons, watch } = watchWith(-5);
+    expect(timers.pendingCount).toBe(0);
+    watch.error();
+    expect(reasons).toEqual(['error']);
   });
 });

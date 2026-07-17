@@ -77,11 +77,12 @@ npm test  -w afterglow-desktop         # unit tests
 npm run dist -w afterglow-desktop      # package installers (electron-builder)
 
 # Headless smoke test (used by CI; safe over SSH):
-xvfb-run -a npx electron apps/desktop --smoke
+xvfb-run -a npx electron apps/desktop --smoke --show
 ```
 
-In-app keys: any input exits; exceptions are `O` overlay, `D/E/M/R` flag,
-`Q` queue window, `S` settings.
+In-app keys: any input leaves the show (back to settings on a manual
+launch, quit under `--show`); exceptions are `O` overlay, `D/E/M/R/N/T`
+flag, `←/→/↑/↓` navigate, `Q` queue window, `S` settings.
 
 ### Mobile (Android)
 

@@ -56,8 +56,11 @@ export const PHOTO_STATES = [
 ] as const;
 export type PhotoState = (typeof PHOTO_STATES)[number];
 
-/** Desktop flag-to-queue types (keys D/E/M/R while the slideshow runs). */
-export const FLAG_TYPES = ['delete', 'edit', 'move', 'review'] as const;
+/**
+ * Desktop flag-to-queue types (keys D/E/M/R/N/T while the slideshow runs).
+ * `rename` = needs renaming, `date` = needs its date fixed (both v0.5).
+ */
+export const FLAG_TYPES = ['delete', 'edit', 'move', 'review', 'rename', 'date'] as const;
 export type FlagType = (typeof FLAG_TYPES)[number];
 
 /**

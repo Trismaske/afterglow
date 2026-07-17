@@ -13,7 +13,10 @@
 export type VideoAdvanceReason = 'ended' | 'cap' | 'error';
 
 export interface VideoWatchDeps {
-  /** Per-video duration cap in ms (already clamped by main). */
+  /**
+   * Per-video duration cap in ms (already clamped by main). 0 or less (v0.5
+   * "play full length") disables the cap: only ended/error/cancel apply.
+   */
   capMs: number;
   /** Fired exactly once with why the slide should advance. */
   onAdvance: (reason: VideoAdvanceReason) => void;
@@ -31,7 +34,7 @@ export interface VideoWatch {
   cancel(): void;
 }
 
-/** Start watching a playing video; the cap timer starts immediately. */
+/** Start watching a playing video; the cap timer (if any) starts immediately. */
 export function createVideoWatch(deps: VideoWatchDeps): VideoWatch {
   const setTimer = deps.setTimer ?? setTimeout;
   const clearTimer = deps.clearTimer ?? clearTimeout;
@@ -48,7 +51,9 @@ export function createVideoWatch(deps: VideoWatchDeps): VideoWatch {
     deps.onAdvance(reason);
   };
 
-  timer = setTimer(() => fire('cap'), Math.max(0, deps.capMs));
+  if (deps.capMs > 0) {
+    timer = setTimer(() => fire('cap'), deps.capMs);
+  }
 
   return {
     ended: () => fire('ended'),

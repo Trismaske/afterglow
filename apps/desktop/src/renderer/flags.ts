@@ -2,9 +2,9 @@
  * Flag-capture keyboard logic, kept pure (time injected, effects via deps)
  * so it is unit-testable without a DOM.
  *
- * Semantics (PLAN.md v0.2):
- * - D / E / M / R (case-insensitive) flag the *current* photo; the slideshow
- *   never stops.
+ * Semantics (PLAN.md v0.2, extended in v0.5):
+ * - D / E / M / R / N / T (case-insensitive) flag the *current* photo; the
+ *   slideshow never stops.
  * - Pressing the SAME key again within the undo window — while the same
  *   photo is still on screen — un-flags it. Once the slide advances, keys
  *   apply to the new photo (undo intent can't outlive its photo).
@@ -20,6 +20,8 @@ const KEY_TO_FLAG: Readonly<Record<string, FlagType>> = {
   e: 'edit',
   m: 'move',
   r: 'review',
+  n: 'rename', // v0.5 "needs rename"
+  t: 'date', // v0.5 "needs date fix"
 };
 
 const FLAG_LABEL: Readonly<Record<FlagType, string>> = {
@@ -27,6 +29,8 @@ const FLAG_LABEL: Readonly<Record<FlagType, string>> = {
   edit: 'edit',
   move: 'move',
   review: 'review',
+  rename: 'rename',
+  date: 'date fix',
 };
 
 /** FlagType for a keyboard key, or null if it isn't a flag key. */
@@ -34,10 +38,16 @@ export function flagTypeForKey(key: string): FlagType | null {
   return KEY_TO_FLAG[key.toLowerCase()] ?? null;
 }
 
-/** Hotkeys that never exit the show: flags + O (overlay) + Q (queue) + S (settings). */
+/** Arrow-key navigation (v0.5): prev/next photo, restart/skip moment. */
+const NAV_KEYS = new Set(['arrowleft', 'arrowright', 'arrowup', 'arrowdown']);
+
+/**
+ * Hotkeys that never exit the show: flags + O (overlay) + Q (queue) +
+ * S (settings) + the arrow nav keys (v0.5).
+ */
 export function isShowHotkey(key: string): boolean {
   const k = key.toLowerCase();
-  return k === 'o' || k === 'q' || k === 's' || flagTypeForKey(k) !== null;
+  return k === 'o' || k === 'q' || k === 's' || NAV_KEYS.has(k) || flagTypeForKey(k) !== null;
 }
 
 export interface FlagControllerDeps {

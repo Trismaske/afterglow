@@ -191,6 +191,23 @@ body.interactive {
   color: rgba(255, 255, 255, 0.75);
 }
 
+/* Shortcut legend (v0.5): bottom-right, mirroring the overlay's treatment —
+   text-shadow for legibility, never intercepts input. */
+#legend {
+  position: fixed;
+  right: 3.5vw;
+  bottom: 3.5vh;
+  max-width: 32vw;
+  text-align: right;
+  pointer-events: none;
+  font-size: 0.95rem;
+  color: rgba(255, 255, 255, 0.6);
+  text-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.9),
+    0 0 12px rgba(0, 0, 0, 0.7);
+  line-height: 1.45;
+}
+
 /* Flag toast: top-center, fades in/out, never intercepts input. */
 #toast {
   position: fixed;

@@ -9,7 +9,10 @@ import {
   CHANNELS,
   type AfterglowApi,
   type ItemInfo,
+  type LaunchInfo,
   type LibraryItem,
+  type ScreensaverResult,
+  type ScreensaverStatus,
   type Settings,
   type SettingsPatch,
 } from '../shared/api';
@@ -20,6 +23,11 @@ const api: AfterglowApi = {
   getPlaylist: () => ipcRenderer.invoke(CHANNELS.getPlaylist) as Promise<string[]>,
   exit: (reason: string) => ipcRenderer.send(CHANNELS.exit, reason),
   rendererReady: () => ipcRenderer.send(CHANNELS.rendererReady),
+  getLaunchInfo: () => ipcRenderer.invoke(CHANNELS.launchInfo) as Promise<LaunchInfo>,
+  setShowActive: (active: boolean) => ipcRenderer.send(CHANNELS.showState, active),
+  screensaverStatus: () => ipcRenderer.invoke(CHANNELS.screensaverStatus) as Promise<ScreensaverStatus>,
+  screensaverRegister: () => ipcRenderer.invoke(CHANNELS.screensaverRegister) as Promise<ScreensaverResult>,
+  screensaverUnregister: () => ipcRenderer.invoke(CHANNELS.screensaverUnregister) as Promise<ScreensaverResult>,
   getItemInfo: (url: string) => ipcRenderer.invoke(CHANNELS.getItemInfo, url) as Promise<ItemInfo | null>,
   updateSettings: (patch: SettingsPatch) =>
     ipcRenderer.invoke(CHANNELS.updateSettings, patch) as Promise<Settings>,

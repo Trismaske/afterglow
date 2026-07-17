@@ -13,6 +13,7 @@ import {
   MIN_SLIDE_SECONDS,
   MIN_VIDEO_MAX_SECONDS,
   SETTINGS_FILENAME,
+  VIDEO_FULL_LENGTH,
   applySettingsPatch,
   loadSettings,
   normalizeSettings,
@@ -66,11 +67,24 @@ describe('normalizeSettings', () => {
 
   it('clamps and rounds videoMaxSeconds (v0.4), defaulting to 30', () => {
     expect(DEFAULT_SETTINGS.videoMaxSeconds).toBe(30);
-    expect(normalizeSettings({ videoMaxSeconds: 0 }).videoMaxSeconds).toBe(MIN_VIDEO_MAX_SECONDS);
+    expect(normalizeSettings({ videoMaxSeconds: 1 }).videoMaxSeconds).toBe(MIN_VIDEO_MAX_SECONDS);
     expect(normalizeSettings({ videoMaxSeconds: 1e9 }).videoMaxSeconds).toBe(MAX_VIDEO_MAX_SECONDS);
     expect(normalizeSettings({ videoMaxSeconds: 44.7 }).videoMaxSeconds).toBe(45);
     expect(normalizeSettings({ videoMaxSeconds: 'x' }).videoMaxSeconds).toBe(DEFAULT_SETTINGS.videoMaxSeconds);
     expect(normalizeSettings({}).videoMaxSeconds).toBe(DEFAULT_SETTINGS.videoMaxSeconds);
+  });
+
+  it('videoMaxSeconds 0 is the "play full length" sentinel (v0.5)', () => {
+    expect(VIDEO_FULL_LENGTH).toBe(0);
+    expect(normalizeSettings({ videoMaxSeconds: 0 }).videoMaxSeconds).toBe(0);
+    // values that round to 0 count as the sentinel...
+    expect(normalizeSettings({ videoMaxSeconds: 0.4 }).videoMaxSeconds).toBe(0);
+    // ...but nothing else may silently become "uncapped"
+    expect(normalizeSettings({ videoMaxSeconds: -5 }).videoMaxSeconds).toBe(MIN_VIDEO_MAX_SECONDS);
+    expect(normalizeSettings({ videoMaxSeconds: NaN }).videoMaxSeconds).toBe(DEFAULT_SETTINGS.videoMaxSeconds);
+    expect(normalizeSettings({ videoMaxSeconds: '0' }).videoMaxSeconds).toBe(DEFAULT_SETTINGS.videoMaxSeconds);
+    // the sentinel survives a patch round-trip and disk persistence paths
+    expect(applySettingsPatch(DEFAULT_SETTINGS, { videoMaxSeconds: 0 }).videoMaxSeconds).toBe(0);
   });
 
   it('clamps slide duration and rejects non-finite values', () => {

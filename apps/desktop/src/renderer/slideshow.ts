@@ -11,15 +11,26 @@
  *
  * Video slides (v0.4): muted, inline, autoplaying; the slide advances at the
  * video's natural end OR after the per-video duration cap, whichever comes
- * first (createVideoWatch fires exactly once). A playback error mid-video
- * advances immediately. Files that fail to load — e.g. a .mov whose codec
- * Chromium can't decode — are logged and skipped like undecodable images.
+ * first (createVideoWatch fires exactly once; a cap of 0 means "full
+ * length", v0.5). A playback error mid-video advances immediately. Files
+ * that fail to load — e.g. a .mov whose codec Chromium can't decode — are
+ * logged and skipped like undecodable images.
+ *
+ * Seek API (v0.5 arrow navigation): next()/previous()/restartMoment()/
+ * skipMoment() drive the same crossfade path through a Navigator that keeps
+ * a back-buffer of shown items — ← replays history across crossfades and
+ * videos, → replays forward history before pulling fresh items, ↑ jumps to
+ * the current moment's first shown item (or just restarts the current
+ * slide), ↓ skips the rest of the moment. Every navigation resets the
+ * auto-advance timer. A step sequence counter makes rapid keypresses safe:
+ * a superseded in-flight step abandons itself before touching the DOM.
  *
  * If a full playlist pass yields nothing displayable, onAllFailed fires and
  * the show stops (input still exits — the arbiter is independent).
  */
 
 import { mediaKindFromUrl, type MediaKind } from '../shared/api';
+import { createNavigator, type NavCandidate, type Navigator } from './navigator';
 import type { Playlist } from './playlist';
 import { createVideoWatch, type VideoWatch } from './video';
 
@@ -27,7 +38,7 @@ export interface SlideshowOptions {
   container: HTMLElement;
   playlist: Playlist;
   slideDurationMs: number;
-  /** Per-video duration cap, ms (v0.4). */
+  /** Per-video duration cap, ms (v0.4). 0 = play full length (v0.5). */
   videoMaxDurationMs: number;
   /** Called when an entire pass over the playlist failed to load anything. */
   onAllFailed: () => void;
@@ -48,10 +59,13 @@ interface Slot {
 
 export class Slideshow {
   private readonly slots: [Slot, Slot];
+  private readonly nav: Navigator;
   private front = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private videoWatch: VideoWatch | null = null;
   private stopped = false;
+  /** Bumped by every step; an in-flight step that lost the race aborts. */
+  private seq = 0;
 
   constructor(private readonly opts: SlideshowOptions) {
     const mkSlot = (): Slot => {
@@ -74,52 +88,151 @@ export class Slideshow {
       return { img, video, active: null };
     };
     this.slots = [mkSlot(), mkSlot()];
+    this.nav = createNavigator(opts.playlist);
   }
 
   start(): void {
-    void this.advance();
+    void this.stepForward();
   }
 
   stop(): void {
     this.stopped = true;
-    if (this.timer !== null) clearTimeout(this.timer);
-    this.timer = null;
-    this.videoWatch?.cancel();
-    this.videoWatch = null;
+    this.clearPending();
     for (const slot of this.slots) this.resetSlot(slot);
   }
 
-  /** Load the next displayable item into the back slot, then crossfade. */
-  private async advance(): Promise<void> {
-    if (this.stopped) return;
-    // Whatever scheduled this advance is spent; make sure nothing else fires.
+  /** → skip ahead (forward history first, then fresh playlist items). */
+  next(): void {
+    void this.stepForward();
+  }
+
+  /** ← back through the history of shown items; no-op at the oldest entry. */
+  previous(): void {
+    void this.stepBackward();
+  }
+
+  /** ↑ back to the current moment's first shown item, or restart the slide. */
+  restartMoment(): void {
+    void this.stepMomentStart();
+  }
+
+  /** ↓ skip the rest of the current moment (plain next() outside moments). */
+  skipMoment(): void {
+    void this.stepForward(true);
+  }
+
+  /** Cancel whatever would advance the show next (timer or video watch). */
+  private clearPending(): void {
+    if (this.timer !== null) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
     this.videoWatch?.cancel();
     this.videoWatch = null;
-    const { playlist, log } = this.opts;
-    const attempts = Math.max(1, playlist.size);
+  }
 
+  /**
+   * Load a candidate into the back slot and crossfade to it. Returns false
+   * when it failed to load (caller tries the next candidate); true when it
+   * is on screen OR the step was superseded/stopped (caller must bail).
+   */
+  private async tryShow(candidate: NavCandidate, seq: number): Promise<boolean> {
+    const kind = mediaKindFromUrl(candidate.url) ?? 'photo';
+    const back = this.slots[1 - this.front];
+    const ok = await this.loadInto(back, candidate.url, kind);
+    if (this.stopped || seq !== this.seq) return true; // superseded: stop looping
+    if (!ok) {
+      this.nav.failed(candidate);
+      this.opts.log?.(`skipping unloadable ${kind}: ${candidate.url}`);
+      return false;
+    }
+    this.nav.shown(candidate);
+    this.clearPending();
+    this.crossfade();
+    this.opts.onShown?.(candidate.url);
+    this.scheduleNext(kind, candidate.url);
+    return true;
+  }
+
+  /**
+   * Advance (auto-advance, → and ↓ share this path; ↓ first consumes the
+   * rest of the current moment). One full failed pass stops the show.
+   */
+  private async stepForward(skipMoment = false): Promise<void> {
+    if (this.stopped) return;
+    const seq = ++this.seq;
+    if (skipMoment) {
+      const candidate = this.nav.momentSkip();
+      if (candidate && (await this.tryShow(candidate, seq))) return;
+      if (this.stopped || seq !== this.seq) return;
+      // No moment to skip (or the landing item was unloadable): fall through
+      // to plain forward stepping.
+    }
+    const attempts = Math.max(1, this.opts.playlist.size);
     for (let i = 0; i < attempts; i++) {
-      const url = playlist.next();
-      const kind = mediaKindFromUrl(url) ?? 'photo';
-      const back = this.slots[1 - this.front];
-      const ok = await this.loadInto(back, url, kind);
-      if (this.stopped) return;
-      if (ok) {
-        this.crossfade();
-        this.opts.onShown?.(url);
-        this.scheduleNext(kind, url);
-        return;
-      }
-      log?.(`skipping unloadable ${kind}: ${url}`);
+      if (await this.tryShow(this.nav.next(), seq)) return;
     }
     this.stop();
     this.opts.onAllFailed();
   }
 
+  /** ← — replay history; entries that no longer load fall out of it. */
+  private async stepBackward(): Promise<void> {
+    if (this.stopped || this.nav.prev() === null) return; // nothing older
+    const seq = ++this.seq;
+    for (;;) {
+      const candidate = this.nav.prev();
+      if (candidate === null) {
+        // Everything older failed to load; keep the current slide but give
+        // it a fresh timer (the pending one was cleared by no one — only
+        // tryShow clears — so this is just a defensive reschedule).
+        this.restartCurrent(seq);
+        return;
+      }
+      if (await this.tryShow(candidate, seq)) return;
+      if (this.stopped || seq !== this.seq) return;
+    }
+  }
+
+  /** ↑ — jump to the moment's first shown item, else restart the slide. */
+  private async stepMomentStart(): Promise<void> {
+    if (this.stopped) return;
+    const seq = ++this.seq;
+    for (;;) {
+      const candidate = this.nav.momentStart();
+      if (candidate === null) {
+        this.restartCurrent(seq);
+        return;
+      }
+      if (await this.tryShow(candidate, seq)) return;
+      if (this.stopped || seq !== this.seq) return;
+    }
+  }
+
+  /**
+   * Restart the current slide's clock: photos get a fresh full timer,
+   * videos rewind to the start with a fresh watch (shuffle-mode ↑).
+   */
+  private restartCurrent(seq: number): void {
+    if (this.stopped || seq !== this.seq) return;
+    const url = this.nav.current;
+    if (url === null) return; // nothing on screen yet
+    this.clearPending();
+    const kind = mediaKindFromUrl(url) ?? 'photo';
+    if (kind === 'video') {
+      try {
+        this.slots[this.front].video.currentTime = 0;
+      } catch {
+        // not seekable — the fresh watch below still restarts the cap clock
+      }
+    }
+    this.scheduleNext(kind, url);
+  }
+
   /** Photo: fixed timer. Video: play(), advance on ended/cap/error. */
   private scheduleNext(kind: MediaKind, url: string): void {
     if (kind === 'photo') {
-      this.timer = setTimeout(() => void this.advance(), this.opts.slideDurationMs);
+      this.timer = setTimeout(() => void this.stepForward(), this.opts.slideDurationMs);
       return;
     }
     const video = this.slots[this.front].video;
@@ -132,7 +245,7 @@ export class Slideshow {
         if (reason === 'ended') this.opts.logInfo?.(`video ended: ${url}`);
         else if (reason === 'cap') this.opts.logInfo?.(`video capped after ${this.opts.videoMaxDurationMs} ms: ${url}`);
         else this.opts.log?.(`video failed during playback, advancing: ${url}`);
-        void this.advance();
+        void this.stepForward();
       },
     });
     this.videoWatch = watch;

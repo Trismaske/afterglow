@@ -44,6 +44,14 @@ describe('flag queue', () => {
     expect(listFlags(q, 'move')).toEqual([]);
   });
 
+  it('accepts the v0.5 rename and date flag types, round-tripping through JSON', () => {
+    let q = createFlagQueue();
+    q = addFlag(q, { path: '/pics/c.jpg', flagType: 'rename', at: 400 });
+    q = addFlag(q, { path: '/pics/c.jpg', flagType: 'date', at: 500 });
+    const restored = flagQueueFromJSON(JSON.parse(JSON.stringify(flagQueueToJSON(q))));
+    expect(listFlags(restored).map((e) => e.flagType)).toEqual(['rename', 'date']);
+  });
+
   it('removes exactly one (path, flagType) pair; no-op when absent', () => {
     const q = base();
     const q2 = removeFlag(q, '/pics/a.jpg', 'delete');

@@ -34,19 +34,27 @@
       </div>
       <label class="settings-label" for="cap">Cluster cap</label>
       <div class="settings-field">
-        <input id="cap" type="number" min="2" max="100" step="1"> <span class="unit">photos per moment</span>
+        <input id="cap" type="number" min="2" max="100" step="1"> <span class="unit">photos per moment · 2–100</span>
       </div>
       <label class="settings-label" for="video-max">Video cap</label>
       <div class="settings-field">
-        <input id="video-max" type="number" min="2" max="600" step="1"> <span class="unit">seconds per video (videos play muted)</span>
+        <input id="video-max" type="number" min="0" max="600" step="1"> <span class="unit">seconds per video (videos play muted) · 0 = full length</span>
+      </div>
+      <!-- Windows only (v0.5): shown from the renderer when platform === 'win32'. -->
+      <span id="scr-label" class="settings-label hidden">Screensaver</span>
+      <div id="scr-field" class="settings-field hidden">
+        <button id="scr-toggle" type="button">Set as default screensaver</button>
+        <span id="scr-status" class="unit"></span>
       </div>
     </div>
     <button id="start" type="button">Start slideshow</button>
-    <p class="settings-hint">During the show — S: settings &nbsp;·&nbsp; O: overlay &nbsp;·&nbsp; Q: flag queue &nbsp;·&nbsp; D/E/M/R: flag &nbsp;·&nbsp; any other input exits</p>
+    <p class="settings-hint">During the show — S: settings &nbsp;·&nbsp; O: overlay &nbsp;·&nbsp; Q: flag queue &nbsp;·&nbsp; ←/→: prev/next &nbsp;·&nbsp; ↑/↓: restart/skip moment &nbsp;·&nbsp; D/E/M/R/N/T: flag &nbsp;·&nbsp; any other input leaves the show</p>
   </section>
   <section id="message" class="screen hidden"></section>
   <div id="stage" class="hidden"></div>
   <div id="overlay" class="hidden" aria-hidden="true"></div>
+  <!-- v0.5 shortcut legend: flashed at show start, then follows the overlay toggle. -->
+  <div id="legend" class="hidden" aria-hidden="true">O overlay · Q queue · S settings · ← prev · → next · ↑ restart moment · ↓ next moment · D delete · E edit · M move · R review · N rename · T date</div>
   <div id="toast" role="status"></div>
   <script src="index.js"></script>
 </body>

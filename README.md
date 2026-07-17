@@ -43,17 +43,27 @@ Shuffle on the settings screen (press **S** during the show).
 
 ### Keys during the show
 
-| Key | Action | Exits? |
+| Key | Action | Leaves the show? |
 |---|---|---|
 | **D** | Flag current photo/video for **delete** (same key again within the toast window undoes) | no |
 | **E** | Flag for **edit** | no |
 | **M** | Flag as **move**/misfiled | no |
 | **R** | Flag for **review** | no |
-| **O** | Toggle the path/date overlay (persisted) | no |
+| **N** | Flag as **needs rename** | no |
+| **T** | Flag as **needs date fix** | no |
+| **←** / **→** | Previous / next photo (← replays your history, videos included) | no |
+| **↑** | Restart the current moment (or the current slide outside a moment) | no |
+| **↓** | Skip to the next moment | no |
+| **O** | Toggle the path/date overlay + shortcut legend (persisted) | no |
 | **Q** | Open the flag-queue window (Esc or Q closes it) | no |
 | **S** | Stop the show and open the settings screen | no |
-| any other key | Exit | yes |
-| mouse move (more than a nudge) / click | Exit | yes |
+| any other key | Leave the show | yes |
+| mouse move (more than a nudge) / click | Leave the show | yes |
+
+"Leave the show" depends on how Afterglow was started: a normal (manual)
+launch returns to the settings screen; started with `--show` — or running as
+the Windows screensaver — it quits the app. A shortcut legend flashes for a
+few seconds when the show starts and stays up while the overlay is on.
 
 Flags land in a persistent queue (`flags.json` next to `settings.json`,
 survives restarts). The queue window lists every flagged photo — its file
@@ -77,17 +87,24 @@ Grab the latest `desktop-v*` release from GitHub Releases:
   anyway**. That's expected until we buy a signing certificate.
 - **Linux:** download the `.AppImage` (make it executable, run it) or the `.deb`.
 
-First run shows the settings screen: pick your Pictures folder(s) with
-**Choose folders…**, optionally tweak slide duration, ordering
-(Smart/Shuffle), the moment gap (default 3 minutes), the cluster cap
-(default 8 photos per moment) and the video cap (default 30 seconds per
-video), then hit **Start slideshow**. Press **S**
-during the show to come back to this screen at any time. Everything persists
-in `settings.json` in the app's user-data directory (`%APPDATA%/Afterglow`
-on Windows, `~/.config/Afterglow` on Linux); the EXIF index lives beside it
-as `index.json` and rebuilds itself if deleted.
+Launching Afterglow lands on the settings screen: pick your Pictures
+folder(s) with **Choose folders…**, optionally tweak slide duration,
+ordering (Smart/Shuffle), the moment gap (default 3 minutes), the cluster
+cap (default 8 photos per moment, max 100) and the video cap (default 30
+seconds per video; 0 = play full length), then hit **Start slideshow**.
+Press **S** during the show — or just move the mouse — to come back to this
+screen at any time. Everything persists in `settings.json` in the app's
+user-data directory (`%APPDATA%/Afterglow` on Windows, `~/.config/Afterglow`
+on Linux); the EXIF index lives beside it as `index.json` and rebuilds
+itself if deleted. Launching with `--show` skips settings and starts the
+slideshow directly (input then exits the app).
 
-To exit: move the mouse (more than a small nudge), press any key, or click.
+**Windows screensaver:** the installer places an `Afterglow.scr` next to the
+app; the settings screen (Windows only) gets a **Set as default
+screensaver** button that registers it for your user account and shows the
+current status — the screensaver uses the same settings as the app. While a
+slideshow runs, Afterglow also keeps the display awake, so no other
+screensaver interrupts it.
 
 ### For developers
 
@@ -99,9 +116,10 @@ npm test -w afterglow-desktop       # unit tests
 npm run typecheck -w afterglow-desktop
 ```
 
-Headless smoke test (used by CI): `npx electron apps/desktop --smoke` —
-starts, loads the renderer, exits 0 on a clean load within ~4s, nonzero on
-any load failure or renderer console error. Set `AFTERGLOW_SMOKE_MEDIA=<dir>`
+Headless smoke test (used by CI): `npx electron apps/desktop --smoke --show`
+— starts, loads the renderer, exits 0 on a clean load within ~4s, nonzero on
+any load failure or renderer console error (`--show` matters since v0.5: a
+manual launch sits on the settings screen). Set `AFTERGLOW_SMOKE_MEDIA=<dir>`
 to point the smoke run at a fixture folder; add
 `AFTERGLOW_SMOKE_EXPECT_VIDEO=1` to additionally require that a video in the
 fixture started playing and finished (natural end or cap). Smoke-only knobs:

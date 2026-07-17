@@ -70,6 +70,7 @@ export interface Settings {
   /**
    * Per-video duration cap in seconds (v0.4). A video slide advances at the
    * video's natural end or after this many seconds, whichever comes first.
+   * 0 (v0.5) = no cap: every video plays to its natural end.
    */
   videoMaxSeconds: number;
 }
@@ -119,6 +120,42 @@ export interface QueueEntry {
   at: number;
 }
 
+/**
+ * How the app was launched, as the renderer needs to know it (v0.5):
+ * 'manual' = land on the settings screen and return there on exit-input;
+ * 'show' = straight into the slideshow (--show / screensaver /s), exit-input
+ * quits the app. The /p preview mode never reaches the renderer.
+ */
+export type LaunchDisplayMode = 'manual' | 'show';
+
+/** Launch facts pushed to the renderer once at startup. */
+export interface LaunchInfo {
+  mode: LaunchDisplayMode;
+  /** process.platform — the settings screen shows Windows-only controls on 'win32'. */
+  platform: string;
+}
+
+/** Who the OS thinks the default screensaver is (v0.5, Windows only). */
+export type ScreensaverRegistered = 'self' | 'other' | 'none';
+
+/** Windows screensaver registration state, as shown on the settings screen. */
+export interface ScreensaverStatus {
+  /** False everywhere but win32 — the UI is hidden then anyway. */
+  supported: boolean;
+  /** Afterglow.scr exists next to the app exe (i.e. a packaged install). */
+  scrPresent: boolean;
+  registered: ScreensaverRegistered;
+  /** The registry's SCRNSAVE.EXE value, or null when none is registered. */
+  currentPath: string | null;
+}
+
+/** Outcome of a register/unregister attempt. */
+export interface ScreensaverResult {
+  status: ScreensaverStatus;
+  /** Human-readable failure, or null on success/no-op. */
+  error: string | null;
+}
+
 /** IPC channel names, single source of truth. */
 export const CHANNELS = {
   getSettings: 'afterglow:get-settings',
@@ -126,6 +163,13 @@ export const CHANNELS = {
   getPlaylist: 'afterglow:get-playlist',
   exit: 'afterglow:exit',
   rendererReady: 'afterglow:renderer-ready',
+  // v0.5 — launch modes, power management, screensaver
+  launchInfo: 'afterglow:launch-info',
+  /** renderer → main: the slideshow is (not) running (powerSaveBlocker). */
+  showState: 'afterglow:show-state',
+  screensaverStatus: 'afterglow:screensaver-status',
+  screensaverRegister: 'afterglow:screensaver-register',
+  screensaverUnregister: 'afterglow:screensaver-unregister',
   // v0.3 — story engine
   updateSettings: 'afterglow:update-settings',
   /** main → slideshow renderer: EXIF index built/refreshed (LibraryItem[]). */
@@ -165,6 +209,16 @@ export interface AfterglowApi {
   exit(reason: string): void;
   /** Renderer reached a stable state (slideshow / first-run / message). */
   rendererReady(): void;
+  /** How the app was launched (manual vs --show) and the OS platform. */
+  getLaunchInfo(): Promise<LaunchInfo>;
+  /** Tell main whether the slideshow is running (drives powerSaveBlocker). */
+  setShowActive(active: boolean): void;
+  /** Windows screensaver registration state (unsupported stub elsewhere). */
+  screensaverStatus(): Promise<ScreensaverStatus>;
+  /** Register Afterglow.scr as the default screensaver (Windows). */
+  screensaverRegister(): Promise<ScreensaverResult>;
+  /** Deregister, but only if the registration currently points at us. */
+  screensaverUnregister(): Promise<ScreensaverResult>;
   /** Path + dates for a media URL; null if it isn't a library image. */
   getItemInfo(url: string): Promise<ItemInfo | null>;
   /** Persist user-editable settings fields; returns the updated settings. */

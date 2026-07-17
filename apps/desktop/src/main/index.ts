@@ -7,7 +7,7 @@
  * refuses anything outside the configured media folders.
  */
 
-import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, net, powerSaveBlocker, protocol, shell } from 'electron';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
@@ -22,6 +22,7 @@ import {
   mediaKindFromPath,
   toMediaUrl,
   type ItemInfo,
+  type LaunchInfo,
   type LibraryItem,
   type QueueEntry,
   type Settings,
@@ -29,9 +30,11 @@ import {
 import { isInsideAny } from './containment';
 import { openFlagStore, type FlagStore } from './flagstore';
 import { buildIndex, INDEX_FILENAME, loadIndex, saveIndex } from './indexer';
+import { parseLaunchMode } from './launch';
 import { getImageDates } from './metadata';
 import { closeQueueWindow, getQueueWindow, isQueueWindow, openQueueWindow } from './queue-window';
 import { isMediaFile, scanMedia } from './scan';
+import { getScreensaverStatus, registerScreensaver, unregisterScreensaver } from './screensaver';
 import { applySettingsPatch, DEFAULT_SETTINGS, loadSettings, normalizeSettings, saveSettings } from './settings';
 
 const SMOKE = process.argv.includes('--smoke');
@@ -54,6 +57,25 @@ if (SMOKE) {
   app.setPath('userData', mkdtempSync(path.join(os.tmpdir(), 'afterglow-smoke-')));
 }
 
+/**
+ * v0.5 launch modes: '--show' (and the screensaver's '/s') start straight in
+ * the slideshow, '/p <hwnd>' (screensaver preview) quits immediately — we
+ * don't render into the preview pane — and everything else lands on the
+ * settings screen.
+ */
+const LAUNCH_MODE = parseLaunchMode(process.argv, process.platform);
+if (LAUNCH_MODE === 'preview-quit') {
+  app.quit();
+}
+
+// Single instance (v0.5): the OS can fire the screensaver while a manual
+// instance is already up (or re-fire it while one saver is running). The
+// newcomer just quits; a *manual* second launch additionally focuses the
+// existing window via the first instance's 'second-instance' handler below.
+if (LAUNCH_MODE !== 'preview-quit' && !app.requestSingleInstanceLock()) {
+  app.quit();
+}
+
 // Must be registered before app is ready.
 protocol.registerSchemesAsPrivileged([
   { scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
@@ -64,6 +86,24 @@ let settings: Settings = { ...DEFAULT_SETTINGS };
 let mediaRootsReal: string[] = [];
 let mainWindow: BrowserWindow | null = null;
 let flagStore: FlagStore | null = null;
+
+// ---- v0.5: keep the display awake while the slideshow runs ----
+
+/** Active powerSaveBlocker id, or null when no show is running. */
+let displayBlockerId: number | null = null;
+
+/**
+ * Renderer-driven: blocks display sleep (which also keeps the OS screensaver
+ * away) exactly while a slideshow is on screen, in both launch modes.
+ */
+function setShowRunning(running: boolean): void {
+  if (running && displayBlockerId === null) {
+    displayBlockerId = powerSaveBlocker.start('prevent-display-sleep');
+  } else if (!running && displayBlockerId !== null) {
+    powerSaveBlocker.stop(displayBlockerId);
+    displayBlockerId = null;
+  }
+}
 
 async function refreshMediaRoots(): Promise<void> {
   const roots: string[] = [];
@@ -197,9 +237,24 @@ function registerIpc(): void {
 
   ipcMain.handle(CHANNELS.getPlaylist, async (): Promise<string[]> => {
     await refreshMediaRoots();
-    const files = await scanMedia(settings.mediaFolders, {
-      onError: (dir, err) => console.warn(`[afterglow] cannot read directory ${dir}`, err),
-    });
+    const scan = (): Promise<string[]> =>
+      scanMedia(settings.mediaFolders, {
+        onError: (dir, err) => console.warn(`[afterglow] cannot read directory ${dir}`, err),
+      });
+    // v0.5 warm start: when a persisted index exists, the show starts on it
+    // immediately (files that vanished since just fail to load and the show
+    // advances) and the full rescan runs in the background — its indexReady
+    // push replaces the renderer's playlist for subsequent items.
+    const prev = await loadIndex(app.getPath('userData'), warn);
+    if (prev.size > 0) {
+      void scan()
+        .then((files) => startIndexing(files))
+        .catch((err) => warn('background rescan failed; playing the persisted index', err));
+      console.log(`[afterglow] warm start from persisted index (${prev.size} files); rescanning in background`);
+      return shuffled([...prev.keys()], Math.random).map(toMediaUrl);
+    }
+    // Cold start (no index yet): scan synchronously as before.
+    const files = await scan();
     // v0.3: index in the background; the shuffled playlist returns immediately.
     startIndexing(files);
     return shuffled(files, Math.random).map(toMediaUrl);
@@ -219,6 +274,21 @@ function registerIpc(): void {
   // rendererReady is consumed by the smoke harness; a no-op listener keeps
   // normal runs quiet.
   ipcMain.on(CHANNELS.rendererReady, () => {});
+
+  // ---- v0.5: launch mode, power management, screensaver ----
+
+  ipcMain.handle(CHANNELS.launchInfo, (): LaunchInfo => ({
+    mode: LAUNCH_MODE === 'show' ? 'show' : 'manual',
+    platform: process.platform,
+  }));
+
+  ipcMain.on(CHANNELS.showState, (_event, active: unknown) => {
+    setShowRunning(active === true);
+  });
+
+  ipcMain.handle(CHANNELS.screensaverStatus, () => getScreensaverStatus());
+  ipcMain.handle(CHANNELS.screensaverRegister, () => registerScreensaver());
+  ipcMain.handle(CHANNELS.screensaverUnregister, () => unregisterScreensaver());
 
   // ---- v0.2: overlay + flag capture ----
 
@@ -359,8 +429,12 @@ function armSmokeHarness(win: BrowserWindow): void {
   app.on('web-contents-created', (_event, contents) => watch(contents, 'queue-renderer'));
 
   if (exercised) {
-    // E flags the current photo; Q opens the queue window. Both are show
-    // hotkeys and must NOT exit the app.
+    // Arrow nav (v0.5), then E flags the current photo, then Q opens the
+    // queue window. All are show hotkeys and must NOT exit the app — if any
+    // of them did, the app would quit before the assertions run and the
+    // "[smoke] OK" line would never print.
+    setTimeout(() => win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Right' }), 600);
+    setTimeout(() => win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Left' }), 900);
     setTimeout(() => win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'e' }), 1200);
     setTimeout(() => win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'q' }), 2000);
   }
@@ -439,7 +513,21 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
+// A second *manual* launch while we hold the single-instance lock: bring
+// the existing window forward (the second process has already quit itself).
+// Screensaver/preview launches must not steal focus — the OS fired them,
+// not the user.
+app.on('second-instance', (_event, commandLine) => {
+  if (parseLaunchMode(commandLine, process.platform) !== 'settings') return;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
+
 void app.whenReady().then(async () => {
+  // Quitting (preview mode / lost the single-instance race): don't bootstrap.
+  if (LAUNCH_MODE === 'preview-quit' || !app.hasSingleInstanceLock()) return;
   protocol.handle(MEDIA_SCHEME, handleMediaRequest);
   settings = await loadSettings(app.getPath('userData'));
   flagStore = await openFlagStore(app.getPath('userData'), {

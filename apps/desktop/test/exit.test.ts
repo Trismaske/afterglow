@@ -75,6 +75,19 @@ describe('exit arbiter', () => {
     expect(onExit).not.toHaveBeenCalled();
   });
 
+  it('re-arming after a fire starts a fresh session (v0.5 settings round-trip)', () => {
+    const { arbiter, onExit } = make();
+    arbiter.arm();
+    arbiter.keyDown('Escape'); // manual mode: this sent the user to settings
+    expect(onExit).toHaveBeenCalledTimes(1);
+    arbiter.disarm(); // settings screen
+    arbiter.arm(); // show started again
+    expect(arbiter.fired).toBe(false);
+    arbiter.pointerMoved(0, 0); // fresh baseline, not carried over
+    arbiter.pointerMoved(500, 500);
+    expect(onExit).toHaveBeenCalledTimes(2);
+  });
+
   it('exempt keys pass through without exiting (v0.2 flag keys hook)', () => {
     const { arbiter, onExit } = make({ isExemptKey: (k) => k === 'd' });
     arbiter.arm();

@@ -10,6 +10,13 @@ describe('flagTypeForKey', () => {
     expect(flagTypeForKey('r')).toBe('review');
   });
 
+  it('maps the v0.5 keys: N = rename, T = date', () => {
+    expect(flagTypeForKey('n')).toBe('rename');
+    expect(flagTypeForKey('N')).toBe('rename');
+    expect(flagTypeForKey('t')).toBe('date');
+    expect(flagTypeForKey('T')).toBe('date');
+  });
+
   it('returns null for everything else', () => {
     for (const key of ['x', 'Escape', 'Enter', ' ', 'ArrowRight', 'q', 'o']) {
       expect(flagTypeForKey(key)).toBeNull();
@@ -19,13 +26,19 @@ describe('flagTypeForKey', () => {
 
 describe('isShowHotkey', () => {
   it('exempts flag keys plus O, Q and S, both cases', () => {
-    for (const key of ['d', 'e', 'm', 'r', 'o', 'q', 's', 'D', 'E', 'M', 'R', 'O', 'Q', 'S']) {
+    for (const key of ['d', 'e', 'm', 'r', 'n', 't', 'o', 'q', 's', 'D', 'E', 'M', 'R', 'N', 'T', 'O', 'Q', 'S']) {
+      expect(isShowHotkey(key)).toBe(true);
+    }
+  });
+
+  it('exempts the v0.5 arrow nav keys', () => {
+    for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']) {
       expect(isShowHotkey(key)).toBe(true);
     }
   });
 
   it('does not exempt exit keys', () => {
-    for (const key of ['Escape', 'Enter', ' ', 'a', 'ArrowLeft']) {
+    for (const key of ['Escape', 'Enter', ' ', 'a', 'PageDown']) {
       expect(isShowHotkey(key)).toBe(false);
     }
   });
@@ -114,5 +127,18 @@ describe('flag controller', () => {
     const { controller, toast } = make();
     controller.keyPressed('R', 'item-1');
     expect(toast).toHaveBeenCalledExactlyOnceWith('Flagged for review — R again to undo');
+  });
+
+  it('v0.5 flags toast with their labels and undo like the others', () => {
+    const { controller, add, remove, toast } = make();
+    controller.keyPressed('n', 'item-1');
+    expect(add).toHaveBeenCalledExactlyOnceWith('item-1', 'rename');
+    expect(toast).toHaveBeenLastCalledWith('Flagged for rename — N again to undo');
+    controller.keyPressed('t', 'item-1');
+    expect(add).toHaveBeenLastCalledWith('item-1', 'date');
+    expect(toast).toHaveBeenLastCalledWith('Flagged for date fix — T again to undo');
+    controller.keyPressed('t', 'item-1'); // undo within the window
+    expect(remove).toHaveBeenCalledExactlyOnceWith('item-1', 'date');
+    expect(toast).toHaveBeenLastCalledWith('Date fix flag removed');
   });
 });

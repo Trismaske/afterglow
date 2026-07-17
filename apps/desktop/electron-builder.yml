@@ -26,6 +26,10 @@ win:
 nsis:
   oneClick: true
   deleteAppDataOnUninstall: false
+  # v0.5: copies the installed exe to Afterglow.scr (a renamed Electron exe
+  # is a valid screensaver — Windows launches it with /s, which main
+  # handles) and cleans up/deregisters on uninstall.
+  include: build/installer.nsh
 
 linux:
   target:

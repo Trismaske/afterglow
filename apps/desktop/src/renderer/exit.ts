@@ -1,6 +1,8 @@
 /**
  * The ONE exit path. Every input signal (mouse move, key, click) funnels
- * through this arbiter; nothing else in the renderer may quit the app.
+ * through this arbiter; nothing else in the renderer may leave the show.
+ * Since v0.5 `onExit` doesn't necessarily quit the app: on a manual launch
+ * it returns to the settings screen, in --show/screensaver mode it quits.
  *
  * Mouse-move threshold: the first mousemove after arming only records a
  * baseline position (Chromium can emit a synthetic move on window show, and
@@ -8,8 +10,8 @@
  * has moved more than `moveThresholdPx` (default 24 CSS px) away from that
  * baseline.
  *
- * v0.2 hook: pass `isExemptKey` to let flag keys (D/E/M/R) through without
- * exiting — the arbiter already supports it.
+ * v0.2 hook: pass `isExemptKey` to let flag keys (D/E/M/R/N/T), nav arrows
+ * and O/Q/S through without exiting.
  */
 
 export interface ExitArbiterOptions {
@@ -24,7 +26,12 @@ export interface ExitArbiterOptions {
 export const DEFAULT_MOVE_THRESHOLD_PX = 24;
 
 export interface ExitArbiter {
-  /** Start reacting to input (call when the show / message screen is up). */
+  /**
+   * Start reacting to input (call when the show / message screen is up).
+   * Re-arming starts a fresh session: the fired latch and the pointer
+   * baseline reset, so a settings → show round-trip (v0.5 manual mode) can
+   * fire again.
+   */
   arm(): void;
   /** Stop reacting (first-run screen needs clicks to work). */
   disarm(): void;
@@ -49,6 +56,8 @@ export function createExitArbiter(opts: ExitArbiterOptions): ExitArbiter {
   return {
     arm() {
       armed = true;
+      fired = false;
+      baseline = null;
     },
     disarm() {
       armed = false;

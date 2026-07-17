@@ -249,3 +249,114 @@ release, inherited and new.)*
     explicitly (`play()` at crossfade), which is the same user-visible
     behavior without racing the crossfade. muted/playsinline/
     disablePictureInPicture are set both as properties and attributes.
+
+## desktop-v0.5
+
+1. **Launch-arg parsing (`src/main/launch.ts`):** `--show` is honored on
+   every platform; the Windows screensaver switches `/s`, `/p`, `/c` are
+   honored **only on win32** (on POSIX a literal `/s` argument is far more
+   likely to be a path), case-insensitively, with `/` or `-` prefix and an
+   optional `:hwnd` suffix (`/c:5551212`). `/p <hwnd>` (preview) quits
+   immediately — rendering into the preview pane is out of scope, and a
+   quiet exit shows a black preview box instead of an error. `--show` with
+   zero configured folders falls back to the settings screen (there is
+   nothing to show).
+2. **Single-instance lock in all modes** (`requestSingleInstanceLock`): the
+   losing process just quits — in screensaver mode that's exactly the "OS
+   re-fires the saver" case, and deliberately nothing is focused. The
+   surviving instance focuses its window on `second-instance`, which gives
+   manual double-launches the expected behavior for free.
+3. **Exit semantics per mode:** the one exit arbiter still sees all input,
+   but its `onExit` now branches — manual launch → back to the settings
+   screen (show stopped cleanly), `--show`/screensaver → quit as before.
+   Message screens (no images / all failed) follow the same rule and their
+   text adapts ("return to settings" vs "exit"). The arbiter's `arm()` now
+   resets its fired-latch and pointer baseline so settings ↔ show round
+   trips re-arm cleanly (previously `fired` latched forever because firing
+   always meant process exit).
+4. **History buffer: 200 entries of successfully *shown* items** (unloadable
+   files never enter it; a history entry that later fails to load falls out
+   of the buffer and the step continues past it). Browser-history model:
+   showing a fresh playlist item while the cursor is behind truncates the
+   forward tail. ← at the oldest entry is a no-op (current slide and timer
+   keep running). Auto-advance and → both replay forward history first, so
+   the auto-advance walks back up the same trail after a ←.
+5. **↑ (restart moment) rewinds through history**, to the earliest entry of
+   the contiguous same-cluster run ending at the current item — i.e. it
+   replays exactly what was shown (respecting the cluster-cap sampling)
+   rather than re-queuing the cluster from core's mix, which would have
+   required core API changes. With no cluster (singles, shuffle mode, or
+   already at the run's first shown item) it restarts the current slide:
+   photos get a fresh full timer, videos rewind to 0 with a fresh cap
+   clock.
+6. **↓ (skip moment) consumes live playlist items** until the cluster id
+   changes (bounded by playlist size); the skipped items are discarded, not
+   recorded. On singles/in shuffle mode ↓ degrades to → per the plan. Moment
+   identity comes from a URL → cluster-index map built alongside the smart
+   playlist (2+ item clusters only, same clustering pass the mix uses);
+   core's mix engine is untouched.
+7. **Rapid keypresses are serialized by a step sequence counter** in the
+   Slideshow: every nav/advance step bumps it, and an in-flight step that
+   lost the race abandons itself after its (async) load instead of touching
+   the DOM — no double-crossfades, no orphan timers. Every successful nav
+   resets the auto-advance timer (photos) or the video watch.
+8. **videoMaxSeconds 0 = "play full length":** values that *round* to 0
+   count as the sentinel, negatives still clamp up to 2, and non-numeric
+   input falls back to the default 30. A blank form field would read as 0
+   via `Number('')`, so the renderer sends NaN for blank — blank can never
+   silently mean "uncapped". With cap 0 `createVideoWatch` schedules no
+   timer at all (ended/error/cancel still advance).
+9. **powerSaveBlocker (`prevent-display-sleep`)** is driven by a
+   renderer → main "show state" IPC: started when the slideshow is on
+   screen (both launch modes), stopped on the settings and message screens.
+   Display-sleep blocking also keeps the OS screensaver away, per the
+   Electron docs and the plan's intent.
+10. **Warm start plays the persisted index verbatim** (no existence
+    filtering, per the plan — a deleted file fails to load and the show
+    advances; the background rescan's `indexReady` push then replaces the
+    playlist). If the media folders changed since the index was written,
+    the first items can 403 against the protocol's containment check until
+    the rescan lands — same graceful skip path, worst case a few seconds
+    of black. New in v0.5: `indexReady` refreshes the playlist in shuffle
+    mode too (it used to be smart-only), otherwise a warm start from a
+    stale index would never pick up new files.
+11. **The `.scr` is a full copy of the installed exe**, not the plan's
+    "thin wrapper" stub: a renamed Electron exe next to its own resources
+    is already a valid screensaver (Windows launches it with `/s`, which
+    launch.ts handles), while a real stub would mean building and shipping
+    a second binary. NSIS `customInstall` does the copy;
+    `customUnInstall` deletes it and deregisters **only** if
+    `SCRNSAVE.EXE` currently points at our path. Cost: one duplicated exe
+    on disk (the Electron exe is not small); the resources beside it
+    (asar, dlls) are shared, and a stub can still replace the copy in a
+    later release without touching the registration logic.
+12. **Registration is per-user via `reg.exe`** (execFile with an argument
+    vector, never a shell string): `HKCU\Control Panel\Desktop\SCRNSAVE.EXE`
+    plus `ScreenSaveActive=1`; status = `reg query` parsed by a pure,
+    unit-tested function (REG_SZ and REG_EXPAND_SZ, case-insensitive value
+    name, path comparison case-insensitive). "Unset" only ever deletes the
+    value when it points at us. Registering without the `.scr` present
+    (unpackaged run) is refused with a helpful message. **All of this is
+    untested on real Windows** — this machine is Linux; everything is
+    guarded by `process.platform === 'win32'` and the UI row is hidden
+    elsewhere. The NSIS include relies on electron-builder-provided
+    `${APP_EXECUTABLE_FILENAME}` and LogicLib — verified against
+    electron-builder 26's templates, not against a live installer build.
+13. **Shortcut legend is a separate `#legend` element** (bottom-right,
+    overlay-styled) rather than a fourth line inside `#overlay`: it must be
+    able to flash at show start even when the overlay is toggled off, and
+    the overlay element's visibility is all-or-nothing. Flash duration 6 s,
+    then visibility follows the overlay toggle.
+14. **Smoke harness launches with `--show` now** (manual-launch smoke would
+    sit on the settings screen); the exercised path additionally injects
+    ArrowRight/ArrowLeft before E/Q — if any hotkey wrongly exited, the app
+    would quit before the assertions and the "[smoke] OK" line would never
+    print. Verified on xvfb with a mixed fixture (4 EXIF burst JPEGs,
+    2 PNGs, 1 s + 10 s H.264 MP4s): nav visible in the log, flag + queue +
+    index assertions green, video ended and capped paths green. Warm start
+    verified separately with a seeded `XDG_CONFIG_HOME`: run 1 builds
+    index.json, run 2 logs "warm start from persisted index (8 files)".
+15. **New flag keys N/T map to core's `rename`/`date`** with toast labels
+    "rename" and "date fix" (the queue badge shows the raw type). The queue
+    window got badge colors and updated key lists; it has no filter UI to
+    extend (the plan's "labels/filters" reduces to labels here).

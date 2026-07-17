@@ -20,6 +20,8 @@ export const MIN_CLUSTER_CAP = 2;
 export const MAX_CLUSTER_CAP = 100;
 export const MIN_VIDEO_MAX_SECONDS = 2;
 export const MAX_VIDEO_MAX_SECONDS = 600;
+/** videoMaxSeconds sentinel: 0 = play every video to its natural end (v0.5). */
+export const VIDEO_FULL_LENGTH = 0;
 
 export const DEFAULT_SETTINGS: Settings = {
   mediaFolders: [],
@@ -79,12 +81,15 @@ export function normalizeSettings(raw: unknown): Settings {
     DEFAULT_SETTINGS.momentGapMinutes,
   );
   out.clusterCap = clampInt(obj.clusterCap, MIN_CLUSTER_CAP, MAX_CLUSTER_CAP, DEFAULT_SETTINGS.clusterCap);
-  out.videoMaxSeconds = clampInt(
-    obj.videoMaxSeconds,
-    MIN_VIDEO_MAX_SECONDS,
-    MAX_VIDEO_MAX_SECONDS,
-    DEFAULT_SETTINGS.videoMaxSeconds,
-  );
+  // v0.5: an explicit 0 means "play videos full length" (no cap). Everything
+  // else clamps to 2–600 as before; non-numeric input falls back to the
+  // default, so a blank field can never silently become "uncapped".
+  const vm = obj.videoMaxSeconds;
+  if (typeof vm === 'number' && Number.isFinite(vm) && Math.round(vm) === 0) {
+    out.videoMaxSeconds = VIDEO_FULL_LENGTH;
+  } else {
+    out.videoMaxSeconds = clampInt(vm, MIN_VIDEO_MAX_SECONDS, MAX_VIDEO_MAX_SECONDS, DEFAULT_SETTINGS.videoMaxSeconds);
+  }
   return out;
 }
 

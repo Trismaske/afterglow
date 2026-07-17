@@ -1,17 +1,22 @@
 /**
- * Renderer entry: settings screen (doubles as first-run) when no folders are
- * configured or when S is pressed mid-show, otherwise the crossfade
- * slideshow. All input-driven exiting funnels through the one exit arbiter
- * (exit.ts); show hotkeys (S settings, O overlay, Q queue, D/E/M/R flags)
- * are handled first and never reach the exit path.
+ * Renderer entry: on a manual launch the settings screen comes first (v0.5 —
+ * with a prominent Start button; it doubles as first-run and as the S-mid-
+ * show screen); `--show` / screensaver launches go straight into the
+ * crossfade slideshow. All input-driven exiting funnels through the one exit
+ * arbiter (exit.ts); show hotkeys (S settings, O overlay, Q queue, arrows
+ * nav, D/E/M/R/N/T flags) are handled first and never reach the exit path.
+ * What "exit" means depends on the launch mode: manual → back to settings,
+ * --show → quit the app.
  *
  * v0.3 story engine: the show always starts on a plain shuffled playlist;
  * when main pushes the background EXIF index (indexReady) and orderMode is
  * 'smart', the playlist hot-swaps to core's moments-cluster mix engine
- * without interrupting the running show.
+ * without interrupting the running show (in shuffle mode the push refreshes
+ * the plain playlist instead — that's how a v0.5 warm start from a stale
+ * persisted index picks up new files).
  */
 
-import type { LibraryItem, Settings } from '../shared/api';
+import type { LaunchDisplayMode, LibraryItem, ScreensaverStatus, Settings } from '../shared/api';
 import { createExitArbiter } from './exit';
 import { createFlagController, isShowHotkey, UNDO_WINDOW_MS } from './flags';
 import { Overlay } from './overlay';
@@ -37,9 +42,17 @@ const orderModeSelect = $<HTMLSelectElement>('order-mode');
 const gapInput = $<HTMLInputElement>('gap');
 const capInput = $<HTMLInputElement>('cap');
 const videoMaxInput = $<HTMLInputElement>('video-max');
+const legendEl = $('legend');
+const scrLabelEl = $('scr-label');
+const scrFieldEl = $('scr-field');
+const scrToggleBtn = $<HTMLButtonElement>('scr-toggle');
+const scrStatusEl = $('scr-status');
 
 const overlay = new Overlay($('overlay'));
 const toast = new Toast($('toast'), UNDO_WINDOW_MS);
+
+/** How long the shortcut legend stays up on its own after the show starts. */
+const LEGEND_FLASH_MS = 6000;
 
 /** True while the slideshow itself is on screen (hotkeys only apply then). */
 let showActive = false;
@@ -52,9 +65,22 @@ let slideshow: Slideshow | null = null;
 let currentSettings: Settings | null = null;
 /** The running show's playlist wrapper; null when no show is up. */
 let swappable: SwappablePlaylist | null = null;
+/** v0.5: 'manual' returns to settings on exit-input, 'show' quits the app. */
+let launchMode: LaunchDisplayMode = 'manual';
+/** True while the shortcut legend is force-shown right after show start. */
+let legendFlashing = false;
+let legendFlashTimer: ReturnType<typeof setTimeout> | null = null;
 
 const arbiter = createExitArbiter({
-  onExit: (reason) => window.afterglow.exit(reason),
+  onExit: (reason) => {
+    // v0.5: what leaving the show means depends on how we were launched.
+    if (launchMode === 'manual') {
+      console.log(`[afterglow] input (${reason}) — returning to settings`);
+      showSettings();
+    } else {
+      window.afterglow.exit(reason);
+    }
+  },
   isExemptKey: (key) => showActive && isShowHotkey(key),
 });
 
@@ -90,6 +116,26 @@ function applyArbiterState(): void {
   }
 }
 
+/**
+ * The shortcut legend (v0.5) is visible while the show runs and either the
+ * overlay is on or the show just started (a few seconds' flash).
+ */
+function syncLegend(): void {
+  legendEl.classList.toggle('hidden', !(showActive && (overlayEnabled || legendFlashing)));
+}
+
+/** Force the legend on for LEGEND_FLASH_MS (called at show start). */
+function flashLegend(): void {
+  legendFlashing = true;
+  if (legendFlashTimer !== null) clearTimeout(legendFlashTimer);
+  legendFlashTimer = setTimeout(() => {
+    legendFlashing = false;
+    legendFlashTimer = null;
+    syncLegend();
+  }, LEGEND_FLASH_MS);
+  syncLegend();
+}
+
 /** Returns true when the key was consumed as a show hotkey. */
 function handleHotkey(key: string): boolean {
   if (!showActive) return false;
@@ -98,6 +144,7 @@ function handleHotkey(key: string): boolean {
     overlayEnabled = !overlayEnabled;
     overlay.setVisible(overlayEnabled);
     if (overlayEnabled) updateOverlay();
+    syncLegend();
     void window.afterglow.setOverlayEnabled(overlayEnabled);
     return true;
   }
@@ -107,6 +154,23 @@ function handleHotkey(key: string): boolean {
   }
   if (k === 's') {
     showSettings();
+    return true;
+  }
+  // v0.5 arrow navigation — handled by the slideshow's seek API.
+  if (k === 'arrowleft') {
+    slideshow?.previous();
+    return true;
+  }
+  if (k === 'arrowright') {
+    slideshow?.next();
+    return true;
+  }
+  if (k === 'arrowup') {
+    slideshow?.restartMoment();
+    return true;
+  }
+  if (k === 'arrowdown') {
+    slideshow?.skipMoment();
     return true;
   }
   return flags.keyPressed(key, currentUrl);
@@ -130,8 +194,17 @@ window.afterglow.onQueueState((open) => {
 // v0.3: the background EXIF index finished — hot-swap to smart order if the
 // show is on a swappable playlist and smart mode is selected. Stale pushes
 // (from before a settings change) are harmless: the next scan re-pushes.
+// v0.5: in shuffle mode the push refreshes the plain playlist instead, so a
+// warm start from a stale persisted index converges on the fresh scan.
 window.afterglow.onIndexReady((items: LibraryItem[]) => {
-  if (!swappable || !currentSettings || currentSettings.orderMode !== 'smart') return;
+  if (!swappable || !currentSettings) return;
+  if (currentSettings.orderMode !== 'smart') {
+    if (items.length > 0) {
+      swappable.swap(createPlaylist(items.map((item) => item.url), Math.random));
+      console.log(`[afterglow] playlist refreshed from rescan (${items.length} files)`);
+    }
+    return;
+  }
   const smart = createSmartPlaylist(items, {
     gapMinutes: currentSettings.momentGapMinutes,
     clusterCap: currentSettings.clusterCap,
@@ -148,15 +221,24 @@ function showOnly(el: HTMLElement | null): void {
   }
 }
 
+/** What any-input does from a show/message screen, for message texts. */
+function exitHint(): string {
+  return launchMode === 'manual'
+    ? 'Move the mouse or press any key to return to settings.'
+    : 'Move the mouse or press any key to exit.';
+}
+
 function showMessage(text: string): void {
   showActive = false;
   swappable = null;
   currentUrl = null;
   overlay.setVisible(false);
+  syncLegend();
+  window.afterglow.setShowActive(false);
   messageEl.textContent = text;
   showOnly(messageEl);
   document.body.classList.remove('interactive');
-  arbiter.arm(); // a message screen still exits on any input
+  arbiter.arm(); // a message screen still reacts to any input (exit/settings)
 }
 
 function renderFolderList(folders: readonly string[]): void {
@@ -175,7 +257,53 @@ function populateSettingsForm(settings: Settings): void {
   videoMaxInput.value = String(settings.videoMaxSeconds);
 }
 
-/** The settings screen — first-run and S-mid-show land here. */
+// ---- v0.5: Windows "set as default screensaver" ----
+
+/** Cached last-known status so the toggle knows which action it performs. */
+let scrStatus: ScreensaverStatus | null = null;
+
+function renderScreensaverStatus(status: ScreensaverStatus, error: string | null = null): void {
+  scrStatus = status;
+  scrToggleBtn.textContent =
+    status.registered === 'self' ? 'Unset as default screensaver' : 'Set as default screensaver';
+  if (error) {
+    scrStatusEl.textContent = error;
+  } else if (status.registered === 'self') {
+    scrStatusEl.textContent = 'Afterglow is the default screensaver.';
+  } else if (status.registered === 'other') {
+    scrStatusEl.textContent = `Current screensaver: ${status.currentPath ?? 'unknown'}`;
+  } else if (!status.scrPresent) {
+    scrStatusEl.textContent = 'Not set. Requires the installed (installer) version of Afterglow.';
+  } else {
+    scrStatusEl.textContent = 'No screensaver is set.';
+  }
+}
+
+function refreshScreensaverUi(): void {
+  void window.afterglow
+    .screensaverStatus()
+    .then((status) => renderScreensaverStatus(status))
+    .catch(() => {
+      scrStatusEl.textContent = 'Screensaver status unavailable.';
+    });
+}
+
+scrToggleBtn.addEventListener('click', () => {
+  void (async () => {
+    scrToggleBtn.disabled = true;
+    try {
+      const result =
+        scrStatus?.registered === 'self'
+          ? await window.afterglow.screensaverUnregister()
+          : await window.afterglow.screensaverRegister();
+      renderScreensaverStatus(result.status, result.error);
+    } finally {
+      scrToggleBtn.disabled = false;
+    }
+  })();
+});
+
+/** The settings screen — manual launch, first-run and S-mid-show land here. */
 function showSettings(): void {
   showActive = false;
   swappable = null;
@@ -183,9 +311,12 @@ function showSettings(): void {
   slideshow = null;
   currentUrl = null; // no photo on screen: don't fetch stale overlay info
   overlay.setVisible(false);
+  syncLegend();
+  window.afterglow.setShowActive(false);
   arbiter.disarm(); // the user must be able to click controls
   document.body.classList.add('interactive');
   if (currentSettings) populateSettingsForm(currentSettings);
+  if (!scrFieldEl.classList.contains('hidden')) refreshScreensaverUi();
   showOnly(settingsEl);
 }
 
@@ -194,7 +325,7 @@ async function startShow(settings: Settings): Promise<void> {
   swappable = null;
   const urls = await window.afterglow.getPlaylist();
   if (urls.length === 0) {
-    showMessage('Afterglow found no images in your folders. Move the mouse or press any key to exit, then check the folders in settings.');
+    showMessage(`Afterglow found no images in your folders. ${exitHint()} Then check the folders in settings.`);
     return;
   }
   document.body.classList.remove('interactive');
@@ -203,6 +334,8 @@ async function startShow(settings: Settings): Promise<void> {
   overlay.setVisible(overlayEnabled);
   showActive = true;
   applyArbiterState();
+  window.afterglow.setShowActive(true); // main blocks display sleep while up
+  flashLegend(); // remind about the shortcuts for a few seconds
   slideshow?.stop();
   slideshow = null;
   // S ↔ settings ↔ start can cycle: drop the previous show's <img> layers so
@@ -214,8 +347,9 @@ async function startShow(settings: Settings): Promise<void> {
     container: stageEl,
     playlist: swappable,
     slideDurationMs: Math.max(1000, settings.slideDurationSeconds * 1000),
-    videoMaxDurationMs: Math.max(1000, settings.videoMaxSeconds * 1000),
-    onAllFailed: () => showMessage('Afterglow could not display any of the media it found. Move the mouse or press any key to exit.'),
+    // 0 = play full length (v0.5): pass the sentinel straight through.
+    videoMaxDurationMs: settings.videoMaxSeconds === 0 ? 0 : Math.max(1000, settings.videoMaxSeconds * 1000),
+    onAllFailed: () => showMessage(`Afterglow could not display any of the media it found. ${exitHint()}`),
     onShown: (url) => {
       currentUrl = url;
       flags.itemChanged();
@@ -253,7 +387,9 @@ startBtn.addEventListener('click', () => {
         orderMode: orderModeSelect.value === 'shuffle' ? 'shuffle' : 'smart',
         momentGapMinutes: Number(gapInput.value),
         clusterCap: Number(capInput.value),
-        videoMaxSeconds: Number(videoMaxInput.value),
+        // Blank must NOT read as 0 ("full length", v0.5) — Number('') is 0,
+        // so send NaN instead and let main fall back to the default.
+        videoMaxSeconds: videoMaxInput.value.trim() === '' ? NaN : Number(videoMaxInput.value),
       });
       await startShow(settings);
     } finally {
@@ -263,18 +399,31 @@ startBtn.addEventListener('click', () => {
 });
 
 async function main(): Promise<void> {
-  const settings = await window.afterglow.getSettings();
+  const [settings, launch] = await Promise.all([
+    window.afterglow.getSettings(),
+    window.afterglow.getLaunchInfo(),
+  ]);
+  launchMode = launch.mode;
   currentSettings = settings;
   populateSettingsForm(settings);
-  if (settings.mediaFolders.length === 0) {
-    showSettings();
-  } else {
+  if (launch.platform === 'win32') {
+    // The screensaver row only exists on Windows; status loads lazily when
+    // the settings screen is shown.
+    scrLabelEl.classList.remove('hidden');
+    scrFieldEl.classList.remove('hidden');
+  }
+  // v0.5: manual launches always land on settings (that's where the
+  // prominent Start button lives); --show / screensaver launches go straight
+  // into the show — unless there is nothing configured to show yet.
+  if (launch.mode === 'show' && settings.mediaFolders.length > 0) {
     await startShow(settings);
+  } else {
+    showSettings();
   }
   window.afterglow.rendererReady();
 }
 
 void main().catch((err) => {
   console.error(`[afterglow] renderer failed to start: ${String(err)}`);
-  showMessage('Afterglow failed to start. Move the mouse or press any key to exit.');
+  showMessage(`Afterglow failed to start. ${exitHint()}`);
 });

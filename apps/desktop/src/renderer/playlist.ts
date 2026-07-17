@@ -14,6 +14,12 @@ export interface Playlist {
   readonly size: number;
   /** Next URL to show. Throws if the playlist is empty. */
   next(): string;
+  /**
+   * Moment membership for a URL (v0.5 arrow navigation): a stable cluster id
+   * when the item belongs to a multi-photo moment, null for singles.
+   * Absent on order modes without moments (plain shuffle).
+   */
+  clusterOf?(url: string): number | null;
 }
 
 export function createPlaylist(items: readonly string[], rng: Rng): Playlist {

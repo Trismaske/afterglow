@@ -4,6 +4,7 @@
   "version": "0.5.0",
   "private": true,
   "author": "Tristan <trismaske@gmail.com>",
+  "homepage": "https://github.com/Trismaske/afterglow",
   "description": "Fullscreen ambient photo display with intelligent ordering and flag-to-queue capture.",
   "main": "dist/main/index.js",
   "scripts": {

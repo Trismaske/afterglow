@@ -128,3 +128,63 @@ into `ASSUMPTIONS.md` at the end of the build.
     resolves, the queue window lists all entries with Reveal/Open/Remove,
     and the store round-trips restarts (unit-tested). Open failures surface
     as console warnings only in v0.2 (no in-window error UI yet).
+
+## desktop-v0.3
+
+*(This version was started by an agent that was interrupted mid-flight; the
+work was reviewed line-by-line, two renderer defects were fixed — stage
+`<img>` layers accumulating across settings↔show cycles, and a stale
+`currentUrl` surviving into the settings/message screens — and the version
+was completed and verified from there. Decisions below cover the whole
+release, inherited and new.)*
+
+1. **Settings screen = the first-run screen, reachable with S mid-show.**
+   The plan left "Q-window or settings screen" open; a dedicated settings
+   screen keeps the queue window single-purpose and gives folders + duration
+   + ordering one home. S stops the show (exit arbiter disarmed so controls
+   are clickable), Start re-persists the form via a whitelisted
+   `SettingsPatch` (main revalidates/clamps everything with
+   `normalizeSettings` — a hostile renderer can't corrupt settings.json or
+   touch `mediaFolders` through this channel) and rescans.
+2. **`orderMode` defaults to `'smart'` unconditionally** rather than
+   "smart once index exists": the show *always* starts in shuffle order and
+   hot-swaps only when the index push arrives, so "smart before the index
+   exists" degrades to exactly the old shuffle behavior — a separate
+   "index exists yet?" state would add nothing.
+3. **Index lives at `userData/index.json`** (`{version: 1, entries: [...]}`,
+   path-keyed, atomic temp+rename writes like settings.json, entries sorted
+   by path for stable diffs). Corrupt file or wrong version → rebuilt from
+   scratch; malformed rows dropped individually. mtime **and** size are the
+   change detectors; either changing re-extracts that file.
+4. **Indexing is fire-and-forget per scan with a generation counter:** every
+   `getPlaylist` (i.e. every show start) bumps a generation; an in-flight
+   build from an older scan cancels itself instead of publishing stale
+   results. Extraction runs at concurrency 8 (`mapLimit`), stat + exifr only
+   for new/changed files. EXIF `DateTimeOriginal` → `CreateDate` → file
+   mtime (recorded as `source: 'exif' | 'mtime'`), timezone-naive local time
+   per the plan's risk note.
+5. **Hot-swap via a SwappablePlaylist wrapper:** the Slideshow keeps a single
+   `Playlist` reference for its lifetime; smart order arrives by swapping the
+   delegate inside the wrapper, so the running show (timers, crossfade state)
+   is never interrupted. In shuffle mode the push is simply ignored.
+6. **Smart order treats only 2+ item clusters as moments**; singletons stay
+   ordinary pool members. Clustering happens in the renderer from the pushed
+   `{url, timestampMs}` list, so a settings change only needs a restart of
+   the show, not a re-index. Mix weights stay at core's default 1:1
+   (cluster:single) — configurable weights are v0.7 polish per the plan.
+7. **Settings bounds:** momentGapMinutes clamped 1–720, clusterCap 2–100,
+   both rounded to integers; unknown orderMode values fall back to 'smart'.
+8. **`clusterCap` beyond core's even-sampling semantics is unchanged** —
+   capping selects first + last + evenly sampled interior shots, so an
+   8-burst at cap 8 plays complete and in order (the release's done-when
+   bar, asserted in `test/smart.test.ts` with a seeded rng).
+9. **Smoke test extended, not forked:** with `AFTERGLOW_SMOKE_MEDIA` set the
+   existing E/Q keypress harness now also requires `index.json` on disk with
+   ≥1 entry, every entry carrying a finite `timestampMs`. Verified locally
+   against a fixture containing 4 EXIF-dated burst JPEGs + 2 EXIF-less PNGs:
+   the run logs "smart order engaged: 2 moments across 6 photos" and the
+   persisted index shows `source: "exif"` with the correct capture dates for
+   the burst and mtime fallback for the PNGs.
+10. **The queue window cannot reach `updateSettings`** (its preload doesn't
+    expose it), and the channel carries no paths, so no sender guard beyond
+    the existing pattern was added.

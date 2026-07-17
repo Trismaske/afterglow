@@ -6,9 +6,19 @@ See [PLAN.md](PLAN.md) for the product plan and release roadmap.
 ## Afterglow Desktop — quickstart
 
 A fullscreen ambient photo display. Shows JPEG/PNG/WebP from folders you
-pick, recursively scanned, shuffled, with crossfade transitions. Any mouse
-movement, click or keypress exits — except the keys below, which quietly
-capture organization work while you watch (v0.2).
+pick, recursively scanned, with crossfade transitions. Any mouse movement,
+click or keypress exits — except the keys below, which quietly capture
+organization work while you watch (v0.2).
+
+Since v0.3 the show is smart-ordered by default: a background EXIF index
+(capture dates, persisted to `index.json` and refreshed incrementally on
+every start) feeds the story engine, so a burst of shots taken within a few
+minutes of each other plays back-to-back as one "moment" instead of being
+scattered across the night, with random singles interleaved between moments.
+The show starts immediately in shuffle order and hot-swaps to smart order
+the moment the index is ready — no waiting on a library scan. Photos without
+EXIF fall back to their file date. Prefer pure shuffle? Set **Ordering** to
+Shuffle on the settings screen (press **S** during the show).
 
 ### Keys during the show
 
@@ -20,6 +30,7 @@ capture organization work while you watch (v0.2).
 | **R** | Flag for **review** | no |
 | **O** | Toggle the path/date overlay (persisted) | no |
 | **Q** | Open the flag-queue window (Esc or Q closes it) | no |
+| **S** | Stop the show and open the settings screen | no |
 | any other key | Exit | yes |
 | mouse move (more than a nudge) / click | Exit | yes |
 
@@ -45,12 +56,14 @@ Grab the latest `desktop-v*` release from GitHub Releases:
   anyway**. That's expected until we buy a signing certificate.
 - **Linux:** download the `.AppImage` (make it executable, run it) or the `.deb`.
 
-First run shows a dark screen with one button — **Choose folders…** — pick
-your Pictures folder(s) and the show starts. Settings (folders, slide
-duration) persist in `settings.json` in the app's user-data directory
-(`%APPDATA%/Afterglow` on Windows, `~/.config/Afterglow` on Linux); edit
-`slideDurationSeconds` there to change the default 8s per slide (a settings
-UI comes later).
+First run shows the settings screen: pick your Pictures folder(s) with
+**Choose folders…**, optionally tweak slide duration, ordering
+(Smart/Shuffle), the moment gap (default 3 minutes) and the cluster cap
+(default 8 photos per moment), then hit **Start slideshow**. Press **S**
+during the show to come back to this screen at any time. Everything persists
+in `settings.json` in the app's user-data directory (`%APPDATA%/Afterglow`
+on Windows, `~/.config/Afterglow` on Linux); the EXIF index lives beside it
+as `index.json` and rebuilds itself if deleted.
 
 To exit: move the mouse (more than a small nudge), press any key, or click.
 

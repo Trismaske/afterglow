@@ -8,18 +8,30 @@
 
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
-import type { Settings } from '../shared/api';
+import type { Settings, SettingsPatch } from '../shared/api';
 
 export const SETTINGS_FILENAME = 'settings.json';
 
 export const MIN_SLIDE_SECONDS = 2;
 export const MAX_SLIDE_SECONDS = 3600;
+export const MIN_MOMENT_GAP_MINUTES = 1;
+export const MAX_MOMENT_GAP_MINUTES = 720;
+export const MIN_CLUSTER_CAP = 2;
+export const MAX_CLUSTER_CAP = 100;
 
 export const DEFAULT_SETTINGS: Settings = {
   mediaFolders: [],
   slideDurationSeconds: 8,
   overlayEnabled: true,
+  orderMode: 'smart',
+  momentGapMinutes: 3,
+  clusterCap: 8,
 };
+
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
 
 /**
  * Coerce arbitrary parsed JSON into a valid Settings object.
@@ -31,6 +43,9 @@ export function normalizeSettings(raw: unknown): Settings {
     mediaFolders: [...DEFAULT_SETTINGS.mediaFolders],
     slideDurationSeconds: DEFAULT_SETTINGS.slideDurationSeconds,
     overlayEnabled: DEFAULT_SETTINGS.overlayEnabled,
+    orderMode: DEFAULT_SETTINGS.orderMode,
+    momentGapMinutes: DEFAULT_SETTINGS.momentGapMinutes,
+    clusterCap: DEFAULT_SETTINGS.clusterCap,
   };
   if (typeof raw !== 'object' || raw === null) return out;
   const obj = raw as Record<string, unknown>;
@@ -49,7 +64,37 @@ export function normalizeSettings(raw: unknown): Settings {
   if (typeof obj.overlayEnabled === 'boolean') {
     out.overlayEnabled = obj.overlayEnabled;
   }
+
+  if (obj.orderMode === 'shuffle' || obj.orderMode === 'smart') {
+    out.orderMode = obj.orderMode;
+  }
+  out.momentGapMinutes = clampInt(
+    obj.momentGapMinutes,
+    MIN_MOMENT_GAP_MINUTES,
+    MAX_MOMENT_GAP_MINUTES,
+    DEFAULT_SETTINGS.momentGapMinutes,
+  );
+  out.clusterCap = clampInt(obj.clusterCap, MIN_CLUSTER_CAP, MAX_CLUSTER_CAP, DEFAULT_SETTINGS.clusterCap);
   return out;
+}
+
+/**
+ * Apply a renderer-supplied patch (untrusted) to the current settings.
+ * Only whitelisted fields transfer; everything is re-validated by
+ * {@link normalizeSettings}, so bad values clamp or fall back rather than
+ * corrupting the persisted state.
+ */
+export function applySettingsPatch(current: Settings, patch: unknown): Settings {
+  if (typeof patch !== 'object' || patch === null) return current;
+  const p = patch as SettingsPatch;
+  return normalizeSettings({
+    ...current,
+    ...(p.slideDurationSeconds !== undefined && { slideDurationSeconds: p.slideDurationSeconds }),
+    ...(p.overlayEnabled !== undefined && { overlayEnabled: p.overlayEnabled }),
+    ...(p.orderMode !== undefined && { orderMode: p.orderMode }),
+    ...(p.momentGapMinutes !== undefined && { momentGapMinutes: p.momentGapMinutes }),
+    ...(p.clusterCap !== undefined && { clusterCap: p.clusterCap }),
+  });
 }
 
 /** Load settings; a missing or corrupt file yields defaults (never throws). */

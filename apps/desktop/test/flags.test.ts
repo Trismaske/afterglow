@@ -18,8 +18,8 @@ describe('flagTypeForKey', () => {
 });
 
 describe('isShowHotkey', () => {
-  it('exempts flag keys plus O and Q, both cases', () => {
-    for (const key of ['d', 'e', 'm', 'r', 'o', 'q', 'D', 'E', 'M', 'R', 'O', 'Q']) {
+  it('exempts flag keys plus O, Q and S, both cases', () => {
+    for (const key of ['d', 'e', 'm', 'r', 'o', 'q', 's', 'D', 'E', 'M', 'R', 'O', 'Q', 'S']) {
       expect(isShowHotkey(key)).toBe(true);
     }
   });

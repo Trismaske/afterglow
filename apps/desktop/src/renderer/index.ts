@@ -1,16 +1,23 @@
 /**
- * Renderer entry: first-run screen when no folders are configured, otherwise
- * the crossfade slideshow. All input-driven exiting funnels through the one
- * exit arbiter (exit.ts); show hotkeys (O overlay, Q queue, D/E/M/R flags)
+ * Renderer entry: settings screen (doubles as first-run) when no folders are
+ * configured or when S is pressed mid-show, otherwise the crossfade
+ * slideshow. All input-driven exiting funnels through the one exit arbiter
+ * (exit.ts); show hotkeys (S settings, O overlay, Q queue, D/E/M/R flags)
  * are handled first and never reach the exit path.
+ *
+ * v0.3 story engine: the show always starts on a plain shuffled playlist;
+ * when main pushes the background EXIF index (indexReady) and orderMode is
+ * 'smart', the playlist hot-swaps to core's moments-cluster mix engine
+ * without interrupting the running show.
  */
 
-import type { Settings } from '../shared/api';
+import type { LibraryItem, Settings } from '../shared/api';
 import { createExitArbiter } from './exit';
 import { createFlagController, isShowHotkey, UNDO_WINDOW_MS } from './flags';
 import { Overlay } from './overlay';
 import { createPlaylist } from './playlist';
 import { Slideshow } from './slideshow';
+import { createSmartPlaylist, createSwappablePlaylist, type SwappablePlaylist } from './smart';
 import { Toast } from './toast';
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -19,10 +26,16 @@ const $ = <T extends HTMLElement>(id: string): T => {
   return el as T;
 };
 
-const firstRunEl = $('first-run');
+const settingsEl = $('settings');
 const messageEl = $('message');
 const stageEl = $('stage');
 const chooseBtn = $<HTMLButtonElement>('choose');
+const startBtn = $<HTMLButtonElement>('start');
+const foldersEl = $('folders');
+const durationInput = $<HTMLInputElement>('duration');
+const orderModeSelect = $<HTMLSelectElement>('order-mode');
+const gapInput = $<HTMLInputElement>('gap');
+const capInput = $<HTMLInputElement>('cap');
 
 const overlay = new Overlay($('overlay'));
 const toast = new Toast($('toast'), UNDO_WINDOW_MS);
@@ -34,6 +47,10 @@ let queueOpen = false;
 let overlayEnabled = true;
 let currentUrl: string | null = null;
 let slideshow: Slideshow | null = null;
+/** Settings as last loaded/saved — the smart hot-swap reads gap/cap from here. */
+let currentSettings: Settings | null = null;
+/** The running show's playlist wrapper; null when no show is up. */
+let swappable: SwappablePlaylist | null = null;
 
 const arbiter = createExitArbiter({
   onExit: (reason) => window.afterglow.exit(reason),
@@ -87,6 +104,10 @@ function handleHotkey(key: string): boolean {
     window.afterglow.openQueue();
     return true;
   }
+  if (k === 's') {
+    showSettings();
+    return true;
+  }
   return flags.keyPressed(key, currentUrl);
 }
 
@@ -105,14 +126,31 @@ window.afterglow.onQueueState((open) => {
   applyArbiterState();
 });
 
+// v0.3: the background EXIF index finished — hot-swap to smart order if the
+// show is on a swappable playlist and smart mode is selected. Stale pushes
+// (from before a settings change) are harmless: the next scan re-pushes.
+window.afterglow.onIndexReady((items: LibraryItem[]) => {
+  if (!swappable || !currentSettings || currentSettings.orderMode !== 'smart') return;
+  const smart = createSmartPlaylist(items, {
+    gapMinutes: currentSettings.momentGapMinutes,
+    clusterCap: currentSettings.clusterCap,
+    rng: Math.random,
+  });
+  if (!smart) return;
+  swappable.swap(smart);
+  console.log(`[afterglow] smart order engaged: ${smart.clusterCount} moments across ${smart.size} photos`);
+});
+
 function showOnly(el: HTMLElement | null): void {
-  for (const candidate of [firstRunEl, messageEl, stageEl]) {
+  for (const candidate of [settingsEl, messageEl, stageEl]) {
     candidate.classList.toggle('hidden', candidate !== el);
   }
 }
 
 function showMessage(text: string): void {
   showActive = false;
+  swappable = null;
+  currentUrl = null;
   overlay.setVisible(false);
   messageEl.textContent = text;
   showOnly(messageEl);
@@ -120,17 +158,41 @@ function showMessage(text: string): void {
   arbiter.arm(); // a message screen still exits on any input
 }
 
-function showFirstRun(): void {
+function renderFolderList(folders: readonly string[]): void {
+  foldersEl.textContent = folders.length === 0 ? 'No folders chosen yet.' : folders.join('\n');
+  foldersEl.classList.toggle('empty', folders.length === 0);
+  foldersEl.style.whiteSpace = 'pre-line';
+  startBtn.disabled = folders.length === 0;
+}
+
+function populateSettingsForm(settings: Settings): void {
+  renderFolderList(settings.mediaFolders);
+  durationInput.value = String(settings.slideDurationSeconds);
+  orderModeSelect.value = settings.orderMode;
+  gapInput.value = String(settings.momentGapMinutes);
+  capInput.value = String(settings.clusterCap);
+}
+
+/** The settings screen — first-run and S-mid-show land here. */
+function showSettings(): void {
   showActive = false;
-  arbiter.disarm(); // the user must be able to click the button
+  swappable = null;
+  slideshow?.stop();
+  slideshow = null;
+  currentUrl = null; // no photo on screen: don't fetch stale overlay info
+  overlay.setVisible(false);
+  arbiter.disarm(); // the user must be able to click controls
   document.body.classList.add('interactive');
-  showOnly(firstRunEl);
+  if (currentSettings) populateSettingsForm(currentSettings);
+  showOnly(settingsEl);
 }
 
 async function startShow(settings: Settings): Promise<void> {
+  currentSettings = settings;
+  swappable = null;
   const urls = await window.afterglow.getPlaylist();
   if (urls.length === 0) {
-    showMessage('Afterglow found no images in your folders. Move the mouse or press any key to exit, then check the folders in settings.json.');
+    showMessage('Afterglow found no images in your folders. Move the mouse or press any key to exit, then check the folders in settings.');
     return;
   }
   document.body.classList.remove('interactive');
@@ -140,9 +202,15 @@ async function startShow(settings: Settings): Promise<void> {
   showActive = true;
   applyArbiterState();
   slideshow?.stop();
+  slideshow = null;
+  // S ↔ settings ↔ start can cycle: drop the previous show's <img> layers so
+  // DOM nodes (and a stale 'visible' photo) never accumulate across restarts.
+  stageEl.replaceChildren();
+  // Start in shuffle order; indexReady hot-swaps to smart when appropriate.
+  swappable = createSwappablePlaylist(createPlaylist(urls, Math.random));
   slideshow = new Slideshow({
     container: stageEl,
-    playlist: createPlaylist(urls, Math.random),
+    playlist: swappable,
     slideDurationMs: Math.max(1000, settings.slideDurationSeconds * 1000),
     onAllFailed: () => showMessage('Afterglow could not display any of the images it found. Move the mouse or press any key to exit.'),
     onShown: (url) => {
@@ -161,17 +229,40 @@ chooseBtn.addEventListener('click', () => {
     chooseBtn.disabled = true;
     try {
       const settings = await window.afterglow.chooseFolders();
-      if (settings) await startShow(settings);
+      if (settings) {
+        currentSettings = settings;
+        renderFolderList(settings.mediaFolders);
+      }
     } finally {
       chooseBtn.disabled = false;
     }
   })();
 });
 
+/** Read the form, persist via main (which validates/clamps), start the show. */
+startBtn.addEventListener('click', () => {
+  void (async () => {
+    startBtn.disabled = true;
+    try {
+      const settings = await window.afterglow.updateSettings({
+        slideDurationSeconds: Number(durationInput.value),
+        orderMode: orderModeSelect.value === 'shuffle' ? 'shuffle' : 'smart',
+        momentGapMinutes: Number(gapInput.value),
+        clusterCap: Number(capInput.value),
+      });
+      await startShow(settings);
+    } finally {
+      startBtn.disabled = false;
+    }
+  })();
+});
+
 async function main(): Promise<void> {
   const settings = await window.afterglow.getSettings();
+  currentSettings = settings;
+  populateSettingsForm(settings);
   if (settings.mediaFolders.length === 0) {
-    showFirstRun();
+    showSettings();
   } else {
     await startShow(settings);
   }

@@ -8,6 +8,9 @@
 
 import type { FlagType } from '@afterglow/core';
 
+/** How the slideshow orders photos (v0.3 story engine). */
+export type OrderMode = 'shuffle' | 'smart';
+
 /** Persisted app settings (JSON in app.getPath('userData')/settings.json). */
 export interface Settings {
   /** Absolute paths of folders to scan (recursively) for images. */
@@ -16,6 +19,39 @@ export interface Settings {
   slideDurationSeconds: number;
   /** Whether the path/date overlay is shown (toggle with O during the show). */
   overlayEnabled: boolean;
+  /**
+   * 'smart' = moments clusters + mix engine once the EXIF index is ready
+   * (the show always starts in shuffle and hot-swaps); 'shuffle' = v0.1
+   * behavior forever.
+   */
+  orderMode: OrderMode;
+  /** Max silence between shots that still counts as one "moment" (minutes). */
+  momentGapMinutes: number;
+  /** Max photos played per cluster run (evenly sampled when over). */
+  clusterCap: number;
+}
+
+/**
+ * User-editable settings fields (settings screen → main). Folders change
+ * through the chooseFolders dialog, so they are not patchable here.
+ */
+export interface SettingsPatch {
+  slideDurationSeconds?: number;
+  overlayEnabled?: boolean;
+  orderMode?: OrderMode;
+  momentGapMinutes?: number;
+  clusterCap?: number;
+}
+
+/** One indexed photo, pushed to the renderer when the EXIF index is ready. */
+export interface LibraryItem {
+  /** afterglow://media/... URL (same encoding as playlist entries). */
+  url: string;
+  /**
+   * Best-known capture time in ms since epoch: EXIF DateTimeOriginal (or
+   * CreateDate), falling back to file mtime. Timezone-naive local time.
+   */
+  timestampMs: number;
 }
 
 /** Metadata for the overlay: where the current photo lives and when it was taken. */
@@ -43,6 +79,10 @@ export const CHANNELS = {
   getPlaylist: 'afterglow:get-playlist',
   exit: 'afterglow:exit',
   rendererReady: 'afterglow:renderer-ready',
+  // v0.3 — story engine
+  updateSettings: 'afterglow:update-settings',
+  /** main → slideshow renderer: EXIF index built/refreshed (LibraryItem[]). */
+  indexReady: 'afterglow:index-ready',
   // v0.2 — overlay + flag capture
   getItemInfo: 'afterglow:get-item-info',
   setOverlayEnabled: 'afterglow:set-overlay-enabled',
@@ -80,6 +120,13 @@ export interface AfterglowApi {
   rendererReady(): void;
   /** Path + dates for a media URL; null if it isn't a library image. */
   getItemInfo(url: string): Promise<ItemInfo | null>;
+  /** Persist user-editable settings fields; returns the updated settings. */
+  updateSettings(patch: SettingsPatch): Promise<Settings>;
+  /**
+   * Subscribe to EXIF-index completion. Fires after every scan once the
+   * background indexer finishes (fast when the index was already on disk).
+   */
+  onIndexReady(cb: (items: LibraryItem[]) => void): void;
   /** Persist the overlay toggle; returns the updated settings. */
   setOverlayEnabled(enabled: boolean): Promise<Settings>;
   /** Flag the photo behind a media URL. True if newly added, false if it was already flagged. */

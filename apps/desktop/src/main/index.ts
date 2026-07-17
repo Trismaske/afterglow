@@ -21,15 +21,17 @@ import {
   fromMediaUrl,
   toMediaUrl,
   type ItemInfo,
+  type LibraryItem,
   type QueueEntry,
   type Settings,
 } from '../shared/api';
 import { isInsideAny } from './containment';
 import { openFlagStore, type FlagStore } from './flagstore';
+import { buildIndex, INDEX_FILENAME, loadIndex, saveIndex } from './indexer';
 import { getImageDates } from './metadata';
 import { closeQueueWindow, getQueueWindow, isQueueWindow, openQueueWindow } from './queue-window';
 import { isImageFile, scanImages } from './scan';
-import { loadSettings, saveSettings } from './settings';
+import { applySettingsPatch, DEFAULT_SETTINGS, loadSettings, saveSettings } from './settings';
 
 const SMOKE = process.argv.includes('--smoke');
 /** In smoke mode auto-quit after this long if all went well. */
@@ -47,7 +49,7 @@ protocol.registerSchemesAsPrivileged([
   { scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ]);
 
-let settings: Settings = { mediaFolders: [], slideDurationSeconds: 8, overlayEnabled: true };
+let settings: Settings = { ...DEFAULT_SETTINGS };
 /** realpath()ed media folders — the containment allowlist for the protocol. */
 let mediaRootsReal: string[] = [];
 let mainWindow: BrowserWindow | null = null;
@@ -123,6 +125,47 @@ function pushQueueChanged(entries: QueueEntry[]): void {
   getQueueWindow()?.webContents.send(CHANNELS.queueChanged, entries);
 }
 
+// ---- v0.3: background EXIF indexing ----
+
+/**
+ * Monotonic generation counter: every scan bumps it, and an in-flight build
+ * from an older scan cancels itself instead of publishing stale results.
+ */
+let indexGeneration = 0;
+
+const warn = (msg: string, err?: unknown): void => console.warn(`[afterglow] ${msg}`, err);
+
+/**
+ * Kick off (or restart) the background index build for a fresh scan result.
+ * Never blocks the caller: the slideshow starts in shuffle order and the
+ * renderer hot-swaps to smart order when `indexReady` arrives.
+ */
+function startIndexing(files: readonly string[]): void {
+  const generation = ++indexGeneration;
+  void (async () => {
+    try {
+      const dir = app.getPath('userData');
+      const prev = await loadIndex(dir, warn);
+      const entries = await buildIndex(files, prev, {
+        onWarn: warn,
+        isCancelled: () => generation !== indexGeneration,
+      });
+      if (entries === null || generation !== indexGeneration) return; // superseded
+      await saveIndex(dir, entries);
+      const items: LibraryItem[] = entries.map((e) => ({
+        url: toMediaUrl(e.path),
+        timestampMs: e.timestampMs,
+      }));
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(CHANNELS.indexReady, items);
+      }
+      console.log(`[afterglow] EXIF index ready (${entries.length} files)`);
+    } catch (err) {
+      warn('background indexing failed; staying in shuffle order', err);
+    }
+  })();
+}
+
 function registerIpc(): void {
   ipcMain.handle(CHANNELS.getSettings, (): Settings => settings);
 
@@ -144,7 +187,15 @@ function registerIpc(): void {
     const files = await scanImages(settings.mediaFolders, {
       onError: (dir, err) => console.warn(`[afterglow] cannot read directory ${dir}`, err),
     });
+    // v0.3: index in the background; the shuffled playlist returns immediately.
+    startIndexing(files);
     return shuffled(files, Math.random).map(toMediaUrl);
+  });
+
+  ipcMain.handle(CHANNELS.updateSettings, async (_event, patch: unknown): Promise<Settings> => {
+    settings = applySettingsPatch(settings, patch);
+    await saveSettings(app.getPath('userData'), settings);
+    return settings;
   });
 
   ipcMain.on(CHANNELS.exit, (_event, reason: unknown) => {
@@ -305,6 +356,19 @@ function armSmokeHarness(win: BrowserWindow): void {
       return `flags.json was not persisted: ${String(err)}`;
     }
     if (!getQueueWindow()) return 'queue window did not open after simulated Q keypress';
+    // v0.3: the background EXIF index must have been built and persisted.
+    try {
+      const raw = readFileSync(path.join(app.getPath('userData'), INDEX_FILENAME), 'utf8');
+      const parsed = JSON.parse(raw) as { entries?: Array<{ timestampMs?: unknown }> };
+      if (!Array.isArray(parsed.entries) || parsed.entries.length === 0) {
+        return `index.json on disk holds no entries: ${raw}`;
+      }
+      if (!parsed.entries.every((e) => typeof e.timestampMs === 'number' && Number.isFinite(e.timestampMs))) {
+        return `index.json contains entries without a usable timestamp: ${raw}`;
+      }
+    } catch (err) {
+      return `index.json was not persisted: ${String(err)}`;
+    }
     return null;
   };
 
@@ -319,7 +383,7 @@ function armSmokeHarness(win: BrowserWindow): void {
     } else {
       console.log(
         exercised
-          ? '[smoke] OK: renderer loaded cleanly, flag captured + persisted, queue window opened'
+          ? '[smoke] OK: renderer loaded cleanly, flag captured + persisted, queue window opened, EXIF index persisted'
           : '[smoke] OK: renderer loaded cleanly',
       );
       app.exit(0);

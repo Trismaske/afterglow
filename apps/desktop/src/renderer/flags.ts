@@ -34,10 +34,10 @@ export function flagTypeForKey(key: string): FlagType | null {
   return KEY_TO_FLAG[key.toLowerCase()] ?? null;
 }
 
-/** Hotkeys that must never exit the show: flag keys + O (overlay) + Q (queue). */
+/** Hotkeys that never exit the show: flags + O (overlay) + Q (queue) + S (settings). */
 export function isShowHotkey(key: string): boolean {
   const k = key.toLowerCase();
-  return k === 'o' || k === 'q' || flagTypeForKey(k) !== null;
+  return k === 'o' || k === 'q' || k === 's' || flagTypeForKey(k) !== null;
 }
 
 export interface FlagControllerDeps {

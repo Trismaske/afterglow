@@ -9,6 +9,8 @@ import type { RootStackParamList } from '../navigation';
 import { getToEditPhotos, markEditDone, type ToEditRow } from '../db/store';
 import { getEditableContentUri } from '../lib/media';
 import { launchEditor } from '../lib/edit';
+import { NO_EDITOR_MESSAGE, NO_EDITOR_TITLE, VIEWER_FALLBACK_TOAST } from '../lib/editFallback';
+import { showToast } from '../lib/toast';
 import { labelForDayKey } from '../lib/dates';
 import { formatClock } from '../lib/format';
 import { colors, touch } from '../theme';
@@ -52,15 +54,15 @@ export function EditQueueScreen(_props: Props) {
       setBusyId(row.asset_id);
       try {
         const contentUri = await getEditableContentUri(row.asset_id);
-        const result = await launchEditor(contentUri);
+        // m0.5 Samsung fallback: no ACTION_EDIT handler → open the default
+        // viewer instead (its edit button is one tap away), with a toast
+        // over the opening viewer. Only a double failure shows the error.
+        const result = await launchEditor(contentUri, () => showToast(VIEWER_FALLBACK_TOAST));
         if (result === 'failed') {
-          Alert.alert(
-            'No editor opened',
-            'Android could not find an app that edits this photo. Install or enable a photo editor and try again.',
-          );
+          Alert.alert(NO_EDITOR_TITLE, NO_EDITOR_MESSAGE);
           return;
         }
-        if (result === 'returned') {
+        if (result === 'returned' || result === 'viewer') {
           // Editors rarely report a useful result code, so ask instead of
           // guessing. Auto-detection of saved edits is m0.3.
           Alert.alert('Done editing?', 'Mark this photo as done and clear it from the queue?', [

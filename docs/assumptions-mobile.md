@@ -612,3 +612,188 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
    swatch follows the accent. React Navigation's `primary` follows the
    accent via a ThemedNavigator component. Hardcoded on-accent
    (#1a1205) and muted (#3d3116) hexes are gone from src/.
+
+## m0.5
+
+1. **Editor fallback chain (Samsung bug):** `launchEditor` now tries
+   `ACTION_EDIT` → on rejection `ACTION_VIEW` on the same content URI
+   (same read+write grant flags, so the viewer's built-in editor can
+   save over the photo too) → only a double failure shows the error,
+   reworded without the old "or enable" phrase ("No installed app could
+   edit or even view this photo…"). The sequencing is pure and
+   vitest-covered (`lib/editFallback.ts`); `edit.ts` only binds the
+   platform. The "Opened in viewer — use its edit button" toast fires
+   the moment the fallback intent is dispatched — Android toasts overlay
+   the opening viewer, and an unresolvable intent rejects immediately,
+   so the toast only ever races the error alert in the
+   no-viewer-at-all case (accepted). Returning from the VIEWER also
+   triggers the "Done editing?" prompt — the user may well have edited
+   through the viewer's pencil, and the prompt's "Not yet" is cheap.
+2. **Similarity rescale is display-compatible, no migration:** new
+   steps 12/16/20/26/32 (old Normal 12 = new Strictest), default 20 on
+   fresh installs only — an existing stored value is untouched (any int
+   0–64 was already valid) and simply renders as its exact chip or as
+   "Custom (N)" next to the new slider. Chip highlighting switched from
+   nearest-step to EXACT match because the slider made off-preset
+   values first-class; `nearestStep` remains (ties → stricter) for the
+   step-hint copy and tests document how old values read on the new
+   scale.
+3. **Fine-tune slider is hand-built** (`components/FineSlider.tsx`):
+   no slider dependency exists in the app and `@react-native-community/
+   slider` is a native module — adding it would break the existing dev
+   client without a rebuild, so the track is a RNGH pan/tap surface
+   (horizontal `activeOffsetX` activation so vertical scrolling wins,
+   revert-on-cancel) with − / + buttons for true single-step precision
+   (64 steps ≈ 5 px each; finger-only ±1 is unrealistic). Chips set the
+   slider; an off-chip value shows "Custom (N)"; explainer line
+   "Higher groups more different-looking photos together."
+4. **Re-decide surface = one sheet, three chips**
+   (`components/ReDecideSheet.tsx`; keep / to-edit / cull): reachable
+   by tapping a DECIDED thumbnail in the Groups strips, from a
+   completed group's browse deck (see #6), and from the cull list
+   (whose tap-to-restore became tap-to-choose — restoring is now one of
+   three chips; badge says "tap to change"). No "done" chip: in-session
+   photos are never `done` before Finish, and out-of-session `done`
+   editing already lives in the m0.4 progress state editor. Summary
+   shows no photos, so it got no re-decide surface.
+5. **No core changes were needed for reversibility.** All m0.5
+   re-decides compose from existing transitions: kept→culled =
+   `cullKept` (m0.4), culled→kept = `unstageCull`, and to-edit is the
+   app-side needs-edit flag (m0.2 #1) aligned BEFORE persisting so the
+   store CASE lands the right row state (`to_edit` vs `kept`).
+   `SessionContext.redecide` is the single wrapper; changing a to-edit
+   photo to cull stages it exactly like any cull (flag kept, so
+   un-culling later returns it to to-edit per m0.2 #8).
+6. **Any-order flow:** `Deck` takes an optional `groupId`; Groups rows
+   (and strip thumbnails of unreviewed photos) open that group, the
+   singles row opens singles any time, and "Continue" keeps the old
+   linear default. An explicitly opened COMPLETED group renders the
+   deck in browse mode: pages every remaining member (kept AND staged)
+   with the photo's verdict as re-decide chips; the pager cursor for
+   browse mode is screen-local (core's cursor indexes only alive
+   members). Explicit + "Keep rest" returns to the overview (unless a
+   reconsider hint fires, which takes priority in both modes); in the
+   linear flow routing is unchanged. Singles entered early return to
+   the overview when done instead of skipping to the cull list.
+7. **Replace-dialog banking:** "Start new" first runs
+   `bankActiveSessionKeepers` (store-level: reads the persisted
+   snapshot, so it also covers never-resumed sessions after a restart)
+   — kept photos converge to `done` exactly like Finish; `to_edit`
+   rows are already remapped; compare history was persisted
+   per-decision all along. Staged culls deliberately STAY interim
+   'culled' (m0.2 #3: a stale delete list is re-earned, never carried
+   or silently dropped). Banking runs BEFORE `loadReviewablePhotos`
+   (order matters — the loader must see the keepers as handled) plus a
+   harmless backstop inside `startSession` for any other caller. The
+   replaced session is abandoned (finished=0), so it never feeds the
+   streak. Dialog buttons: [Start new (destructive) · Cancel ·
+   Continue existing]; RN maps the 3-button array to
+   neutral/negative/positive, which renders exactly that left-to-right
+   order on Android ("isPreferred" additionally marks Continue on iOS).
+8. **"End session & apply" is routing, not new state:** a footer action
+   on Groups that jumps straight to the cull list; confirm → Summary →
+   Finish already converges kept → done and leaves unreviewed rows
+   unreviewed (they simply reload next session). It counts as a
+   finished session (streak) because the user deliberately finished.
+9. **Session settings** (settings table, accent_color pattern):
+   `session_photo_cap` (int 10–500, default 50, garbage → default;
+   Settings offers chips 25/50/100/200/500 — a free-form numeric field
+   felt like desktop UI, any hand-stored value in bounds still parses
+   and is displayed), `session_whole_groups` ('1' default / '0'),
+   `session_review_order` ('oldest' default / 'newest').
+10. **"Don't split groups" uses the TIME-gap boundary** (core
+    `MOMENTS_GAP_MS`, pure logic in `lib/sessionSelect.ts`): the cap
+    extends while consecutive draw-order photos are ≤ 3 min apart.
+    That is exactly `clusterByGap`'s boundary, and similarity
+    refinement only ever SPLITS time clusters — so a session can never
+    cut a final group, though it may over-include (a time cluster that
+    similarity would have split counts as one "group" for the soft
+    cap). Extension is bounded at +200 photos so a gap-free stream
+    can't unbound memory; per-bucket paging early-stops via the
+    matching `bucketNeedsMore` rule (superset guarantee preserved from
+    m0.3.1).
+11. **Draw order selects WHICH photos, not how they're presented:**
+    'newest first' pages MediaStore descending, caps from the new end,
+    then the selection is re-sorted chronologically before clustering —
+    groups and review order inside a session stay oldest-first
+    (clusterByGap sorts anyway). Home's cap copy follows the setting
+    ("sessions take the newest 50 at a time").
+12. **Compare labels are the deck's ALIVE positions** (1-based index in
+    `aliveIds`, frozen for the screen's lifetime — membership can't
+    change while Compare is up), matching the deck's "3/9" counter and
+    thumbnail order. Fallback to memberIds position, then '?', for
+    stale ids. Chips, badge, buttons, edit tag and the header ("Compare
+    3 vs 7") all use them.
+13. **Two-photo-group "better" semantics:** the confirm dialog is a
+    custom modal (RN Alert has no checkbox) — "Keep both" records the
+    compare keptBoth=true; "Cull N" stars the winner and calls the
+    normal compareCull (keptBoth=false — exactly ONE duel row per
+    verdict, never better+cull double-recorded). "Don't ask again"
+    persists ONLY with the cull choice (key `compare_auto_cull_loser`)
+    because it means "better = auto-cull from now on" — suppressing on
+    "Keep both" would flip the user's stated intent. Settings →
+    Confirmations → "Reset confirmation dialogs" clears it. In groups
+    of >2, "better" now stars the winner (`markBest`, overwriting any
+    prior star) + records the compare, with a toast naming the
+    position; the explicit "Cull N" button intentionally does NOT
+    auto-star the survivor.
+14. **"Compare with…" picker:** the deck's Compare button opens a
+    thumbnail grid (position-badged) of the group's OTHER alive members
+    when more than two are alive, and goes straight to Compare when
+    exactly two are. Long-press on a strip thumbnail stays as the
+    shortcut. The old silent "compare against the next photo" default
+    died with it — implicit opponents were the discoverability
+    complaint.
+15. **Scope store schema:** one JSON blob (`review_scopes`, settings
+    table — same single-blob pattern as `photo_sources`; no SQL
+    migration). Builtins keep their m0.3.1 ids/day-counts, can be
+    disabled but never deleted, and missing builtins re-seed on parse
+    (disabled ones stay disabled — only truly absent ids come back).
+    Custom scopes are FIXED date ranges (`range-<epochMs>` ids) — a
+    trip must not drift with "now" — created inline on Home's Custom
+    section (name field + "Save scope"; there is no separate
+    custom-range screen to extend, m0.3.1 put the pickers inline).
+    "Reset to defaults" restores builtin order/enabled state but KEEPS
+    customs — deleting user-named scopes on reset felt destructive;
+    delete is explicit per-scope (with confirm). The All-time gate
+    still applies to the builtin `all` id only; named ranges bypass it
+    by design (they are bounded, so the gate's
+    protect-against-the-whole-backlog rationale doesn't apply).
+16. **Home scope selection isn't persisted** (unchanged from m0.3.1);
+    on focus an invalid selection (scope disabled/deleted in Settings)
+    falls back to the first enabled chip, and the all-time re-lock
+    snap-back to `year1` remains.
+17. **Deck pinch-zoom SHIPPED, as an overlay, not a transformed pager:**
+    a two-pointer pinch (pinch can't activate with one finger, so
+    single-finger swipes always reach the untouched FlatList pager)
+    sets a `zoomed` flag on activation → the pager's `scrollEnabled`
+    goes false and an absolutely-positioned overlay of the CURRENT
+    photo carries the Compare screen's transform (same clamp math,
+    1×–8×, center-anchored); a one-finger pan gesture is enabled only
+    while zoomed. Zooming back out (≤1.02) springs back and re-enables
+    paging; the reset lives in `onFinalize` so a cancelled gesture can
+    never leave the pager frozen; cursor/photo changes and navigation
+    reset the zoom. Known accepted seams (device verification pending):
+    a two-finger touch that starts as a scroll may move the pager a few
+    px before the pinch activates and freezes it, and the gesture
+    object is rebuilt when `zoomed` flips (same composition shape, so
+    RNGH updates handlers in place per its documented diffing). The
+    undo banner is cleared when a cull completes the group (browse mode
+    takes over — core `undoCull` only works on live decks).
+18. **Gear icon:** the app has no icon font (text glyphs only —
+    @expo/vector-icons is not a dependency), so the ⚙ TEXT glyph
+    became the ⚙️ color-emoji gear (U+2699 U+FE0F), which renders as an
+    unambiguous cog on Android. Home's "Source: … Edit ›" row is gone;
+    the picker lives in Settings → Photos (route unchanged).
+19. **Not verifiable without a device** (flagged for the on-device
+    pass): ACTION_VIEW resolution on Samsung Gallery and the grant
+    flags surviving the viewer→editor hop; toast timing over the
+    opening viewer; pinch-vs-pager feel and the two-finger-scroll seam
+    (#17); Switch thumb/track colors on Material You devices; emoji
+    gear rendering on older Android emoji fonts; Alert 3-button
+    left-to-right order on Samsung's dialog skin.
+20. **DayProgress "Review this day" follows every m0.5 rule** (same
+    dialog order/wording, banking before load, session prefs) — it
+    reuses the Home machinery per m0.4 #27, so the cap now applies to
+    day reviews too (a 300-photo day at cap 50 takes several sessions;
+    consistent with "progress must be bankable").

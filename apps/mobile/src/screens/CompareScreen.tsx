@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSQLiteContext } from 'expo-sqlite';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   runOnJS,
@@ -12,6 +13,13 @@ import Animated, {
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { useSession } from '../session/SessionContext';
+import { getSetting, setSetting } from '../db/store';
+import {
+  COMPARE_AUTO_CULL_KEY,
+  parseCompareAutoCull,
+  serializeCompareAutoCull,
+} from '../lib/comparePrefs';
+import { showToast } from '../lib/toast';
 import { colors, touch, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded } from '../lib/format';
 
@@ -32,20 +40,39 @@ function clamp(value: number, max: number): number {
  * comparison is the point), and pinch/pan zooms BOTH identically because
  * the transform lives on the shared parent.
  *
- * The verdict buttons apply to the photo currently shown and return to
- * the deck:
- *   - "Cull" stages IT for deletion (records a compare, keptBoth=false).
- *   - "Better" keeps both and records the compare (keptBoth=true) —
- *     compare losers that stay kept feed the Reconsider hint.
- *   - "Close" records nothing.
+ * m0.5 changes:
+ * - Labels are the photos' GROUP POSITIONS ("3" / "7", matching the deck's
+ *   "3/9" numbering) instead of A/B, so testers can find the photo again
+ *   after leaving compare.
+ * - "N is better" now visibly means something: it stars N best-of-group
+ *   (markBest) and records the compare (feeding Reconsider), with a toast
+ *   saying so. In a TWO-photo group it also offers to cull the other —
+ *   confirm dialog with "Don't ask again" (suppression persisted in
+ *   settings; resettable from Settings → auto-cull thereafter).
+ * - "Cull N" is unchanged: stages N and records the compare.
  */
 export function CompareScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
-  const { aId, bId } = route.params;
-  const { session, recordCompare, compareCull, needsEdit, toggleNeedsEdit } = useSession();
+  const db = useSQLiteContext();
+  const { groupId, aId, bId } = route.params;
+  const { session, recordCompare, compareCull, markBest, needsEdit, toggleNeedsEdit } =
+    useSession();
   const [busy, setBusy] = useState(false);
   const [showB, setShowB] = useState(false);
+  const [autoCull, setAutoCull] = useState(false);
+  const [cullOffer, setCullOffer] = useState<{ winnerId: string; loserId: string } | null>(null);
+  const [dontAskAgain, setDontAskAgain] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getSetting(db, COMPARE_AUTO_CULL_KEY).then((raw) => {
+      if (!cancelled) setAutoCull(parseCompareAutoCull(raw));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [db]);
 
   const pair = useMemo(() => {
     if (!session) return null;
@@ -55,6 +82,28 @@ export function CompareScreen({ navigation, route }: Props) {
       return null;
     }
   }, [session, aId, bId]);
+
+  // m0.5: group positions as labels (1-based over the deck's alive order,
+  // frozen at mount — membership can't change while this screen is up).
+  const groupInfo = useMemo(() => {
+    if (!session) return null;
+    try {
+      return session.groupInfo(groupId);
+    } catch {
+      return null;
+    }
+  }, [session, groupId]);
+  const posOf = useCallback(
+    (id: string): string => {
+      if (!groupInfo) return '?';
+      const alive = groupInfo.aliveIds.indexOf(id);
+      if (alive >= 0) return String(alive + 1);
+      const member = groupInfo.memberIds.indexOf(id);
+      return member >= 0 ? String(member + 1) : '?';
+    },
+    [groupInfo],
+  );
+  const aliveCount = groupInfo?.aliveIds.length ?? 0;
 
   // --- synchronized zoom state (shared by both stacked images) ----------
   const scale = useSharedValue(1);
@@ -142,18 +191,80 @@ export function CompareScreen({ navigation, route }: Props) {
     if (!pair) navigation.goBack();
   }, [pair, navigation]);
 
+  /** Star the winner + keep both, with the m0.5 visibility toast. */
+  const betterKeepBoth = useCallback(
+    async (winnerId: string, loserId: string) => {
+      await markBest(groupId, winnerId);
+      await recordCompare(winnerId, loserId);
+      showToast(`★ Photo ${posOf(winnerId)} starred best of group — compare recorded`);
+      navigation.goBack();
+    },
+    [groupId, markBest, recordCompare, posOf, navigation],
+  );
+
+  /** Star the winner + stage the two-photo-group loser. */
+  const betterCullLoser = useCallback(
+    async (winnerId: string, loserId: string) => {
+      await markBest(groupId, winnerId);
+      await compareCull(loserId, winnerId);
+      showToast(`★ Photo ${posOf(winnerId)} kept — photo ${posOf(loserId)} staged to cull`);
+      navigation.goBack();
+    },
+    [groupId, markBest, compareCull, posOf, navigation],
+  );
+
   const decideBetter = useCallback(
     async (winnerId: string, loserId: string) => {
       if (busy) return;
+      // Two-photo group: "better" implies the other loses the group —
+      // offer the cull (or just do it once the dialog was suppressed).
+      if (aliveCount === 2) {
+        if (autoCull) {
+          setBusy(true);
+          try {
+            await betterCullLoser(winnerId, loserId);
+          } finally {
+            setBusy(false);
+          }
+        } else {
+          setDontAskAgain(false);
+          setCullOffer({ winnerId, loserId });
+        }
+        return;
+      }
       setBusy(true);
       try {
-        await recordCompare(winnerId, loserId);
-        navigation.goBack();
+        await betterKeepBoth(winnerId, loserId);
       } finally {
         setBusy(false);
       }
     },
-    [busy, recordCompare, navigation],
+    [busy, aliveCount, autoCull, betterCullLoser, betterKeepBoth],
+  );
+
+  const resolveCullOffer = useCallback(
+    async (cull: boolean) => {
+      const offer = cullOffer;
+      if (!offer || busy) return;
+      setCullOffer(null);
+      setBusy(true);
+      try {
+        if (cull) {
+          // "Don't ask again" only sticks with the cull choice — it means
+          // "better = auto-cull the loser from now on".
+          if (dontAskAgain) {
+            setAutoCull(true);
+            await setSetting(db, COMPARE_AUTO_CULL_KEY, serializeCompareAutoCull(true));
+          }
+          await betterCullLoser(offer.winnerId, offer.loserId);
+        } else {
+          await betterKeepBoth(offer.winnerId, offer.loserId);
+        }
+      } finally {
+        setBusy(false);
+      }
+    },
+    [cullOffer, busy, dontAskAgain, db, betterCullLoser, betterKeepBoth],
   );
 
   const decideCull = useCallback(
@@ -176,7 +287,7 @@ export function CompareScreen({ navigation, route }: Props) {
 
   const visible = showB ? pair.b : pair.a;
   const hidden = showB ? pair.a : pair.b;
-  const visibleLabel = showB ? 'B' : 'A';
+  const visibleLabel = posOf(visible.id);
 
   // Seconds always; millis when the two candidates share a second and the
   // data has sub-second resolution (same rule as the deck labels).
@@ -186,8 +297,12 @@ export function CompareScreen({ navigation, route }: Props) {
   return (
     <View style={[styles.root, { paddingBottom: insets.bottom + 8 }]}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Compare</Text>
-        <Text style={styles.headerHint}>Tap to flip A/B · pinch to zoom both · decide below.</Text>
+        <Text style={styles.headerTitle}>
+          Compare {posOf(pair.a.id)} vs {posOf(pair.b.id)}
+        </Text>
+        <Text style={styles.headerHint}>
+          Tap to flip {posOf(pair.a.id)}/{posOf(pair.b.id)} · pinch to zoom both · decide below.
+        </Text>
       </View>
 
       <GestureDetector gesture={composedGesture}>
@@ -224,22 +339,23 @@ export function CompareScreen({ navigation, route }: Props) {
 
       <View style={styles.subRow}>
         <View style={styles.abChips}>
-          {(['A', 'B'] as const).map((which) => (
-            <Pressable
-              key={which}
-              onPress={() => setShowB(which === 'B')}
-              style={[
-                styles.abChip,
-                visibleLabel === which && { backgroundColor: theme.accent, borderColor: theme.accent },
-              ]}
-            >
-              <Text
-                style={[styles.abChipText, visibleLabel === which && { color: theme.onAccent }]}
+          {([pair.a, pair.b] as const).map((item, index) => {
+            const active = (index === 1) === showB;
+            return (
+              <Pressable
+                key={item.id}
+                onPress={() => setShowB(index === 1)}
+                style={[
+                  styles.abChip,
+                  active && { backgroundColor: theme.accent, borderColor: theme.accent },
+                ]}
               >
-                {which}
-              </Text>
-            </Pressable>
-          ))}
+                <Text style={[styles.abChipText, active && { color: theme.onAccent }]}>
+                  {posOf(item.id)}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
         {/* m0.2: the flag follows the photo — a kept photo with the flag
             lands in the to-edit queue instead of plain done. */}
@@ -250,7 +366,9 @@ export function CompareScreen({ navigation, route }: Props) {
           onPress={() => void toggleNeedsEdit(visible.id)}
         >
           <Text style={[styles.editTagText, needsEdit(visible.id) && styles.editTagTextActive]}>
-            {needsEdit(visible.id) ? `✎ ${visibleLabel} needs edit ✓` : `✎ ${visibleLabel} needs edit`}
+            {needsEdit(visible.id)
+              ? `✎ ${visibleLabel} needs edit ✓`
+              : `✎ ${visibleLabel} needs edit`}
           </Text>
         </Pressable>
       </View>
@@ -274,6 +392,59 @@ export function CompareScreen({ navigation, route }: Props) {
       <Pressable style={styles.closeButton} disabled={busy} onPress={() => navigation.goBack()}>
         <Text style={styles.closeText}>Close — no verdict</Text>
       </Pressable>
+
+      {/* m0.5: two-photo group "better" → offer to cull the loser. */}
+      <Modal
+        visible={cullOffer !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCullOffer(null)}
+      >
+        <View style={styles.offerBackdrop}>
+          <View style={styles.offerCard}>
+            <Text style={styles.offerTitle}>
+              Keep only photo {cullOffer ? posOf(cullOffer.winnerId) : ''}?
+            </Text>
+            <Text style={styles.offerText}>
+              It becomes the group's best. Photo {cullOffer ? posOf(cullOffer.loserId) : ''} goes
+              to the cull list — deleted only after you confirm the list.
+            </Text>
+            <Pressable
+              style={styles.offerCheckRow}
+              hitSlop={6}
+              onPress={() => setDontAskAgain((v) => !v)}
+            >
+              <View
+                style={[
+                  styles.offerCheckbox,
+                  dontAskAgain && { backgroundColor: theme.accent, borderColor: theme.accent },
+                ]}
+              >
+                {dontAskAgain && <Text style={[styles.offerCheckmark, { color: theme.onAccent }]}>✓</Text>}
+              </View>
+              <Text style={styles.offerCheckLabel}>
+                Don't ask again — "better" always culls the other photo
+              </Text>
+            </Pressable>
+            <View style={styles.offerButtons}>
+              <Pressable
+                style={[styles.offerButton, styles.offerKeepButton]}
+                onPress={() => void resolveCullOffer(false)}
+              >
+                <Text style={styles.offerButtonText}>Keep both</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.offerButton, styles.offerCullButton]}
+                onPress={() => void resolveCullOffer(true)}
+              >
+                <Text style={styles.offerButtonText}>
+                  Cull {cullOffer ? posOf(cullOffer.loserId) : ''}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -347,4 +518,45 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   closeText: { color: colors.textDim, fontSize: 14, fontWeight: '700' },
+  offerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  offerCard: {
+    alignSelf: 'stretch',
+    backgroundColor: colors.surface,
+    borderRadius: touch.radius,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 18,
+    gap: 12,
+  },
+  offerTitle: { color: colors.text, fontSize: 18, fontWeight: '800' },
+  offerText: { color: colors.textDim, fontSize: 14, lineHeight: 20 },
+  offerCheckRow: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 44 },
+  offerCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  offerCheckmark: { fontSize: 14, fontWeight: '800' },
+  offerCheckLabel: { color: colors.textDim, fontSize: 13, flex: 1, lineHeight: 18 },
+  offerButtons: { flexDirection: 'row', gap: 10 },
+  offerButton: {
+    flex: 1,
+    minHeight: 52,
+    borderRadius: touch.radius,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  offerKeepButton: { backgroundColor: colors.keepDim },
+  offerCullButton: { backgroundColor: colors.cullDim },
+  offerButtonText: { color: colors.text, fontSize: 15, fontWeight: '800' },
 });

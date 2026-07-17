@@ -12,7 +12,8 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { rangeOfDayKey } from '../lib/dates';
 import { resolveSources } from '../lib/sourceCatalog';
-import { loadReviewablePhotos } from '../lib/reviewLoader';
+import { getSessionPrefs, loadReviewablePhotos } from '../lib/reviewLoader';
+import { bankActiveSessionKeepers } from '../db/store';
 import { remainingReviewable, type StateBreakdown } from '../lib/progress';
 import { useSession } from '../session/SessionContext';
 import { ProgressView } from '../components/progress/ProgressView';
@@ -34,12 +35,17 @@ export function DayProgressScreen({ route, navigation }: Props) {
     const begin = async () => {
       setStarting(true);
       try {
+        // m0.5: bank the replaced session's keepers before loading, so
+        // they land as handled instead of being re-reviewed.
+        await bankActiveSessionKeepers(db);
         const src = await resolveSources(db).catch(() => null);
+        const prefs = await getSessionPrefs(db);
         const { reviewable } = await loadReviewablePhotos(
           db,
           range.startMs,
           range.endMs,
           src?.albumIds ?? null,
+          prefs,
         );
         if (reviewable.length === 0) return; // counts were stale; focus refresh will catch up
         await sessionCtx.startSession(range.label, range.startMs, range.endMs, reviewable, (
@@ -56,12 +62,20 @@ export function DayProgressScreen({ route, navigation }: Props) {
     // is replaced only after an explicit confirm.
     const hasActive = sessionCtx.session !== null || (await sessionCtx.resumeSession());
     if (hasActive) {
+      // m0.5 order/roles: destructive "Start new" leftmost, Cancel in the
+      // middle, "Continue existing" as the rightmost default action.
       Alert.alert(
         'Replace unfinished session?',
-        'Starting a new session discards the unfinished one. Nothing gets deleted either way.',
+        'Starting a new session keeps every decision you already made — reviewed keepers ' +
+          'are saved, and the unreviewed rest waits for a later session. Nothing gets deleted.',
         [
-          { text: 'Cancel', style: 'cancel' },
           { text: 'Start new', style: 'destructive', onPress: () => void begin() },
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Continue existing',
+            isPreferred: true,
+            onPress: () => navigation.navigate('Groups'),
+          },
         ],
       );
     } else {

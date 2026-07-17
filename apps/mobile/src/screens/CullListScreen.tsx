@@ -7,20 +7,23 @@ import type { MediaItem } from '@afterglow/core';
 import type { RootStackParamList } from '../navigation';
 import { useSession } from '../session/SessionContext';
 import { BigButton } from '../components/BigButton';
+import { ReDecideSheet } from '../components/ReDecideSheet';
 import { colors, touch } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'CullList'>;
 
 /**
- * The staged cull list. Tap a photo to un-cull it (back to kept). The ONE
- * confirm button below is the only path in the app that deletes anything;
- * on Android 11+ the system dialog moves the batch to the trash (30-day
- * recovery).
+ * The staged cull list. Tapping a photo opens the m0.5 re-decide sheet
+ * (keep / to edit / stays culled) — the last stop where any decision is
+ * still reversible. The ONE confirm button below is the only path in the
+ * app that deletes anything; on Android 11+ the system dialog moves the
+ * batch to the trash (30-day recovery).
  */
 export function CullListScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
-  const { session, unstageCull, confirmCulls, version } = useSession();
+  const { session, confirmCulls, version } = useSession();
   const [busy, setBusy] = useState(false);
+  const [redecideItem, setRedecideItem] = useState<MediaItem | null>(null);
 
   const staged = useMemo(() => session?.stagedCulls() ?? [], [session, version]);
 
@@ -61,7 +64,7 @@ export function CullListScreen({ navigation }: Props) {
 
   const renderItem = useCallback(
     ({ item }: { item: MediaItem }) => (
-      <Pressable style={styles.tile} onPress={() => void unstageCull(item.id)} disabled={busy}>
+      <Pressable style={styles.tile} onPress={() => setRedecideItem(item)} disabled={busy}>
         <Image
           source={{ uri: item.uri }}
           style={styles.tileImage}
@@ -69,11 +72,11 @@ export function CullListScreen({ navigation }: Props) {
           recyclingKey={item.id}
         />
         <View style={styles.tileBadge}>
-          <Text style={styles.tileBadgeText}>tap to restore</Text>
+          <Text style={styles.tileBadgeText}>tap to change</Text>
         </View>
       </Pressable>
     ),
-    [unstageCull, busy],
+    [busy],
   );
 
   if (!session) {
@@ -86,7 +89,7 @@ export function CullListScreen({ navigation }: Props) {
       <Text style={styles.subtitle}>
         {staged.length === 0
           ? 'Nothing staged for deletion.'
-          : `${staged.length} staged · tap any photo to keep it instead`}
+          : `${staged.length} staged · tap any photo to change its decision`}
       </Text>
       <FlatList
         data={staged}
@@ -113,6 +116,13 @@ export function CullListScreen({ navigation }: Props) {
           onPress={onConfirmPress}
         />
       </View>
+      {redecideItem && (
+        <ReDecideSheet
+          item={redecideItem}
+          current="culled"
+          onClose={() => setRedecideItem(null)}
+        />
+      )}
     </View>
   );
 }

@@ -40,6 +40,34 @@ and [assumptions-mobile.md](assumptions-mobile.md).
    in-session; the `duels` SQLite table is the durable cross-session archive (same
    transaction, can't diverge).
 
+## v0.5 / m0.5 (2026-07-18 feedback release) — needs your eyes
+
+25. **Windows screensaver integration has never run on Windows.** The `.scr` is a
+    NSIS-installed copy of the app exe (renamed Electron exe; main handles `/s`,
+    `/p` quits, `/c` opens settings), registered via HKCU `SCRNSAVE.EXE` by the
+    settings button. Registry parsing is unit-tested; everything else is
+    platform-guarded and first exercised by the v0.5 CI installer + a Windows
+    tester. Full details: assumptions-desktop.md "desktop-v0.5".
+26. **Session "never discard decisions" rule (mobile):** replacing an unfinished
+    session banks kept→done first, but interim staged culls are NOT carried — a
+    delete list must be re-earned in a live session (conservative delete-path
+    rule). Reworded dialog says so.
+27. **"Don't split groups" extends the cap along the time-gap cluster boundary**
+    (not the similarity-refined one; refinement only splits, so no final group is
+    ever cut), bounded at +200 photos.
+28. **Similarity scale shifted looser** (12/16/20/26/32, default 20 = old Loose-ish;
+    old Normal 12 is the new Strictest) + a 0–64 slider. Stored values re-map
+    without migration. The new scale is untested against a real photo library.
+29. **Deck pinch-zoom shipped** as a two-pointer overlay that freezes the pager;
+    known seam: a two-finger touch that starts as a scroll can nudge the pager a
+    few px before the pinch takes over. Needs the on-device pass (assumptions-
+    mobile.md m0.5 #19 lists everything device-only).
+30. **mobile-release.yml is new and unproven**: on `mobile-m*` tags CI runs
+    `expo prebuild` + Gradle and uploads the APK to a GitHub Release, signed with
+    the standard shared debug keystore — same signature as the locally-built
+    m0.4 APK (verified by fingerprint), so in-place upgrades work. Neither it nor
+    desktop-release.yml had ever run before the v0.5 tags.
+
 ## Notable UX calls
 
 9. Desktop exit-on-input: mouse must move >24 px from a baseline; keys/clicks exit

@@ -100,6 +100,36 @@ export async function abandonActiveSessions(db: SQLiteDatabase, at: number): Pro
   await db.runAsync('UPDATE sessions SET completed_at = ? WHERE completed_at IS NULL', at);
 }
 
+/**
+ * Bank an about-to-be-replaced session's keep decisions (m0.5: "starting
+ * a new session never discards decisions"). Kept photos converge to done
+ * exactly like normal session completion ('to_edit' rows are untouched
+ * — the CASE remap already put them there; per-photo states and compare
+ * history were persisted after every decision, so nothing else is
+ * pending). Staged culls deliberately stay 'culled': they were never
+ * confirmed, and per the m0.2 #3 rule a stale delete list must be
+ * re-earned, never silently carried or dropped. Reads the persisted
+ * snapshot rather than in-memory state so it also covers a session that
+ * was never resumed after an app restart. Unparseable snapshots (e.g.
+ * bracket-era) are skipped — their SQLite rows are already the durable
+ * truth.
+ */
+export async function bankActiveSessionKeepers(db: SQLiteDatabase): Promise<void> {
+  const row = await getActiveSession(db);
+  if (!row) return;
+  let keptIds: string[];
+  try {
+    const snap = JSON.parse(row.snapshot) as { states?: Record<string, string> };
+    if (typeof snap !== 'object' || snap === null || typeof snap.states !== 'object') return;
+    keptIds = Object.entries(snap.states ?? {})
+      .filter(([, state]) => state === 'kept')
+      .map(([id]) => id);
+  } catch {
+    return;
+  }
+  if (keptIds.length > 0) await markKeptDone(db, keptIds);
+}
+
 export interface NewSessionInput {
   label: string;
   rangeStart: number;

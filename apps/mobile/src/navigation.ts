@@ -2,8 +2,13 @@
 export type RootStackParamList = {
   Home: undefined;
   Groups: undefined;
-  /** Swipe-deck group review (m0.4): page through a group, cull as you go. */
-  Deck: undefined;
+  /**
+   * Swipe-deck group review (m0.4): page through a group, cull as you go.
+   * m0.5: `groupId` opens a SPECIFIC group (any order, even a completed
+   * one — browse/re-decide mode); omitted = the linear "continue" flow
+   * (next incomplete group, then singles, then the cull list).
+   */
+  Deck: { groupId?: string } | undefined;
   /**
    * On-demand A/B flip + synced-zoom compare tool for two deck photos.
    * The verdict buttons record a compare (DuelRecord-shaped) and may cull.

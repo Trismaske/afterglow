@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_SIMILARITY_THRESHOLD,
+  exactStep,
   MAX_SIMILARITY_THRESHOLD,
   nearestStep,
   parseSimilarityThreshold,
   serializeSimilarityThreshold,
   SIMILARITY_STEPS,
+  thresholdLabel,
 } from './similarityPrefs';
 
 describe('SIMILARITY_STEPS', () => {
@@ -19,7 +21,12 @@ describe('SIMILARITY_STEPS', () => {
     }
   });
 
-  it('includes the default as a selectable step', () => {
+  it('uses the m0.5 rescaled values (old Normal is the new Strictest)', () => {
+    expect(SIMILARITY_STEPS.map((s) => s.value)).toEqual([12, 16, 20, 26, 32]);
+  });
+
+  it('defaults to the new Normal (20) as a selectable step', () => {
+    expect(DEFAULT_SIMILARITY_THRESHOLD).toBe(20);
     expect(SIMILARITY_STEPS.some((s) => s.value === DEFAULT_SIMILARITY_THRESHOLD)).toBe(true);
   });
 });
@@ -56,10 +63,34 @@ describe('nearestStep', () => {
   });
 
   it('snaps in-between values to the nearest step, ties toward stricter', () => {
-    expect(nearestStep(0).value).toBe(4);
-    expect(nearestStep(5).value).toBe(4);
-    expect(nearestStep(10).value).toBe(8); // tie 8 vs 12 → stricter
-    expect(nearestStep(15).value).toBe(12); // tie 12 vs 18 → stricter
-    expect(nearestStep(64).value).toBe(26);
+    expect(nearestStep(0).value).toBe(12);
+    expect(nearestStep(13).value).toBe(12);
+    expect(nearestStep(14).value).toBe(12); // tie 12 vs 16 → stricter
+    expect(nearestStep(18).value).toBe(16); // tie 16 vs 20 → stricter
+    expect(nearestStep(23).value).toBe(20); // tie 20 vs 26 → stricter
+    expect(nearestStep(64).value).toBe(32);
+  });
+
+  it('re-maps m0.4-era stored values onto the new scale sensibly', () => {
+    expect(nearestStep(4).value).toBe(12); // old Strictest
+    expect(nearestStep(8).value).toBe(12); // old Strict
+    expect(nearestStep(12).value).toBe(12); // old Normal → new Strictest
+    expect(nearestStep(18).value).toBe(16); // old Loose
+    expect(nearestStep(26).value).toBe(26); // old Loosest
+  });
+});
+
+describe('exactStep / thresholdLabel', () => {
+  it('finds a step only on exact values', () => {
+    expect(exactStep(20)?.label).toBe('Normal');
+    expect(exactStep(21)).toBeNull();
+    expect(exactStep(0)).toBeNull();
+  });
+
+  it('labels off-preset values as Custom (N)', () => {
+    expect(thresholdLabel(20)).toBe('Normal');
+    expect(thresholdLabel(12)).toBe('Strictest');
+    expect(thresholdLabel(21)).toBe('Custom (21)');
+    expect(thresholdLabel(0)).toBe('Custom (0)');
   });
 });

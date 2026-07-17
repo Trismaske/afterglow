@@ -1,5 +1,5 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -8,22 +8,30 @@ import * as MediaLibrary from 'expo-media-library';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { customRange, labelForDayKey, recentDayKeys, rangeOfDayKey } from '../lib/dates';
+import { allTimeUnlocked, remainingToReview, rollingRange } from '../lib/scopes';
 import {
-  allTimeUnlocked,
-  remainingToReview,
-  rollingRange,
-  SCOPE_DEFS,
-  type ScopeKey,
-} from '../lib/scopes';
+  addCustomScope,
+  enabledScopes,
+  newCustomScopeId,
+  parseScopeConfig,
+  REVIEW_SCOPES_KEY,
+  serializeScopeConfig,
+  storedScopeRange,
+  type ScopeConfig,
+} from '../lib/scopeStore';
 import { countPhotosInRange, deleteAssets } from '../lib/media';
-import { resolveSources, type ResolvedSources } from '../lib/sourceCatalog';
-import { loadReviewablePhotos, SESSION_PHOTO_CAP } from '../lib/reviewLoader';
+import { resolveSources } from '../lib/sourceCatalog';
+import { getSessionPrefs, loadReviewablePhotos } from '../lib/reviewLoader';
+import { DEFAULT_SESSION_PREFS, type SessionPrefs } from '../lib/sessionPrefs';
 import {
+  bankActiveSessionKeepers,
   countToEdit,
   getDaySummaries,
+  getSetting,
   getStateCountsInScope,
   markEditDone,
   markTrashedDirect,
+  setSetting,
 } from '../db/store';
 import { runEditDetection, type DetectedCopy } from '../lib/detect';
 import { useSession } from '../session/SessionContext';
@@ -67,15 +75,18 @@ export function HomeScreen({ navigation }: Props) {
     granularPermissions: ['photo'],
   });
 
-  const [scope, setScope] = useState<ScopeKey>('day1');
+  /** Selected scope id from the store-backed config; 'custom' = picker chip. */
+  const [scope, setScope] = useState<string>('day1');
+  const [scopeConfig, setScopeConfig] = useState<ScopeConfig | null>(null);
+  const [sessionPrefs, setSessionPrefs] = useState<SessionPrefs>(DEFAULT_SESSION_PREFS);
   const [customFrom, setCustomFrom] = useState<Date>(new Date());
   const [customTo, setCustomTo] = useState<Date>(new Date());
+  const [customName, setCustomName] = useState('');
   const [pickerFor, setPickerFor] = useState<'from' | 'to' | null>(null);
   const [countsLoading, setCountsLoading] = useState(false);
   const [counts, setCounts] = useState<ScopeCounts | null>(null);
   /** null = not yet checked; the All-time chip stays disabled until true. */
   const [allTimeReady, setAllTimeReady] = useState<boolean | null>(null);
-  const [sources, setSources] = useState<ResolvedSources | null>(null);
   const [hasResumable, setHasResumable] = useState(false);
   const [starting, setStarting] = useState(false);
   /** Perceptual-hash progress while a session is being built (m0.4). */
@@ -89,13 +100,60 @@ export function HomeScreen({ navigation }: Props) {
 
   /**
    * The selected scope's range, computed at call time: rolling windows
-   * end at "now" (not calendar-aligned — see scopes.ts).
+   * end at "now" (not calendar-aligned — see scopes.ts); named custom
+   * scopes are fixed ranges (scopeStore.ts).
    */
   const rangeFor = useCallback(
-    (key: ScopeKey) =>
-      key === 'custom' ? customRange(customFrom, customTo) : rollingRange(key, Date.now()),
-    [customFrom, customTo],
+    (id: string) => {
+      const def = id === 'custom' ? undefined : scopeConfig?.scopes.find((s) => s.id === id);
+      return def ? storedScopeRange(def, Date.now()) : customRange(customFrom, customTo);
+    },
+    [customFrom, customTo, scopeConfig],
   );
+
+  // Store-backed scope chips + session prefs (m0.5), refreshed on focus
+  // (Settings may have changed either). An invalid selection (scope
+  // disabled/deleted meanwhile) falls back to the first enabled chip.
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      (async () => {
+        const [rawScopes, prefs] = await Promise.all([
+          getSetting(db, REVIEW_SCOPES_KEY),
+          getSessionPrefs(db),
+        ]);
+        if (cancelled) return;
+        const config = parseScopeConfig(rawScopes);
+        setScopeConfig(config);
+        setSessionPrefs(prefs);
+        setScope((current) => {
+          if (current === 'custom') return current;
+          const stillThere = enabledScopes(config).some((s) => s.id === current);
+          return stillThere ? current : (enabledScopes(config)[0]?.id ?? 'custom');
+        });
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [db]),
+  );
+
+  /** Persist a named scope from the current custom range (m0.5). */
+  const saveCustomScope = useCallback(() => {
+    if (!scopeConfig || customName.trim() === '') return;
+    const range = customRange(customFrom, customTo);
+    const id = newCustomScopeId(Date.now());
+    const next = addCustomScope(scopeConfig, {
+      id,
+      label: customName.trim(),
+      startMs: range.startMs,
+      endMs: range.endMs,
+    });
+    setScopeConfig(next);
+    setCustomName('');
+    setScope(id);
+    void setSetting(db, REVIEW_SCOPES_KEY, serializeScopeConfig(next));
+  }, [scopeConfig, customName, customFrom, customTo, db]);
 
   // Is there a persisted session to resume? (session may not be loaded yet)
   useFocusEffect(
@@ -236,14 +294,13 @@ export function HomeScreen({ navigation }: Props) {
   // paged in only when a session starts.
   useFocusEffect(
     useCallback(() => {
-      if (!permission?.granted) return;
+      if (!permission?.granted || scopeConfig === null) return;
       let cancelled = false;
       setCountsLoading(true);
       (async () => {
         try {
           const src = await resolveSources(db);
           if (cancelled) return;
-          setSources(src);
 
           const range = rangeFor(scope);
           const [msCount, sc] = await Promise.all([
@@ -305,16 +362,23 @@ export function HomeScreen({ navigation }: Props) {
     const begin = async () => {
       setStarting(true);
       try {
-        // Recompute the rolling range and load the actual photos now —
-        // paged, state-filtered, capped at the oldest SESSION_PHOTO_CAP
+        // m0.5: bank the replaced session's keep decisions FIRST so the
+        // loader below sees them as handled — decisions are never
+        // silently discarded (staged culls stay staged-interim and are
+        // re-earned per the m0.2 rule).
+        await bankActiveSessionKeepers(db);
+        // Recompute the range and load the actual photos now — paged,
+        // state-filtered, capped per the Sessions settings
         // (reviewLoader.ts) so huge scopes can't blow up memory.
         const range = rangeFor(scope);
         const src = await resolveSources(db);
+        const prefs = await getSessionPrefs(db);
         const { reviewable } = await loadReviewablePhotos(
           db,
           range.startMs,
           range.endMs,
           src.albumIds,
+          prefs,
         );
         if (reviewable.length === 0) {
           setRefreshTick((t) => t + 1); // counts were stale — refresh them
@@ -334,12 +398,20 @@ export function HomeScreen({ navigation }: Props) {
       }
     };
     if (hasResumable) {
+      // m0.5 order/roles: destructive "Start new" leftmost, Cancel in the
+      // middle, "Continue existing" as the rightmost default action.
       Alert.alert(
         'Replace unfinished session?',
-        'Starting a new session discards the unfinished one. Nothing gets deleted either way.',
+        'Starting a new session keeps every decision you already made — reviewed keepers ' +
+          'are saved, and the unreviewed rest waits for a later session. Nothing gets deleted.',
         [
-          { text: 'Cancel', style: 'cancel' },
           { text: 'Start new', style: 'destructive', onPress: () => void begin() },
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Continue existing',
+            isPreferred: true,
+            onPress: () => navigation.navigate('Groups'),
+          },
         ],
       );
     } else {
@@ -358,7 +430,8 @@ export function HomeScreen({ navigation }: Props) {
   }, [navigation, rangeFor, scope]);
 
   const scopeLabel = rangeFor(scope).label;
-  const capApplies = counts !== null && counts.remaining > SESSION_PHOTO_CAP;
+  const capApplies = counts !== null && counts.remaining > sessionPrefs.cap;
+  const drawWord = sessionPrefs.order === 'oldest' ? 'oldest' : 'newest';
   const donePctValue =
     counts && counts.grandTotal > 0
       ? Math.round((counts.doneTotal / counts.grandTotal) * 100)
@@ -380,7 +453,8 @@ export function HomeScreen({ navigation }: Props) {
           accessibilityLabel="Settings"
           onPress={() => navigation.navigate('Settings')}
         >
-          <Text style={styles.gearIcon}>⚙</Text>
+          {/* m0.5: emoji gear — the ⚙ text glyph read as an eye/sun. */}
+          <Text style={styles.gearIcon}>⚙️</Text>
         </Pressable>
       </View>
       <Text style={styles.subtitle}>Clear your photos down to the keepers.</Text>
@@ -444,14 +518,17 @@ export function HomeScreen({ navigation }: Props) {
 
       <Text style={styles.sectionLabel}>Review scope</Text>
       <View style={styles.scopeWrap}>
-        {SCOPE_DEFS.map((def) => {
-          const disabled = def.key === 'all' && allTimeReady !== true;
-          const active = scope === def.key;
+        {[
+          ...(scopeConfig ? enabledScopes(scopeConfig) : []),
+          { id: 'custom', label: 'Custom', kind: 'picker' as const },
+        ].map((def) => {
+          const disabled = def.id === 'all' && allTimeReady !== true;
+          const active = scope === def.id;
           return (
             <Pressable
-              key={def.key}
+              key={def.id}
               disabled={disabled}
-              onPress={() => setScope(def.key)}
+              onPress={() => setScope(def.id)}
               style={[
                 styles.scopeChip,
                 active && { backgroundColor: theme.accent, borderColor: theme.accent },
@@ -479,16 +556,46 @@ export function HomeScreen({ navigation }: Props) {
       )}
 
       {scope === 'custom' && (
-        <View style={styles.customRow}>
-          <Pressable style={styles.dateField} onPress={() => setPickerFor('from')}>
-            <Text style={styles.dateFieldLabel}>From</Text>
-            <Text style={styles.dateFieldValue}>{customFrom.toLocaleDateString()}</Text>
-          </Pressable>
-          <Pressable style={styles.dateField} onPress={() => setPickerFor('to')}>
-            <Text style={styles.dateFieldLabel}>To</Text>
-            <Text style={styles.dateFieldValue}>{customTo.toLocaleDateString()}</Text>
-          </Pressable>
-        </View>
+        <>
+          <View style={styles.customRow}>
+            <Pressable style={styles.dateField} onPress={() => setPickerFor('from')}>
+              <Text style={styles.dateFieldLabel}>From</Text>
+              <Text style={styles.dateFieldValue}>{customFrom.toLocaleDateString()}</Text>
+            </Pressable>
+            <Pressable style={styles.dateField} onPress={() => setPickerFor('to')}>
+              <Text style={styles.dateFieldLabel}>To</Text>
+              <Text style={styles.dateFieldValue}>{customTo.toLocaleDateString()}</Text>
+            </Pressable>
+          </View>
+          {/* m0.5: name the range to keep it as a scope chip ("Japan"). */}
+          <View style={styles.customRow}>
+            <TextInput
+              style={styles.nameField}
+              placeholder="Name this range to keep it (e.g. Japan)"
+              placeholderTextColor={colors.textDim}
+              value={customName}
+              onChangeText={setCustomName}
+              maxLength={40}
+            />
+            <Pressable
+              style={[
+                styles.saveScopeButton,
+                customName.trim() !== '' && { backgroundColor: theme.accent, borderColor: theme.accent },
+              ]}
+              disabled={customName.trim() === ''}
+              onPress={saveCustomScope}
+            >
+              <Text
+                style={[
+                  styles.saveScopeText,
+                  customName.trim() !== '' && { color: theme.onAccent },
+                ]}
+              >
+                Save scope
+              </Text>
+            </Pressable>
+          </View>
+        </>
       )}
 
       {pickerFor && (
@@ -497,15 +604,6 @@ export function HomeScreen({ navigation }: Props) {
           mode="date"
           onChange={onPickerChange}
         />
-      )}
-
-      {permission?.granted && (
-        <Pressable style={styles.sourceRow} onPress={() => navigation.navigate('SourcePicker')}>
-          <Text style={styles.sourceText} numberOfLines={1}>
-            Source: <Text style={styles.sourceValue}>{sources?.label ?? '…'}</Text>
-          </Text>
-          <Text style={[styles.sourceEdit, { color: theme.accent }]}>Edit ›</Text>
-        </Pressable>
       )}
 
       {permission?.granted && counts && counts.grandTotal > 0 && donePctValue !== null && (
@@ -544,7 +642,7 @@ export function HomeScreen({ navigation }: Props) {
                 : `${counts.remaining} to review` +
                   (counts.handled > 0 ? ` · ${counts.handled} already handled` : '') +
                   (capApplies
-                    ? ` · sessions take the oldest ${SESSION_PHOTO_CAP} at a time`
+                    ? ` · sessions take the ${drawWord} ${sessionPrefs.cap} at a time`
                     : '')}
             </Text>
           )}
@@ -557,7 +655,7 @@ export function HomeScreen({ navigation }: Props) {
                 : !counts || counts.remaining === 0
                   ? 'Start culling'
                   : capApplies
-                    ? `Start culling · oldest ${SESSION_PHOTO_CAP} of ${counts.remaining}`
+                    ? `Start culling · ${drawWord} ${sessionPrefs.cap} of ${counts.remaining}`
                     : `Start culling · ${counts.remaining} to review`
             }
             color={colors.keep}
@@ -659,21 +757,6 @@ const styles = StyleSheet.create({
   scopeChipText: { color: colors.textDim, fontSize: 15, fontWeight: '600' },
   scopeChipTextDisabled: { color: colors.textDim },
   gateHint: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: -8 },
-  sourceRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    backgroundColor: colors.surface,
-    borderRadius: touch.radius,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-  sourceText: { color: colors.textDim, fontSize: 14, flexShrink: 1 },
-  sourceValue: { color: colors.text, fontWeight: '600' },
-  sourceEdit: { fontSize: 14, fontWeight: '600' },
   headline: { color: colors.text, fontSize: 17, fontWeight: '700', marginBottom: -6 },
   progressRow: {
     flexDirection: 'row',
@@ -702,6 +785,28 @@ const styles = StyleSheet.create({
   },
   dateFieldLabel: { color: colors.textDim, fontSize: 12 },
   dateFieldValue: { color: colors.text, fontSize: 16, fontWeight: '600' },
+  nameField: {
+    flex: 1,
+    backgroundColor: colors.surface,
+    borderRadius: touch.radius,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 12,
+    color: colors.text,
+    fontSize: 14,
+    minHeight: 48,
+  },
+  saveScopeButton: {
+    minHeight: 48,
+    borderRadius: touch.radius,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  saveScopeText: { color: colors.textDim, fontSize: 14, fontWeight: '700' },
   notice: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -31,8 +31,13 @@ export function SinglesScreen({ navigation }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, singleIds, version]);
 
+  // Singles done: in the linear flow (groups finished) continue to the
+  // cull list; entered early (m0.5 free ordering, groups still pending)
+  // return to the session overview instead of skipping ahead.
   useEffect(() => {
-    if (session && !current) navigation.replace('CullList');
+    if (!session || current) return;
+    if (session.currentGroupId()) navigation.goBack();
+    else navigation.replace('CullList');
   }, [session, current, navigation]);
 
   const decide = useCallback(

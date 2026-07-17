@@ -43,6 +43,7 @@ import { parseSimilarityThreshold, SIMILARITY_THRESHOLD_KEY } from '../lib/simil
 import {
   abandonActiveSessions,
   addReclaimedBytes,
+  bankActiveSessionKeepers,
   clearPhotoGroup,
   completeSession,
   createSession,
@@ -60,6 +61,9 @@ export const CULL_GROUP_GAP_MS = MOMENTS_GAP_MS; // 3 minutes
 
 /** m0.2 single-review actions ('to_edit' = keep + flag for the edit queue). */
 export type SingleReviewAction = 'keep' | 'cull' | 'to_edit';
+
+/** m0.5 re-decide targets — any decided photo, until final cull confirm. */
+export type RedecideTarget = 'keep' | 'cull' | 'to_edit';
 
 export interface GroupInfo {
   id: string;
@@ -138,6 +142,14 @@ interface SessionContextValue {
    */
   reconsiderCull: (id: string) => Promise<void>;
   unstageCull: (id: string) => Promise<void>;
+  /**
+   * m0.5 reversible decisions: change any DECIDED photo's verdict (kept /
+   * to-edit / staged-cull → any of the three) until the final cull
+   * confirmation. Built on existing transitions: core unstageCull
+   * (culled→kept) / cullKept (kept→culled) plus the app-side needs-edit
+   * flag for to_edit. No-op for unreviewed/confirmed/trashed photos.
+   */
+  redecide: (id: string, target: RedecideTarget) => Promise<void>;
   /** THE one delete path: confirm staged culls → system dialog → trash. */
   confirmCulls: () => Promise<ConfirmResult>;
   /** Finish: remaining keepers converge to done; to_edit stays queued. */
@@ -238,6 +250,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       const groupIdByAsset = new Map<string, string>();
       for (const g of groups) for (const item of g.items) groupIdByAsset.set(item.id, g.id);
 
+      // m0.5: decisions are never silently discarded — the replaced
+      // session's keepers converge to done first (its per-photo states
+      // and compare history are already in SQLite after every decision).
+      await bankActiveSessionKeepers(db);
       await abandonActiveSessions(db, Date.now());
       const id = await createSession(db, {
         label: newLabel,
@@ -505,6 +521,38 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     [persist, bump],
   );
 
+  const redecide = useCallback(
+    async (id: string, target: RedecideTarget) => {
+      const session = sessionRef.current;
+      if (!session) throw new Error('redecide: no active session');
+      const state = session.getState(id);
+      // Only decided, pre-confirm photos are re-decidable; 'to_edit' is
+      // app-side (core state 'kept' + needs-edit flag).
+      if (state !== 'kept' && state !== 'culled') return;
+      if (target === 'cull') {
+        if (state === 'kept') {
+          session.cullKept(id);
+          bump();
+          await persist();
+          void hashInBackground(id);
+        }
+        return; // already staged — nothing to do
+      }
+      // keep / to_edit: align the app-side flag FIRST so any state write
+      // lands as 'to_edit' vs 'kept' via the persistDecision/store CASE.
+      const wantFlag = target === 'to_edit';
+      if (needsEditRef.current.has(id) !== wantFlag) {
+        if (wantFlag) needsEditRef.current.add(id);
+        else needsEditRef.current.delete(id);
+        await setNeedsEdit(db, id, wantFlag, Date.now());
+      }
+      if (state === 'culled') session.unstageCull(id); // culled → kept (+flag remap)
+      bump();
+      await persist();
+    },
+    [db, persist, bump, hashInBackground],
+  );
+
   const confirmCulls = useCallback(async (): Promise<ConfirmResult> => {
     const session = sessionRef.current;
     if (!session || sessionId === null) throw new Error('confirmCulls: no active session');
@@ -617,6 +665,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       clearPendingReconsider,
       reconsiderCull,
       unstageCull,
+      redecide,
       confirmCulls,
       finishSession,
     }),
@@ -646,6 +695,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       clearPendingReconsider,
       reconsiderCull,
       unstageCull,
+      redecide,
       confirmCulls,
       finishSession,
     ],

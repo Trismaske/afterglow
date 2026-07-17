@@ -40,17 +40,19 @@ function toLoadedPhoto(asset: MediaLibrary.Asset): LoadedPhoto {
 }
 
 /**
- * Page through the photos in [startMs, endMs], oldest first, optionally
- * restricted to one MediaStore album (bucket). `onPage` receives each
- * page and returns false to stop early — this is what keeps large scopes
- * (6 months / year / all time, m0.3.1) from ever materializing the whole
- * MediaStore in memory.
+ * Page through the photos in [startMs, endMs], oldest first by default
+ * (`descending` flips to newest first — m0.5 "newest first" sessions),
+ * optionally restricted to one MediaStore album (bucket). `onPage`
+ * receives each page and returns false to stop early — this is what
+ * keeps large scopes (6 months / year / all time, m0.3.1) from ever
+ * materializing the whole MediaStore in memory.
  */
 export async function pagePhotosInRange(
   startMs: number,
   endMs: number,
   albumId: string | undefined,
   onPage: (page: LoadedPhoto[]) => boolean | Promise<boolean>,
+  descending = false,
 ): Promise<void> {
   let after: string | undefined;
   for (;;) {
@@ -61,7 +63,7 @@ export async function pagePhotosInRange(
       createdAfter: startMs,
       createdBefore: endMs,
       mediaType: MediaLibrary.MediaType.photo,
-      sortBy: [[MediaLibrary.SortBy.creationTime, true]],
+      sortBy: [[MediaLibrary.SortBy.creationTime, !descending]],
     });
     const keepGoing = await onPage(page.assets.map(toLoadedPhoto));
     if (!keepGoing || !page.hasNextPage || !page.endCursor) break;

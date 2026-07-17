@@ -45,3 +45,12 @@ to point the smoke run at a fixture folder.
 Installers are built per platform with `npm run dist -w afterglow-desktop`
 (electron-builder; config in `apps/desktop/electron-builder.yml`). CI builds
 Windows + Linux artifacts on every `desktop-v*` tag.
+
+## Afterglow Companion (Android) — quickstart
+
+The mobile app clears a day's camera roll down to keepers: burst groups are
+reviewed as pairwise photo duels ("cull one, or keep both and pick the
+better"), staged culls are deleted in one confirmed batch to the system
+trash. See [apps/mobile/README.md](apps/mobile/README.md) for the flow and
+how to run it — it needs an Android development build
+(`npx expo run:android`), **not Expo Go**.

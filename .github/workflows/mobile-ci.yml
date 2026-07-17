@@ -1,0 +1,32 @@
+name: mobile-ci
+
+on:
+  push:
+    branches: [main, initial]
+    paths:
+      - 'apps/mobile/**'
+      - 'packages/core/**'
+      - 'package-lock.json'
+      - '.github/workflows/mobile-ci.yml'
+  pull_request:
+    paths:
+      - 'apps/mobile/**'
+      - 'packages/core/**'
+      - 'package-lock.json'
+      - '.github/workflows/mobile-ci.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test -w @afterglow/core
+      - run: npm run typecheck -w afterglow-companion
+      - name: Metro bundle proof (Android export)
+        run: npx expo export --platform android --output-dir /tmp/expo-export
+        working-directory: apps/mobile

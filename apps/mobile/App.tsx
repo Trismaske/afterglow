@@ -1,20 +1,75 @@
+import React, { Suspense } from 'react';
+import { ActivityIndicator, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { SQLiteProvider } from 'expo-sqlite';
+import { DarkTheme, NavigationContainer } from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import type { RootStackParamList } from './src/navigation';
+import { DATABASE_NAME, migrateDatabase } from './src/db/database';
+import { SessionProvider } from './src/session/SessionContext';
+import { HomeScreen } from './src/screens/HomeScreen';
+import { GroupsScreen } from './src/screens/GroupsScreen';
+import { DuelScreen } from './src/screens/DuelScreen';
+import { SinglesScreen } from './src/screens/SinglesScreen';
+import { CullListScreen } from './src/screens/CullListScreen';
+import { SummaryScreen } from './src/screens/SummaryScreen';
+import { colors } from './src/theme';
 
-export default function App() {
+const Stack = createNativeStackNavigator<RootStackParamList>();
+
+const theme = {
+  ...DarkTheme,
+  colors: {
+    ...DarkTheme.colors,
+    background: colors.background,
+    card: colors.surface,
+    text: colors.text,
+    border: colors.border,
+    primary: colors.accent,
+  },
+};
+
+function Loading() {
   return (
-    <View style={styles.container}>
-      <Text>Open up App.tsx to start working on your app!</Text>
-      <StatusBar style="auto" />
+    <View style={{ flex: 1, backgroundColor: colors.background, justifyContent: 'center' }}>
+      <ActivityIndicator color={colors.accent} size="large" />
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-});
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <Suspense fallback={<Loading />}>
+        <SQLiteProvider databaseName={DATABASE_NAME} onInit={migrateDatabase} useSuspense>
+          <SessionProvider>
+            <NavigationContainer theme={theme}>
+              <StatusBar style="light" />
+              <Stack.Navigator
+                initialRouteName="Home"
+                screenOptions={{
+                  headerStyle: { backgroundColor: colors.background },
+                  headerTintColor: colors.text,
+                  headerShadowVisible: false,
+                  contentStyle: { backgroundColor: colors.background },
+                }}
+              >
+                <Stack.Screen name="Home" component={HomeScreen} options={{ headerShown: false }} />
+                <Stack.Screen name="Groups" component={GroupsScreen} options={{ title: 'Session' }} />
+                <Stack.Screen name="Duel" component={DuelScreen} options={{ title: 'Duel' }} />
+                <Stack.Screen name="Singles" component={SinglesScreen} options={{ title: 'Singles' }} />
+                <Stack.Screen name="CullList" component={CullListScreen} options={{ title: 'Cull list' }} />
+                <Stack.Screen
+                  name="Summary"
+                  component={SummaryScreen}
+                  options={{ title: 'Summary', headerBackVisible: false }}
+                />
+              </Stack.Navigator>
+            </NavigationContainer>
+          </SessionProvider>
+        </SQLiteProvider>
+      </Suspense>
+    </SafeAreaProvider>
+  );
+}

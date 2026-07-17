@@ -5,7 +5,7 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
     "ios": {
       "supportsTablet": true
     },
@@ -24,7 +24,15 @@
     "plugins": [
       "expo-sqlite",
       "expo-image",
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow $(PRODUCT_NAME) to review your photos.",
+          "granularPermissions": ["photo"],
+          "isAccessMediaLocationEnabled": false
+        }
+      ]
     ]
   }
 }

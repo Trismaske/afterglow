@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -6,34 +6,32 @@ import { useSQLiteContext } from 'expo-sqlite';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import * as MediaLibrary from 'expo-media-library';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { clusterByGap } from '@afterglow/core';
 import type { RootStackParamList } from '../navigation';
+import { customRange, labelForDayKey, recentDayKeys, rangeOfDayKey } from '../lib/dates';
 import {
-  customRange,
-  labelForDayKey,
-  recentDayKeys,
-  rangeOfDayKey,
-  todayRange,
-  yesterdayRange,
-  type DateRange,
-} from '../lib/dates';
-import { countPhotosInRange, deleteAssets, loadPhotosInRange, type LoadedPhoto } from '../lib/media';
+  allTimeUnlocked,
+  remainingToReview,
+  rollingRange,
+  SCOPE_DEFS,
+  type ScopeKey,
+} from '../lib/scopes';
+import { countPhotosInRange, deleteAssets } from '../lib/media';
+import { resolveSources, type ResolvedSources } from '../lib/sourceCatalog';
+import { loadReviewablePhotos, SESSION_PHOTO_CAP } from '../lib/reviewLoader';
 import {
+  countHandledInRange,
   countToEdit,
   getDaySummaries,
-  getStatesForAssets,
   markEditDone,
   markTrashedDirect,
 } from '../db/store';
 import { runEditDetection, type DetectedCopy } from '../lib/detect';
-import { useSession, CULL_GROUP_GAP_MS } from '../session/SessionContext';
+import { useSession } from '../session/SessionContext';
 import { BigButton } from '../components/BigButton';
 import { StateProgressBar } from '../components/StateProgressBar';
 import { colors, touch } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Home'>;
-
-type Scope = 'today' | 'yesterday' | 'custom';
 
 const RECENT_DAYS = 7;
 
@@ -48,10 +46,11 @@ interface DayRow {
   staged: number;
 }
 
-interface LoadedRange {
-  /** Photos still needing review (not yet converged to to_edit/done/trashed). */
-  reviewable: LoadedPhoto[];
-  /** Photos in this range already handled in previous sessions. */
+/** Cheap scope counts (m0.3.1) — no asset lists, just totals. */
+interface ScopeCounts {
+  /** MediaStore total minus already-handled rows, clamped at 0. */
+  remaining: number;
+  /** DB rows in range already converged (to_edit/done, still in MediaStore). */
   handled: number;
 }
 
@@ -63,12 +62,15 @@ export function HomeScreen({ navigation }: Props) {
     granularPermissions: ['photo'],
   });
 
-  const [scope, setScope] = useState<Scope>('today');
+  const [scope, setScope] = useState<ScopeKey>('day1');
   const [customFrom, setCustomFrom] = useState<Date>(new Date());
   const [customTo, setCustomTo] = useState<Date>(new Date());
   const [pickerFor, setPickerFor] = useState<'from' | 'to' | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [loaded, setLoaded] = useState<LoadedRange | null>(null);
+  const [countsLoading, setCountsLoading] = useState(false);
+  const [counts, setCounts] = useState<ScopeCounts | null>(null);
+  /** null = not yet checked; the All-time chip stays disabled until true. */
+  const [allTimeReady, setAllTimeReady] = useState<boolean | null>(null);
+  const [sources, setSources] = useState<ResolvedSources | null>(null);
   const [hasResumable, setHasResumable] = useState(false);
   const [starting, setStarting] = useState(false);
   const [editCount, setEditCount] = useState(0);
@@ -78,11 +80,15 @@ export function HomeScreen({ navigation }: Props) {
   const [refreshTick, setRefreshTick] = useState(0);
   const lastDetectionRef = useRef(0);
 
-  const range: DateRange = useMemo(() => {
-    if (scope === 'today') return todayRange(new Date());
-    if (scope === 'yesterday') return yesterdayRange(new Date());
-    return customRange(customFrom, customTo);
-  }, [scope, customFrom, customTo]);
+  /**
+   * The selected scope's range, computed at call time: rolling windows
+   * end at "now" (not calendar-aligned — see scopes.ts).
+   */
+  const rangeFor = useCallback(
+    (key: ScopeKey) =>
+      key === 'custom' ? customRange(customFrom, customTo) : rollingRange(key, Date.now()),
+    [customFrom, customTo],
+  );
 
   // Is there a persisted session to resume? (session may not be loaded yet)
   useFocusEffect(
@@ -170,7 +176,8 @@ export function HomeScreen({ navigation }: Props) {
     }, [db, permission?.granted, promptForCopies]),
   );
 
-  // Edit-queue badge + recent-days progress, refreshed on focus.
+  // Edit-queue badge + recent-days progress, refreshed on focus. Both
+  // respect the photo-source filter (m0.3.1).
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
@@ -179,15 +186,19 @@ export function HomeScreen({ navigation }: Props) {
         if (cancelled) return;
         setEditCount(toEdit);
 
+        const src = permission?.granted ? await resolveSources(db).catch(() => null) : null;
+        if (cancelled) return;
         const keys = recentDayKeys(RECENT_DAYS);
-        const summaries = await getDaySummaries(db, keys[keys.length - 1]);
+        const summaries = await getDaySummaries(db, keys[keys.length - 1], src?.roots ?? null);
         const rows: DayRow[] = [];
         for (const day of keys) {
           const dbRow = summaries.get(day);
           let msTotal = 0;
           if (permission?.granted) {
             const r = rangeOfDayKey(day);
-            msTotal = await countPhotosInRange(r.startMs, r.endMs).catch(() => 0);
+            msTotal = await countPhotosInRange(r.startMs, r.endMs, src?.albumIds ?? null).catch(
+              () => 0,
+            );
           }
           // Trashed photos are gone from MediaStore, so the day's true
           // total is MediaStore + trashed rows (DB `done` includes them).
@@ -212,56 +223,57 @@ export function HomeScreen({ navigation }: Props) {
     }, [db, permission?.granted, refreshTick]),
   );
 
-  // Load photos + previously-handled filter whenever the range changes.
+  // Cheap scope counts + the All-time gate, on focus and scope change.
+  // No asset lists are loaded here — MediaStore totalCount queries plus
+  // one DB aggregate per range (m0.3.1); the exact reviewable set is
+  // paged in only when a session starts.
   useFocusEffect(
     useCallback(() => {
       if (!permission?.granted) return;
       let cancelled = false;
-      setLoading(true);
-      setLoaded(null);
+      setCountsLoading(true);
       (async () => {
         try {
-          const photos = await loadPhotosInRange(range.startMs, range.endMs);
-          const states = await getStatesForAssets(
-            db,
-            photos.map((p) => p.item.id),
-          );
-          const reviewable: LoadedPhoto[] = [];
-          let handled = 0;
-          for (const photo of photos) {
-            const state = states.get(photo.item.id);
-            // Converged states stay converged; interim states (unreviewed /
-            // kept / culled from an abandoned session) get re-reviewed.
-            if (state === 'to_edit' || state === 'done' || state === 'trashed') handled++;
-            else reviewable.push(photo);
+          const src = await resolveSources(db);
+          if (cancelled) return;
+          setSources(src);
+
+          const range = rangeFor(scope);
+          const [msCount, handled] = await Promise.all([
+            countPhotosInRange(range.startMs, range.endMs, src.albumIds),
+            countHandledInRange(db, range.startMs, range.endMs, src.roots),
+          ]);
+
+          // All-time gate: ranges nest, so a clear last-year means only
+          // the older backlog is left — that's when All time unlocks.
+          const year = rollingRange('year1', Date.now());
+          const [msYear, handledYear] = await Promise.all([
+            countPhotosInRange(year.startMs, year.endMs, src.albumIds),
+            countHandledInRange(db, year.startMs, year.endMs, src.roots),
+          ]);
+          if (cancelled) return;
+          const unlocked = allTimeUnlocked(remainingToReview(msYear, handledYear));
+          setAllTimeReady(unlocked);
+          if (scope === 'all' && !unlocked) {
+            // New photos re-locked the gate while it was selected.
+            setScope('year1');
+            return; // effect re-runs with the new scope
           }
-          if (!cancelled) setLoaded({ reviewable, handled });
+          setCounts({
+            remaining: remainingToReview(msCount, handled),
+            handled: Math.min(handled, msCount),
+          });
         } catch {
-          if (!cancelled) setLoaded({ reviewable: [], handled: 0 });
+          if (!cancelled) setCounts({ remaining: 0, handled: 0 });
         } finally {
-          if (!cancelled) setLoading(false);
+          if (!cancelled) setCountsLoading(false);
         }
       })();
       return () => {
         cancelled = true;
       };
-    }, [db, permission?.granted, range.startMs, range.endMs]),
+    }, [db, permission?.granted, scope, rangeFor, refreshTick]),
   );
-
-  const counts = useMemo(() => {
-    if (!loaded) return null;
-    const clusters = clusterByGap(
-      loaded.reviewable.map((p) => p.item),
-      { gapMs: CULL_GROUP_GAP_MS },
-    );
-    const groups = clusters.filter((c) => c.items.length >= 2);
-    return {
-      photos: loaded.reviewable.length,
-      handled: loaded.handled,
-      groups: groups.length,
-      singles: clusters.length - groups.length,
-    };
-  }, [loaded]);
 
   const onPickerChange = useCallback(
     (event: DateTimePickerEvent, date?: Date) => {
@@ -275,11 +287,26 @@ export function HomeScreen({ navigation }: Props) {
   );
 
   const startReview = useCallback(async () => {
-    if (!loaded || loaded.reviewable.length === 0 || starting) return;
+    if (!counts || counts.remaining === 0 || starting) return;
     const begin = async () => {
       setStarting(true);
       try {
-        await sessionCtx.startSession(range.label, range.startMs, range.endMs, loaded.reviewable);
+        // Recompute the rolling range and load the actual photos now —
+        // paged, state-filtered, capped at the oldest SESSION_PHOTO_CAP
+        // (reviewLoader.ts) so huge scopes can't blow up memory.
+        const range = rangeFor(scope);
+        const src = await resolveSources(db);
+        const { reviewable } = await loadReviewablePhotos(
+          db,
+          range.startMs,
+          range.endMs,
+          src.albumIds,
+        );
+        if (reviewable.length === 0) {
+          setRefreshTick((t) => t + 1); // counts were stale — refresh them
+          return;
+        }
+        await sessionCtx.startSession(range.label, range.startMs, range.endMs, reviewable);
         navigation.navigate('Groups');
       } finally {
         setStarting(false);
@@ -297,7 +324,10 @@ export function HomeScreen({ navigation }: Props) {
     } else {
       await begin();
     }
-  }, [loaded, starting, hasResumable, sessionCtx, range, navigation]);
+  }, [counts, starting, hasResumable, sessionCtx, scope, rangeFor, db, navigation]);
+
+  const scopeLabel = rangeFor(scope).label;
+  const capApplies = counts !== null && counts.remaining > SESSION_PHOTO_CAP;
 
   return (
     <ScrollView
@@ -308,7 +338,7 @@ export function HomeScreen({ navigation }: Props) {
       ]}
     >
       <Text style={styles.title}>Afterglow Companion</Text>
-      <Text style={styles.subtitle}>Clear today's photos down to the keepers.</Text>
+      <Text style={styles.subtitle}>Clear your photos down to the keepers.</Text>
 
       {detectionNotice && (
         <Pressable style={styles.notice} onPress={() => setDetectionNotice(null)}>
@@ -368,25 +398,40 @@ export function HomeScreen({ navigation }: Props) {
       </Pressable>
 
       <Text style={styles.sectionLabel}>Review scope</Text>
-      <View style={styles.scopeRow}>
-        {(
-          [
-            ['today', 'Today'],
-            ['yesterday', 'Yesterday'],
-            ['custom', 'Custom'],
-          ] as const
-        ).map(([key, title]) => (
-          <Pressable
-            key={key}
-            onPress={() => setScope(key)}
-            style={[styles.scopeChip, scope === key && styles.scopeChipActive]}
-          >
-            <Text style={[styles.scopeChipText, scope === key && styles.scopeChipTextActive]}>
-              {title}
-            </Text>
-          </Pressable>
-        ))}
+      <View style={styles.scopeWrap}>
+        {SCOPE_DEFS.map((def) => {
+          const disabled = def.key === 'all' && allTimeReady !== true;
+          const active = scope === def.key;
+          return (
+            <Pressable
+              key={def.key}
+              disabled={disabled}
+              onPress={() => setScope(def.key)}
+              style={[
+                styles.scopeChip,
+                active && styles.scopeChipActive,
+                disabled && styles.scopeChipDisabled,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.scopeChipText,
+                  active && styles.scopeChipTextActive,
+                  disabled && styles.scopeChipTextDisabled,
+                ]}
+              >
+                {def.label}
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
+      {permission?.granted && allTimeReady === false && (
+        <Text style={styles.gateHint}>
+          All time unlocks when nothing is left to review in the last year — finish the last
+          year first.
+        </Text>
+      )}
 
       {scope === 'custom' && (
         <View style={styles.customRow}>
@@ -410,23 +455,43 @@ export function HomeScreen({ navigation }: Props) {
       )}
 
       {permission?.granted && (
+        <Pressable style={styles.sourceRow} onPress={() => navigation.navigate('SourcePicker')}>
+          <Text style={styles.sourceText} numberOfLines={1}>
+            Source: <Text style={styles.sourceValue}>{sources?.label ?? '…'}</Text>
+          </Text>
+          <Text style={styles.sourceEdit}>Edit ›</Text>
+        </Pressable>
+      )}
+
+      {permission?.granted && (
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>{range.label}</Text>
-          {loading && <Text style={styles.cardText}>Counting photos…</Text>}
-          {!loading && counts && (
+          <Text style={styles.cardTitle}>{scopeLabel}</Text>
+          {countsLoading && <Text style={styles.cardText}>Counting photos…</Text>}
+          {!countsLoading && counts && (
             <Text style={styles.cardText}>
-              {counts.photos === 0
+              {counts.remaining === 0
                 ? counts.handled > 0
                   ? `All ${counts.handled} photos in this range are already handled ✦`
                   : 'No photos in this range.'
-                : `${counts.photos} to review · ${counts.groups} cull groups · ${counts.singles} singles` +
-                  (counts.handled > 0 ? ` · ${counts.handled} already handled` : '')}
+                : `${counts.remaining} to review` +
+                  (counts.handled > 0 ? ` · ${counts.handled} already handled` : '') +
+                  (capApplies
+                    ? ` · sessions take the oldest ${SESSION_PHOTO_CAP} at a time`
+                    : '')}
             </Text>
           )}
           <BigButton
-            label={starting ? 'Starting…' : 'Start culling'}
+            label={
+              starting
+                ? 'Loading photos…'
+                : !counts || counts.remaining === 0
+                  ? 'Start culling'
+                  : capApplies
+                    ? `Start culling · oldest ${SESSION_PHOTO_CAP} of ${counts.remaining}`
+                    : `Start culling · ${counts.remaining} to review`
+            }
             color={colors.keep}
-            disabled={loading || starting || !counts || counts.photos === 0}
+            disabled={countsLoading || starting || !counts || counts.remaining === 0}
             onPress={() => void startReview()}
           />
         </View>
@@ -492,20 +557,38 @@ const styles = StyleSheet.create({
   },
   cardTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
   cardText: { color: colors.textDim, fontSize: 15, lineHeight: 21 },
-  scopeRow: { flexDirection: 'row', gap: 10 },
+  scopeWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   scopeChip: {
-    flex: 1,
-    minHeight: 52,
+    minHeight: 44,
     borderRadius: touch.radius,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: 14,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
   },
   scopeChipActive: { backgroundColor: colors.accent, borderColor: colors.accent },
-  scopeChipText: { color: colors.textDim, fontSize: 16, fontWeight: '600' },
+  scopeChipDisabled: { opacity: 0.4 },
+  scopeChipText: { color: colors.textDim, fontSize: 15, fontWeight: '600' },
   scopeChipTextActive: { color: '#1a1205' },
+  scopeChipTextDisabled: { color: colors.textDim },
+  gateHint: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: -8 },
+  sourceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    backgroundColor: colors.surface,
+    borderRadius: touch.radius,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  sourceText: { color: colors.textDim, fontSize: 14, flexShrink: 1 },
+  sourceValue: { color: colors.text, fontWeight: '600' },
+  sourceEdit: { color: colors.accent, fontSize: 14, fontWeight: '600' },
   customRow: { flexDirection: 'row', gap: 10 },
   dateField: {
     flex: 1,

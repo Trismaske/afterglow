@@ -228,3 +228,98 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
 14. **Summary also shows all-time reclaimed bytes** (SUM over sessions,
     same "approximate" caveat). Cheap per the "if cheap" clause; deeper
     stats stay m0.4.
+
+## m0.3.1 (trip feedback)
+
+1. **Scopes are rolling windows ending "now", not calendar-aligned.**
+   "Last day" = the trailing 24 h, "Last 7 days" = trailing 7×24 h, etc.
+   Fixed day counts throughout: 1 / 7 / 30 / **183** ("Last 6 months") /
+   **365** ("Last year") days; "All time" = epoch 0 → now. Rationale:
+   the chips answer "how far back do I want to catch up?", rolling avoids
+   timezone/calendar edge cases, and PLAN-style day-scoped thinking still
+   exists via the Recent-days rows. Today/Yesterday chips are gone
+   (m0.1–m0.3's `todayRange`/`yesterdayRange` remain in dates.ts,
+   unused); "Last day" covers them, and Custom still picks exact days.
+   Default scope = "Last day".
+2. **All-time gating rule as implemented:** the All-time chip is visible
+   but disabled until `remaining(lastYear) == 0`, where `remaining =
+   max(0, mediaStoreCount − handledCount)`, `handledCount` = DB rows in
+   the range with state `to_edit` or `done` (**`trashed` rows are
+   excluded** — they've left MediaStore, so they're absent from both
+   sides of the subtraction; `unreviewed`/`kept`/`culled` interim rows
+   count as *not* reviewed, matching the m0.2 re-review rule). Ranges
+   nest, so last-year-clear ⇒ only the >365-day backlog remains. A hint
+   under the chips explains the gate while locked. The gate re-checks on
+   every Home focus; if new photos re-lock it while "All time" is
+   selected, the scope snaps back to "Last year".
+3. **Scope counts are approximate by design (and cheap).** Remaining =
+   MediaStore `totalCount` queries (per source bucket) minus one SQL
+   aggregate — no asset lists are loaded to render Home. Known skew: a
+   `done` photo later deleted *outside* the app still counts as handled
+   (no external-delete reconciliation exists), so remaining can
+   undercount and the gate can unlock slightly early; the clamp at 0
+   hides the opposite skew. The exact reviewable set is still computed
+   photo-by-photo when a session starts (which can also come up empty →
+   counts refresh instead of a broken session).
+4. **Large scopes: sessions are capped at the oldest 500 reviewable
+   photos** (`SESSION_PHOTO_CAP`, reviewLoader.ts). Loading pages
+   MediaStore 200 at a time (as m0.1 did), drops converged photos page
+   by page against SQLite, and early-stops per bucket at the cap —
+   memory stays ≤ buckets × cap, never the whole library. Oldest-first
+   matches review order, so repeating the scope after finishing walks
+   the backlog forward in 500-photo chunks. The CTA says so ("Start
+   culling · oldest 500 of 5 234"); the m0.2 "N to review · X groups ·
+   Y singles" pre-count died with the full-list load (groups/singles now
+   first appear on the Session screen — acceptable, the numbers were
+   never actionable on Home).
+5. **Source matching mechanism:** Android MediaStore albums are
+   per-directory, non-recursive buckets with no path field, and the
+   legacy expo-media-library builds `asset.uri` as `"file://" + DATA`
+   (raw path, **no percent-encoding** — verified in the SDK 57 package's
+   Android source, AssetUtils.kt). So: each bucket's directory is probed
+   with one `first: 1` asset query (`totalCount` doubles as the picker's
+   photo count), stripped to a storage-relative path
+   (`/storage/emulated/0/…`, `/storage/XXXX-XXXX/…`, `/sdcard/…`
+   prefixes), and a selection = a set of directory roots matched
+   **case-insensitively as whole-segment path prefixes** (recursive;
+   FAT SD cards are case-insensitive, so case-insensitive is the safer
+   uniform choice). Queries then pass the matching bucket ids to
+   `getAssetsAsync({ album })` — one query per bucket, summed/merged,
+   since the API takes a single album.
+6. **Source-matching limits (accepted):** (a) buckets exist only for
+   directories that contain ≥1 photo — empty or brand-new folders can't
+   be picked, and folders created after the 60 s catalog cache expires
+   appear on next resolution; (b) the SQLite side filters `photos.uri`
+   with `LIKE '%/<root>/%' ESCAPE '\'` (wildcards escaped, ASCII-case-
+   insensitive) — containment, not anchored at the volume root, so a
+   root named "Pictures" would also match a hypothetical
+   ".../Foo/Pictures/..."; contrived, accepted; (c) iOS `ph://` uris
+   have no directory — the feature degrades to "All folders" there
+   (Android-first per PLAN.md).
+7. **Source default is dynamic until explicitly saved:** with nothing
+   persisted, the source resolves to "DCIM/Camera" when any bucket lives
+   under it, else "All folders" — re-evaluated on every resolution (a
+   first camera photo flips the default automatically). Saving in the
+   picker persists an explicit choice (settings table, migration v4,
+   JSON under key `photo_sources`) and freezes it. The picker keeps
+   persisted dirs that no longer have a bucket visible ("no photos
+   found") so they can be unselected, and marks subfolders of a selected
+   root as "included via a parent folder".
+8. **Every MediaStore query site now respects the source filter**
+   (audited: Home scope counts + gate, session loading, Recent-days
+   totals, DayProgress totals, edited-copy candidate scans) *and* the
+   DB-side counterparts (`countHandledInRange`, `getDaySummaries`,
+   `getDayStateCounts`) filter by uri. Consequence for edit detection,
+   documented in detect.ts: an editor that saves its copy **outside**
+   the source folders (Snapseed → `Pictures/` while the source is
+   `DCIM/Camera`) is no longer detected — manual Mark done covers it;
+   in-place detection re-queries assets by id and is unaffected.
+   Already-queued to-edit photos from other folders also stay in the
+   queue (queue membership is state, not a live query).
+9. **Recent-days rows kept their m0.2 shape** (last 7 calendar days,
+   hidden when empty) — only their counts became source-filtered. The
+   per-day MediaStore read is now one `totalCount` query per source
+   bucket per day (unchanged: 1/day for "All folders").
+10. **Settings storage:** a generic `settings(key, value)` table
+    (migration v4) rather than a photo-source-specific table — future
+    small settings share it without further migrations.

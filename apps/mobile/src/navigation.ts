@@ -12,4 +12,6 @@ export type RootStackParamList = {
   EditQueue: undefined;
   /** Day-scoped inbox-zero progress. `day` is a local "YYYY-MM-DD" key. */
   DayProgress: { day: string };
+  /** Photo-source folder picker (m0.3.1): choose which directories feed reviews. */
+  SourcePicker: undefined;
 };

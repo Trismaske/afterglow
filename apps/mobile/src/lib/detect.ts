@@ -23,6 +23,7 @@ import {
   type CandidateAsset,
 } from './media';
 import { sha256OfFile } from './hash';
+import { resolveSources } from './sourceCatalog';
 import {
   classifyInPlace,
   CREATION_TOLERANCE_MS,
@@ -105,10 +106,21 @@ export async function runEditDetection(db: SQLiteDatabase): Promise<EditDetectio
   if (live.length === 0) return result;
 
   // Pass 2: edited copies. One shared "new since flagging" scan plus a
-  // small per-photo creation-time sibling window.
+  // small per-photo creation-time sibling window. Both scans respect the
+  // photo-source filter (m0.3.1) — an editor that saves its copy OUTSIDE
+  // the selected source folders (e.g. Snapseed → Pictures/ while the
+  // source is DCIM/Camera) is therefore not detected; manual Mark done
+  // covers that, and in-place detection (pass 1) is unaffected since it
+  // re-queries queued assets directly.
+  const sources = await resolveSources(db);
   const pool = new Map<string, CandidateAsset>();
   const oldestFlag = Math.min(...live.map((l) => l.row.to_edit_at ?? l.row.taken_at));
-  for (const c of await loadCandidatesCreatedBetween(oldestFlag, undefined, MAX_NEW_ASSET_SCAN)) {
+  for (const c of await loadCandidatesCreatedBetween(
+    oldestFlag,
+    undefined,
+    MAX_NEW_ASSET_SCAN,
+    sources.albumIds,
+  )) {
     pool.set(c.id, c);
   }
   for (const l of live) {
@@ -116,6 +128,7 @@ export async function runEditDetection(db: SQLiteDatabase): Promise<EditDetectio
       l.row.taken_at - CREATION_TOLERANCE_MS,
       l.row.taken_at + CREATION_TOLERANCE_MS,
       MAX_SIBLING_SCAN,
+      sources.albumIds,
     );
     for (const c of siblings) pool.set(c.id, c);
   }

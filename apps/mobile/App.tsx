@@ -18,6 +18,7 @@ import { CullListScreen } from './src/screens/CullListScreen';
 import { SummaryScreen } from './src/screens/SummaryScreen';
 import { EditQueueScreen } from './src/screens/EditQueueScreen';
 import { DayProgressScreen } from './src/screens/DayProgressScreen';
+import { SourcePickerScreen } from './src/screens/SourcePickerScreen';
 import { colors } from './src/theme';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -84,6 +85,11 @@ export default function App() {
                     name="DayProgress"
                     component={DayProgressScreen}
                     options={{ title: 'Day progress' }}
+                  />
+                  <Stack.Screen
+                    name="SourcePicker"
+                    component={SourcePickerScreen}
+                    options={{ title: 'Photo source' }}
                   />
                 </Stack.Navigator>
               </NavigationContainer>

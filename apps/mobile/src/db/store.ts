@@ -17,9 +17,44 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 import type { DuelRecord, PhotoState } from '@afterglow/core';
 import type { LoadedPhoto } from '../lib/media';
+import { sourceLikePattern } from '../lib/sources';
 
 /** Max ids per IN (...) chunk — stays under SQLite's bind-parameter limit. */
 const IN_CHUNK = 500;
+
+/**
+ * Photo-source roots as an SQL fragment over `photos.uri` (m0.3.1).
+ * `roots` null/empty = "All folders" (no filter). The LIKE containment
+ * match (`%/<root>/%`, ASCII-case-insensitive by SQLite default) is the
+ * DB-side counterpart of the album matching in sources.ts — see its
+ * module docs for the accepted looseness.
+ */
+function sourceClause(roots: readonly string[] | null | undefined): {
+  sql: string;
+  params: string[];
+} {
+  if (!roots || roots.length === 0) return { sql: '', params: [] };
+  const likes = roots.map(() => "uri LIKE ? ESCAPE '\\'").join(' OR ');
+  return { sql: ` AND (${likes})`, params: roots.map(sourceLikePattern) };
+}
+
+/** Read one settings value (null when unset). */
+export async function getSetting(db: SQLiteDatabase, key: string): Promise<string | null> {
+  const row = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM settings WHERE key = ?',
+    key,
+  );
+  return row?.value ?? null;
+}
+
+/** Upsert one settings value. */
+export async function setSetting(db: SQLiteDatabase, key: string, value: string): Promise<void> {
+  await db.runAsync(
+    'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    key,
+    value,
+  );
+}
 
 function chunk<T>(items: readonly T[], size: number): T[][] {
   const out: T[][] = [];
@@ -314,6 +349,34 @@ export async function markTrashedDirect(db: SQLiteDatabase, assetId: string): Pr
   );
 }
 
+/**
+ * Photos in [startMs, endMs] already handled AND still present in
+ * MediaStore — state to_edit or done ('trashed' rows are deliberately
+ * excluded: they left MediaStore, so they are not part of the MediaStore
+ * count this number gets subtracted from). Feeds the cheap
+ * remaining-to-review scope counts (m0.3.1): remaining =
+ * max(0, mediaStoreCount - handled). Approximate by design — a done
+ * photo deleted outside the app still counts as handled until its row
+ * meets an external-delete reconciliation (none exists yet); the exact
+ * reviewable set is computed when a session starts.
+ */
+export async function countHandledInRange(
+  db: SQLiteDatabase,
+  startMs: number,
+  endMs: number,
+  roots: readonly string[] | null,
+): Promise<number> {
+  const src = sourceClause(roots);
+  const row = await db.getFirstAsync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM photos
+     WHERE taken_at BETWEEN ? AND ? AND state IN ('to_edit', 'done')${src.sql}`,
+    startMs,
+    endMs,
+    ...src.params,
+  );
+  return row?.n ?? 0;
+}
+
 /** Number of photos waiting in the to-edit queue. */
 export async function countToEdit(db: SQLiteDatabase): Promise<number> {
   const row = await db.getFirstAsync<{ n: number }>(
@@ -336,11 +399,17 @@ export interface DayStateCounts {
   tracked: number;
 }
 
-export async function getDayStateCounts(db: SQLiteDatabase, day: string): Promise<DayStateCounts> {
+export async function getDayStateCounts(
+  db: SQLiteDatabase,
+  day: string,
+  roots: readonly string[] | null = null,
+): Promise<DayStateCounts> {
+  const src = sourceClause(roots);
   const rows = await db.getAllAsync<{ state: PhotoState; grouped: number; n: number }>(
     `SELECT state, (group_id IS NOT NULL) AS grouped, COUNT(*) AS n
-     FROM photos WHERE day = ? GROUP BY state, grouped`,
+     FROM photos WHERE day = ?${src.sql} GROUP BY state, grouped`,
     day,
+    ...src.params,
   );
   const counts: DayStateCounts = {
     unreviewedGrouped: 0,
@@ -393,7 +462,9 @@ export interface DaySummaryRow {
 export async function getDaySummaries(
   db: SQLiteDatabase,
   sinceDay: string,
+  roots: readonly string[] | null = null,
 ): Promise<Map<string, DaySummaryRow>> {
+  const src = sourceClause(roots);
   const rows = await db.getAllAsync<DaySummaryRow>(
     `SELECT day,
             COUNT(*) AS tracked,
@@ -401,9 +472,10 @@ export async function getDaySummaries(
             SUM(CASE WHEN state = 'trashed' THEN 1 ELSE 0 END) AS trashed,
             SUM(CASE WHEN state = 'to_edit' THEN 1 ELSE 0 END) AS toEdit,
             SUM(CASE WHEN state IN ('culled', 'confirmed') THEN 1 ELSE 0 END) AS staged
-     FROM photos WHERE day IS NOT NULL AND day >= ?
+     FROM photos WHERE day IS NOT NULL AND day >= ?${src.sql}
      GROUP BY day`,
     sinceDay,
+    ...src.params,
   );
   return new Map(rows.map((r) => [r.day, r]));
 }

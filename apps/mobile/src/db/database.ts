@@ -87,6 +87,16 @@ const MIGRATIONS: readonly string[] = [
     ALTER TABLE sessions ADD COLUMN finished INTEGER NOT NULL DEFAULT 0;
     UPDATE sessions SET finished = 1 WHERE completed_at IS NOT NULL;
   `,
+  // 3 → 4: m0.3.1 settings (photo-source folder targeting). A generic
+  // key/value table — the photo-source selection is a JSON blob under
+  // 'photo_sources' (see src/lib/sources.ts); future small settings can
+  // share the table without further migrations.
+  `
+    CREATE TABLE IF NOT EXISTS settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

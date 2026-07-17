@@ -7,6 +7,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { getDayStateCounts, type DayStateCounts } from '../db/store';
 import { countPhotosInRange } from '../lib/media';
+import { resolveSources } from '../lib/sourceCatalog';
 import { labelForDayKey, rangeOfDayKey } from '../lib/dates';
 import { StateProgressBar } from '../components/StateProgressBar';
 import { colors, touch } from '../theme';
@@ -56,9 +57,11 @@ export function DayProgressScreen({ route }: Props) {
       let cancelled = false;
       (async () => {
         const range = rangeOfDayKey(day);
+        // Respect the photo-source folder filter (m0.3.1) on both sides.
+        const src = await resolveSources(db).catch(() => null);
         const [msTotal, counts] = await Promise.all([
-          countPhotosInRange(range.startMs, range.endMs).catch(() => 0),
-          getDayStateCounts(db, day),
+          countPhotosInRange(range.startMs, range.endMs, src?.albumIds ?? null).catch(() => 0),
+          getDayStateCounts(db, day, src?.roots ?? null),
         ]);
         if (!cancelled) setData(breakdown(msTotal, counts));
       })();

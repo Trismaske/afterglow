@@ -74,6 +74,82 @@ export async function countPhotosInRange(startMs: number, endMs: number): Promis
   return page.totalCount;
 }
 
+/** Live MediaStore details for one asset (edit detection, m0.3). */
+export interface AssetDetails {
+  id: string;
+  filename: string;
+  creationTime: number;
+  modificationTime: number;
+  uri: string;
+  /** Readable file path when MediaStore exposes one (preferred for hashing). */
+  localUri: string | null;
+}
+
+/**
+ * Re-query one asset. Returns null when the asset no longer exists (or the
+ * lookup fails) — callers treat that as "no detection signal".
+ */
+export async function getAssetDetails(assetId: string): Promise<AssetDetails | null> {
+  try {
+    const info = await MediaLibrary.getAssetInfoAsync(assetId);
+    if (!info) return null;
+    return {
+      id: info.id,
+      filename: info.filename,
+      creationTime: info.creationTime,
+      modificationTime: info.modificationTime,
+      uri: info.uri,
+      localUri: info.localUri ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Candidate asset for edited-copy detection. */
+export interface CandidateAsset {
+  id: string;
+  filename: string;
+  creationTime: number;
+  modificationTime: number;
+  uri: string;
+}
+
+/**
+ * Photos whose creationTime falls in [startMs, endMs] (endMs omitted =
+ * open-ended), capped at `max` — candidate pool for edited-copy detection.
+ */
+export async function loadCandidatesCreatedBetween(
+  startMs: number,
+  endMs: number | undefined,
+  max: number,
+): Promise<CandidateAsset[]> {
+  const out: CandidateAsset[] = [];
+  let after: string | undefined;
+  while (out.length < max) {
+    const page = await MediaLibrary.getAssetsAsync({
+      first: Math.min(PAGE_SIZE, max - out.length),
+      after,
+      createdAfter: startMs,
+      ...(endMs !== undefined ? { createdBefore: endMs } : {}),
+      mediaType: MediaLibrary.MediaType.photo,
+      sortBy: [[MediaLibrary.SortBy.creationTime, false]],
+    });
+    for (const asset of page.assets) {
+      out.push({
+        id: asset.id,
+        filename: asset.filename,
+        creationTime: asset.creationTime,
+        modificationTime: asset.modificationTime,
+        uri: asset.uri,
+      });
+    }
+    if (!page.hasNextPage || !page.endCursor) break;
+    after = page.endCursor;
+  }
+  return out;
+}
+
 /**
  * The `content://` URI for an asset — what ACTION_EDIT needs (external
  * editors can't be granted access to a raw `file://` path on modern
@@ -93,7 +169,9 @@ export async function getEditableContentUri(assetId: string): Promise<string> {
  * the system confirmation dialog and moves photos to the system trash
  * (30-day recovery). Resolves `true` only if the deletion went through;
  * `false` means the user cancelled. THIS IS THE ONLY DELETION CALL IN THE
- * APP — nothing else may delete media.
+ * APP — nothing else may delete media. Reachable from exactly two explicit
+ * user actions: the cull-list confirm button, and the "cull the original"
+ * choice after an edited copy is detected (m0.3).
  */
 export async function deleteAssets(assetIds: readonly string[]): Promise<boolean> {
   if (assetIds.length === 0) return true;

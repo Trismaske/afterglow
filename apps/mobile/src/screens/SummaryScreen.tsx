@@ -1,9 +1,12 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSQLiteContext } from 'expo-sqlite';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { useSession } from '../session/SessionContext';
+import { getAllTimeReclaimedBytes, getFinishedSessionDays } from '../db/store';
+import { currentStreak, dayKey } from '../lib/dates';
 import { BigButton } from '../components/BigButton';
 import { colors, touch } from '../theme';
 import { formatBytes } from '../lib/format';
@@ -13,8 +16,30 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Summary'>;
 /** End-of-session summary: the "done for today" moment. */
 export function SummaryScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
+  const db = useSQLiteContext();
   const { session, label, reclaimedBytes, editFlagCount, finishSession, version } = useSession();
   const [finishing, setFinishing] = useState(false);
+  const [streak, setStreak] = useState<number | null>(null);
+  const [allTimeBytes, setAllTimeBytes] = useState<number | null>(null);
+
+  // Streak + all-time reclaimed (m0.3 polish). This session isn't finished
+  // yet while the summary shows, so today counts as part of the streak.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [days, bytes] = await Promise.all([
+        getFinishedSessionDays(db),
+        getAllTimeReclaimedBytes(db),
+      ]);
+      if (cancelled) return;
+      const today = dayKey(Date.now());
+      setStreak(currentStreak([today, ...days], today));
+      setAllTimeBytes(bytes);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [db]);
 
   const stats = useMemo(() => {
     if (!session) return null;
@@ -56,6 +81,15 @@ export function SummaryScreen({ navigation }: Props) {
         <Stat value={String(stats.kept)} label="keepers" />
         <Stat value={String(stats.trashed)} label="culled to trash" />
         <Stat value={formatBytes(reclaimedBytes)} label="storage reclaimed*" />
+        {streak !== null && (
+          <Stat
+            value={`${streak} day${streak === 1 ? '' : 's'}`}
+            label={streak > 1 ? 'review streak ✦ keep it going' : 'review streak'}
+          />
+        )}
+        {allTimeBytes !== null && allTimeBytes > 0 && (
+          <Stat value={formatBytes(allTimeBytes)} label="reclaimed all-time*" />
+        )}
       </View>
       <Text style={styles.footnote}>
         *approximate — measured before the batch went to the system trash.

@@ -3,6 +3,8 @@ export type RootStackParamList = {
   Home: undefined;
   Groups: undefined;
   Duel: undefined;
+  /** Auto-cull hint: second pass over a completed group's never-won keepers. */
+  Reconsider: { groupId: string };
   Singles: undefined;
   CullList: undefined;
   Summary: undefined;

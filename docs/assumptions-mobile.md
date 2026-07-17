@@ -138,3 +138,93 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
 11. **`photos.session_day` (the free-text session label) is retained but
     superseded** by the new `day` column for anything day-scoped; dropping
     a column needs a table rebuild and isn't worth it in a v2 migration.
+
+## m0.3
+
+1. **Duel-history source of truth (m0.2 open question resolved):** the
+   `duels` SQLite table is the *durable* record (append-only archive across
+   sessions, future mining); the core snapshot's `duelHistory` is
+   *in-session working state* that feeds `autoCullCandidates()`. They are
+   written in the same exclusive transaction so they can't diverge
+   mid-session; if they ever did, the snapshot wins for the active session.
+   Neither was dropped: the table is queryable SQL the snapshot blob isn't,
+   and the snapshot is what core's bracket logic actually replays.
+2. **Detection heuristics live in `apps/mobile/src/lib/editDetection.ts`,
+   not core.** They're Android-MediaStore-shaped (filenames,
+   modificationTime semantics) and useless to desktop; keeping core
+   untouched also avoids racing the other train on shared prebuilt files.
+   The module is pure TS (no platform imports, no Date.now()) and
+   unit-tested with vitest, which is now a mobile devDependency
+   (`npm test -w afterglow-companion`) — revisits m0.1 #13.
+3. **In-place detection = mod-time baseline + lazy hash tiebreaker.**
+   `modificationTime > stored mod_time` alone marks done when no hash
+   baseline exists (accepting rare metadata-only false positives — it's a
+   convenience layer per PLAN.md). Baseline SHA-256 hashes are computed
+   lazily during detection runs for unchanged queued photos (max 5
+   full-file reads per run); once a baseline exists, a mod-time bump with
+   an identical hash is treated as metadata-only and just advances the
+   stored baseline. A moved mod time whose file can't be re-hashed counts
+   as edited (the mod time is the best remaining signal).
+4. **`photos.to_edit_at` (migration v3)** records when a photo entered the
+   queue — the scan window for copy detection — maintained by the same
+   CASE writes that maintain the kept→to_edit remap (first entry wins,
+   kept across done for history). Backfill uses the photo's own mod_time
+   (wider window than the unknowable true flag time; matching tolerates
+   it).
+5. **Copy detection query strategy:** one MediaStore scan of photos created
+   since the oldest queue entry (capped at 400) plus a ±2 s creation-time
+   sibling window per queued photo (capped at 50). Candidates already
+   tracked in SQLite are excluded — that's what stops burst siblings from
+   false-positive timestamp matches AND prevents re-prompting (a detected
+   copy is inserted as `done`, so it's tracked forever after). A candidate
+   must also have been *written* (modificationTime) after flagging.
+6. **Copy-prompt outcomes:** "Keep original" → original `done`;
+   "Cull original" → the standard system-trash dialog (`deleteAssets` is
+   still the app's only delete call — now reachable from exactly two
+   explicit user actions) then `trashed`; cancelling the system dialog or
+   "Decide later" leaves the original queued in the edit queue, where
+   manual Mark done always works. No re-prompt happens later (see #5) —
+   deliberate, not a bug.
+7. **Detection runs on Home focus, throttled to once per 60 s** — "app
+   open" per the plan, plus returning from an editor session usually lands
+   back on Home. It does NOT run on EditQueue focus: that screen already
+   prompts "Mark done?" on editor return, and double-prompting is worse
+   than a 60 s delay.
+8. **Externally deleted photos stay in the edit queue.** If a queued
+   asset no longer resolves (`getAssetInfoAsync` fails), detection skips
+   it rather than guessing trashed — a permission hiccup must not converge
+   a photo. Manual mark-done clears it.
+9. **Auto-cull hints are a separate Reconsider screen**, routed to when a
+   duel decision completes a bracket whose `autoCullCandidates()` (minus
+   needs-edit-flagged photos — the user explicitly wants those) is
+   non-empty. The pending-hint flag is in-memory only: abandoning/resuming
+   mid-transition loses the hint, which is fine for an opportunistic
+   prompt. Undecided candidates stay kept.
+10. **Reconsider-cull uses the snapshot escape hatch.** Core has no
+    kept→culled transition; like the m0.1 confirm-rollback, the app
+    rewrites the versioned snapshot (kept → culled) and persists it with
+    the state change. No duel record is written — a reconsider isn't a
+    duel, and inventing a loser would poison the history.
+11. **A/B flip is an instant opacity swap, deliberately not animated** —
+    flicker-comparison is how you spot the sharper frame. Both photos stay
+    mounted inside ONE transformed container (reanimated shared values on
+    the parent), so pinch-zoom/pan applies to both by construction. Zoom
+    is center-anchored (no focal-point math) and clamped to 1×–8×;
+    pan clamps to the scaled bounds; pinching below ~1× springs back.
+    Gestures compose as Exclusive(Simultaneous(pinch, pan), tap) per RNGH
+    2.x docs. Buttons act on the *visible* candidate ("✕ Cull B",
+    "★ B is better") — clearer than positional buttons on a flip UI.
+    Long-press-to-inspect died; the zoom replaces it.
+12. **Reanimated 4 / worklets setup relies on babel-preset-expo defaults**
+    (SDK 57 auto-configures the worklets plugin; no babel.config.js in the
+    app) and `GestureHandlerRootView` now wraps the app root. Verified via
+    Metro export; real gesture feel needs the on-device run.
+13. **Streak definition:** consecutive local days ending today (or
+    yesterday, while today is unfinished) with ≥ 1 *finished* session —
+    `sessions.finished` (migration v3) distinguishes Finish-button
+    completion from abandonment. Pre-m0.3 completed sessions can't be told
+    apart retroactively and optimistically count as finished. Summary
+    counts the about-to-finish session as today.
+14. **Summary also shows all-time reclaimed bytes** (SUM over sessions,
+    same "approximate" caveat). Cheap per the "if cheap" clause; deeper
+    stats stay m0.4.

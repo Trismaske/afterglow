@@ -72,6 +72,21 @@ const MIGRATIONS: readonly string[] = [
     UPDATE photos SET state = 'done' WHERE state = 'kept';
     CREATE INDEX IF NOT EXISTS idx_photos_day ON photos(day);
   `,
+  // 2 → 3: m0.3 edit detection + streaks.
+  //  - `to_edit_at`: when the photo entered the to-edit queue — the scan
+  //    window for edited-copy detection. Backfilled with the photo's own
+  //    mod time (a wider window than the true flag time; the matching
+  //    heuristics tolerate that).
+  //  - `sessions.finished`: 1 only when the user pressed Finish on the
+  //    summary screen; abandoned sessions keep 0. Drives the review streak.
+  //    Pre-m0.3 completed sessions can't be told apart from abandoned ones,
+  //    so they optimistically count as finished.
+  `
+    ALTER TABLE photos ADD COLUMN to_edit_at INTEGER;
+    UPDATE photos SET to_edit_at = COALESCE(mod_time, taken_at) WHERE state = 'to_edit';
+    ALTER TABLE sessions ADD COLUMN finished INTEGER NOT NULL DEFAULT 0;
+    UPDATE sessions SET finished = 1 WHERE completed_at IS NOT NULL;
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

@@ -92,6 +92,20 @@ interface SessionContextValue {
   toggleNeedsEdit: (id: string) => Promise<void>;
   /** How many photos in this session are flagged for editing. */
   editFlagCount: number;
+  /**
+   * Group whose bracket just completed with never-won keepers — the Duel
+   * screen routes to the Reconsider (auto-cull hint) screen when set.
+   * In-memory only: lost on app restart (the hint is opportunistic).
+   */
+  pendingReconsider: string | null;
+  clearPendingReconsider: () => void;
+  /**
+   * Second-pass cull from the Reconsider screen: a kept photo goes to the
+   * staged cull list. Core has no kept→culled transition, so this rewrites
+   * the versioned snapshot (the supported escape hatch, same as the
+   * confirm-rollback path). Not a duel — no duel record is written.
+   */
+  reconsiderCull: (id: string) => Promise<void>;
   unstageCull: (id: string) => Promise<void>;
   /** THE one delete path: confirm staged culls → system dialog → trash. */
   confirmCulls: () => Promise<ConfirmResult>;
@@ -127,6 +141,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [label, setLabel] = useState('');
   const [reclaimedBytes, setReclaimedBytes] = useState(0);
   const [version, setVersion] = useState(0);
+  const [pendingReconsider, setPendingReconsider] = useState<string | null>(null);
 
   const bump = useCallback(() => setVersion((v) => v + 1), []);
 
@@ -144,13 +159,20 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   /** Persist a mutation the session just performed. */
   const persist = useCallback(
-    async (duel?: Parameters<typeof persistDecision>[4]) => {
+    async (duel?: Parameters<typeof persistDecision>[5]) => {
       const session = sessionRef.current;
       if (!session || sessionId === null) return;
       const after = statesOf(session);
       const changes = changedStates(lastStatesRef.current, after);
       lastStatesRef.current = after;
-      await persistDecision(db, sessionId, JSON.stringify(session.toJSON()), changes, duel);
+      await persistDecision(
+        db,
+        sessionId,
+        JSON.stringify(session.toJSON()),
+        changes,
+        Date.now(),
+        duel,
+      );
     },
     [db, sessionId],
   );
@@ -193,6 +215,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       setSessionId(id);
       setLabel(newLabel);
       setReclaimedBytes(0);
+      setPendingReconsider(null);
       bump();
     },
     [db, indexSession, bump],
@@ -228,6 +251,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setSessionId(null);
     setLabel('');
     setReclaimedBytes(0);
+    setPendingReconsider(null);
     bump();
   }, [db, bump]);
 
@@ -236,11 +260,45 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       const session = sessionRef.current;
       if (!session) throw new Error('decideDuel: no active session');
       const record = session.decideDuel(decision, Date.now());
+      // Auto-cull hint (m0.3): a completed bracket with keepers that never
+      // won a duel earns a second-pass "reconsider these?" screen. Photos
+      // the user flagged needs-edit are exempt — they explicitly want them.
+      if (session.isGroupComplete(record.groupId)) {
+        const candidates = session
+          .autoCullCandidates(record.groupId)
+          .filter((item) => !needsEditRef.current.has(item.id));
+        if (candidates.length > 0) setPendingReconsider(record.groupId);
+      }
       bump();
       await persist(record);
       if (!record.keptBoth) void hashInBackground(record.loserId);
     },
     [persist, bump],
+  );
+
+  const clearPendingReconsider = useCallback(() => setPendingReconsider(null), []);
+
+  const reconsiderCull = useCallback(
+    async (id: string) => {
+      const session = sessionRef.current;
+      if (!session || sessionId === null) throw new Error('reconsiderCull: no active session');
+      const snap = session.toJSON();
+      if (snap.states[id] !== 'kept') return; // already culled/edited — nothing to do
+      snap.states[id] = 'culled';
+      const restored = CullSession.fromJSON(snap);
+      sessionRef.current = restored;
+      indexSession(restored); // also refreshes lastStatesRef
+      bump();
+      await persistDecision(
+        db,
+        sessionId,
+        JSON.stringify(restored.toJSON()),
+        [[id, 'culled']],
+        Date.now(),
+      );
+      void hashInBackground(id);
+    },
+    [db, sessionId, indexSession, bump],
   );
 
   const decideSingle = useCallback(
@@ -251,7 +309,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         // Core only knows keep/cull — the edit flag is app-side state.
         // Set the flag BEFORE persisting so the state write lands as
         // 'to_edit' (see persistDecision's CASE).
-        await setNeedsEdit(db, id, true);
+        await setNeedsEdit(db, id, true, Date.now());
         needsEditRef.current.add(id);
         session.decideSingle(id, 'keep');
       } else {
@@ -278,7 +336,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       else needsEditRef.current.add(id);
       bump();
       // setNeedsEdit also remaps an already-kept row to to_edit (and back).
-      await setNeedsEdit(db, id, !flagged);
+      await setNeedsEdit(db, id, !flagged, Date.now());
     },
     [db, bump],
   );
@@ -344,7 +402,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     indexSession(restored);
     bump();
     await persistDecision(db, sessionId, JSON.stringify(restored.toJSON()),
-      ids.map((id) => [id, 'culled'] as [string, PhotoState]));
+      ids.map((id) => [id, 'culled'] as [string, PhotoState]), Date.now());
     lastStatesRef.current = statesOf(restored);
     return { deleted: false, count: ids.length, bytes };
   }, [db, sessionId, persist, indexSession, bump]);
@@ -366,6 +424,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     needsEditRef.current = new Set();
     setSessionId(null);
     setLabel('');
+    setPendingReconsider(null);
     bump();
   }, [db, sessionId, bump]);
 
@@ -404,6 +463,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       needsEdit,
       toggleNeedsEdit,
       editFlagCount,
+      pendingReconsider,
+      clearPendingReconsider,
+      reconsiderCull,
       unstageCull,
       confirmCulls,
       finishSession,
@@ -422,6 +484,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       needsEdit,
       toggleNeedsEdit,
       editFlagCount,
+      pendingReconsider,
+      clearPendingReconsider,
+      reconsiderCull,
       unstageCull,
       confirmCulls,
       finishSession,

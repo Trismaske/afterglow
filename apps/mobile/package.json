@@ -1,6 +1,6 @@
 {
   "name": "afterglow-companion",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "main": "index.ts",
   "dependencies": {
     "@afterglow/core": "*",
@@ -25,10 +25,12 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
-    "typescript": "~6.0.3"
+    "typescript": "~6.0.3",
+    "vitest": "^3.0.0"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",

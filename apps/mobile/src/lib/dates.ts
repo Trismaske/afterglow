@@ -84,6 +84,29 @@ export function recentDayKeys(count: number, now: Date = new Date()): string[] {
   return keys;
 }
 
+/** The day key immediately before `key` (handles month/year rollover). */
+export function previousDayKey(key: string): string {
+  const [y, m, d] = key.split('-').map(Number);
+  return dayKey(new Date(y, m - 1, d - 1).getTime());
+}
+
+/**
+ * Review streak: consecutive days with a finished session, walking back
+ * from `today`. A day without a session breaks the streak — except today
+ * itself, which is still in progress (yesterday's streak holds until
+ * midnight).
+ */
+export function currentStreak(daysWithSessions: readonly string[], today: string): number {
+  const days = new Set(daysWithSessions);
+  let cursor = days.has(today) ? today : previousDayKey(today);
+  let streak = 0;
+  while (days.has(cursor)) {
+    streak++;
+    cursor = previousDayKey(cursor);
+  }
+  return streak;
+}
+
 const DAY_FORMAT: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
 
 export function formatDay(ms: number): string {

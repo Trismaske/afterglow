@@ -26,6 +26,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test -w @afterglow/core
+      - run: npm test -w afterglow-companion
       - run: npm run typecheck -w afterglow-companion
       - name: Metro bundle proof (Android export)
         run: npx expo export --platform android --output-dir /tmp/expo-export

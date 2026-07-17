@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -17,8 +17,15 @@ import {
   yesterdayRange,
   type DateRange,
 } from '../lib/dates';
-import { countPhotosInRange, loadPhotosInRange, type LoadedPhoto } from '../lib/media';
-import { countToEdit, getDaySummaries, getStatesForAssets } from '../db/store';
+import { countPhotosInRange, deleteAssets, loadPhotosInRange, type LoadedPhoto } from '../lib/media';
+import {
+  countToEdit,
+  getDaySummaries,
+  getStatesForAssets,
+  markEditDone,
+  markTrashedDirect,
+} from '../db/store';
+import { runEditDetection, type DetectedCopy } from '../lib/detect';
 import { useSession, CULL_GROUP_GAP_MS } from '../session/SessionContext';
 import { BigButton } from '../components/BigButton';
 import { StateProgressBar } from '../components/StateProgressBar';
@@ -66,6 +73,10 @@ export function HomeScreen({ navigation }: Props) {
   const [starting, setStarting] = useState(false);
   const [editCount, setEditCount] = useState(0);
   const [dayRows, setDayRows] = useState<DayRow[] | null>(null);
+  const [detectionNotice, setDetectionNotice] = useState<string | null>(null);
+  /** Bumped after detection changes states, to re-run the focus loaders. */
+  const [refreshTick, setRefreshTick] = useState(0);
+  const lastDetectionRef = useRef(0);
 
   const range: DateRange = useMemo(() => {
     if (scope === 'today') return todayRange(new Date());
@@ -90,6 +101,73 @@ export function HomeScreen({ navigation }: Props) {
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sessionCtx.version]),
+  );
+
+  /** Keep-or-cull prompts for detected edited copies, one at a time. */
+  const promptForCopies = useCallback(
+    (copies: readonly DetectedCopy[]) => {
+      const [head, ...rest] = copies;
+      if (!head) {
+        setRefreshTick((t) => t + 1);
+        return;
+      }
+      const next = () => promptForCopies(rest);
+      Alert.alert(
+        'Edited copy detected',
+        `“${head.copyFilename}” looks like an edited copy of “${head.originalFilename}”. ` +
+          'The copy is marked done. What about the original?',
+        [
+          { text: 'Decide later', style: 'cancel', onPress: next },
+          {
+            text: 'Cull original',
+            style: 'destructive',
+            onPress: () =>
+              void (async () => {
+                // System dialog is the real gate; cancel leaves it queued.
+                const deleted = await deleteAssets([head.originalAssetId]);
+                if (deleted) await markTrashedDirect(db, head.originalAssetId);
+                next();
+              })(),
+          },
+          {
+            text: 'Keep original',
+            onPress: () =>
+              void (async () => {
+                await markEditDone(db, head.originalAssetId);
+                next();
+              })(),
+          },
+        ],
+      );
+    },
+    [db],
+  );
+
+  // m0.3 edit detection — runs on app open / return to Home, throttled.
+  useFocusEffect(
+    useCallback(() => {
+      if (!permission?.granted) return;
+      const now = Date.now();
+      if (now - lastDetectionRef.current < 60_000) return;
+      lastDetectionRef.current = now;
+      let cancelled = false;
+      (async () => {
+        const result = await runEditDetection(db).catch(() => null);
+        if (!result || cancelled) return;
+        if (result.autoDone > 0) {
+          setDetectionNotice(
+            result.autoDone === 1
+              ? '✓ 1 edited photo detected — marked done'
+              : `✓ ${result.autoDone} edited photos detected — marked done`,
+          );
+          setRefreshTick((t) => t + 1);
+        }
+        if (result.copies.length > 0) promptForCopies(result.copies);
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [db, permission?.granted, promptForCopies]),
   );
 
   // Edit-queue badge + recent-days progress, refreshed on focus.
@@ -130,7 +208,8 @@ export function HomeScreen({ navigation }: Props) {
       return () => {
         cancelled = true;
       };
-    }, [db, permission?.granted]),
+      // refreshTick re-runs this after edit detection changes states.
+    }, [db, permission?.granted, refreshTick]),
   );
 
   // Load photos + previously-handled filter whenever the range changes.
@@ -230,6 +309,13 @@ export function HomeScreen({ navigation }: Props) {
     >
       <Text style={styles.title}>Afterglow Companion</Text>
       <Text style={styles.subtitle}>Clear today's photos down to the keepers.</Text>
+
+      {detectionNotice && (
+        <Pressable style={styles.notice} onPress={() => setDetectionNotice(null)}>
+          <Text style={styles.noticeText}>{detectionNotice}</Text>
+          <Text style={styles.noticeDismiss}>dismiss</Text>
+        </Pressable>
+      )}
 
       {!permission?.granted && (
         <View style={styles.card}>
@@ -432,6 +518,20 @@ const styles = StyleSheet.create({
   },
   dateFieldLabel: { color: colors.textDim, fontSize: 12 },
   dateFieldValue: { color: colors.text, fontSize: 16, fontWeight: '600' },
+  notice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    backgroundColor: colors.keepDim,
+    borderRadius: touch.radius,
+    borderWidth: 1,
+    borderColor: colors.keep,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  noticeText: { color: colors.text, fontSize: 14, fontWeight: '600', flexShrink: 1 },
+  noticeDismiss: { color: colors.textDim, fontSize: 12 },
   editQueueRow: {
     flexDirection: 'row',
     alignItems: 'center',

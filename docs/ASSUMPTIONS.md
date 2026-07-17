@@ -61,6 +61,27 @@ and [assumptions-mobile.md](assumptions-mobile.md).
 14. Mobile convergence rule: unflagged keepers become `done` when a session is finished
     via Summary; abandoned sessions get re-reviewed.
 
+## Dev environment (added 2026-07-17, emulator setup session)
+
+19. **Android package ID is now `com.afterglow.companion`** (was Expo's default
+    `com.anonymous.afterglowcompanion` for the very first emulator build; nothing
+    had shipped, so the rename was free). Mirrors desktop's `com.afterglow.desktop`.
+20. **Toolchain installs are user-local, no sudo**: Temurin JDK 21 + Android SDK
+    under `~/Android`, pinned + checksum-verified in `scripts/setup-android-env.sh`.
+    apt-based JDK install was rejected to keep the script sudo-free and the JDK
+    version exactly pinned. Google's site lists SHA-1 for cmdline-tools; the SHA-256
+    pin was computed from a download verified against that SHA-1.
+21. **AVD**: Pixel 7, Android 16 (API 36, Google APIs, x86_64), named
+    `afterglow-pixel7`, 4 GB RAM / 8 GB storage. KVM present via login ACL.
+22. **Emulator media-scanner quirk** (worth knowing for fixture-based testing):
+    EXIF dates on adb-pushed JPEGs got inconsistent `datetaken` values, and
+    MediaStore rejects direct `datetaken` updates from the adb shell. App-level
+    grouping was verified with an 8-photo cull group; per-timestamp clustering
+    fidelity is better tested on a real phone.
+23. The app was verified live on the emulator: Home → permission grant → session
+    (8 to review, 1 group) → duel screen with A/B flip → bracket advance after
+    "A is better". Screenshots in the session scratchpad, not committed.
+
 ## Smaller code decisions
 
 15. `electronVersion` pinned to 37.10.3 in electron-builder.yml (hoisted workspace dep

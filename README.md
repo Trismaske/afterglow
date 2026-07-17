@@ -1,7 +1,10 @@
 # afterglow
 An Electron based cross platform screensaver app that shows RAW files (with their edits applied from sidecar XMPs) as well as videos (muted) and normal photos.
 
-See [PLAN.md](PLAN.md) for the product plan and release roadmap.
+See [PLAN.md](PLAN.md) for the product plan and release roadmap, and
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full developer setup —
+including the one-command Android toolchain/emulator install
+(`npm run setup:android`).
 
 ## Afterglow Desktop — quickstart
 
@@ -118,3 +121,16 @@ better"), staged culls are deleted in one confirmed batch to the system
 trash. See [apps/mobile/README.md](apps/mobile/README.md) for the flow and
 how to run it — it needs an Android development build
 (`npx expo run:android`), **not Expo Go**.
+
+Dev-environment setup (JDK, Android SDK, emulator) is one command from the
+repo root — see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md):
+
+```bash
+npm run setup:android        # installs everything under ~/Android, no sudo
+source scripts/android-env.sh
+npm run emulator             # boot the afterglow-pixel7 AVD
+npm run mobile:android       # build + install + launch the app
+```
+
+Run Expo commands from `apps/mobile` (or via the root aliases above) —
+running them from the repo root scaffolds a junk project into the root.

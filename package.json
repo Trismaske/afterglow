@@ -10,7 +10,11 @@
   "scripts": {
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "build": "npm run build --workspaces --if-present"
+    "build": "npm run build --workspaces --if-present",
+    "setup:android": "bash scripts/setup-android-env.sh",
+    "emulator": "bash scripts/run-emulator.sh",
+    "mobile:android": "npm run android:run -w afterglow-companion",
+    "mobile:start": "npm run start -w afterglow-companion"
   },
   "engines": {
     "node": ">=22"

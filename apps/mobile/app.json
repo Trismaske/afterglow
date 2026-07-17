@@ -16,7 +16,14 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.afterglow.companion",
+      "permissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.READ_MEDIA_IMAGES"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -29,7 +36,9 @@
         "expo-media-library",
         {
           "photosPermission": "Allow $(PRODUCT_NAME) to review your photos.",
-          "granularPermissions": ["photo"],
+          "granularPermissions": [
+            "photo"
+          ],
           "isAccessMediaLocationEnabled": false
         }
       ]

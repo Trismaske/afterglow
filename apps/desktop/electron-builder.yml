@@ -1,0 +1,36 @@
+appId: com.afterglow.desktop
+productName: Afterglow
+
+# electron is hoisted to the workspace root, so electron-builder cannot
+# resolve the ^37 range on its own. Keep in sync with the installed version
+# (npm ls electron).
+electronVersion: 37.10.3
+
+directories:
+  output: release
+
+# Everything the app needs at runtime is bundled by esbuild into dist/;
+# no node_modules ship in the package.
+files:
+  - dist/**
+  - package.json
+
+asar: true
+npmRebuild: false
+
+win:
+  target:
+    - nsis
+    - portable
+
+nsis:
+  oneClick: true
+  deleteAppDataOnUninstall: false
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Graphics
+  maintainer: trismaske@gmail.com
+  synopsis: Fullscreen ambient photo display

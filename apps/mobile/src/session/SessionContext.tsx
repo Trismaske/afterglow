@@ -4,7 +4,10 @@
  * actions to the screens.
  *
  * All bracket/staging logic lives in @afterglow/core — this file only
- * adapts it to React and persistence.
+ * adapts it to React and persistence. The m0.2 additions (needs-edit flags,
+ * kept → done convergence) are app-side state layered over the core
+ * session: core only knows kept/culled; SQLite is the source of truth for
+ * to_edit/done (PLAN.md).
  */
 import React, {
   createContext,
@@ -23,23 +26,29 @@ import {
   type DuelDecision,
   type MediaItem,
   type PhotoState,
-  type SingleAction,
 } from '@afterglow/core';
 import type { LoadedPhoto } from '../lib/media';
 import { deleteAssets } from '../lib/media';
 import { fileSize, sha256OfFile } from '../lib/hash';
+import { dayKey } from '../lib/dates';
 import {
   abandonActiveSessions,
   addReclaimedBytes,
   completeSession,
   createSession,
   getActiveSession,
+  getNeedsEditAssets,
+  markKeptDone,
   persistDecision,
   setContentHash,
+  setNeedsEdit,
 } from '../db/store';
 
 /** Gap that makes shots "the same moment" → one cull group. */
 export const CULL_GROUP_GAP_MS = MOMENTS_GAP_MS; // 3 minutes
+
+/** m0.2 single-review actions ('to_edit' = keep + flag for the edit queue). */
+export type SingleReviewAction = 'keep' | 'cull' | 'to_edit';
 
 export interface GroupInfo {
   id: string;
@@ -76,10 +85,17 @@ interface SessionContextValue {
   resumeSession: () => Promise<boolean>;
   discardActiveSession: () => Promise<void>;
   decideDuel: (decision: DuelDecision) => Promise<void>;
-  decideSingle: (id: string, action: SingleAction) => Promise<void>;
+  decideSingle: (id: string, action: SingleReviewAction) => Promise<void>;
+  /** Whether a photo carries the "keeper needs editing" flag. */
+  needsEdit: (id: string) => boolean;
+  /** Flip the needs-edit flag (persisted immediately; state remaps if kept). */
+  toggleNeedsEdit: (id: string) => Promise<void>;
+  /** How many photos in this session are flagged for editing. */
+  editFlagCount: number;
   unstageCull: (id: string) => Promise<void>;
   /** THE one delete path: confirm staged culls → system dialog → trash. */
   confirmCulls: () => Promise<ConfirmResult>;
+  /** Finish: remaining keepers converge to done; to_edit stays queued. */
   finishSession: () => Promise<void>;
 }
 
@@ -106,6 +122,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const lastStatesRef = useRef<Map<string, PhotoState>>(new Map());
   const groupItemsRef = useRef<{ id: string; items: MediaItem[] }[]>([]);
   const singleIdsRef = useRef<string[]>([]);
+  const needsEditRef = useRef<Set<string>>(new Set());
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [label, setLabel] = useState('');
   const [reclaimedBytes, setReclaimedBytes] = useState(0);
@@ -162,12 +179,17 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         rangeStart,
         rangeEnd,
         snapshot: JSON.stringify(session.toJSON()),
-        photos: photos.map((p) => ({ ...p, groupId: groupIdByAsset.get(p.item.id) ?? null })),
+        photos: photos.map((p) => ({
+          ...p,
+          groupId: groupIdByAsset.get(p.item.id) ?? null,
+          day: dayKey(p.item.timestamp),
+        })),
         createdAt: Date.now(),
       });
 
       sessionRef.current = session;
       indexSession(session);
+      needsEditRef.current = new Set();
       setSessionId(id);
       setLabel(newLabel);
       setReclaimedBytes(0);
@@ -183,6 +205,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       const session = CullSession.fromJSON(JSON.parse(row.snapshot));
       sessionRef.current = session;
       indexSession(session);
+      needsEditRef.current = await getNeedsEditAssets(
+        db,
+        session.toJSON().items.map((i) => i.id),
+      );
       setSessionId(row.id);
       setLabel(row.label);
       setReclaimedBytes(row.reclaimed_bytes);
@@ -198,6 +224,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const discardActiveSession = useCallback(async () => {
     await abandonActiveSessions(db, Date.now());
     sessionRef.current = null;
+    needsEditRef.current = new Set();
     setSessionId(null);
     setLabel('');
     setReclaimedBytes(0);
@@ -217,15 +244,43 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   );
 
   const decideSingle = useCallback(
-    async (id: string, action: SingleAction) => {
+    async (id: string, action: SingleReviewAction) => {
       const session = sessionRef.current;
       if (!session) throw new Error('decideSingle: no active session');
-      session.decideSingle(id, action);
+      if (action === 'to_edit') {
+        // Core only knows keep/cull — the edit flag is app-side state.
+        // Set the flag BEFORE persisting so the state write lands as
+        // 'to_edit' (see persistDecision's CASE).
+        await setNeedsEdit(db, id, true);
+        needsEditRef.current.add(id);
+        session.decideSingle(id, 'keep');
+      } else {
+        session.decideSingle(id, action);
+      }
       bump();
       await persist();
       if (action === 'cull') void hashInBackground(id);
     },
-    [persist, bump],
+    [db, persist, bump],
+  );
+
+  const needsEdit = useCallback(
+    (id: string) => needsEditRef.current.has(id),
+    // needsEditRef is a ref; version ties re-renders to mutations.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [version],
+  );
+
+  const toggleNeedsEdit = useCallback(
+    async (id: string) => {
+      const flagged = needsEditRef.current.has(id);
+      if (flagged) needsEditRef.current.delete(id);
+      else needsEditRef.current.add(id);
+      bump();
+      // setNeedsEdit also remaps an already-kept row to to_edit (and back).
+      await setNeedsEdit(db, id, !flagged);
+    },
+    [db, bump],
   );
 
   /** Content-hash fallback identity, computed only for staged culls. */
@@ -295,9 +350,20 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [db, sessionId, persist, indexSession, bump]);
 
   const finishSession = useCallback(async () => {
+    const session = sessionRef.current;
     if (sessionId === null) return;
+    // Converge: keepers that don't need editing are done. Rows already
+    // remapped to 'to_edit' are untouched (markKeptDone only hits 'kept').
+    if (session) {
+      const snap = session.toJSON();
+      const keptIds = Object.entries(snap.states)
+        .filter(([, state]) => state === 'kept')
+        .map(([id]) => id);
+      await markKeptDone(db, keptIds);
+    }
     await completeSession(db, sessionId, Date.now());
     sessionRef.current = null;
+    needsEditRef.current = new Set();
     setSessionId(null);
     setLabel('');
     bump();
@@ -315,6 +381,12 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version]);
 
+  const editFlagCount = useMemo(
+    () => needsEditRef.current.size,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [version],
+  );
+
   const value: SessionContextValue = useMemo(
     () => ({
       session: sessionRef.current,
@@ -329,6 +401,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       discardActiveSession,
       decideDuel,
       decideSingle,
+      needsEdit,
+      toggleNeedsEdit,
+      editFlagCount,
       unstageCull,
       confirmCulls,
       finishSession,
@@ -344,6 +419,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       discardActiveSession,
       decideDuel,
       decideSingle,
+      needsEdit,
+      toggleNeedsEdit,
+      editFlagCount,
       unstageCull,
       confirmCulls,
       finishSession,

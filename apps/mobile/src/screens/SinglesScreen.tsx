@@ -12,8 +12,10 @@ import { formatClock } from '../lib/format';
 type Props = NativeStackScreenProps<RootStackParamList, 'Singles'>;
 
 /**
- * One-at-a-time review of photos outside any cull group. Big Keep / Cull
- * buttons (m0.1 call — swipe gestures are later polish).
+ * One-at-a-time review of photos outside any cull group. Big Cull /
+ * To edit / Keep buttons (m0.2 adds the edit path; swipes remain later
+ * polish). "To edit" keeps the photo AND queues it in the edit queue;
+ * "Keep" converges to done when the session finishes.
  */
 export function SinglesScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
@@ -34,7 +36,7 @@ export function SinglesScreen({ navigation }: Props) {
   }, [session, current, navigation]);
 
   const decide = useCallback(
-    async (action: 'keep' | 'cull') => {
+    async (action: 'keep' | 'cull' | 'to_edit') => {
       if (!current || busy) return;
       setBusy(true);
       try {
@@ -69,14 +71,21 @@ export function SinglesScreen({ navigation }: Props) {
       </View>
       <View style={styles.actions}>
         <BigButton
-          label="✕ Cull"
+          label={'✕\nCull'}
           color={colors.cull}
           disabled={busy}
           onPress={() => void decide('cull')}
           style={styles.actionButton}
         />
         <BigButton
-          label="✓ Keep"
+          label={'✎\nTo edit'}
+          color={colors.edit}
+          disabled={busy}
+          onPress={() => void decide('to_edit')}
+          style={styles.actionButton}
+        />
+        <BigButton
+          label={'✓\nKeep'}
           color={colors.keep}
           disabled={busy}
           onPress={() => void decide('keep')}

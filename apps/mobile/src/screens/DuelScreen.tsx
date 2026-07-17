@@ -20,7 +20,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Duel'>;
  */
 export function DuelScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
-  const { session, groups, decideDuel, version } = useSession();
+  const { session, groups, decideDuel, needsEdit, toggleNeedsEdit, version } = useSession();
   const [busy, setBusy] = useState(false);
   const [zoomed, setZoomed] = useState<MediaItem | null>(null);
 
@@ -76,6 +76,19 @@ export function DuelScreen({ navigation }: Props) {
         <View style={styles.timeTag}>
           <Text style={styles.timeTagText}>{formatClock(item.timestamp)}</Text>
         </View>
+        {/* m0.2: "keep → needs edit". The flag follows the photo — if it
+            ends up kept (duel loser kept, or group best), it lands in the
+            to-edit queue instead of plain done. */}
+        <Pressable
+          style={[styles.editTag, needsEdit(item.id) && styles.editTagActive]}
+          hitSlop={8}
+          disabled={busy}
+          onPress={() => void toggleNeedsEdit(item.id)}
+        >
+          <Text style={[styles.editTagText, needsEdit(item.id) && styles.editTagTextActive]}>
+            {needsEdit(item.id) ? '✎ needs edit ✓' : '✎ needs edit'}
+          </Text>
+        </Pressable>
       </Pressable>
       <View style={styles.actionRow}>
         <Pressable
@@ -143,6 +156,20 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
   },
   timeTagText: { color: colors.text, fontSize: 12, fontWeight: '600' },
+  editTag: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  editTagActive: { backgroundColor: colors.editDim, borderColor: colors.edit },
+  editTagText: { color: colors.textDim, fontSize: 12, fontWeight: '700' },
+  editTagTextActive: { color: colors.edit },
   actionRow: { flexDirection: 'row' },
   actionButton: {
     flex: 1,

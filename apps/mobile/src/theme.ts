@@ -8,8 +8,11 @@ export const colors = {
   textDim: '#9aa3b2',
   accent: '#e8a54b', // afterglow amber
   keep: '#3fb96a',
+  keepDim: '#2a4a36',
   cull: '#e05252',
   cullDim: '#5a2a2a',
+  edit: '#5f8fe8',
+  editDim: '#22334f',
 } as const;
 
 export const touch = {

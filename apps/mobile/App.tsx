@@ -14,6 +14,8 @@ import { DuelScreen } from './src/screens/DuelScreen';
 import { SinglesScreen } from './src/screens/SinglesScreen';
 import { CullListScreen } from './src/screens/CullListScreen';
 import { SummaryScreen } from './src/screens/SummaryScreen';
+import { EditQueueScreen } from './src/screens/EditQueueScreen';
+import { DayProgressScreen } from './src/screens/DayProgressScreen';
 import { colors } from './src/theme';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -64,6 +66,16 @@ export default function App() {
                   name="Summary"
                   component={SummaryScreen}
                   options={{ title: 'Summary', headerBackVisible: false }}
+                />
+                <Stack.Screen
+                  name="EditQueue"
+                  component={EditQueueScreen}
+                  options={{ title: 'Edit queue' }}
+                />
+                <Stack.Screen
+                  name="DayProgress"
+                  component={DayProgressScreen}
+                  options={{ title: 'Day progress' }}
                 />
               </Stack.Navigator>
             </NavigationContainer>

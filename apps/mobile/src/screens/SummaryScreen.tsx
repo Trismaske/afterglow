@@ -13,7 +13,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Summary'>;
 /** End-of-session summary: the "done for today" moment. */
 export function SummaryScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
-  const { session, label, reclaimedBytes, finishSession, version } = useSession();
+  const { session, label, reclaimedBytes, editFlagCount, finishSession, version } = useSession();
   const [finishing, setFinishing] = useState(false);
 
   const stats = useMemo(() => {
@@ -60,6 +60,12 @@ export function SummaryScreen({ navigation }: Props) {
       <Text style={styles.footnote}>
         *approximate — measured before the batch went to the system trash.
       </Text>
+      {editFlagCount > 0 && (
+        <Text style={styles.editNote}>
+          ✎ {editFlagCount} keeper{editFlagCount === 1 ? '' : 's'} added to the edit queue —
+          find them on the Home screen.
+        </Text>
+      )}
       {stats.staged > 0 && (
         <Text style={styles.warning}>
           {stats.staged} photo{stats.staged === 1 ? '' : 's'} still staged (delete was skipped).
@@ -106,6 +112,7 @@ const styles = StyleSheet.create({
   statValue: { color: colors.accent, fontSize: 30, fontWeight: '800' },
   statLabel: { color: colors.textDim, fontSize: 13 },
   footnote: { color: colors.textDim, fontSize: 12, marginTop: 10 },
+  editNote: { color: colors.edit, fontSize: 14, marginTop: 14, lineHeight: 20 },
   warning: { color: colors.cull, fontSize: 14, marginTop: 14, lineHeight: 20 },
   spacer: { flex: 1 },
 });

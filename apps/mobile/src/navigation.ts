@@ -6,4 +6,8 @@ export type RootStackParamList = {
   Singles: undefined;
   CullList: undefined;
   Summary: undefined;
+  /** To-edit queue: every photo flagged "needs edit", across all days. */
+  EditQueue: undefined;
+  /** Day-scoped inbox-zero progress. `day` is a local "YYYY-MM-DD" key. */
+  DayProgress: { day: string };
 };

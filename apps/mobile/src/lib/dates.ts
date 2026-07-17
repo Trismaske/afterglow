@@ -37,6 +37,53 @@ export function yesterdayRange(now: Date): DateRange {
   return { startMs: startOfDay(y), endMs: endOfDay(y), label: 'Yesterday' };
 }
 
+/**
+ * Local calendar-day key, "YYYY-MM-DD" — the `photos.day` column. Must
+ * stay lexicographically sortable (day comparisons use string >=).
+ */
+export function dayKey(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** The full local-day range for a "YYYY-MM-DD" key. */
+export function rangeOfDayKey(key: string): DateRange {
+  const [y, m, d] = key.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  return {
+    startMs: startOfDay(date),
+    endMs: endOfDay(date),
+    label: labelForDayKey(key),
+  };
+}
+
+/** "Today" / "Yesterday" / "Jul 12" for a day key, relative to now. */
+export function labelForDayKey(key: string, now: Date = new Date()): string {
+  if (key === dayKey(now.getTime())) return 'Today';
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (key === dayKey(yesterday.getTime())) return 'Yesterday';
+  return formatDay(rangeStartOfKey(key));
+}
+
+/** Midnight ms of a day key (internal helper for labeling). */
+function rangeStartOfKey(key: string): number {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, m - 1, d).getTime();
+}
+
+/** The last `count` day keys ending at `now`'s day, newest first. */
+export function recentDayKeys(count: number, now: Date = new Date()): string[] {
+  const keys: string[] = [];
+  const d = new Date(now);
+  for (let i = 0; i < count; i++) {
+    keys.push(dayKey(d.getTime()));
+    d.setDate(d.getDate() - 1);
+  }
+  return keys;
+}
+
 const DAY_FORMAT: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
 
 export function formatDay(ms: number): string {

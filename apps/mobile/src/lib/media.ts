@@ -61,6 +61,34 @@ export async function loadPhotosInRange(startMs: number, endMs: number): Promise
 }
 
 /**
+ * How many photos MediaStore has in [startMs, endMs] — one cheap query
+ * (first: 1) reading PagedInfo.totalCount, no asset paging.
+ */
+export async function countPhotosInRange(startMs: number, endMs: number): Promise<number> {
+  const page = await MediaLibrary.getAssetsAsync({
+    first: 1,
+    createdAfter: startMs,
+    createdBefore: endMs,
+    mediaType: MediaLibrary.MediaType.photo,
+  });
+  return page.totalCount;
+}
+
+/**
+ * The `content://` URI for an asset — what ACTION_EDIT needs (external
+ * editors can't be granted access to a raw `file://` path on modern
+ * Android). Falls back to constructing the standard external-images URI
+ * from the MediaStore id if the native lookup fails.
+ */
+export async function getEditableContentUri(assetId: string): Promise<string> {
+  try {
+    return await MediaLibrary.getAssetContentUriAsync(assetId);
+  } catch {
+    return `content://media/external/images/media/${assetId}`;
+  }
+}
+
+/**
  * Delete the given assets via the system flow. On Android 11+ this raises
  * the system confirmation dialog and moves photos to the system trash
  * (30-day recovery). Resolves `true` only if the deletion went through;

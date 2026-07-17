@@ -19,6 +19,7 @@ import {
   MEDIA_HOST,
   MEDIA_SCHEME,
   fromMediaUrl,
+  mediaKindFromPath,
   toMediaUrl,
   type ItemInfo,
   type LibraryItem,
@@ -30,14 +31,23 @@ import { openFlagStore, type FlagStore } from './flagstore';
 import { buildIndex, INDEX_FILENAME, loadIndex, saveIndex } from './indexer';
 import { getImageDates } from './metadata';
 import { closeQueueWindow, getQueueWindow, isQueueWindow, openQueueWindow } from './queue-window';
-import { isImageFile, scanImages } from './scan';
-import { applySettingsPatch, DEFAULT_SETTINGS, loadSettings, saveSettings } from './settings';
+import { isMediaFile, scanMedia } from './scan';
+import { applySettingsPatch, DEFAULT_SETTINGS, loadSettings, normalizeSettings, saveSettings } from './settings';
 
 const SMOKE = process.argv.includes('--smoke');
-/** In smoke mode auto-quit after this long if all went well. */
-const SMOKE_OK_MS = 3000;
+/**
+ * In smoke mode auto-quit after this long if all went well. 4s leaves room
+ * for the video smoke (AFTERGLOW_SMOKE_EXPECT_VIDEO): a ~1s fixture clip has
+ * to load, play and end inside this window. AFTERGLOW_SMOKE_OK_MS (smoke
+ * only) stretches the window so a mixed photo+video fixture can play a full
+ * playlist epoch before the assertions run.
+ */
+const SMOKE_OK_MS = (() => {
+  const override = Number(process.env.AFTERGLOW_SMOKE_OK_MS);
+  return Number.isFinite(override) && override >= 1000 ? Math.min(override, 120_000) : 4000;
+})();
 /** ...and give up entirely after this long if the renderer never came up. */
-const SMOKE_TIMEOUT_MS = 10_000;
+const SMOKE_TIMEOUT_MS = SMOKE_OK_MS + 8000;
 
 // Smoke runs must be hermetic: never read or write the user's real settings.
 if (SMOKE) {
@@ -69,8 +79,10 @@ async function refreshMediaRoots(): Promise<void> {
 
 /**
  * afterglow://media/<encodeURIComponent(absolute path)> → file contents.
- * Refuses: non-media hosts, non-image extensions, unresolvable paths, and
- * anything whose realpath is not inside a configured media folder.
+ * Refuses: non-media hosts, non-media extensions (images + MP4/WebM/MOV
+ * since v0.4), unresolvable paths, and anything whose realpath is not inside
+ * a configured media folder. Request headers are forwarded so <video> range
+ * requests stream instead of buffering whole files.
  */
 async function handleMediaRequest(request: Request): Promise<Response> {
   try {
@@ -78,7 +90,7 @@ async function handleMediaRequest(request: Request): Promise<Response> {
     if (url.hostname !== MEDIA_HOST) return new Response('not found', { status: 404 });
     const encoded = url.pathname.startsWith('/') ? url.pathname.slice(1) : url.pathname;
     const filePath = decodeURIComponent(encoded);
-    if (!path.isAbsolute(filePath) || !isImageFile(filePath)) {
+    if (!path.isAbsolute(filePath) || !isMediaFile(filePath)) {
       return new Response('forbidden', { status: 403 });
     }
     const real = await fs.realpath(filePath);
@@ -86,21 +98,21 @@ async function handleMediaRequest(request: Request): Promise<Response> {
       console.warn(`[afterglow] refused media request outside library: ${filePath}`);
       return new Response('forbidden', { status: 403 });
     }
-    return await net.fetch(pathToFileURL(real).toString());
+    return await net.fetch(pathToFileURL(real).toString(), { headers: request.headers });
   } catch {
     return new Response('not found', { status: 404 });
   }
 }
 
 /**
- * Decode a renderer-supplied media URL and verify it points at a real image
- * inside the configured library (same containment rules as the protocol).
- * Returns the decoded path, or null for anything suspect.
+ * Decode a renderer-supplied media URL and verify it points at a real media
+ * file inside the configured library (same containment rules as the
+ * protocol). Returns the decoded path, or null for anything suspect.
  */
 async function libraryPathFromUrl(url: unknown): Promise<string | null> {
   if (typeof url !== 'string') return null;
   const filePath = fromMediaUrl(url);
-  if (!filePath || !path.isAbsolute(filePath) || !isImageFile(filePath)) return null;
+  if (!filePath || !path.isAbsolute(filePath) || !isMediaFile(filePath)) return null;
   try {
     const real = await fs.realpath(filePath);
     return isInsideAny(real, mediaRootsReal) ? filePath : null;
@@ -155,6 +167,7 @@ function startIndexing(files: readonly string[]): void {
       const items: LibraryItem[] = entries.map((e) => ({
         url: toMediaUrl(e.path),
         timestampMs: e.timestampMs,
+        kind: mediaKindFromPath(e.path) ?? 'photo',
       }));
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send(CHANNELS.indexReady, items);
@@ -184,7 +197,7 @@ function registerIpc(): void {
 
   ipcMain.handle(CHANNELS.getPlaylist, async (): Promise<string[]> => {
     await refreshMediaRoots();
-    const files = await scanImages(settings.mediaFolders, {
+    const files = await scanMedia(settings.mediaFolders, {
       onError: (dir, err) => console.warn(`[afterglow] cannot read directory ${dir}`, err),
     });
     // v0.3: index in the background; the shuffled playlist returns immediately.
@@ -302,14 +315,22 @@ function createWindow(): BrowserWindow {
  * signalled ready with no console errors or load failures; exit 1 otherwise.
  *
  * With AFTERGLOW_SMOKE_MEDIA set it also drives the v0.2 capture path:
- * a simulated E keypress must flag the photo on screen (verified in
+ * a simulated E keypress must flag the item on screen (verified in
  * flags.json on disk) and a simulated Q keypress must open the queue window
  * (whose console is watched for errors like the main window's).
+ *
+ * With AFTERGLOW_SMOKE_EXPECT_VIDEO additionally set (v0.4), the run fails
+ * unless the renderer logged that a video started playing AND finished
+ * (natural end or duration cap) — i.e. the full scan → protocol → <video>
+ * playback → advance path worked.
  */
 function armSmokeHarness(win: BrowserWindow): void {
   let rendererReady = false;
   let failure: string | null = null;
   const exercised = Boolean(process.env.AFTERGLOW_SMOKE_MEDIA);
+  const expectVideo = Boolean(process.env.AFTERGLOW_SMOKE_EXPECT_VIDEO);
+  let sawVideoStarted = false;
+  let sawVideoFinished = false;
 
   ipcMain.on(CHANNELS.rendererReady, () => {
     rendererReady = true;
@@ -322,6 +343,10 @@ function armSmokeHarness(win: BrowserWindow): void {
       const message = typeof event?.message === 'string' ? event.message : '';
       console.log(`[${label}:${level}] ${message}`);
       if (level === 'error') failure = failure ?? `${label} console error: ${message}`;
+      if (message.includes('[afterglow] video started')) sawVideoStarted = true;
+      if (message.includes('[afterglow] video ended') || message.includes('[afterglow] video capped')) {
+        sawVideoFinished = true;
+      }
     });
     contents.on('did-fail-load', (_e, code, desc) => {
       failure = failure ?? `${label} did-fail-load: ${code} ${desc}`;
@@ -369,6 +394,12 @@ function armSmokeHarness(win: BrowserWindow): void {
     } catch (err) {
       return `index.json was not persisted: ${String(err)}`;
     }
+    if (expectVideo && !sawVideoStarted) {
+      return 'expected a video to start playing (no "video started" console marker)';
+    }
+    if (expectVideo && !sawVideoFinished) {
+      return 'expected the video slide to finish (no "video ended"/"video capped" marker)';
+    }
     return null;
   };
 
@@ -383,7 +414,7 @@ function armSmokeHarness(win: BrowserWindow): void {
     } else {
       console.log(
         exercised
-          ? '[smoke] OK: renderer loaded cleanly, flag captured + persisted, queue window opened, EXIF index persisted'
+          ? `[smoke] OK: renderer loaded cleanly, flag captured + persisted, queue window opened, EXIF index persisted${expectVideo ? ', video played to completion' : ''}`
           : '[smoke] OK: renderer loaded cleanly',
       );
       app.exit(0);
@@ -416,9 +447,16 @@ void app.whenReady().then(async () => {
     onWarn: (msg, err) => console.warn(`[afterglow] ${msg}`, err),
   });
   // Smoke runs can point at a fixture folder to exercise the full
-  // scan → protocol → crossfade path headlessly.
+  // scan → protocol → crossfade path headlessly. AFTERGLOW_SMOKE_VIDEO_CAP_S
+  // (smoke only) shrinks the per-video cap so the cap path is provable with
+  // a long fixture clip inside the smoke window; the value still goes
+  // through normalizeSettings, same as any user input.
   if (SMOKE && process.env.AFTERGLOW_SMOKE_MEDIA) {
     settings = { ...settings, mediaFolders: [process.env.AFTERGLOW_SMOKE_MEDIA] };
+    const capOverride = Number(process.env.AFTERGLOW_SMOKE_VIDEO_CAP_S);
+    if (Number.isFinite(capOverride)) {
+      settings = { ...normalizeSettings({ ...settings, videoMaxSeconds: capOverride }), mediaFolders: settings.mediaFolders };
+    }
   }
   await refreshMediaRoots();
   registerIpc();

@@ -5,10 +5,28 @@ See [PLAN.md](PLAN.md) for the product plan and release roadmap.
 
 ## Afterglow Desktop — quickstart
 
-A fullscreen ambient photo display. Shows JPEG/PNG/WebP from folders you
-pick, recursively scanned, with crossfade transitions. Any mouse movement,
-click or keypress exits — except the keys below, which quietly capture
-organization work while you watch (v0.2).
+A fullscreen ambient photo display. Shows photos and muted videos from
+folders you pick, recursively scanned, with crossfade transitions. Any mouse
+movement, click or keypress exits — except the keys below, which quietly
+capture organization work while you watch (v0.2).
+
+### Supported formats (the honest list)
+
+- **Images:** JPEG, PNG, WebP. **HEIC is not supported on desktop for now**
+  (Chromium has no HEIC decoder; it works in the Android companion). GIF and
+  RAW come in later releases per the roadmap.
+- **Videos (v0.4):** MP4, WebM, MOV — always muted. These are the containers
+  Chromium can decode natively; **AVI and MKV are not supported** and never
+  will be claimed. A `.mov` (or anything else) holding a codec Chromium
+  lacks — HEVC, ProRes — is skipped with a console note and the show simply
+  advances; it never hangs the slideshow.
+
+A video slide plays until the video ends **or** until the per-video cap
+(**Video cap** on the settings screen, default 30 seconds, `videoMaxSeconds`
+in `settings.json`) — whichever comes first. Playback errors mid-video
+advance immediately. Videos join moments/clusters like photos, ordered by
+their file date (video containers aren't EXIF-parsed), and the overlay and
+flag keys (D/E/M/R) work on them exactly like on photos.
 
 Since v0.3 the show is smart-ordered by default: a background EXIF index
 (capture dates, persisted to `index.json` and refreshed incrementally on
@@ -24,7 +42,7 @@ Shuffle on the settings screen (press **S** during the show).
 
 | Key | Action | Exits? |
 |---|---|---|
-| **D** | Flag current photo for **delete** (same key again within the toast window undoes) | no |
+| **D** | Flag current photo/video for **delete** (same key again within the toast window undoes) | no |
 | **E** | Flag for **edit** | no |
 | **M** | Flag as **move**/misfiled | no |
 | **R** | Flag for **review** | no |
@@ -58,8 +76,9 @@ Grab the latest `desktop-v*` release from GitHub Releases:
 
 First run shows the settings screen: pick your Pictures folder(s) with
 **Choose folders…**, optionally tweak slide duration, ordering
-(Smart/Shuffle), the moment gap (default 3 minutes) and the cluster cap
-(default 8 photos per moment), then hit **Start slideshow**. Press **S**
+(Smart/Shuffle), the moment gap (default 3 minutes), the cluster cap
+(default 8 photos per moment) and the video cap (default 30 seconds per
+video), then hit **Start slideshow**. Press **S**
 during the show to come back to this screen at any time. Everything persists
 in `settings.json` in the app's user-data directory (`%APPDATA%/Afterglow`
 on Windows, `~/.config/Afterglow` on Linux); the EXIF index lives beside it
@@ -78,9 +97,14 @@ npm run typecheck -w afterglow-desktop
 ```
 
 Headless smoke test (used by CI): `npx electron apps/desktop --smoke` —
-starts, loads the renderer, exits 0 on a clean load within ~3s, nonzero on
+starts, loads the renderer, exits 0 on a clean load within ~4s, nonzero on
 any load failure or renderer console error. Set `AFTERGLOW_SMOKE_MEDIA=<dir>`
-to point the smoke run at a fixture folder.
+to point the smoke run at a fixture folder; add
+`AFTERGLOW_SMOKE_EXPECT_VIDEO=1` to additionally require that a video in the
+fixture started playing and finished (natural end or cap). Smoke-only knobs:
+`AFTERGLOW_SMOKE_VIDEO_CAP_S` overrides the per-video cap and
+`AFTERGLOW_SMOKE_OK_MS` stretches the observation window (e.g. to let a
+mixed photo+video fixture play a full epoch).
 
 Installers are built per platform with `npm run dist -w afterglow-desktop`
 (electron-builder; config in `apps/desktop/electron-builder.yml`). CI builds

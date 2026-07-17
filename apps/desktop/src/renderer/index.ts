@@ -36,6 +36,7 @@ const durationInput = $<HTMLInputElement>('duration');
 const orderModeSelect = $<HTMLSelectElement>('order-mode');
 const gapInput = $<HTMLInputElement>('gap');
 const capInput = $<HTMLInputElement>('cap');
+const videoMaxInput = $<HTMLInputElement>('video-max');
 
 const overlay = new Overlay($('overlay'));
 const toast = new Toast($('toast'), UNDO_WINDOW_MS);
@@ -171,6 +172,7 @@ function populateSettingsForm(settings: Settings): void {
   orderModeSelect.value = settings.orderMode;
   gapInput.value = String(settings.momentGapMinutes);
   capInput.value = String(settings.clusterCap);
+  videoMaxInput.value = String(settings.videoMaxSeconds);
 }
 
 /** The settings screen — first-run and S-mid-show land here. */
@@ -212,7 +214,8 @@ async function startShow(settings: Settings): Promise<void> {
     container: stageEl,
     playlist: swappable,
     slideDurationMs: Math.max(1000, settings.slideDurationSeconds * 1000),
-    onAllFailed: () => showMessage('Afterglow could not display any of the images it found. Move the mouse or press any key to exit.'),
+    videoMaxDurationMs: Math.max(1000, settings.videoMaxSeconds * 1000),
+    onAllFailed: () => showMessage('Afterglow could not display any of the media it found. Move the mouse or press any key to exit.'),
     onShown: (url) => {
       currentUrl = url;
       flags.itemChanged();
@@ -220,6 +223,7 @@ async function startShow(settings: Settings): Promise<void> {
       console.log(`[afterglow] showing ${url}`);
     },
     log: (msg) => console.warn(`[afterglow] ${msg}`),
+    logInfo: (msg) => console.log(`[afterglow] ${msg}`),
   });
   slideshow.start();
 }
@@ -249,6 +253,7 @@ startBtn.addEventListener('click', () => {
         orderMode: orderModeSelect.value === 'shuffle' ? 'shuffle' : 'smart',
         momentGapMinutes: Number(gapInput.value),
         clusterCap: Number(capInput.value),
+        videoMaxSeconds: Number(videoMaxInput.value),
       });
       await startShow(settings);
     } finally {

@@ -188,3 +188,64 @@ release, inherited and new.)*
 10. **The queue window cannot reach `updateSettings`** (its preload doesn't
     expose it), and the channel carries no paths, so no sender guard beyond
     the existing pattern was added.
+
+## desktop-v0.4
+
+1. **Format lists moved to `shared/api.ts`** (pure, no Node APIs) because
+   three layers route on the same truth: the scanner collects the
+   extensions, the afterglow:// protocol allowlists them, and the renderer
+   picks `<img>` vs `<video>` per URL (`mediaKindFromPath`/`mediaKindFromUrl`,
+   final-extension only, case-insensitive). `scan.ts` keeps thin
+   `isImageFile`/`isVideoFile`/`isMediaFile` wrappers; `scanImages` was
+   renamed `scanMedia` (internal API, both callers updated).
+2. **Video timestamps are always file mtime** (`source: 'mtime'`): exifr
+   does not parse MP4/WebM/MOV containers, so `getImageDates` short-circuits
+   for videos (no wasted container reads on index builds, overlay shows the
+   date labeled "(file date)"). Container-metadata creation dates are a
+   possible later refinement; PLAN.md only promises "EXIF/mtime as indexed".
+3. **A `.mov` is scanned/indexed optimistically and skipped at play time**
+   if Chromium can't decode it (the `<video>` element errors on load →
+   "skipping unloadable video", show advances; verified in smoke with a
+   garbage .mov). There is no up-front codec sniffing — the decoder is the
+   only honest oracle, and failures cost one skipped slide, never a hang.
+4. **Slideshow structure: two slots × (one `<img>` + one `<video>`)**,
+   created once and reused forever (soak safety as before); per slide
+   exactly one element of the incoming slot gets the `visible` class, so
+   photo↔video crossfades are identical to photo↔photo. The outgoing
+   video is paused at crossfade (its last frame fades out) and its `src` is
+   detached on slot reuse to free the decoder.
+5. **Video slide lifetime** = natural `ended` OR `videoMaxSeconds` cap OR
+   playback error, whichever first, firing exactly once — the arbitration is
+   a pure helper (`renderer/video.ts`, `createVideoWatch`) with unit tests.
+   The cap timer starts when `play()` is initiated (not at load). `play()`
+   rejection is treated like a playback error → immediate graceful advance.
+   Videos ignore `slideDurationSeconds` entirely.
+6. **`videoMaxSeconds` bounds: 2–600 s, default 30**, integer-rounded,
+   normalized in main like every other setting; editable on the settings
+   screen ("Video cap") and via the whitelisted SettingsPatch.
+7. **Videos are full citizens of the story engine:** LibraryItem now carries
+   `kind` (computed in main from the path), the renderer maps it into
+   core's `MediaItem.kind`, and clustering/mix treat videos exactly like
+   photos (unit-tested: a clip shot mid-burst plays in chronological
+   position inside the moment). Overlay and D/E/M/R flag keys work on
+   videos unchanged — flag containment now validates against media (not
+   just image) extensions.
+8. **Protocol forwards request headers to `net.fetch`** so `<video>` Range
+   requests stream partial content instead of re-buffering whole files;
+   CSP gained `media-src afterglow:`. Containment rules are unchanged
+   (absolute path + allowed extension + realpath inside a configured root).
+9. **Smoke harness (v0.4):** `AFTERGLOW_SMOKE_EXPECT_VIDEO=1` fails the run
+   unless the renderer logged `video started` AND `video ended`/`video
+   capped`; smoke-only env knobs `AFTERGLOW_SMOKE_VIDEO_CAP_S` (cap
+   override, still normalized) and `AFTERGLOW_SMOKE_OK_MS` (longer
+   observation window) exist so the cap path and a full mixed-folder epoch
+   are provable headlessly. `SMOKE_OK_MS` default went 3s → 4s to fit a ~1s
+   fixture clip's load→play→end; ffmpeg was available on this machine, so
+   real H.264 MP4s (1s and 10s) were generated and played in xvfb — the
+   mixed run (4 photos + 2 MP4s + capped long video) is captured in the
+   release verification.
+10. **`autoplay` is not set on the `<video>` element** despite the plan's
+    `<video muted autoplay playsinline>` shorthand: the show controls timing
+    explicitly (`play()` at crossfade), which is the same user-visible
+    behavior without racing the crossfade. muted/playsinline/
+    disablePictureInPicture are set both as properties and attributes.

@@ -7,9 +7,11 @@ import {
   MAX_CLUSTER_CAP,
   MAX_MOMENT_GAP_MINUTES,
   MAX_SLIDE_SECONDS,
+  MAX_VIDEO_MAX_SECONDS,
   MIN_CLUSTER_CAP,
   MIN_MOMENT_GAP_MINUTES,
   MIN_SLIDE_SECONDS,
+  MIN_VIDEO_MAX_SECONDS,
   SETTINGS_FILENAME,
   applySettingsPatch,
   loadSettings,
@@ -62,6 +64,15 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings({ clusterCap: NaN }).clusterCap).toBe(DEFAULT_SETTINGS.clusterCap);
   });
 
+  it('clamps and rounds videoMaxSeconds (v0.4), defaulting to 30', () => {
+    expect(DEFAULT_SETTINGS.videoMaxSeconds).toBe(30);
+    expect(normalizeSettings({ videoMaxSeconds: 0 }).videoMaxSeconds).toBe(MIN_VIDEO_MAX_SECONDS);
+    expect(normalizeSettings({ videoMaxSeconds: 1e9 }).videoMaxSeconds).toBe(MAX_VIDEO_MAX_SECONDS);
+    expect(normalizeSettings({ videoMaxSeconds: 44.7 }).videoMaxSeconds).toBe(45);
+    expect(normalizeSettings({ videoMaxSeconds: 'x' }).videoMaxSeconds).toBe(DEFAULT_SETTINGS.videoMaxSeconds);
+    expect(normalizeSettings({}).videoMaxSeconds).toBe(DEFAULT_SETTINGS.videoMaxSeconds);
+  });
+
   it('clamps slide duration and rejects non-finite values', () => {
     expect(normalizeSettings({ slideDurationSeconds: 0 }).slideDurationSeconds).toBe(MIN_SLIDE_SECONDS);
     expect(normalizeSettings({ slideDurationSeconds: 1e9 }).slideDurationSeconds).toBe(MAX_SLIDE_SECONDS);
@@ -81,6 +92,7 @@ describe('applySettingsPatch', () => {
       orderMode: 'shuffle',
       momentGapMinutes: 10,
       clusterCap: 5,
+      videoMaxSeconds: 60,
     });
     expect(next).toEqual({
       ...DEFAULT_SETTINGS,
@@ -88,6 +100,7 @@ describe('applySettingsPatch', () => {
       orderMode: 'shuffle',
       momentGapMinutes: 10,
       clusterCap: 5,
+      videoMaxSeconds: 60,
     });
   });
 
@@ -118,6 +131,7 @@ describe('loadSettings / saveSettings', () => {
       orderMode: 'shuffle' as const,
       momentGapMinutes: 7,
       clusterCap: 12,
+      videoMaxSeconds: 45,
     };
     await saveSettings(dir, settings);
     expect(await loadSettings(dir)).toEqual(settings);

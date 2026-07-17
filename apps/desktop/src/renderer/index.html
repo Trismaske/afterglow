@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; img-src afterglow:; script-src 'self'; style-src 'self'">
+        content="default-src 'none'; img-src afterglow:; media-src afterglow:; script-src 'self'; style-src 'self'">
   <title>Afterglow</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -35,6 +35,10 @@
       <label class="settings-label" for="cap">Cluster cap</label>
       <div class="settings-field">
         <input id="cap" type="number" min="2" max="100" step="1"> <span class="unit">photos per moment</span>
+      </div>
+      <label class="settings-label" for="video-max">Video cap</label>
+      <div class="settings-field">
+        <input id="video-max" type="number" min="2" max="600" step="1"> <span class="unit">seconds per video (videos play muted)</span>
       </div>
     </div>
     <button id="start" type="button">Start slideshow</button>

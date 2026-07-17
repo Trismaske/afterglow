@@ -1,12 +1,15 @@
 /**
- * Recursive image scan over the configured media folders.
+ * Recursive media scan over the configured media folders.
  *
  * Rules (documented in assumptions-desktop.md):
- * - Only extensions Chromium decodes natively in v0.1: .jpg/.jpeg/.png/.webp.
+ * - Only extensions Chromium decodes natively: images .jpg/.jpeg/.png/.webp,
+ *   videos .mp4/.webm/.mov (v0.4). The lists live in shared/api.ts because
+ *   the protocol allowlist and the renderer's <img>/<video> routing use the
+ *   same source of truth.
  * - Dot-entries (hidden files/dirs like .thumbnails) are skipped.
  * - Symlinks are skipped entirely — the media protocol refuses anything whose
  *   realpath escapes the configured folders, so following links would only
- *   produce images that later fail the containment check.
+ *   produce media that later fails the containment check.
  * - Unreadable directories are logged and skipped, never fatal.
  * - Overlapping/nested folders are de-duplicated; output is sorted for
  *   determinism (shuffling happens later).
@@ -14,11 +17,21 @@
 
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import { IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, mediaKindFromPath } from '../shared/api';
 
-export const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+export { IMAGE_EXTENSIONS, VIDEO_EXTENSIONS };
 
 export function isImageFile(filePath: string): boolean {
-  return IMAGE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+  return mediaKindFromPath(filePath) === 'photo';
+}
+
+export function isVideoFile(filePath: string): boolean {
+  return mediaKindFromPath(filePath) === 'video';
+}
+
+/** Anything the slideshow can display: image or video. */
+export function isMediaFile(filePath: string): boolean {
+  return mediaKindFromPath(filePath) !== null;
 }
 
 export interface ScanOptions {
@@ -26,8 +39,8 @@ export interface ScanOptions {
   onError?: (dir: string, err: unknown) => void;
 }
 
-/** Recursively collect absolute paths of all images under `folders`. */
-export async function scanImages(folders: readonly string[], opts: ScanOptions = {}): Promise<string[]> {
+/** Recursively collect absolute paths of all displayable media under `folders`. */
+export async function scanMedia(folders: readonly string[], opts: ScanOptions = {}): Promise<string[]> {
   const found = new Set<string>();
   const visitedDirs = new Set<string>();
 
@@ -49,7 +62,7 @@ export async function scanImages(folders: readonly string[], opts: ScanOptions =
       const full = path.join(abs, entry.name);
       if (entry.isDirectory()) {
         await walk(full);
-      } else if (entry.isFile() && isImageFile(entry.name)) {
+      } else if (entry.isFile() && isMediaFile(entry.name)) {
         found.add(full);
       }
     }

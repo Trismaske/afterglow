@@ -8,7 +8,7 @@ const HOUR = 60 * MIN;
 
 /** A photo shot at `t` ms past midnight, named for readability. */
 function shot(name: string, t: number): SmartItem {
-  return { url: `afterglow://media/${name}`, timestampMs: t };
+  return { url: `afterglow://media/${name}`, timestampMs: t, kind: 'photo' };
 }
 
 /** An 8-shot burst 10 seconds apart, plus singles scattered hours apart. */
@@ -56,6 +56,25 @@ describe('createSmartPlaylist', () => {
     expect(hasRun(seq, capped)).toBe(true);
     // the uncapped 8-run never plays
     expect(hasRun(seq, burstUrls)).toBe(false);
+  });
+
+  it('mixes videos into moments exactly like photos (v0.4)', () => {
+    const { items, burstUrls } = library();
+    // A phone clip shot 25s into the burst joins the same moment and plays
+    // in chronological position inside the run.
+    const clip: SmartItem = {
+      url: 'afterglow://media/clip.mp4',
+      timestampMs: 12 * HOUR + 31 * MIN + 25_000,
+      kind: 'video',
+    };
+    const smart = createSmartPlaylist([...items, clip], { gapMinutes: 3, clusterCap: 9, rng: mulberry32(5) })!;
+    expect(smart.clusterCount).toBe(1);
+    const seq = Array.from({ length: 130 }, () => smart.next());
+    const runWithClip = [...burstUrls.slice(0, 3), clip.url, ...burstUrls.slice(3)];
+    function hasRun(s: string[], run: string[]): boolean {
+      return s.some((_, i) => run.every((u, j) => s[i + j] === u));
+    }
+    expect(hasRun(seq, runWithClip)).toBe(true);
   });
 
   it('splits by the configured gap: a wide gap yields no clusters', () => {

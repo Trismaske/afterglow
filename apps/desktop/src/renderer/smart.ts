@@ -7,7 +7,7 @@
  * delegate inside a SwappablePlaylist — the Slideshow never notices.
  */
 
-import { clusterByGap, createMix, type MediaItem, type Rng } from '@afterglow/core';
+import { clusterByGap, createMix, type MediaItem, type MediaKind, type Rng } from '@afterglow/core';
 import type { Playlist } from './playlist';
 
 /** A Playlist whose underlying source can be replaced mid-show. */
@@ -36,10 +36,12 @@ export interface SmartPlaylistOptions {
   rng: Rng;
 }
 
-/** What the renderer needs per indexed photo (mirrors shared LibraryItem). */
+/** What the renderer needs per indexed item (mirrors shared LibraryItem). */
 export interface SmartItem {
   url: string;
   timestampMs: number;
+  /** 'photo' | 'video' — videos cluster and mix exactly like photos (v0.4). */
+  kind: MediaKind;
 }
 
 export interface SmartPlaylist extends Playlist {
@@ -63,7 +65,7 @@ export function createSmartPlaylist(
     id: item.url,
     uri: item.url,
     timestamp: item.timestampMs,
-    kind: 'photo',
+    kind: item.kind,
   }));
 
   const clusters = clusterByGap(mediaItems, {

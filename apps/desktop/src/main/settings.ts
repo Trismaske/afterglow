@@ -18,6 +18,8 @@ export const MIN_MOMENT_GAP_MINUTES = 1;
 export const MAX_MOMENT_GAP_MINUTES = 720;
 export const MIN_CLUSTER_CAP = 2;
 export const MAX_CLUSTER_CAP = 100;
+export const MIN_VIDEO_MAX_SECONDS = 2;
+export const MAX_VIDEO_MAX_SECONDS = 600;
 
 export const DEFAULT_SETTINGS: Settings = {
   mediaFolders: [],
@@ -26,6 +28,7 @@ export const DEFAULT_SETTINGS: Settings = {
   orderMode: 'smart',
   momentGapMinutes: 3,
   clusterCap: 8,
+  videoMaxSeconds: 30,
 };
 
 function clampInt(value: unknown, min: number, max: number, fallback: number): number {
@@ -46,6 +49,7 @@ export function normalizeSettings(raw: unknown): Settings {
     orderMode: DEFAULT_SETTINGS.orderMode,
     momentGapMinutes: DEFAULT_SETTINGS.momentGapMinutes,
     clusterCap: DEFAULT_SETTINGS.clusterCap,
+    videoMaxSeconds: DEFAULT_SETTINGS.videoMaxSeconds,
   };
   if (typeof raw !== 'object' || raw === null) return out;
   const obj = raw as Record<string, unknown>;
@@ -75,6 +79,12 @@ export function normalizeSettings(raw: unknown): Settings {
     DEFAULT_SETTINGS.momentGapMinutes,
   );
   out.clusterCap = clampInt(obj.clusterCap, MIN_CLUSTER_CAP, MAX_CLUSTER_CAP, DEFAULT_SETTINGS.clusterCap);
+  out.videoMaxSeconds = clampInt(
+    obj.videoMaxSeconds,
+    MIN_VIDEO_MAX_SECONDS,
+    MAX_VIDEO_MAX_SECONDS,
+    DEFAULT_SETTINGS.videoMaxSeconds,
+  );
   return out;
 }
 
@@ -94,6 +104,7 @@ export function applySettingsPatch(current: Settings, patch: unknown): Settings 
     ...(p.orderMode !== undefined && { orderMode: p.orderMode }),
     ...(p.momentGapMinutes !== undefined && { momentGapMinutes: p.momentGapMinutes }),
     ...(p.clusterCap !== undefined && { clusterCap: p.clusterCap }),
+    ...(p.videoMaxSeconds !== undefined && { videoMaxSeconds: p.videoMaxSeconds }),
   });
 }
 

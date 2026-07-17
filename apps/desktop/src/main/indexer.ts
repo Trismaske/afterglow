@@ -182,6 +182,8 @@ async function defaultStatFile(filePath: string): Promise<FileStat | null> {
 }
 
 async function defaultExtract(stat: FileStat): Promise<Pick<IndexEntry, 'timestampMs' | 'source'>> {
+  // Videos (v0.4): exifr can't parse MP4/WebM/MOV, so mtime is the honest
+  // timestamp — getImageDates short-circuits, no wasted container reads.
   const dates = await getImageDates(stat.path);
   if (dates.captureDateMs !== null) return { timestampMs: dates.captureDateMs, source: 'exif' };
   return { timestampMs: dates.fileDateMs ?? stat.mtimeMs, source: 'mtime' };

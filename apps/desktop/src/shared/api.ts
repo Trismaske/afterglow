@@ -6,10 +6,48 @@
  * pure TS, so its types are fine here.)
  */
 
-import type { FlagType } from '@afterglow/core';
+import type { FlagType, MediaKind } from '@afterglow/core';
+
+export type { MediaKind };
 
 /** How the slideshow orders photos (v0.3 story engine). */
 export type OrderMode = 'shuffle' | 'smart';
+
+/**
+ * The honest media format lists (v0.4). Images are what Chromium decodes
+ * natively; videos are containers Chromium can *usually* decode (a .mov with
+ * a codec Chromium lacks — HEVC, ProRes — loads with an error and the show
+ * skips it gracefully). Deliberately absent: AVI/MKV (never claimed), HEIC
+ * (no desktop decoder yet), GIF (later).
+ *
+ * These live in the shared module (pure, no Node APIs) because renderer,
+ * preload and main all route on them: the scanner collects these extensions,
+ * the afterglow:// protocol allowlists them, and the slideshow picks
+ * <img> vs <video> per item.
+ */
+export const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp'] as const;
+export const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mov'] as const;
+
+/** Lowercased ".ext" of a path/file name, or null (pure, no node:path). */
+function extnameLower(filePath: string): string | null {
+  const match = /\.[^./\\]+$/.exec(filePath);
+  return match ? match[0].toLowerCase() : null;
+}
+
+/** 'photo' | 'video' for a file path, or null if it isn't displayable media. */
+export function mediaKindFromPath(filePath: string): MediaKind | null {
+  const ext = extnameLower(filePath);
+  if (ext === null) return null;
+  if ((IMAGE_EXTENSIONS as readonly string[]).includes(ext)) return 'photo';
+  if ((VIDEO_EXTENSIONS as readonly string[]).includes(ext)) return 'video';
+  return null;
+}
+
+/** Kind for an afterglow://media/... URL, or null for foreign/non-media URLs. */
+export function mediaKindFromUrl(url: string): MediaKind | null {
+  const filePath = fromMediaUrl(url);
+  return filePath === null ? null : mediaKindFromPath(filePath);
+}
 
 /** Persisted app settings (JSON in app.getPath('userData')/settings.json). */
 export interface Settings {
@@ -29,6 +67,11 @@ export interface Settings {
   momentGapMinutes: number;
   /** Max photos played per cluster run (evenly sampled when over). */
   clusterCap: number;
+  /**
+   * Per-video duration cap in seconds (v0.4). A video slide advances at the
+   * video's natural end or after this many seconds, whichever comes first.
+   */
+  videoMaxSeconds: number;
 }
 
 /**
@@ -41,17 +84,21 @@ export interface SettingsPatch {
   orderMode?: OrderMode;
   momentGapMinutes?: number;
   clusterCap?: number;
+  videoMaxSeconds?: number;
 }
 
-/** One indexed photo, pushed to the renderer when the EXIF index is ready. */
+/** One indexed photo/video, pushed to the renderer when the index is ready. */
 export interface LibraryItem {
   /** afterglow://media/... URL (same encoding as playlist entries). */
   url: string;
   /**
    * Best-known capture time in ms since epoch: EXIF DateTimeOriginal (or
-   * CreateDate), falling back to file mtime. Timezone-naive local time.
+   * CreateDate), falling back to file mtime (always mtime for videos).
+   * Timezone-naive local time.
    */
   timestampMs: number;
+  /** 'photo' or 'video' — the slideshow picks <img> vs <video> on this. */
+  kind: MediaKind;
 }
 
 /** Metadata for the overlay: where the current photo lives and when it was taken. */

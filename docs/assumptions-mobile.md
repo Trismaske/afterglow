@@ -797,3 +797,9 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
     reuses the Home machinery per m0.4 #27, so the cap now applies to
     day reviews too (a 300-photo day at cap 50 takes several sessions;
     consistent with "progress must be bankable").
+
+21. **Dark app icon (2026-07-18, post-m0.5, unreleased):** `app.json` now
+    uses `icon-dark.png` + `android-icon-background-dark.png` (adaptive
+    background `#0F172A`) — the same chevron-on-dark-slate set as the new
+    desktop icon, generated from `android-icon-foreground.png`. Takes
+    effect on the next APK build; light originals remain in assets/.

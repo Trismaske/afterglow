@@ -283,7 +283,13 @@ function registerIpc(): void {
   }));
 
   ipcMain.on(CHANNELS.showState, (_event, active: unknown) => {
-    setShowRunning(active === true);
+    const running = active === true;
+    setShowRunning(running);
+    // Manual launches live in a normal window; fullscreen tracks the show
+    // (in --show mode the window is fullscreen for its whole lifetime).
+    if (LAUNCH_MODE !== 'show' && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setFullScreen(running);
+    }
   });
 
   ipcMain.handle(CHANNELS.screensaverStatus, () => getScreensaverStatus());
@@ -359,9 +365,14 @@ function registerIpc(): void {
 }
 
 function createWindow(): BrowserWindow {
+  // Screensaver/--show launches are fullscreen+frameless for the whole run.
+  // Manual launches open as an ordinary windowed app (close/minimize work);
+  // the window goes fullscreen only while the show runs (showState IPC).
+  const showLaunch = LAUNCH_MODE === 'show';
   const win = new BrowserWindow({
-    fullscreen: true,
-    frame: false,
+    fullscreen: showLaunch,
+    frame: !showLaunch,
+    ...(showLaunch ? {} : { width: 980, height: 820, minWidth: 640, minHeight: 480 }),
     autoHideMenuBar: true,
     backgroundColor: '#000000',
     show: true,

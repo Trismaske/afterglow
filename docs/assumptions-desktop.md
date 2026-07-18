@@ -360,3 +360,22 @@ release, inherited and new.)*
     "rename" and "date fix" (the queue badge shows the raw type). The queue
     window got badge colors and updated key lists; it has no filter UI to
     extend (the plan's "labels/filters" reduces to labels here).
+
+## post-v0.5 feedback tweaks (2026-07-18, unreleased)
+
+16. **Manual launches are now an ordinary window** (980×820, resizable,
+    native frame — close/minimize work; no more Alt+F4). The window goes
+    fullscreen only while the show runs (showState IPC toggles
+    `setFullScreen`); `--show`//s launches stay fullscreen+frameless for
+    their whole lifetime. The settings subtitle line was removed.
+17. **Moment gap copy** now states the real semantics (core `clusterByGap`):
+    a shot joins the current moment when it is within the gap *of the
+    previous shot* — chains can span longer than the gap in total.
+18. **App icon**: `build/icon.png` (1024, rounded-tile) — the Companion's
+    chevron glyph composited on dark slate `#0F172A`, generated with
+    ImageMagick from `apps/mobile/assets/android-icon-foreground.png`.
+    electron-builder picks it up by convention (the "default Electron icon"
+    warning is gone); Windows .ico is derived by the builder. The matching
+    mobile dark set (`icon-dark.png`, `android-icon-background-dark.png`,
+    adaptive background `#0F172A`) is wired in `app.json` and takes effect
+    on the next APK build. Light originals remain in the repo.

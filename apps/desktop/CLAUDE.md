@@ -4,7 +4,7 @@ Electron, vanilla TS (no framework), esbuild. Three processes: **main** (Node), 
 
 ## Behavior contracts (don't regress)
 
-- **Launch modes** (`main/launch.ts`): plain launch → settings screen ("Start slideshow" button); `--show` → straight into the show; win32 screensaver args `/s`=show, `/p`=quit, `/c`=settings. Exit semantics: manual launch → any non-shortcut input returns to settings; `--show` → quits. Non-exiting keys: O Q S, D/E/M/R/N/T flags, arrows.
+- **Launch modes** (`main/launch.ts`): plain launch → settings screen ("Start slideshow" button) in an ordinary resizable window (close/minimize work); the window goes fullscreen only while the show runs. `--show` → straight into the show, fullscreen+frameless for the whole run; win32 screensaver args `/s`=show, `/p`=quit, `/c`=settings. Exit semantics: manual launch → any non-shortcut input returns to (windowed) settings; `--show` → quits. Non-exiting keys: O Q S, D/E/M/R/N/T flags, arrows. App icon: `build/icon.png` (chevron on dark slate; mobile has the matching dark set in `assets/`).
 - **Arrow nav**: ←/→ prev(history)/next, ↑ restart moment, ↓ skip moment (shuffle mode: ↑ restarts slide, ↓ = next). History is what was actually shown (200 entries).
 - **Settings clamps** (`main/settings.ts`): slide 2–3600 s, gap 1–720 min, clusterCap 2–100, videoMaxSeconds **0 (= full length)** or 2–600.
 - Show starts in shuffle and hot-swaps to smart when the index lands; warm start serves the persisted index immediately, rescans in background.

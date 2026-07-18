@@ -6,6 +6,11 @@ See [PLAN.md](PLAN.md) for the product plan and release roadmap, and
 including the one-command Android toolchain/emulator install
 (`npm run setup:android`).
 
+**Working on the code (human or agent)? Start at [CLAUDE.md](CLAUDE.md)** —
+a token-lean orientation map of the whole repo, with per-package file maps
+in `apps/desktop/CLAUDE.md`, `apps/mobile/AGENTS.md`, and
+`packages/core/CLAUDE.md`. Read those instead of scanning the tree.
+
 ## Afterglow Desktop — quickstart
 
 A fullscreen ambient photo display. Shows photos and muted videos from

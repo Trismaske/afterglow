@@ -88,10 +88,7 @@ export function FineSlider({
           {trackW > 0 && (
             <View
               pointerEvents="none"
-              style={[
-                styles.thumb,
-                { backgroundColor: accent, left: ratio * trackW - THUMB / 2 },
-              ]}
+              style={[styles.thumb, { backgroundColor: accent, left: ratio * trackW - THUMB / 2 }]}
             />
           )}
         </View>

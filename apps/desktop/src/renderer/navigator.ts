@@ -49,7 +49,10 @@ export interface Navigator {
   failed(candidate: NavCandidate): void;
 }
 
-export function createNavigator(playlist: Playlist, capacity: number = HISTORY_CAPACITY): Navigator {
+export function createNavigator(
+  playlist: Playlist,
+  capacity: number = HISTORY_CAPACITY,
+): Navigator {
   /** Shown URLs, oldest first; entries[cursor] is on screen. */
   const entries: string[] = [];
   let cursor = -1;

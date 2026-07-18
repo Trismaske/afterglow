@@ -226,10 +226,7 @@ export class CullSession {
       this.history.filter((r) => r.groupId === groupId).map((r) => r.winnerId),
     );
     return bracket.photoIds
-      .filter(
-        (id) =>
-          this.states.get(id) === 'kept' && !winners.has(id) && id !== bracket.bestId,
-      )
+      .filter((id) => this.states.get(id) === 'kept' && !winners.has(id) && id !== bracket.bestId)
       .map((id) => this.item(id));
   }
 

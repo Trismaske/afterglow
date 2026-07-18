@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -17,15 +17,21 @@ type Props = NativeStackScreenProps<RootStackParamList, 'CullList'>;
  * (keep / to edit / stays culled) — the last stop where any decision is
  * still reversible. The ONE confirm button below is the only path in the
  * app that deletes anything; on Android 11+ the system dialog moves the
- * batch to the trash (30-day recovery).
+ * batch to recoverable system trash (retention is gallery-controlled).
  */
 export function CullListScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const { session, confirmCulls, version } = useSession();
   const [busy, setBusy] = useState(false);
   const [redecideItem, setRedecideItem] = useState<MediaItem | null>(null);
+  const systemTrashSupported = Platform.OS === 'android' && Number(Platform.Version) >= 30;
 
-  const staged = useMemo(() => session?.stagedCulls() ?? [], [session, version]);
+  const staged = useMemo(
+    () => session?.stagedCulls() ?? [],
+    // The session object mutates in place; version is its render signal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [session, version],
+  );
 
   const runConfirm = useCallback(async () => {
     if (busy) return;
@@ -34,10 +40,21 @@ export function CullListScreen({ navigation }: Props) {
       const result = await confirmCulls();
       if (result.deleted) {
         navigation.replace('Summary');
+      } else if (result.status === 'cancelled') {
+        Alert.alert(
+          'Nothing moved to trash',
+          'The system confirmation was cancelled. Your photos are untouched and still staged.',
+        );
+      } else if (result.status === 'unsupported') {
+        Alert.alert(
+          'System trash unavailable',
+          'Afterglow does not permanently delete photos. Moving culls to trash requires Android 11 or later.',
+        );
       } else {
         Alert.alert(
-          'Nothing deleted',
-          'The system delete was cancelled. Your photos are untouched and still staged.',
+          'Could not move photos to trash',
+          result.error ??
+            'Android MediaStore returned an unexpected error. Your culls remain staged.',
         );
       }
     } finally {
@@ -50,14 +67,14 @@ export function CullListScreen({ navigation }: Props) {
       navigation.replace('Summary');
       return;
     }
-    // Our own confirm matters on Android < 11 where there is no system
-    // dialog; on 11+ the system dialog follows and is the real gate.
+    // The app-level warning is followed by Android's MediaStore-owned
+    // confirmation sheet. There is no permanent-delete fallback.
     Alert.alert(
-      `Delete ${staged.length} photo${staged.length === 1 ? '' : 's'}?`,
-      'They go to the system trash (recoverable for ~30 days).',
+      `Move ${staged.length} photo${staged.length === 1 ? '' : 's'} to trash?`,
+      'Android will ask you to confirm. Recovery duration is controlled by your system gallery.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: () => void runConfirm() },
+        { text: 'Move to trash', style: 'destructive', onPress: () => void runConfirm() },
       ],
     );
   }, [staged.length, navigation, runConfirm]);
@@ -87,9 +104,11 @@ export function CullListScreen({ navigation }: Props) {
     <View style={[styles.root, { paddingTop: insets.top + 12 }]}>
       <Text style={styles.title}>Cull list</Text>
       <Text style={styles.subtitle}>
-        {staged.length === 0
-          ? 'Nothing staged for deletion.'
-          : `${staged.length} staged · tap any photo to change its decision`}
+        {!systemTrashSupported && staged.length > 0
+          ? 'System trash requires Android 11 or later. Culls remain staged and untouched.'
+          : staged.length === 0
+            ? 'Nothing staged for deletion.'
+            : `${staged.length} staged · tap any photo to change its decision`}
       </Text>
       <FlatList
         data={staged}
@@ -106,22 +125,18 @@ export function CullListScreen({ navigation }: Props) {
         <BigButton
           label={
             busy
-              ? 'Deleting…'
+              ? 'Moving to trash…'
               : staged.length === 0
                 ? 'Finish session'
-                : `Delete ${staged.length} photo${staged.length === 1 ? '' : 's'}`
+                : `Trash ${staged.length} photo${staged.length === 1 ? '' : 's'}`
           }
           color={staged.length === 0 ? colors.keep : colors.cull}
-          disabled={busy}
+          disabled={busy || (!systemTrashSupported && staged.length > 0)}
           onPress={onConfirmPress}
         />
       </View>
       {redecideItem && (
-        <ReDecideSheet
-          item={redecideItem}
-          current="culled"
-          onClose={() => setRedecideItem(null)}
-        />
+        <ReDecideSheet item={redecideItem} current="culled" onClose={() => setRedecideItem(null)} />
       )}
     </View>
   );

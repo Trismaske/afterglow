@@ -107,6 +107,23 @@ export function currentStreak(daysWithSessions: readonly string[], today: string
   return streak;
 }
 
+/** Longest historical run plus the current run, both over unique local days. */
+export function streakStats(
+  daysWithSessions: readonly string[],
+  today: string,
+): { current: number; longest: number } {
+  const days = [...new Set(daysWithSessions)].sort();
+  let longest = 0;
+  let run = 0;
+  let previous: string | null = null;
+  for (const day of days) {
+    run = previous !== null && previousDayKey(day) === previous ? run + 1 : 1;
+    longest = Math.max(longest, run);
+    previous = day;
+  }
+  return { current: currentStreak(days, today), longest };
+}
+
 const DAY_FORMAT: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
 
 export function formatDay(ms: number): string {

@@ -16,9 +16,9 @@ import from `@afterglow/core`.
 | Export | What | Consumed by |
 |---|---|---|
 | `MediaItem`, `MediaKind` | One photo/video: `{ id, timestamp, uri, kind }` | everything |
-| `Cluster` | Time-proximate group, items sorted ascending | desktop v0.3, mobile m0.1 |
-| `PhotoState`, `PHOTO_STATES` | Mobile state machine: `unreviewed → kept/culled → confirmed → trashed`, plus `to_edit`/`done` (adopted in m0.2) | mobile m0.1+ |
-| `FlagType`, `FLAG_TYPES` | Desktop flags: `delete \| edit \| move \| review` | desktop v0.2 |
+| `Cluster` | Time-proximate group, items sorted ascending | both apps |
+| `PhotoState`, `PHOTO_STATES` | Mobile state machine: `unreviewed → kept/culled → confirmed → trashed`, plus `to_edit`/`done` (app-side states persisted in SQLite) | mobile |
+| `FlagType`, `FLAG_TYPES` | Desktop flags: `delete \| edit \| move \| review \| rename \| date` | desktop |
 | `Rng` | Injected random source `() => number` in `[0, 1)` | everything random |
 
 ### `rng.ts`
@@ -28,7 +28,7 @@ import from `@afterglow/core`.
 | `shuffled(arr, rng)` | Fisher–Yates into a new array |
 | `pickOne(arr, rng)` | Uniform pick, throws on empty |
 
-### `clustering.ts` — desktop v0.3 (story engine), mobile m0.1 (cull groups)
+### `clustering.ts` — desktop story engine, mobile cull groups
 | Export | What |
 |---|---|
 | `clusterByGap(items, { gapMs })` | Sort by timestamp; a gap **>** `gapMs` starts a new cluster. Every item lands in exactly one cluster (singletons included — callers filter by size) |
@@ -37,7 +37,14 @@ import from `@afterglow/core`.
 | `capCluster(cluster, cap)` | Even sampling down to `cap` (keeps first + last, preserves order) |
 | `DEFAULT_CLUSTER_CAP` | 8 |
 
-### `mix.ts` — desktop v0.3
+### `similarity.ts` — mobile group refinement
+| Export | What |
+|---|---|
+| `dhash64(lumaGrid)` | 64-bit dHash as a 16-char hex string; caller supplies the 9×8 luma grid |
+| `hammingDistance(a, b)` | Bit distance between two hashes (throws on malformed input) |
+| `refineClustersBySimilarity(clusters, hashes, threshold)` | Splits time clusters into connected components of ≤-threshold neighbors (chain-linking keeps drifting bursts together; null hashes attach to the nearest-by-timestamp neighbor) |
+
+### `mix.ts` — desktop story engine
 `createMix({ items, clusters?, weights?, avoidRepeatWindow?, clusterCap?, rng })`
 returns `{ next(): MediaItem }` — an endless slideshow stream that plays
 clusters consecutively (capped/sampled), interleaves random singles per
@@ -46,7 +53,7 @@ clusters consecutively (capped/sampled), interleaves random singles per
 never runs dry (cluster epochs reshuffle). Fully deterministic under a
 seeded `rng`.
 
-### `retrospectives.ts` — desktop v0.7
+### `retrospectives.ts` — desktop, roadmap v0.8
 | Export | What |
 |---|---|
 | `thisDayInHistory(items, { month, day, toleranceDays? })` | Photos on this calendar day across all years (± tolerance, year-wrap aware) |
@@ -56,35 +63,40 @@ seeded `rng`.
 All date math uses local naive time (PLAN.md: EXIF timestamps are
 best-effort local).
 
-### `flags.ts` — desktop v0.2 (capture) / v0.6 (organizer)
+### `flags.ts` — desktop flag capture (organizer actions: roadmap v0.7)
 Immutable functions over a serializable `FlagQueueState`:
 `createFlagQueue()`, `addFlag(state, { path, flagType, at, note? })` (deduped
 by `(path, flagType)`), `removeFlag(state, path, flagType)`,
 `listFlags(state, flagType?)`, `flagQueueToJSON(state)` /
 `flagQueueFromJSON(json)` (versioned; malformed entries are dropped).
 
-### `cull.ts` — mobile m0.1 (the signature mechanic)
-`CullSession.create({ groups, singles? })` — groups are `CullGroup`s
-(`Cluster` is assignable); everything starts `unreviewed`.
+### `deck.ts` — mobile group review (the live session model)
+`DeckSession.create({ groups, singles? })` — the swipe-deck model the
+Companion drives. Per group it tracks members, alive (undecided) photos, a
+cursor, completion and a starred best.
 
-- **Duels:** `nextPair()` peeks the current duel; `decideDuel(decision, at)`
-  takes `{ cull: loserId }` (loser staged for culling) or
-  `{ keepBoth: true, winner: id }` (both kept, winner advances). Winners
-  advance bracket-style (byes handled) until a group best emerges —
-  `groupBest(groupId)`, `isGroupComplete(groupId)`. Always n−1 duels per
-  n-photo group.
-- **History:** every outcome is a `DuelRecord { groupId, winnerId, loserId,
-  keptBoth, at }` via the `duelHistory` getter.
-- **Auto-cull hints (m0.3):** `autoCullCandidates(groupId)` — kept photos
-  that never won a duel (excluding the best).
+- **Decisions:** `cull(id)` stages a photo; `undoCull(id)` restores it into
+  the deck; `keepRest(groupId)` completes the group keeping every alive
+  member; `cullKept(id)` / `unstageCull(id)` are the re-decide transitions
+  (reversible until confirm); `markBest` stars a photo; `makeSingle(id)`
+  ejects a photo to the singles queue.
+- **Compares:** `recordCompare(...)` stores a `DuelRecord`;
+  `reconsiderCandidates(groupId)` — kept photos that lost a compare and
+  never won one (excluding the best) — is retained analysis for future
+  consumers and does not interrupt the current mobile flow.
 - **Singles:** `nextSingle()` / `decideSingle(id, action)` with
-  `SingleAction = 'keep' | 'cull'` (m0.2 widens with `'to_edit'`).
-- **Staged culls:** `stagedCulls()`, `unstageCull(id)` (restores to `kept`,
-  never back into the bracket), `confirmAll()` (`culled → confirmed`,
-  returns ids), then the app deletes and calls `markTrashed(ids)`.
-- **Queries:** `getState(id)`, `isComplete()`, `summary()`.
-- **Persistence:** `toJSON()` / `CullSession.fromJSON(json)` — plain JSON,
-  survives app restarts mid-bracket.
+  `SingleAction = 'keep' | 'cull' | 'to_edit'`.
+- **Staged culls:** `stagedCulls()`, `confirmAll()` (`culled → confirmed`,
+  returns ids), then the app deletes and calls `markTrashed(ids)` (atomic —
+  a bad id mutates nothing).
+- **Persistence:** `toJSON()` / `DeckSession.fromJSON(json)` — versioned
+  JSON (`kind: 'deck'`), survives app restarts mid-review.
+
+### `cull.ts` — legacy pairwise duel bracket
+`CullSession` (m0.1–m0.3's mechanic: duels advance winners bracket-style
+until a group best emerges, `autoCullCandidates` hints). Exported and
+tested but no longer used by the apps; kept for potential desktop
+burst-culling reuse.
 
 ## Testing
 

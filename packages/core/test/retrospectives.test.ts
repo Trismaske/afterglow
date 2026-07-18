@@ -1,10 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  thisDayInHistory,
-  onePerDayOfMonth,
-  onePerMonthOfYear,
-  mulberry32,
-} from '../src/index';
+import { thisDayInHistory, onePerDayOfMonth, onePerMonthOfYear, mulberry32 } from '../src/index';
 import { item, ts } from './helpers';
 
 describe('thisDayInHistory', () => {

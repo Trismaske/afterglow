@@ -67,8 +67,16 @@ describe('lumaGridFromRgba', () => {
   });
 
   it('box-averages larger images to the same ordering', () => {
-    const small = lumaGridFromRgba(rgba(9, 8, (x) => x * 20), 9, 8);
-    const large = lumaGridFromRgba(rgba(90, 80, (x) => Math.floor(x / 10) * 20), 90, 80);
+    const small = lumaGridFromRgba(
+      rgba(9, 8, (x) => x * 20),
+      9,
+      8,
+    );
+    const large = lumaGridFromRgba(
+      rgba(90, 80, (x) => Math.floor(x / 10) * 20),
+      90,
+      80,
+    );
     for (let r = 0; r < DHASH_GRID_ROWS; r++) {
       for (let c = 0; c < DHASH_GRID_COLS; c++) {
         expect(large[r][c]).toBeCloseTo(small[r][c], 3);
@@ -77,7 +85,13 @@ describe('lumaGridFromRgba', () => {
   });
 
   it('rejects images smaller than the grid and short buffers', () => {
-    expect(() => lumaGridFromRgba(rgba(8, 8, () => 0), 8, 8)).toThrow(/smaller than/);
+    expect(() =>
+      lumaGridFromRgba(
+        rgba(8, 8, () => 0),
+        8,
+        8,
+      ),
+    ).toThrow(/smaller than/);
     expect(() => lumaGridFromRgba(new Uint8Array(10), 9, 8)).toThrow(/too small/);
   });
 
@@ -118,9 +132,7 @@ describe('dhashFromJpegBase64', () => {
 
   it('tolerates a data-URI prefix', () => {
     const plain = jpegBase64(9, 8, (x) => x * 28);
-    expect(dhashFromJpegBase64(`data:image/jpeg;base64,${plain}`)).toBe(
-      dhashFromJpegBase64(plain),
-    );
+    expect(dhashFromJpegBase64(`data:image/jpeg;base64,${plain}`)).toBe(dhashFromJpegBase64(plain));
   });
 
   it('throws on non-JPEG bytes and garbage base64', () => {

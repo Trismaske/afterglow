@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { mulberry32 } from '@afterglow/core';
 import { createPlaylist } from '../src/renderer/playlist';
-import { createSmartPlaylist, createSwappablePlaylist, type SmartItem } from '../src/renderer/smart';
+import {
+  createSmartPlaylist,
+  createSwappablePlaylist,
+  type SmartItem,
+} from '../src/renderer/smart';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -15,14 +19,18 @@ function shot(name: string, t: number): SmartItem {
 function library(): { items: SmartItem[]; burstUrls: string[] } {
   // Singles sit on even 2-hour marks; the burst starts 31 minutes past 12h so
   // no single falls within the 3-minute moment gap of any burst shot.
-  const burst = Array.from({ length: 8 }, (_, i) => shot(`burst-${i}.jpg`, 12 * HOUR + 31 * MIN + i * 10_000));
+  const burst = Array.from({ length: 8 }, (_, i) =>
+    shot(`burst-${i}.jpg`, 12 * HOUR + 31 * MIN + i * 10_000),
+  );
   const singles = Array.from({ length: 30 }, (_, i) => shot(`single-${i}.jpg`, i * 2 * HOUR));
   return { items: [...singles, ...burst], burstUrls: burst.map((b) => b.url) };
 }
 
 describe('createSmartPlaylist', () => {
   it('returns null for an empty library', () => {
-    expect(createSmartPlaylist([], { gapMinutes: 3, clusterCap: 8, rng: mulberry32(1) })).toBeNull();
+    expect(
+      createSmartPlaylist([], { gapMinutes: 3, clusterCap: 8, rng: mulberry32(1) }),
+    ).toBeNull();
   });
 
   it('reports size and finds the burst as a moment', () => {
@@ -67,7 +75,11 @@ describe('createSmartPlaylist', () => {
       timestampMs: 12 * HOUR + 31 * MIN + 25_000,
       kind: 'video',
     };
-    const smart = createSmartPlaylist([...items, clip], { gapMinutes: 3, clusterCap: 9, rng: mulberry32(5) })!;
+    const smart = createSmartPlaylist([...items, clip], {
+      gapMinutes: 3,
+      clusterCap: 9,
+      rng: mulberry32(5),
+    })!;
     expect(smart.clusterCount).toBe(1);
     const seq = Array.from({ length: 130 }, () => smart.next());
     const runWithClip = [...burstUrls.slice(0, 3), clip.url, ...burstUrls.slice(3)];
@@ -82,7 +94,11 @@ describe('createSmartPlaylist', () => {
     // 10s spacing but a 0-tolerance... minimum gap is 1 minute; shots are 10s
     // apart so they still cluster at 1 min. Push them apart instead:
     const spread = items.map((it, i) => ({ ...it, timestampMs: i * 2 * HOUR }));
-    const smart = createSmartPlaylist(spread, { gapMinutes: 3, clusterCap: 8, rng: mulberry32(1) })!;
+    const smart = createSmartPlaylist(spread, {
+      gapMinutes: 3,
+      clusterCap: 8,
+      rng: mulberry32(1),
+    })!;
     expect(smart.clusterCount).toBe(0);
   });
 });

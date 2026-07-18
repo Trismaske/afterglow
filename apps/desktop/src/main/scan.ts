@@ -40,7 +40,10 @@ export interface ScanOptions {
 }
 
 /** Recursively collect absolute paths of all displayable media under `folders`. */
-export async function scanMedia(folders: readonly string[], opts: ScanOptions = {}): Promise<string[]> {
+export async function scanMedia(
+  folders: readonly string[],
+  opts: ScanOptions = {},
+): Promise<string[]> {
   const found = new Set<string>();
   const visitedDirs = new Set<string>();
 

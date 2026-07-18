@@ -104,8 +104,6 @@ export async function ensureDhashes(
       onProgress?.(done, total);
     }
   };
-  await Promise.all(
-    Array.from({ length: Math.min(HASH_CONCURRENCY, total) }, () => worker()),
-  );
+  await Promise.all(Array.from({ length: Math.min(HASH_CONCURRENCY, total) }, () => worker()));
   return { hashes, computed: total };
 }

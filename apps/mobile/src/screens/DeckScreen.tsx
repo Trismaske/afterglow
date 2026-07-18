@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   FlatList,
   Modal,
   Pressable,
@@ -7,6 +8,7 @@ import {
   StyleSheet,
   Text,
   View,
+  Platform,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
@@ -19,15 +21,29 @@ import Animated, {
   useSharedValue,
   withTiming,
 } from 'react-native-reanimated';
-import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useIsFocused } from '@react-navigation/native';
+import type {
+  NativeStackNavigationProp,
+  NativeStackScreenProps,
+} from '@react-navigation/native-stack';
 import type { MediaItem } from '@afterglow/core';
 import type { RootStackParamList } from '../navigation';
 import { useSession, type RedecideTarget } from '../session/SessionContext';
 import { BigButton } from '../components/BigButton';
 import { colors, touch, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded } from '../lib/format';
+import { completedDuringVisit, destinationAfterGroup } from '../lib/groupFlow';
+import { DecisionBadge, DECISION_GLYPHS, type DecisionKind } from '../components/DecisionBadge';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { isFavouriteSelected } from '../lib/favouriteState';
 
-type Props = NativeStackScreenProps<RootStackParamList, 'Deck'>;
+type DeckProps = NativeStackScreenProps<RootStackParamList, 'Deck'>;
+type SinglesProps = NativeStackScreenProps<RootStackParamList, 'Singles'>;
+type SharedProps = {
+  navigation: NativeStackNavigationProp<RootStackParamList>;
+  explicitGroupId?: string;
+  singlesMode: boolean;
+};
 
 const UNDO_MS = 4000;
 const THUMB = 52;
@@ -60,12 +76,28 @@ function clampPan(value: number, max: number): number {
  *   group's other alive members (straight into Compare when only two
  *   are alive). Long-pressing a strip thumbnail stays as the shortcut.
  */
-export function DeckScreen({ navigation, route }: Props) {
+export function DeckScreen({ navigation, route }: DeckProps) {
+  return (
+    <ReviewDeck
+      navigation={navigation}
+      explicitGroupId={route.params?.groupId}
+      singlesMode={false}
+    />
+  );
+}
+
+export function SinglesDeckScreen({ navigation }: SinglesProps) {
+  return <ReviewDeck navigation={navigation as DeckProps['navigation']} singlesMode />;
+}
+
+function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
+  const isFocused = useIsFocused();
   const {
     session,
     groups,
+    singleIds,
     deckSetCursor,
     deckCull,
     deckUndoCull,
@@ -75,8 +107,11 @@ export function DeckScreen({ navigation, route }: Props) {
     needsEdit,
     toggleNeedsEdit,
     redecide,
+    decideSingle,
+    keepRemainingSingles,
+    favouriteStatus,
+    toggleFavourite,
     version,
-    pendingReconsider,
   } = useSession();
   const [busy, setBusy] = useState(false);
   const [pageW, setPageW] = useState(0);
@@ -87,11 +122,10 @@ export function DeckScreen({ navigation, route }: Props) {
 
   // m0.5: an explicit group (Groups screen tap) pins the deck to it; the
   // linear flow keeps following the first incomplete group.
-  const explicitGroupId = route.params?.groupId;
   const groupId = useMemo(
-    () => explicitGroupId ?? session?.currentGroupId() ?? null,
+    () => (singlesMode ? null : (explicitGroupId ?? session?.currentGroupId() ?? null)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [explicitGroupId, session, version],
+    [explicitGroupId, session, singlesMode, version],
   );
   const info = useMemo(
     () => {
@@ -106,10 +140,13 @@ export function DeckScreen({ navigation, route }: Props) {
     [session, groupId, version],
   );
   const browse = info?.complete ?? false;
+  const completionRef = useRef<{ groupId: string | null; complete: boolean | null }>({
+    groupId: explicitGroupId ?? null,
+    complete: explicitGroupId ? (info?.complete ?? null) : null,
+  });
 
   const aliveItems: MediaItem[] = useMemo(
     () => (session && info ? info.aliveIds.map((id) => session.item(id)) : []),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [session, info],
   );
   // Browse mode pages every re-decidable member (kept AND staged culls).
@@ -123,12 +160,18 @@ export function DeckScreen({ navigation, route }: Props) {
       .map((id) => session.item(id));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, info, browse, version]);
-  const deckItems = browse ? browseItems : aliveItems;
+  const singlesItems: MediaItem[] = useMemo(
+    () => (session && singlesMode ? singleIds.map((id) => session.item(id)) : []),
+    [session, singleIds, singlesMode],
+  );
+  const deckItems = singlesMode ? singlesItems : browse ? browseItems : aliveItems;
 
   const [browseCursor, setBrowseCursor] = useState(0);
-  const cursor = browse
+  const cursor = singlesMode
     ? Math.min(browseCursor, Math.max(0, deckItems.length - 1))
-    : (info?.cursor ?? 0);
+    : browse
+      ? Math.min(browseCursor, Math.max(0, deckItems.length - 1))
+      : (info?.cursor ?? 0);
   const current: MediaItem | null = deckItems[cursor] ?? null;
   const groupIndex = useMemo(
     () => (groupId ? groups.findIndex((g) => g.id === groupId) : -1),
@@ -151,6 +194,7 @@ export function DeckScreen({ navigation, route }: Props) {
   const savedTy = useSharedValue(0);
   const stageW = useSharedValue(0);
   const stageH = useSharedValue(0);
+  const pagerGesture = useMemo(() => Gesture.Native(), []);
 
   const resetZoom = useCallback(() => {
     scale.value = 1;
@@ -165,7 +209,8 @@ export function DeckScreen({ navigation, route }: Props) {
 
   const zoomGesture = useMemo(() => {
     const pinch = Gesture.Pinch()
-      .onStart(() => {
+      .simultaneousWithExternalGesture(pagerGesture)
+      .onBegin(() => {
         runOnJS(setZoomed)(true);
       })
       .onUpdate((event) => {
@@ -211,7 +256,7 @@ export function DeckScreen({ navigation, route }: Props) {
       });
     return Gesture.Simultaneous(pinch, pan);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [zoomed]);
+  }, [pagerGesture, zoomed]);
 
   const zoomStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: tx.value }, { translateY: ty.value }, { scale: scale.value }],
@@ -222,9 +267,12 @@ export function DeckScreen({ navigation, route }: Props) {
     undoTimer.current = null;
     setUndo(null);
   }, []);
-  useEffect(() => () => {
-    if (undoTimer.current) clearTimeout(undoTimer.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (undoTimer.current) clearTimeout(undoTimer.current);
+    },
+    [],
+  );
   // A new group means the old cull can't return to a live deck anymore;
   // ditto a group COMPLETING under the banner (cull of the last photo in
   // an explicitly opened group) — core undoCull only works on live decks,
@@ -232,7 +280,7 @@ export function DeckScreen({ navigation, route }: Props) {
   useEffect(() => {
     clearUndo();
     setComparePicker(false);
-  }, [groupId, browse, clearUndo]);
+  }, [groupId, browse, clearUndo, singlesMode]);
   useEffect(() => {
     setBrowseCursor(0);
   }, [groupId]);
@@ -242,15 +290,12 @@ export function DeckScreen({ navigation, route }: Props) {
     resetZoom();
   }, [currentId, resetZoom]);
 
-  // Route forward: reconsider hint first, then — in the linear flow only —
-  // remaining groups (stay), singles, and finally the cull list. An
-  // explicitly opened group stays put (completed groups browse in place).
+  // Linear flow follows the first incomplete group, then singles and the
+  // cull list. Explicitly opening an ALREADY completed group still permits
+  // browse/re-decide mode.
   useEffect(() => {
     if (!session) return;
-    if (pendingReconsider) {
-      navigation.replace('Reconsider', { groupId: pendingReconsider });
-      return;
-    }
+    if (singlesMode) return;
     if (explicitGroupId) {
       if (!info) navigation.goBack(); // stale group id — nothing to show
       return;
@@ -258,12 +303,58 @@ export function DeckScreen({ navigation, route }: Props) {
     if (groupId) return;
     if (session.nextSingle()) navigation.replace('Singles');
     else navigation.replace('CullList');
-  }, [session, groupId, explicitGroupId, info, pendingReconsider, navigation]);
+  }, [session, groupId, explicitGroupId, info, navigation, singlesMode]);
+
+  const singlesPending = useMemo(
+    () =>
+      session && singlesMode
+        ? singleIds.filter((id) => session.getState(id) === 'unreviewed').length
+        : 0,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [session, singleIds, singlesMode, version],
+  );
+
+  useEffect(() => {
+    if (!session || !singlesMode || singlesPending > 0 || busy || !isFocused) return;
+    if (session.currentGroupId()) navigation.goBack();
+    else navigation.replace('CullList');
+  }, [busy, isFocused, navigation, session, singlesMode, singlesPending]);
+
+  // A group that becomes complete during this visit advances immediately.
+  // This covers Keep rest, culling/ejecting the final member, and completion
+  // while returning from Compare. A group that was complete when opened is a
+  // deliberate revisit and stays in browse mode.
+  useEffect(() => {
+    if (!session || !explicitGroupId || !info) return;
+    const previous = completionRef.current;
+    if (previous.groupId !== explicitGroupId) {
+      completionRef.current = { groupId: explicitGroupId, complete: info.complete };
+      return;
+    }
+    // Do not consume the transition while its write is still in flight, or
+    // while Compare/another screen is on top. The next focused, idle render
+    // performs the advance.
+    if (!isFocused || busy) return;
+    const justCompleted = completedDuringVisit(previous, explicitGroupId, info.complete, isFocused);
+    completionRef.current = { groupId: explicitGroupId, complete: info.complete };
+    if (!justCompleted) return;
+
+    const destination = destinationAfterGroup(
+      groups,
+      explicitGroupId,
+      session.nextSingle() !== null,
+    );
+    if (destination.screen === 'Deck') {
+      navigation.replace('Deck', { groupId: destination.groupId });
+    } else {
+      navigation.replace(destination.screen);
+    }
+  }, [busy, explicitGroupId, groups, info, isFocused, navigation, session]);
 
   // Keep the pager aligned with the cursor whenever the deck's membership
   // changes (cull/undo/make-single/re-decide) or a new group starts.
   // Swiping itself never triggers this (the key ignores the cursor).
-  const deckKey = `${groupId ?? ''}:${browse ? 'b' : 'r'}:${deckItems.map((i) => i.id).join(',')}`;
+  const deckKey = `${singlesMode ? 'singles' : (groupId ?? '')}:${browse ? 'b' : 'r'}:${deckItems.map((i) => i.id).join(',')}`;
   useEffect(() => {
     if (!pageW || deckItems.length === 0) return;
     listRef.current?.scrollToOffset({ offset: cursor * pageW, animated: false });
@@ -272,23 +363,23 @@ export function DeckScreen({ navigation, route }: Props) {
 
   const onMomentumEnd = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      if (!groupId || !pageW) return;
+      if (!pageW) return;
       const index = Math.round(event.nativeEvent.contentOffset.x / pageW);
       if (index === cursor) return;
-      if (browse) setBrowseCursor(index);
-      else deckSetCursor(groupId, index);
+      if (singlesMode || browse) setBrowseCursor(index);
+      else if (groupId) deckSetCursor(groupId, index);
     },
-    [groupId, pageW, cursor, browse, deckSetCursor],
+    [groupId, pageW, cursor, browse, deckSetCursor, singlesMode],
   );
 
   const jumpTo = useCallback(
     (index: number) => {
-      if (!groupId || !pageW) return;
-      if (browse) setBrowseCursor(index);
-      else deckSetCursor(groupId, index);
+      if (!pageW) return;
+      if (singlesMode || browse) setBrowseCursor(index);
+      else if (groupId) deckSetCursor(groupId, index);
       listRef.current?.scrollToOffset({ offset: index * pageW, animated: true });
     },
-    [groupId, pageW, browse, deckSetCursor],
+    [groupId, pageW, browse, deckSetCursor, singlesMode],
   );
 
   const run = useCallback(
@@ -322,32 +413,46 @@ export function DeckScreen({ navigation, route }: Props) {
     void run(() => deckUndoCull(id));
   }, [undo, clearUndo, run, deckUndoCull]);
 
+  const isBest = !!current && !singlesMode && info?.bestId === current.id;
+
   const finishGroup = useCallback(() => {
-    if (!groupId || !session) return;
+    if (!groupId) return;
+    void run(() => keepRest(groupId));
+  }, [groupId, run, keepRest]);
+
+  const toggleBest = useCallback(() => {
+    if (!groupId || !current) return;
     void run(async () => {
-      await keepRest(groupId);
-      // Explicit visits return to the overview once the group is done —
-      // unless a reconsider hint is about to take over the screen.
-      const hasReconsider =
-        session.reconsiderCandidates(groupId).filter((item) => !needsEdit(item.id)).length > 0;
-      if (explicitGroupId && !hasReconsider) navigation.goBack();
+      await markBest(groupId, isBest ? null : current.id);
+      if (!isBest && Platform.OS === 'android' && Number(Platform.Version) >= 30) {
+        Alert.alert('Best of this group', 'Would you also like to favourite it in your gallery?', [
+          { text: 'Not now', style: 'cancel' },
+          { text: 'Favourite', onPress: () => void toggleFavourite(current.id) },
+        ]);
+      }
     });
-  }, [groupId, session, run, keepRest, needsEdit, explicitGroupId, navigation]);
+  }, [current, groupId, isBest, markBest, run, toggleFavourite]);
 
   const openCompare = useCallback(
     (againstId?: string) => {
-      if (!groupId || !current || aliveItems.length < 2) return;
-      if (againstId === undefined && aliveItems.length > 2) {
+      const candidates = singlesMode ? deckItems : aliveItems;
+      if ((!singlesMode && !groupId) || !current || candidates.length < 2) return;
+      if (againstId === undefined && candidates.length > 2) {
         // m0.5: explicit opponent choice for larger groups.
         setComparePicker(true);
         return;
       }
-      const other = againstId ?? aliveItems.find((i) => i.id !== current.id)?.id;
+      const other = againstId ?? candidates.find((i) => i.id !== current.id)?.id;
       if (!other || other === current.id) return;
       setComparePicker(false);
-      navigation.navigate('Compare', { groupId, aId: current.id, bId: other });
+      navigation.navigate('Compare', {
+        ...(groupId ? { groupId } : {}),
+        singles: singlesMode,
+        aId: current.id,
+        bId: other,
+      });
     },
-    [groupId, current, aliveItems, navigation],
+    [aliveItems, current, deckItems, groupId, navigation, singlesMode],
   );
 
   const renderPage = useCallback(
@@ -365,27 +470,44 @@ export function DeckScreen({ navigation, route }: Props) {
     [pageW],
   );
 
-  if (!session || !groupId || !info || !current) {
+  if (!session || !current || (!singlesMode && (!groupId || !info))) {
     return <View style={styles.root} />;
   }
 
-  const isBest = info.bestId === current.id;
   const flagged = needsEdit(current.id);
+  const favourite = isFavouriteSelected(favouriteStatus(current.id));
   const keepCount = deckItems.length;
   const currentState = session.getState(current.id);
   const browseState: RedecideTarget =
     currentState === 'culled' ? 'cull' : flagged ? 'to_edit' : 'keep';
+  const currentDecision: DecisionKind | null =
+    currentState === 'culled'
+      ? 'cull'
+      : currentState === 'kept'
+        ? flagged
+          ? 'edit'
+          : 'keep'
+        : null;
+
+  const decideSingleCurrent = (target: RedecideTarget) => {
+    if (currentState === 'unreviewed') return decideSingle(current.id, target);
+    return redecide(current.id, target);
+  };
 
   return (
     <View style={[styles.root, { paddingBottom: insets.bottom + 8 }]}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>
-          Group {groupIndex + 1} of {groups.length} · {keepCount} {browse ? 'reviewed' : 'in deck'}
+          {singlesMode
+            ? `Singles · ${keepCount - singlesPending} of ${keepCount} reviewed`
+            : `Group ${groupIndex + 1} of ${groups.length} · ${keepCount} ${browse ? 'reviewed' : 'in deck'}`}
         </Text>
         <Text style={styles.headerHint}>
-          {browse
-            ? 'Reviewed group — change any decision until the final delete confirmation.'
-            : "Swipe through the group · cull what you don't want · Keep rest finishes."}
+          {singlesMode
+            ? 'Scroll freely · use the same decisions, compare and zoom as groups.'
+            : browse
+              ? 'Reviewed group — change any decision until the final delete confirmation.'
+              : "Swipe through the group · cull what you don't want · Keep rest finishes."}
         </Text>
       </View>
 
@@ -399,23 +521,27 @@ export function DeckScreen({ navigation, route }: Props) {
           }}
         >
           {pageW > 0 && (
-            <FlatList
-              ref={listRef}
-              data={deckItems}
-              keyExtractor={(i) => i.id}
-              renderItem={renderPage}
-              horizontal
-              pagingEnabled
-              scrollEnabled={!zoomed}
-              showsHorizontalScrollIndicator={false}
-              initialScrollIndex={Math.min(cursor, deckItems.length - 1)}
-              getItemLayout={(_data, index) => ({
-                length: pageW,
-                offset: pageW * index,
-                index,
-              })}
-              onMomentumScrollEnd={onMomentumEnd}
-            />
+            <GestureDetector gesture={pagerGesture}>
+              <View style={styles.pager}>
+                <FlatList
+                  ref={listRef}
+                  data={deckItems}
+                  keyExtractor={(i) => i.id}
+                  renderItem={renderPage}
+                  horizontal
+                  pagingEnabled
+                  scrollEnabled={!zoomed}
+                  showsHorizontalScrollIndicator={false}
+                  initialScrollIndex={Math.min(cursor, deckItems.length - 1)}
+                  getItemLayout={(_data, index) => ({
+                    length: pageW,
+                    offset: pageW * index,
+                    index,
+                  })}
+                  onMomentumScrollEnd={onMomentumEnd}
+                />
+              </View>
+            </GestureDetector>
           )}
           {zoomed && (
             <Animated.View style={[StyleSheet.absoluteFill, zoomStyle]} pointerEvents="none">
@@ -437,17 +563,11 @@ export function DeckScreen({ navigation, route }: Props) {
               {formatClockPrecise(current.timestamp, needMs[cursor] ?? false)}
             </Text>
           </View>
-          {(isBest || flagged || (browse && currentState === 'culled')) && (
+          {(isBest || favourite || currentDecision) && (
             <View style={styles.flagBadge} pointerEvents="none">
-              <Text style={[styles.flagBadgeText, { color: theme.accent }]}>
-                {[
-                  isBest ? '★ best' : null,
-                  flagged ? '✎ edit' : null,
-                  browse && currentState === 'culled' ? '✕ staged to cull' : null,
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
-              </Text>
+              {currentDecision && <DecisionBadge kind={currentDecision} size={24} />}
+              {isBest && <DecisionBadge kind="best" size={24} accent={theme.accent} />}
+              {favourite && <DecisionBadge kind="fav" size={24} />}
             </View>
           )}
           {undo && (
@@ -465,55 +585,154 @@ export function DeckScreen({ navigation, route }: Props) {
         style={styles.thumbStrip}
         contentContainerStyle={styles.thumbStripContent}
       >
-        {deckItems.map((item, index) => (
-          <Pressable
-            key={item.id}
-            onPress={() => jumpTo(index)}
-            onLongPress={() => {
-              if (!browse && item.id !== current.id) openCompare(item.id);
-            }}
-          >
-            <Image
-              source={{ uri: item.uri }}
-              style={[
-                styles.thumb,
-                index === cursor && styles.thumbActive,
-                item.id === info.bestId && { borderColor: theme.accent },
-              ]}
-              contentFit="cover"
-              recyclingKey={item.id}
-            />
-          </Pressable>
-        ))}
+        {deckItems.map((item, index) => {
+          const itemState = session.getState(item.id);
+          const itemDecision: DecisionKind | null =
+            itemState === 'culled'
+              ? 'cull'
+              : itemState === 'kept'
+                ? needsEdit(item.id)
+                  ? 'edit'
+                  : 'keep'
+                : null;
+          return (
+            <Pressable
+              key={item.id}
+              onPress={() => jumpTo(index)}
+              onLongPress={() => {
+                if ((singlesMode || !browse) && item.id !== current.id) openCompare(item.id);
+              }}
+            >
+              <Image
+                source={{ uri: item.uri }}
+                style={[
+                  styles.thumb,
+                  index === cursor && styles.thumbActive,
+                  item.id === info?.bestId && { borderColor: theme.accent },
+                ]}
+                contentFit="cover"
+                recyclingKey={item.id}
+              />
+              {itemDecision && <DecisionBadge kind={itemDecision} style={styles.thumbDecision} />}
+              {item.id === info?.bestId && (
+                <DecisionBadge kind="best" accent={theme.accent} style={styles.thumbBest} />
+              )}
+              {isFavouriteSelected(favouriteStatus(item.id)) && (
+                <DecisionBadge kind="fav" style={styles.thumbFavourite} />
+              )}
+            </Pressable>
+          );
+        })}
       </ScrollView>
 
-      {browse ? (
-        // m0.5 re-decide chips: the current photo's verdict, changeable.
-        <View style={styles.actionRow}>
-          {(
-            [
-              { target: 'keep', label: '✓ Keep', dim: colors.keepDim, color: colors.keep },
-              { target: 'to_edit', label: '✎ To edit', dim: colors.editDim, color: colors.edit },
-              { target: 'cull', label: '✕ Cull', dim: colors.cullDim, color: colors.cull },
-            ] as const
-          ).map(({ target, label, dim, color }) => {
-            const active = browseState === target;
-            return (
+      {singlesMode || browse ? (
+        <>
+          <View style={styles.actionRow}>
+            {(
+              [
+                {
+                  target: 'keep',
+                  label: 'Keep',
+                  kind: 'keep',
+                  dim: colors.keepDim,
+                  color: colors.keep,
+                },
+                {
+                  target: 'to_edit',
+                  label: 'To edit',
+                  kind: 'edit',
+                  dim: colors.editDim,
+                  color: colors.edit,
+                },
+                {
+                  target: 'cull',
+                  label: 'Cull',
+                  kind: 'cull',
+                  dim: colors.cullDim,
+                  color: colors.cull,
+                },
+              ] as const
+            ).map(({ target, label, kind, dim, color }) => {
+              const active = currentState !== 'unreviewed' && browseState === target;
+              return (
+                <Pressable
+                  key={target}
+                  style={[
+                    styles.actionButton,
+                    { backgroundColor: dim },
+                    active && { borderWidth: 2, borderColor: color },
+                  ]}
+                  disabled={busy}
+                  onPress={() =>
+                    void run(() =>
+                      singlesMode ? decideSingleCurrent(target) : redecide(current.id, target),
+                    )
+                  }
+                >
+                  <MaterialCommunityIcons name={DECISION_GLYPHS[kind]} size={20} color={color} />
+                  <Text style={styles.actionText}>{label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <View style={styles.secondaryRow}>
+            {singlesMode && deckItems.length > 1 && (
               <Pressable
-                key={target}
+                style={styles.secondaryButton}
+                disabled={busy}
+                onPress={() => openCompare()}
+              >
+                <MaterialCommunityIcons
+                  name="compare-horizontal"
+                  size={19}
+                  color={colors.textDim}
+                />
+                <Text style={styles.secondaryText}>Compare with…</Text>
+              </Pressable>
+            )}
+            {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
+              <Pressable
+                style={[styles.secondaryButton, favourite && styles.secondaryButtonFavourite]}
+                disabled={busy}
+                onPress={() => void run(() => toggleFavourite(current.id))}
+              >
+                <MaterialCommunityIcons
+                  name={favourite ? 'heart' : 'heart-outline'}
+                  size={19}
+                  color={favourite ? colors.fav : colors.textDim}
+                />
+                <Text style={[styles.secondaryText, favourite && styles.secondaryTextFavourite]}>
+                  {favourite ? 'Favourite queued' : 'Favourite'}
+                </Text>
+              </Pressable>
+            )}
+            {!singlesMode && groupId && (
+              <Pressable
                 style={[
-                  styles.actionButton,
-                  { backgroundColor: dim },
-                  active && { borderWidth: 2, borderColor: color },
+                  styles.secondaryButton,
+                  isBest && { backgroundColor: theme.accentMuted, borderColor: theme.accent },
                 ]}
                 disabled={busy}
-                onPress={() => void run(() => redecide(current.id, target))}
+                onPress={toggleBest}
               >
-                <Text style={styles.actionText}>{label}</Text>
+                <MaterialCommunityIcons
+                  name={isBest ? 'star' : 'star-outline'}
+                  size={19}
+                  color={isBest ? theme.accent : colors.textDim}
+                />
+                <Text style={[styles.secondaryText, isBest && { color: theme.accent }]}>Best</Text>
               </Pressable>
-            );
-          })}
-        </View>
+            )}
+          </View>
+          {singlesMode && singlesPending > 0 && (
+            <BigButton
+              label={busy ? 'Saving…' : `Keep remaining (${singlesPending})`}
+              color={colors.keep}
+              disabled={busy}
+              onPress={() => void run(keepRemainingSingles)}
+            />
+          )}
+        </>
       ) : (
         <>
           <View style={styles.actionRow}>
@@ -522,15 +741,17 @@ export function DeckScreen({ navigation, route }: Props) {
               disabled={busy}
               onPress={cullCurrent}
             >
-              <Text style={styles.actionText}>✕ Cull</Text>
+              <MaterialCommunityIcons name="close" size={21} color={colors.cull} />
+              <Text style={styles.actionText}>Cull</Text>
             </Pressable>
             <Pressable
               style={[styles.actionButton, styles.compareButton]}
               disabled={busy || keepCount < 2}
               onPress={() => openCompare()}
             >
+              <MaterialCommunityIcons name="compare-horizontal" size={21} color={colors.textDim} />
               <Text style={[styles.actionText, keepCount < 2 && styles.actionTextDisabled]}>
-                ⇄ Compare{keepCount > 2 ? ' with…' : ''}
+                Compare{keepCount > 2 ? ' with…' : ''}
               </Text>
             </Pressable>
             <Pressable
@@ -540,11 +761,14 @@ export function DeckScreen({ navigation, route }: Props) {
                 isBest && { backgroundColor: theme.accentMuted, borderColor: theme.accent },
               ]}
               disabled={busy}
-              onPress={() => void run(() => markBest(groupId, isBest ? null : current.id))}
+              onPress={toggleBest}
             >
-              <Text style={[styles.actionText, isBest && { color: theme.accent }]}>
-                {isBest ? '★ Best' : '☆ Best'}
-              </Text>
+              <MaterialCommunityIcons
+                name={isBest ? 'star' : 'star-outline'}
+                size={21}
+                color={isBest ? theme.accent : colors.textDim}
+              />
+              <Text style={[styles.actionText, isBest && { color: theme.accent }]}>Best</Text>
             </Pressable>
           </View>
 
@@ -554,21 +778,43 @@ export function DeckScreen({ navigation, route }: Props) {
               disabled={busy}
               onPress={() => void toggleNeedsEdit(current.id)}
             >
+              <MaterialCommunityIcons
+                name="pencil"
+                size={18}
+                color={flagged ? colors.edit : colors.textDim}
+              />
               <Text style={[styles.secondaryText, flagged && styles.secondaryTextEdit]}>
-                {flagged ? '✎ Needs edit ✓' : '✎ Needs edit'}
+                {flagged ? 'Needs edit' : 'To edit'}
               </Text>
             </Pressable>
+            {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
+              <Pressable
+                style={[styles.secondaryButton, favourite && styles.secondaryButtonFavourite]}
+                disabled={busy}
+                onPress={() => void run(() => toggleFavourite(current.id))}
+              >
+                <MaterialCommunityIcons
+                  name={favourite ? 'heart' : 'heart-outline'}
+                  size={18}
+                  color={favourite ? colors.fav : colors.textDim}
+                />
+                <Text style={[styles.secondaryText, favourite && styles.secondaryTextFavourite]}>
+                  Favourite
+                </Text>
+              </Pressable>
+            )}
             <Pressable
               style={styles.secondaryButton}
               disabled={busy}
               onPress={() => void run(() => makeSingle(current.id))}
             >
-              <Text style={styles.secondaryText}>↗ Not related — single</Text>
+              <MaterialCommunityIcons name="image-move" size={18} color={colors.textDim} />
+              <Text style={styles.secondaryText}>Not related</Text>
             </Pressable>
           </View>
 
           <BigButton
-            label={busy ? '…' : `✓ Keep rest (${keepCount})`}
+            label={busy ? 'Saving…' : `Keep rest (${keepCount})`}
             color={colors.keep}
             disabled={busy}
             onPress={finishGroup}
@@ -586,11 +832,9 @@ export function DeckScreen({ navigation, route }: Props) {
         <Pressable style={styles.pickerBackdrop} onPress={() => setComparePicker(false)}>
           <Pressable style={styles.pickerCard} onPress={() => {}}>
             <Text style={styles.pickerTitle}>Compare with…</Text>
-            <Text style={styles.pickerHint}>
-              Pick the photo to compare against {cursor + 1}.
-            </Text>
+            <Text style={styles.pickerHint}>Pick the photo to compare against {cursor + 1}.</Text>
             <View style={styles.pickerGrid}>
-              {aliveItems.map((item, index) =>
+              {(singlesMode ? deckItems : aliveItems).map((item, index) =>
                 item.id === current.id ? null : (
                   <Pressable key={item.id} onPress={() => openCompare(item.id)}>
                     <Image
@@ -617,7 +861,13 @@ export function DeckScreen({ navigation, route }: Props) {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 12, gap: 10, paddingTop: 8 },
+  root: {
+    flex: 1,
+    backgroundColor: colors.background,
+    paddingHorizontal: 12,
+    gap: 10,
+    paddingTop: 8,
+  },
   header: { gap: 2, paddingHorizontal: 4 },
   headerTitle: { color: colors.text, fontSize: 16, fontWeight: '700' },
   headerHint: { color: colors.textDim, fontSize: 12 },
@@ -629,6 +879,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     overflow: 'hidden',
   },
+  pager: { flex: 1 },
   posBadge: {
     position: 'absolute',
     top: 10,
@@ -648,7 +899,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
     paddingVertical: 4,
   },
-  timeBadgeText: { color: colors.text, fontSize: 13, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  timeBadgeText: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
   flagBadge: {
     position: 'absolute',
     bottom: 10,
@@ -693,6 +949,7 @@ const styles = StyleSheet.create({
     borderRadius: touch.radius,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 3,
   },
   cullButton: { backgroundColor: colors.cullDim },
   compareButton: {
@@ -718,10 +975,17 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     paddingHorizontal: 8,
+    flexDirection: 'row',
+    gap: 6,
   },
   secondaryButtonEdit: { backgroundColor: colors.editDim, borderColor: colors.edit },
+  secondaryButtonFavourite: { backgroundColor: colors.favDim, borderColor: colors.fav },
   secondaryText: { color: colors.textDim, fontSize: 13, fontWeight: '700' },
   secondaryTextEdit: { color: colors.edit },
+  secondaryTextFavourite: { color: colors.fav },
+  thumbDecision: { position: 'absolute', top: 3, right: 3 },
+  thumbBest: { position: 'absolute', top: 3, left: 3 },
+  thumbFavourite: { position: 'absolute', bottom: 3, right: 3 },
   pickerBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',

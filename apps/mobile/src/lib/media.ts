@@ -3,12 +3,14 @@
  *
  * Uses the SDK 57 *legacy* API (`expo-media-library/legacy`) deliberately:
  * the new class-based Query/Asset API landed in SDK 57 and the legacy
- * functions (`getAssetsAsync` paging, `deleteAssetsAsync` with the Android
- * system delete dialog) are the documented, battle-tested path. Revisit for
- * m0.2+ once the new API has settled.
+ * functions (`getAssetsAsync` paging) are the documented, battle-tested path.
+ * Destructive actions deliberately bypass the legacy delete API and use the
+ * app's Android 11+ MediaStore trash-request module below.
  */
 import * as MediaLibrary from 'expo-media-library/legacy';
 import type { MediaItem } from '@afterglow/core';
+import { trashMedia, type MediaStoreActionStatus } from '../../modules/media-store-actions';
+import { tallyPhotoDays } from './recentMedia';
 
 /** A camera-roll photo: the core item plus MediaStore extras we persist. */
 export interface LoadedPhoto {
@@ -136,6 +138,42 @@ export async function countPhotosInRange(
   return total;
 }
 
+/**
+ * Count photos per local day with one ranged scan per selected source bucket,
+ * instead of one totalCount query per day. Paging is retained for unusually
+ * busy weeks, but the common camera-roll case is a single MediaStore request.
+ */
+export async function countPhotosByDayInRange(
+  startMs: number,
+  endMs: number,
+  albumIds?: readonly string[] | null,
+): Promise<Map<string, number>> {
+  const buckets: (string | undefined)[] = albumIds ? [...albumIds] : [undefined];
+  const timestamps: number[] = [];
+  const seen = new Set<string>();
+  for (const album of buckets) {
+    let after: string | undefined;
+    for (;;) {
+      const page = await MediaLibrary.getAssetsAsync({
+        first: PAGE_SIZE,
+        after,
+        ...(album !== undefined ? { album } : {}),
+        createdAfter: startMs,
+        createdBefore: endMs,
+        mediaType: MediaLibrary.MediaType.photo,
+      });
+      for (const asset of page.assets) {
+        if (seen.has(asset.id)) continue;
+        seen.add(asset.id);
+        timestamps.push(asset.creationTime || asset.modificationTime || 0);
+      }
+      if (!page.hasNextPage || !page.endCursor) break;
+      after = page.endCursor;
+    }
+  }
+  return tallyPhotoDays(timestamps);
+}
+
 /** Live MediaStore details for one asset (edit detection, m0.3). */
 export interface AssetDetails {
   id: string;
@@ -240,21 +278,26 @@ export async function getEditableContentUri(assetId: string): Promise<string> {
   }
 }
 
+export interface TrashAssetsResult {
+  status: MediaStoreActionStatus | 'failed';
+  error?: string;
+}
+
 /**
- * Delete the given assets via the system flow. On Android 11+ this raises
- * the system confirmation dialog and moves photos to the system trash
- * (30-day recovery). Resolves `true` only if the deletion went through;
- * `false` means the user cancelled. THIS IS THE ONLY DELETION CALL IN THE
- * APP — nothing else may delete media. Reachable from exactly two explicit
- * user actions: the cull-list confirm button, and the "cull the original"
- * choice after an edited copy is detected (m0.3).
+ * Move assets to Android's recoverable system trash after the OS-owned
+ * confirmation sheet. THIS IS THE ONLY MEDIA REMOVAL CALL IN THE APP.
+ * There is deliberately no permanent-delete fallback below Android 11 or
+ * when the native module is absent.
  */
-export async function deleteAssets(assetIds: readonly string[]): Promise<boolean> {
-  if (assetIds.length === 0) return true;
+export async function trashAssets(assetIds: readonly string[]): Promise<TrashAssetsResult> {
+  if (assetIds.length === 0) return { status: 'applied' };
   try {
-    return await MediaLibrary.deleteAssetsAsync([...assetIds]);
-  } catch {
-    // User cancellation surfaces as a rejection on some Android versions.
-    return false;
+    const uris = await Promise.all(assetIds.map(getEditableContentUri));
+    return await trashMedia(uris);
+  } catch (error) {
+    return {
+      status: 'failed',
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 }

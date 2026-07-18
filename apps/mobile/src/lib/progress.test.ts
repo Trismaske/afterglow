@@ -5,8 +5,20 @@ import {
   donePct,
   editorActions,
   remainingReviewable,
+  progressRemainder,
   type StateCounts,
 } from './progress';
+
+describe('progressRemainder', () => {
+  it('leaves 13/14 empty for one completed photo', () => {
+    expect(progressRemainder(14, [1, 0, 0])).toBe(13);
+  });
+
+  it('clamps over-counts and negative segments safely', () => {
+    expect(progressRemainder(14, [10, 8])).toBe(0);
+    expect(progressRemainder(14, [-3, 4])).toBe(10);
+  });
+});
 
 function counts(partial: Partial<StateCounts>): StateCounts {
   const base: StateCounts = {

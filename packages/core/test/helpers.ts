@@ -11,12 +11,6 @@ export function burst(n: number, start: number, stepMs: number, prefix = 'p'): M
 }
 
 /** Local-time timestamp helper (month is 1-12). */
-export function ts(
-  year: number,
-  month: number,
-  day: number,
-  hour = 12,
-  minute = 0,
-): number {
+export function ts(year: number, month: number, day: number, hour = 12, minute = 0): number {
   return new Date(year, month - 1, day, hour, minute).getTime();
 }

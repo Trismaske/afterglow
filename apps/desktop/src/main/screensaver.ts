@@ -64,8 +64,12 @@ interface RegResult {
 function reg(args: readonly string[]): Promise<RegResult> {
   return new Promise((resolve) => {
     execFile('reg.exe', [...args], { windowsHide: true }, (err, stdout, stderr) => {
-      const code = err ? ((err as { code?: unknown }).code as number | undefined) ?? 1 : 0;
-      resolve({ code: typeof code === 'number' ? code : 1, stdout: stdout ?? '', stderr: stderr ?? '' });
+      const code = err ? (((err as { code?: unknown }).code as number | undefined) ?? 1) : 0;
+      resolve({
+        code: typeof code === 'number' ? code : 1,
+        stdout: stdout ?? '',
+        stderr: stderr ?? '',
+      });
     });
   });
 }
@@ -106,9 +110,22 @@ export async function registerScreensaver(): Promise<ScreensaverResult> {
       error: `${SCR_BASENAME} was not found next to the app — install Afterglow with the installer to use it as a screensaver.`,
     };
   }
-  const add = await reg(['add', DESKTOP_KEY, '/v', SCRNSAVE_VALUE, '/t', 'REG_SZ', '/d', scrPath(), '/f']);
+  const add = await reg([
+    'add',
+    DESKTOP_KEY,
+    '/v',
+    SCRNSAVE_VALUE,
+    '/t',
+    'REG_SZ',
+    '/d',
+    scrPath(),
+    '/f',
+  ]);
   if (add.code !== 0) {
-    return { status, error: `Could not write the registry: ${add.stderr.trim() || `reg.exe exited ${add.code}`}` };
+    return {
+      status,
+      error: `Could not write the registry: ${add.stderr.trim() || `reg.exe exited ${add.code}`}`,
+    };
   }
   // Make sure the screensaver machinery is on at all (harmless if already 1).
   await reg(['add', DESKTOP_KEY, '/v', 'ScreenSaveActive', '/t', 'REG_SZ', '/d', '1', '/f']);
@@ -123,7 +140,10 @@ export async function unregisterScreensaver(): Promise<ScreensaverResult> {
   }
   const del = await reg(['delete', DESKTOP_KEY, '/v', SCRNSAVE_VALUE, '/f']);
   if (del.code !== 0) {
-    return { status, error: `Could not update the registry: ${del.stderr.trim() || `reg.exe exited ${del.code}`}` };
+    return {
+      status,
+      error: `Could not update the registry: ${del.stderr.trim() || `reg.exe exited ${del.code}`}`,
+    };
   }
   return { status: await getScreensaverStatus(), error: null };
 }

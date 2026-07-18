@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
 import Constants from 'expo-constants';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { resolveSources } from '../lib/sourceCatalog';
@@ -195,8 +196,8 @@ export function SettingsScreen({ navigation }: Props) {
       <View style={styles.card}>
         <Text style={styles.rowTitle}>Max photos per session</Text>
         <Text style={styles.explainer}>
-          A session stops here so progress stays bankable — the rest of the scope waits for
-          the next session.
+          A session stops here so progress stays bankable — the rest of the scope waits for the next
+          session.
         </Text>
         <View style={styles.stepWrap}>
           {SESSION_CAP_CHOICES.map((cap) => {
@@ -270,8 +271,8 @@ export function SettingsScreen({ navigation }: Props) {
       <View style={styles.card}>
         <Text style={styles.rowTitle}>Similarity for groups</Text>
         <Text style={styles.explainer}>
-          Shots taken within minutes of each other are only reviewed as one group when they
-          also look alike. Takes effect from the next session.
+          Shots taken within minutes of each other are only reviewed as one group when they also
+          look alike. Takes effect from the next session.
         </Text>
         <View style={styles.stepWrap}>
           {SIMILARITY_STEPS.map((step) => {
@@ -307,7 +308,8 @@ export function SettingsScreen({ navigation }: Props) {
               onCommit={pickThreshold}
             />
             <Text style={styles.stepHint}>
-              Higher groups more different-looking photos together.
+              How many of the 64 fingerprint bits two photos may differ by and still group; 64 =
+              grouping by time alone.
             </Text>
           </>
         )}
@@ -317,8 +319,8 @@ export function SettingsScreen({ navigation }: Props) {
       <Text style={styles.sectionLabel}>Review scopes</Text>
       <View style={styles.card}>
         <Text style={styles.explainer}>
-          The scope chips offered on the Home screen. Create named scopes from Home's
-          Custom range; the Custom chip itself is always available.
+          The scope chips offered on the Home screen. Create named scopes from Home's Custom range;
+          the Custom chip itself is always available.
         </Text>
         {scopeConfig?.scopes.map((scope) => (
           <View key={scope.id} style={styles.switchRow}>
@@ -332,7 +334,7 @@ export function SettingsScreen({ navigation }: Props) {
             </View>
             {!scope.builtin && (
               <Pressable hitSlop={8} onPress={() => deleteScope(scope)}>
-                <Text style={styles.deleteScope}>✕</Text>
+                <MaterialCommunityIcons name="close" size={22} color={colors.cull} />
               </Pressable>
             )}
             <Switch
@@ -357,8 +359,8 @@ export function SettingsScreen({ navigation }: Props) {
       <View style={styles.card}>
         <Text style={styles.rowTitle}>Accent color</Text>
         <Text style={styles.explainer}>
-          Colors the buttons, chips, and highlights. System follows your phone's Material
-          You palette, so it changes with your wallpaper.
+          Colors the buttons, chips, and highlights. System follows your phone's Material You
+          palette, so it changes with your wallpaper.
         </Text>
         <View style={styles.accentWrap}>
           <Pressable
@@ -376,7 +378,9 @@ export function SettingsScreen({ navigation }: Props) {
                 { backgroundColor: theme.systemAccent ?? colors.surfaceRaised },
               ]}
             />
-            <Text style={[styles.accentLabel, theme.choice === 'system' && styles.accentLabelActive]}>
+            <Text
+              style={[styles.accentLabel, theme.choice === 'system' && styles.accentLabelActive]}
+            >
               System
             </Text>
           </Pressable>
@@ -484,7 +488,6 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   sliderValueLabel: { fontSize: 13, fontWeight: '700' },
-  deleteScope: { color: colors.cull, fontSize: 17, fontWeight: '800', paddingHorizontal: 4 },
   resetRow: { minHeight: 40, alignItems: 'center', justifyContent: 'center' },
   resetText: { fontSize: 14, fontWeight: '700' },
   accentWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },

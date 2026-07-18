@@ -47,7 +47,12 @@ describe('CullSession — duel brackets', () => {
     expect(s.getState('p0')).toBe('kept');
     for (const id of ['p1', 'p2', 'p3']) expect(s.getState(id)).toBe('culled');
     expect(s.duelHistory).toHaveLength(3);
-    expect(s.stagedCulls().map((i) => i.id).sort()).toEqual(['p1', 'p2', 'p3']);
+    expect(
+      s
+        .stagedCulls()
+        .map((i) => i.id)
+        .sort(),
+    ).toEqual(['p1', 'p2', 'p3']);
   });
 
   it('odd group (5): bye advances the leftover photo, mixed decisions', () => {
@@ -78,7 +83,12 @@ describe('CullSession — duel brackets', () => {
     expect(s.duelHistory).toHaveLength(4); // n - 1
     expect(s.getState('p0')).toBe('kept');
     expect(s.getState('p3')).toBe('kept');
-    expect(s.stagedCulls().map((i) => i.id).sort()).toEqual(['p2', 'p4']);
+    expect(
+      s
+        .stagedCulls()
+        .map((i) => i.id)
+        .sort(),
+    ).toEqual(['p2', 'p4']);
   });
 
   it('every n-photo group takes exactly n-1 duels, for odd and even n', () => {
@@ -159,9 +169,9 @@ describe('CullSession — duel brackets', () => {
     expect(() =>
       CullSession.create({ groups: [group('g1', [item('x', 0)]), group('g1', [item('y', 1)])] }),
     ).toThrow(/duplicate group id/);
-    expect(() =>
-      CullSession.create({ groups: [group('g1', [a])], singles: [a] }),
-    ).toThrow(/duplicate photo id/);
+    expect(() => CullSession.create({ groups: [group('g1', [a])], singles: [a] })).toThrow(
+      /duplicate photo id/,
+    );
   });
 });
 
@@ -174,7 +184,12 @@ describe('CullSession — auto-cull candidates', () => {
     s.decideDuel({ keepBoth: true, winner: 'p0' }, 3);
 
     // p1 and p3 never won; p2 won round 1; p0 is best.
-    expect(s.autoCullCandidates('g1').map((i) => i.id).sort()).toEqual(['p1', 'p3']);
+    expect(
+      s
+        .autoCullCandidates('g1')
+        .map((i) => i.id)
+        .sort(),
+    ).toEqual(['p1', 'p3']);
   });
 
   it('culled photos and duel winners are never candidates', () => {

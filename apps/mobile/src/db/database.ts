@@ -8,9 +8,9 @@
  * `CullSession` before that — those old snapshots are discarded on
  * resume) so it survives app restarts.
  *
- * Migrations: simple `PRAGMA user_version`-based runner. Each entry in
- * MIGRATIONS moves the schema from version (index) to (index + 1) and runs
- * exactly once, in order, inside the SQL batch below.
+ * Migrations use `PRAGMA user_version`. Each schema step and its version
+ * bump share one exclusive transaction, so a crash can never advertise a
+ * half-applied migration.
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
 
@@ -20,7 +20,7 @@ export const DATABASE_NAME = 'afterglow.db';
  * MIGRATIONS[n] upgrades user_version n → n+1. Append-only: never edit a
  * shipped migration, add a new one.
  */
-const MIGRATIONS: readonly string[] = [
+export const MIGRATIONS: readonly string[] = [
   // 0 → 1: m0.1 baseline.
   `
     CREATE TABLE IF NOT EXISTS photos (
@@ -112,6 +112,27 @@ const MIGRATIONS: readonly string[] = [
       mod_time INTEGER NOT NULL
     );
   `,
+  // 5 → 6: m0.6 durable favourite/edit metrics. Favourite intent is a
+  // small state machine so a user-confirmed MediaStore batch can be retried
+  // and verified instead of optimistically painting a heart. Completion
+  // timestamps give the lifetime dashboard exact, documented inputs.
+  `
+    ALTER TABLE photos ADD COLUMN favourite_state TEXT NOT NULL DEFAULT 'none'
+      CHECK (favourite_state IN ('none', 'queued_apply', 'applied', 'queued_remove', 'error'));
+    ALTER TABLE photos ADD COLUMN favourite_changed_at INTEGER;
+    ALTER TABLE photos ADD COLUMN favourite_applied_at INTEGER;
+    ALTER TABLE photos ADD COLUMN edit_completed_at INTEGER;
+    ALTER TABLE photos ADD COLUMN reviewed_at INTEGER;
+    ALTER TABLE photos ADD COLUMN culled_at INTEGER;
+    CREATE INDEX IF NOT EXISTS idx_photos_favourite_state ON photos(favourite_state);
+  `,
+  // 6 → 7: retain the desired direction when a favourite operation fails.
+  // `error` alone cannot distinguish retry-apply from retry-remove, especially
+  // after a photo has historical favourite_applied_at data.
+  `
+    ALTER TABLE photos ADD COLUMN favourite_target INTEGER
+      CHECK (favourite_target IS NULL OR favourite_target IN (0, 1));
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
@@ -120,8 +141,17 @@ export async function migrateDatabase(db: SQLiteDatabase): Promise<void> {
   await db.execAsync('PRAGMA journal_mode = WAL');
   const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
   let current = row?.user_version ?? 0;
+  if (!Number.isInteger(current) || current < 0 || current > SCHEMA_VERSION) {
+    throw new Error(
+      `Unsupported database schema version ${String(current)} (app supports ${SCHEMA_VERSION})`,
+    );
+  }
   while (current < SCHEMA_VERSION) {
-    await db.execAsync(`${MIGRATIONS[current]}\nPRAGMA user_version = ${current + 1}`);
+    const next = current + 1;
+    await db.withExclusiveTransactionAsync(async (txn) => {
+      await txn.execAsync(MIGRATIONS[current]);
+      await txn.execAsync(`PRAGMA user_version = ${next}`);
+    });
     current++;
   }
 }

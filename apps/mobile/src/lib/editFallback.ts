@@ -21,16 +21,23 @@ export const VIEWER_FALLBACK_TOAST = 'Opened in viewer — use its edit button';
 /** Error copy when neither an editor nor a viewer could open the photo. */
 export const NO_EDITOR_TITLE = 'Could not open the photo';
 export const NO_EDITOR_MESSAGE =
-  'No installed app could edit or even view this photo. Install a photo editor or gallery app and try again.';
+  'No installed app could edit or view this photo. Install a photo editor or gallery app and try again.';
 
 /**
  * Outcome of one launch attempt chain:
- * - 'returned': ACTION_EDIT launched; the user came back from the editor.
- * - 'viewer':   ACTION_EDIT resolved nothing; ACTION_VIEW launched and the
+ * - returned: ACTION_EDIT launched; the user came back from the editor.
+ * - viewer:   ACTION_EDIT resolved nothing; ACTION_VIEW launched and the
  *               user came back from the viewer.
- * - 'failed':   neither intent resolved an activity.
+ * - failed:   neither intent resolved an activity; both exact errors survive.
  */
-export type FallbackOutcome = 'returned' | 'viewer' | 'failed';
+export type FallbackResult =
+  | { outcome: 'returned' }
+  | { outcome: 'viewer' }
+  | { outcome: 'failed'; editError: string; viewError: string };
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /**
  * Fire ACTION_EDIT; on failure fall back to ACTION_VIEW on the same URI.
@@ -42,20 +49,24 @@ export type FallbackOutcome = 'returned' | 'viewer' | 'failed';
 export async function launchWithViewerFallback(
   launch: (action: string) => Promise<unknown>,
   onViewerLaunch?: () => void,
-): Promise<FallbackOutcome> {
+): Promise<FallbackResult> {
   try {
     await launch(ACTION_EDIT);
-    return 'returned';
-  } catch {
+    return { outcome: 'returned' };
+  } catch (editError) {
     try {
       const returned = launch(ACTION_VIEW);
       // An unresolvable intent rejects immediately, so a toast fired here
       // only ever races the error in the no-viewer-at-all case.
       onViewerLaunch?.();
       await returned;
-      return 'viewer';
-    } catch {
-      return 'failed';
+      return { outcome: 'viewer' };
+    } catch (viewError) {
+      return {
+        outcome: 'failed',
+        editError: errorMessage(editError),
+        viewError: errorMessage(viewError),
+      };
     }
   }
 }

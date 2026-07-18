@@ -1,4 +1,4 @@
-import type { MediaItem, PhotoState } from './types.js';
+import { PHOTO_STATES, type MediaItem, type PhotoState } from './types.js';
 import type { CullGroup, CullSessionInput, CullSessionSummary, DuelRecord } from './cull.js';
 
 /**
@@ -14,8 +14,8 @@ import type { CullGroup, CullSessionInput, CullSessionSummary, DuelRecord } from
  *   from the bracket model (same {@link PhotoState} machine).
  * - Explicit A/B compares (the on-demand compare tool) are recorded with
  *   the {@link DuelRecord} shape so the existing duel-history storage
- *   keeps working. Reconsider ("auto-cull") hints derive from compares
- *   only: the losers of explicit compares that remain kept.
+ *   keeps working. Compare-loser analysis remains available for future
+ *   consumers without interrupting the app's primary review flow.
  * - `makeSingle(id)` is the escape hatch for a mis-grouped photo: it
  *   leaves its group and joins the singles flow.
  * - Serializes to plain JSON (`kind: 'deck'`) and restores mid-deck. A
@@ -142,6 +142,19 @@ export class DeckSession {
   }
 
   /**
+   * Decide one live group member as kept. This is used by metadata actions
+   * such as Favourite that imply a keep without finishing the whole group.
+   * The member leaves the undecided deck; clearing the decision reinserts it
+   * at its original position.
+   */
+  keep(id: string): void {
+    const group = this.aliveGroupOf(id, 'keep');
+    this.requireState(id, 'unreviewed', 'keep');
+    this.states.set(id, 'kept');
+    this.removeFromDeck(group, id);
+  }
+
+  /**
    * Undo a deck cull (the brief undo affordance): the photo returns to
    * `unreviewed` and re-enters its deck at its original position. Only
    * valid while the group is still incomplete.
@@ -154,18 +167,33 @@ export class DeckSession {
       throw new Error(`undoCull: group ${group.groupId} already complete — use unstageCull`);
     }
     this.states.set(id, 'unreviewed');
-    // Reinsert in memberIds order: before the first alive id that follows it.
-    const order = new Map(group.memberIds.map((m, i) => [m, i]));
-    const myPos = order.get(id)!;
-    let insertAt = group.aliveIds.length;
-    for (let i = 0; i < group.aliveIds.length; i++) {
-      if (order.get(group.aliveIds[i])! > myPos) {
-        insertAt = i;
-        break;
-      }
+    this.reinsert(group, id);
+  }
+
+  /**
+   * Clear an active keep/cull decision (m0.6 tap-again-to-clear): back to
+   * `unreviewed`.
+   * A group member re-opens its group (`complete` resets) so keepRest can
+   * finish it again; a kept photo that had left the deck via a cull →
+   * unstageCull round trip re-enters at its original position. Singles
+   * simply rejoin the pending queue.
+   */
+  clearDecision(id: string): void {
+    const state = this.getState(id);
+    if (state !== 'kept' && state !== 'culled') {
+      throw new Error(`clearDecision: expected kept or culled, got ${state} for ${id}`);
     }
-    group.aliveIds.splice(insertAt, 0, id);
-    group.cursor = insertAt;
+    this.states.set(id, 'unreviewed');
+    const group = this.groups.find((g) => g.memberIds.includes(id));
+    if (!group) return;
+    if (!group.aliveIds.includes(id)) this.reinsert(group, id);
+    group.complete = false;
+  }
+
+  /** Backward-compatible kept-only alias used by older callers. */
+  unkeep(id: string): void {
+    this.requireState(id, 'kept', 'unkeep');
+    this.clearDecision(id);
   }
 
   /**
@@ -232,7 +260,7 @@ export class DeckSession {
   }
 
   /**
-   * Reconsider ("auto-cull hint") candidates for a group, m0.4 rule:
+   * Compare-loser candidates for a group (retained analysis from m0.4):
    * kept photos that LOST an explicit compare, never won one, and are not
    * the starred best. A group finished with zero compares yields none —
    * merely surviving the deck is not a signal against a photo.
@@ -310,9 +338,8 @@ export class DeckSession {
   }
 
   /**
-   * Second-pass cull of an already-kept photo (the Reconsider screen).
-   * The bracket model needed a snapshot rewrite for this; the deck model
-   * supports it directly.
+   * Re-decide an already-kept photo as culled. The bracket model needed a
+   * snapshot rewrite for this; the deck model supports it directly.
    */
   cullKept(id: string): void {
     this.requireState(id, 'kept', 'cullKept');
@@ -411,41 +438,166 @@ export class DeckSession {
     if (typeof json !== 'object' || json === null) {
       throw new Error('DeckSession.fromJSON: not an object');
     }
-    const snap = json as DeckSessionJSON;
-    if (snap.kind !== 'deck') {
-      throw new Error(`DeckSession.fromJSON: not a deck snapshot (kind ${String(snap.kind)})`);
+    const raw = json as Record<string, unknown>;
+    if (raw.kind !== 'deck') {
+      throw new Error(`DeckSession.fromJSON: not a deck snapshot (kind ${String(raw.kind)})`);
     }
-    if (snap.version !== 1) {
-      throw new Error(`DeckSession.fromJSON: unsupported version ${String(snap.version)}`);
+    if (raw.version !== 1) {
+      throw new Error(`DeckSession.fromJSON: unsupported version ${String(raw.version)}`);
     }
     if (
-      !Array.isArray(snap.items) ||
-      !Array.isArray(snap.groups) ||
-      !Array.isArray(snap.singleIds) ||
-      !Array.isArray(snap.compareHistory) ||
-      typeof snap.states !== 'object' ||
-      snap.states === null
+      !Array.isArray(raw.items) ||
+      !Array.isArray(raw.groups) ||
+      !Array.isArray(raw.singleIds) ||
+      !Array.isArray(raw.compareHistory) ||
+      !isRecord(raw.states)
     ) {
       throw new Error('DeckSession.fromJSON: malformed snapshot');
     }
-    const session = new DeckSession();
-    for (const item of snap.items) session.itemsById.set(item.id, { ...item });
-    session.groups = snap.groups.map((g) => ({
-      groupId: g.groupId,
-      memberIds: [...g.memberIds],
-      aliveIds: [...g.aliveIds],
-      cursor: clampCursor(g.cursor, g.aliveIds.length),
-      complete: !!g.complete,
-      bestId: g.bestId ?? null,
-    }));
-    session.singleIds = [...snap.singleIds];
-    session.states = new Map(Object.entries(snap.states) as [string, PhotoState][]);
-    session.history = snap.compareHistory.map((r) => ({ ...r }));
-    for (const [id] of session.states) {
-      if (!session.itemsById.has(id)) {
-        throw new Error(`DeckSession.fromJSON: state for unknown id ${id}`);
+
+    const items: MediaItem[] = [];
+    const itemIds = new Set<string>();
+    for (const value of raw.items) {
+      if (
+        !isRecord(value) ||
+        typeof value.id !== 'string' ||
+        value.id.length === 0 ||
+        typeof value.timestamp !== 'number' ||
+        !Number.isFinite(value.timestamp) ||
+        typeof value.uri !== 'string' ||
+        (value.kind !== 'photo' && value.kind !== 'video')
+      ) {
+        throw new Error('DeckSession.fromJSON: malformed media item');
       }
+      if (itemIds.has(value.id)) {
+        throw new Error(`DeckSession.fromJSON: duplicate photo id ${value.id}`);
+      }
+      itemIds.add(value.id);
+      items.push({ id: value.id, timestamp: value.timestamp, uri: value.uri, kind: value.kind });
     }
+
+    const stateEntries = Object.entries(raw.states);
+    const validStates = new Set<string>(PHOTO_STATES);
+    const states = new Map<string, PhotoState>();
+    for (const [id, value] of stateEntries) {
+      if (!itemIds.has(id)) throw new Error(`DeckSession.fromJSON: state for unknown id ${id}`);
+      if (typeof value !== 'string' || !validStates.has(value)) {
+        throw new Error(`DeckSession.fromJSON: invalid state for ${id}`);
+      }
+      states.set(id, value as PhotoState);
+    }
+    for (const id of itemIds) {
+      if (!states.has(id)) throw new Error(`DeckSession.fromJSON: missing state for ${id}`);
+    }
+
+    const groups: DeckGroupState[] = [];
+    const groupIds = new Set<string>();
+    const assigned = new Set<string>();
+    const membersByGroup = new Map<string, Set<string>>();
+    for (const value of raw.groups) {
+      if (
+        !isRecord(value) ||
+        typeof value.groupId !== 'string' ||
+        value.groupId.length === 0 ||
+        !Array.isArray(value.memberIds) ||
+        !Array.isArray(value.aliveIds) ||
+        typeof value.cursor !== 'number' ||
+        !Number.isFinite(value.cursor) ||
+        typeof value.complete !== 'boolean' ||
+        !(value.bestId === null || typeof value.bestId === 'string')
+      ) {
+        throw new Error('DeckSession.fromJSON: malformed group');
+      }
+      if (groupIds.has(value.groupId)) {
+        throw new Error(`DeckSession.fromJSON: duplicate group id ${value.groupId}`);
+      }
+      groupIds.add(value.groupId);
+      const memberIds = stringIdArray(value.memberIds, 'group member');
+      const aliveIds = stringIdArray(value.aliveIds, 'alive member');
+      const members = new Set(memberIds);
+      if (members.size !== memberIds.length) {
+        throw new Error(`DeckSession.fromJSON: duplicate member in ${value.groupId}`);
+      }
+      const alive = new Set(aliveIds);
+      if (alive.size !== aliveIds.length) {
+        throw new Error(`DeckSession.fromJSON: duplicate alive member in ${value.groupId}`);
+      }
+      for (const id of memberIds) {
+        if (!itemIds.has(id)) throw new Error(`DeckSession.fromJSON: unknown group member ${id}`);
+        if (assigned.has(id)) throw new Error(`DeckSession.fromJSON: photo ${id} assigned twice`);
+        assigned.add(id);
+      }
+      for (const id of aliveIds) {
+        if (!members.has(id)) throw new Error(`DeckSession.fromJSON: alive non-member ${id}`);
+        const state = states.get(id)!;
+        if (state === 'culled' || state === 'confirmed' || state === 'trashed') {
+          throw new Error(`DeckSession.fromJSON: removed photo ${id} is still alive`);
+        }
+      }
+      for (const id of memberIds) {
+        if (states.get(id) === 'unreviewed' && !alive.has(id)) {
+          throw new Error(`DeckSession.fromJSON: unreviewed photo ${id} is outside its deck`);
+        }
+      }
+      if (value.bestId !== null && !alive.has(value.bestId)) {
+        throw new Error(`DeckSession.fromJSON: best photo is not alive in ${value.groupId}`);
+      }
+      membersByGroup.set(value.groupId, members);
+      groups.push({
+        groupId: value.groupId,
+        memberIds,
+        aliveIds,
+        cursor: clampCursor(value.cursor, aliveIds.length),
+        complete: value.complete,
+        bestId: value.bestId,
+      });
+    }
+
+    const singleIds = stringIdArray(raw.singleIds, 'single');
+    if (new Set(singleIds).size !== singleIds.length) {
+      throw new Error('DeckSession.fromJSON: duplicate single');
+    }
+    for (const id of singleIds) {
+      if (!itemIds.has(id)) throw new Error(`DeckSession.fromJSON: unknown single ${id}`);
+      if (assigned.has(id)) throw new Error(`DeckSession.fromJSON: photo ${id} assigned twice`);
+      assigned.add(id);
+    }
+    if (assigned.size !== itemIds.size) {
+      throw new Error('DeckSession.fromJSON: one or more photos are not assigned');
+    }
+
+    const history: DuelRecord[] = raw.compareHistory.map((value) => {
+      if (
+        !isRecord(value) ||
+        typeof value.groupId !== 'string' ||
+        typeof value.winnerId !== 'string' ||
+        typeof value.loserId !== 'string' ||
+        value.winnerId === value.loserId ||
+        typeof value.keptBoth !== 'boolean' ||
+        typeof value.at !== 'number' ||
+        !Number.isFinite(value.at)
+      ) {
+        throw new Error('DeckSession.fromJSON: malformed compare record');
+      }
+      const members = membersByGroup.get(value.groupId);
+      if (!members?.has(value.winnerId) || !members.has(value.loserId)) {
+        throw new Error('DeckSession.fromJSON: compare photos are not in their group');
+      }
+      return {
+        groupId: value.groupId,
+        winnerId: value.winnerId,
+        loserId: value.loserId,
+        keptBoth: value.keptBoth,
+        at: value.at,
+      };
+    });
+
+    const session = new DeckSession();
+    for (const item of items) session.itemsById.set(item.id, item);
+    session.groups = groups;
+    session.singleIds = singleIds;
+    session.states = states;
+    session.history = history;
     return session;
   }
 
@@ -474,6 +626,22 @@ export class DeckSession {
     if (!group) throw new Error(`${op}: ${id} is not in any deck`);
     if (group.complete) throw new Error(`${op}: group ${group.groupId} already complete`);
     return group;
+  }
+
+  /** Reinsert an id into its deck in memberIds order; cursor lands on it. */
+  private reinsert(group: DeckGroupState, id: string): void {
+    // Before the first alive id that follows it in the original order.
+    const order = new Map(group.memberIds.map((m, i) => [m, i]));
+    const myPos = order.get(id)!;
+    let insertAt = group.aliveIds.length;
+    for (let i = 0; i < group.aliveIds.length; i++) {
+      if (order.get(group.aliveIds[i])! > myPos) {
+        insertAt = i;
+        break;
+      }
+    }
+    group.aliveIds.splice(insertAt, 0, id);
+    group.cursor = insertAt;
   }
 
   /** Drop an id from a deck, fix the cursor/best, auto-complete if emptied. */
@@ -506,4 +674,15 @@ export class DeckSession {
 function clampCursor(index: number, length: number): number {
   if (length <= 0) return 0;
   return Math.min(length - 1, Math.max(0, Math.floor(index)));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function stringIdArray(value: unknown[], label: string): string[] {
+  if (!value.every((id) => typeof id === 'string' && id.length > 0)) {
+    throw new Error(`DeckSession.fromJSON: malformed ${label} id`);
+  }
+  return value as string[];
 }

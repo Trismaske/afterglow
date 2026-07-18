@@ -8,6 +8,7 @@
 import React, { useCallback, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
 import { editorActions, type EditorAction } from '../../lib/progress';
@@ -25,10 +26,16 @@ import { stateMetaFor } from './stateMeta';
 import type { GridPhoto } from './PhotoStateGrid';
 
 const ACTION_LABEL: Record<EditorAction, string> = {
-  mark_done: '✓ Mark done',
-  queue_edit: '✎ Send to the edit queue',
-  unstage_cull: '↩ Un-cull — back to keepers',
+  mark_done: 'Mark done',
+  queue_edit: 'Send to the edit queue',
+  unstage_cull: 'Un-cull — back to keepers',
 };
+
+const ACTION_ICON = {
+  mark_done: 'check',
+  queue_edit: 'pencil',
+  unstage_cull: 'undo',
+} as const;
 
 function readOnlyHint(photo: GridPhoto, inActiveSession: boolean): string {
   if (inActiveSession) {
@@ -36,7 +43,7 @@ function readOnlyHint(photo: GridPhoto, inActiveSession: boolean): string {
   }
   switch (photo.dbState) {
     case 'trashed':
-      return 'Culled to the system trash — restore it from your gallery within ~30 days if needed.';
+      return 'Moved to the system trash — your gallery controls how long it remains recoverable.';
     case 'confirmed':
       return 'Deletion in progress.';
     default:
@@ -95,10 +102,7 @@ export function StateEditorSheet({
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
         {/* Stop backdrop-press from closing when tapping the card. */}
-        <Pressable
-          style={[styles.card, { paddingBottom: insets.bottom + 16 }]}
-          onPress={() => {}}
-        >
+        <Pressable style={[styles.card, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
           <View style={styles.header}>
             <Image
               source={{ uri: photo.uri }}
@@ -128,6 +132,7 @@ export function StateEditorSheet({
                 disabled={busy}
                 onPress={() => void run(action)}
               >
+                <MaterialCommunityIcons name={ACTION_ICON[action]} size={20} color={colors.text} />
                 <Text style={styles.actionText}>{ACTION_LABEL[action]}</Text>
               </Pressable>
             ))
@@ -175,6 +180,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     paddingHorizontal: 14,
+    flexDirection: 'row',
+    gap: 8,
   },
   actionDisabled: { opacity: 0.5 },
   actionText: { color: colors.text, fontSize: 15, fontWeight: '700' },

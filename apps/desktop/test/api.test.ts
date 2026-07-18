@@ -38,7 +38,17 @@ describe('mediaKindFromPath (v0.4 extension routing)', () => {
   });
 
   it('returns null for undisplayable formats (AVI, MKV, HEIC, GIF, RAW, none)', () => {
-    for (const p of ['a.avi', 'b.mkv', 'c.heic', 'd.gif', 'e.cr2', 'f', 'g.', '.jpg/h', '/dir.mp4/i.txt']) {
+    for (const p of [
+      'a.avi',
+      'b.mkv',
+      'c.heic',
+      'd.gif',
+      'e.cr2',
+      'f',
+      'g.',
+      '.jpg/h',
+      '/dir.mp4/i.txt',
+    ]) {
       expect(mediaKindFromPath(p), p).toBeNull();
     }
   });

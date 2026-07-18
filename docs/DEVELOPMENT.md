@@ -19,7 +19,7 @@ core, rebuild it with `npm run build -w @afterglow/core`.
 
 ## Prerequisites
 
-- **Node.js ≥ 22** and npm ≥ 10
+- **Node.js ≥ 22.13.0** and npm ≥ 10 (React Native 0.86's enforced floor)
 - git, curl, unzip, tar (all standard on Ubuntu/Mint)
 - ~20 GB free disk if you're doing Android work
 
@@ -28,6 +28,7 @@ core, rebuild it with `npm run build -w @afterglow/core`.
 ```bash
 git clone <repo> && cd afterglow
 npm install            # installs every workspace + builds @afterglow/core
+npm run lint && npm run format:check
 npm run typecheck      # sanity check: should be clean
 npm test               # core + desktop + mobile unit tests, all green
 ```
@@ -104,6 +105,8 @@ npx expo start                         # Metro; press 'a' to (re)open the app
 
 npm run typecheck -w afterglow-companion
 npm test -w afterglow-companion        # heuristics unit tests (vitest)
+npx expo prebuild --platform android --clean --no-install
+cd android && ./gradlew :app:assembleDebug --console=plain
 ```
 
 Root-level aliases (work from anywhere in the repo):
@@ -133,6 +136,10 @@ adb shell pm clear com.afterglow.companion   # wipe app data
 
 ## Version pins & bumping
 
+`electronVersion` is pinned in `apps/desktop/electron-builder.yml` (electron
+is hoisted to the workspace root, so electron-builder can't resolve the
+semver range itself) — bump it manually whenever electron is upgraded.
+
 The Android toolchain versions live at the top of
 `scripts/setup-android-env.sh` and mirror
 `node_modules/react-native/gradle/libs.versions.toml` (compileSdk,
@@ -151,6 +158,7 @@ SHA-256 by computing it from a download you've verified against their SHA-1.
 | Emulator boots but is unusably slow | No KVM access: `sudo gpasswd -a $USER kvm`, log out/in |
 | `expo` created `android/`/`app.json` at the repo root | You ran it from the root — delete those, restore `package.json` from git, run commands from `apps/mobile` |
 | First `expo run:android` is very slow | Normal: Gradle downloads ~2-3 GB of dependencies once |
+| Emulator: adb-pushed JPEGs get wrong/inconsistent `datetaken` | Known media-scanner quirk; MediaStore also rejects `datetaken` updates from the adb shell — test timestamp-clustering fidelity on a real phone |
 | Windows testers see SmartScreen warning | Expected for unsigned builds: "More info → Run anyway" |
 | Desktop HEIC files don't display | Unsupported on desktop for now (documented in README) |
 

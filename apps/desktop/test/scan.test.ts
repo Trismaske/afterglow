@@ -32,7 +32,17 @@ describe('isImageFile / isVideoFile / isMediaFile', () => {
   });
 
   it('rejects everything else — explicitly no AVI/MKV/HEIC/GIF', () => {
-    for (const p of ['a.gif', 'b.heic', 'c.avi', 'd.mkv', 'e.txt', 'f', 'g.jpg.exe', 'h.cr2', 'i.mp4.part']) {
+    for (const p of [
+      'a.gif',
+      'b.heic',
+      'c.avi',
+      'd.mkv',
+      'e.txt',
+      'f',
+      'g.jpg.exe',
+      'h.cr2',
+      'i.mp4.part',
+    ]) {
       expect(isImageFile(p), p).toBe(false);
       expect(isVideoFile(p), p).toBe(false);
       expect(isMediaFile(p), p).toBe(false);

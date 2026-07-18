@@ -3,7 +3,10 @@ import { HISTORY_CAPACITY, createNavigator, type NavCandidate } from '../src/ren
 import type { Playlist } from '../src/renderer/playlist';
 
 /** Endless deterministic playlist; optional url → cluster id map (smart). */
-function playlistOf(urls: readonly string[], clusters?: Readonly<Record<string, number>>): Playlist {
+function playlistOf(
+  urls: readonly string[],
+  clusters?: Readonly<Record<string, number>>,
+): Playlist {
   let i = 0;
   return {
     size: urls.length,

@@ -1,5 +1,15 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  Alert,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -19,12 +29,13 @@ import {
   storedScopeRange,
   type ScopeConfig,
 } from '../lib/scopeStore';
-import { countPhotosInRange, deleteAssets } from '../lib/media';
+import { countPhotosByDayInRange, countPhotosInRange, trashAssets } from '../lib/media';
 import { resolveSources } from '../lib/sourceCatalog';
 import { getSessionPrefs, loadReviewablePhotos } from '../lib/reviewLoader';
 import { DEFAULT_SESSION_PREFS, type SessionPrefs } from '../lib/sessionPrefs';
 import {
   bankActiveSessionKeepers,
+  countFavouriteQueue,
   countToEdit,
   getDaySummaries,
   getSetting,
@@ -92,6 +103,7 @@ export function HomeScreen({ navigation }: Props) {
   /** Perceptual-hash progress while a session is being built (m0.4). */
   const [analyzing, setAnalyzing] = useState<{ done: number; total: number } | null>(null);
   const [editCount, setEditCount] = useState(0);
+  const [favouriteCount, setFavouriteCount] = useState(0);
   const [dayRows, setDayRows] = useState<DayRow[] | null>(null);
   const [detectionNotice, setDetectionNotice] = useState<string | null>(null);
   /** Bumped after detection changes states, to re-run the focus loaders. */
@@ -195,8 +207,20 @@ export function HomeScreen({ navigation }: Props) {
             onPress: () =>
               void (async () => {
                 // System dialog is the real gate; cancel leaves it queued.
-                const deleted = await deleteAssets([head.originalAssetId]);
-                if (deleted) await markTrashedDirect(db, head.originalAssetId);
+                const result = await trashAssets([head.originalAssetId]);
+                if (result.status === 'applied') {
+                  await markTrashedDirect(db, head.originalAssetId);
+                } else if (result.status === 'unsupported') {
+                  Alert.alert(
+                    'System trash unavailable',
+                    'Afterglow does not permanently delete photos. This action requires Android 11 or later.',
+                  );
+                } else if (result.status === 'failed') {
+                  Alert.alert(
+                    'Could not move photo to trash',
+                    result.error ?? 'Unknown MediaStore error.',
+                  );
+                }
                 next();
               })(),
           },
@@ -228,8 +252,8 @@ export function HomeScreen({ navigation }: Props) {
         if (result.autoDone > 0) {
           setDetectionNotice(
             result.autoDone === 1
-              ? '✓ 1 edited photo detected — marked done'
-              : `✓ ${result.autoDone} edited photos detected — marked done`,
+              ? '1 edited photo detected — marked done'
+              : `${result.autoDone} edited photos detected — marked done`,
           );
           setRefreshTick((t) => t + 1);
         }
@@ -247,24 +271,33 @@ export function HomeScreen({ navigation }: Props) {
     useCallback(() => {
       let cancelled = false;
       (async () => {
-        const toEdit = await countToEdit(db);
+        const [toEdit, favouriteQueue] = await Promise.all([
+          countToEdit(db),
+          countFavouriteQueue(db),
+        ]);
         if (cancelled) return;
         setEditCount(toEdit);
+        setFavouriteCount(favouriteQueue);
 
         const src = permission?.granted ? await resolveSources(db).catch(() => null) : null;
         if (cancelled) return;
         const keys = recentDayKeys(RECENT_DAYS);
         const summaries = await getDaySummaries(db, keys[keys.length - 1], src?.roots ?? null);
+        const recentRange = {
+          startMs: rangeOfDayKey(keys[keys.length - 1]).startMs,
+          endMs: rangeOfDayKey(keys[0]).endMs,
+        };
+        const mediaByDay = permission?.granted
+          ? await countPhotosByDayInRange(
+              recentRange.startMs,
+              recentRange.endMs,
+              src?.albumIds ?? null,
+            ).catch(() => new Map<string, number>())
+          : new Map<string, number>();
         const rows: DayRow[] = [];
         for (const day of keys) {
           const dbRow = summaries.get(day);
-          let msTotal = 0;
-          if (permission?.granted) {
-            const r = rangeOfDayKey(day);
-            msTotal = await countPhotosInRange(r.startMs, r.endMs, src?.albumIds ?? null).catch(
-              () => 0,
-            );
-          }
+          const msTotal = mediaByDay.get(day) ?? 0;
           // Trashed photos are gone from MediaStore, so the day's true
           // total is MediaStore + trashed rows (DB `done` includes them).
           const total = msTotal + (dbRow?.trashed ?? 0);
@@ -285,6 +318,7 @@ export function HomeScreen({ navigation }: Props) {
         cancelled = true;
       };
       // refreshTick re-runs this after edit detection changes states.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [db, permission?.granted, refreshTick]),
   );
 
@@ -319,9 +353,7 @@ export function HomeScreen({ navigation }: Props) {
             getStateCountsInScope(db, { startMs: year.startMs, endMs: year.endMs }, src.roots),
           ]);
           if (cancelled) return;
-          const unlocked = allTimeUnlocked(
-            remainingToReview(msYear, scYear.toEdit + scYear.done),
-          );
+          const unlocked = allTimeUnlocked(remainingToReview(msYear, scYear.toEdit + scYear.done));
           setAllTimeReady(unlocked);
           if (scope === 'all' && !unlocked) {
             // New photos re-locked the gate while it was selected.
@@ -343,7 +375,9 @@ export function HomeScreen({ navigation }: Props) {
       return () => {
         cancelled = true;
       };
-    }, [db, permission?.granted, scope, rangeFor, refreshTick]),
+      // refreshTick re-runs this after edit detection changes states.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [db, permission?.granted, scope, scopeConfig, rangeFor, refreshTick]),
   );
 
   const onPickerChange = useCallback(
@@ -453,8 +487,8 @@ export function HomeScreen({ navigation }: Props) {
           accessibilityLabel="Settings"
           onPress={() => navigation.navigate('Settings')}
         >
-          {/* m0.5: emoji gear — the ⚙ text glyph read as an eye/sun. */}
-          <Text style={styles.gearIcon}>⚙️</Text>
+          {/* m0.6: Material gear — the m0.5 emoji read as out of place. */}
+          <MaterialCommunityIcons name="cog-outline" size={24} color={colors.textDim} />
         </Pressable>
       </View>
       <Text style={styles.subtitle}>Clear your photos down to the keepers.</Text>
@@ -469,11 +503,15 @@ export function HomeScreen({ navigation }: Props) {
       {!permission?.granted && (
         <View style={styles.card}>
           <Text style={styles.cardText}>
-            Afterglow needs access to your photos to review them. Nothing is ever deleted
-            without your explicit confirmation.
+            Afterglow needs access to your photos to review them. Nothing is ever deleted without
+            your explicit confirmation.
           </Text>
           <BigButton
-            label={permission?.canAskAgain === false ? 'Enable photo access in Settings' : 'Allow photo access'}
+            label={
+              permission?.canAskAgain === false
+                ? 'Enable photo access in Settings'
+                : 'Allow photo access'
+            }
             color={theme.accent}
             textColor={theme.onAccent}
             onPress={() => void requestPermission()}
@@ -500,7 +538,7 @@ export function HomeScreen({ navigation }: Props) {
       )}
 
       <Pressable style={styles.editQueueRow} onPress={() => navigation.navigate('EditQueue')}>
-        <Text style={styles.editQueueIcon}>✎</Text>
+        <MaterialCommunityIcons name="pencil" size={22} color={colors.edit} />
         <View style={styles.editQueueBody}>
           <Text style={styles.editQueueTitle}>Edit queue</Text>
           <Text style={styles.editQueueHint}>
@@ -515,6 +553,28 @@ export function HomeScreen({ navigation }: Props) {
           </View>
         )}
       </Pressable>
+
+      {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
+        <Pressable
+          style={styles.editQueueRow}
+          onPress={() => navigation.navigate('FavouritesQueue')}
+        >
+          <MaterialCommunityIcons name="heart" size={22} color={colors.fav} />
+          <View style={styles.editQueueBody}>
+            <Text style={styles.editQueueTitle}>Gallery favourites</Text>
+            <Text style={styles.editQueueHint}>
+              {favouriteCount === 0
+                ? 'No favourite changes waiting'
+                : `${favouriteCount} change${favouriteCount === 1 ? '' : 's'} waiting for gallery confirmation`}
+            </Text>
+          </View>
+          {favouriteCount > 0 && (
+            <View style={[styles.badge, { backgroundColor: colors.favDim }]}>
+              <Text style={[styles.badgeText, { color: colors.fav }]}>{favouriteCount}</Text>
+            </View>
+          )}
+        </Pressable>
+      )}
 
       <Text style={styles.sectionLabel}>Review scope</Text>
       <View style={styles.scopeWrap}>
@@ -548,12 +608,17 @@ export function HomeScreen({ navigation }: Props) {
           );
         })}
       </View>
-      {permission?.granted && allTimeReady === false && (
-        <Text style={styles.gateHint}>
-          All time unlocks when nothing is left to review in the last year — finish the last
-          year first.
-        </Text>
-      )}
+      {/* Only while the gated chip is actually on screen (and Last year is
+          around to be finished) — a disabled scope shouldn't advertise. */}
+      {permission?.granted &&
+        allTimeReady === false &&
+        scopeConfig &&
+        ['all', 'year1'].every((id) => enabledScopes(scopeConfig).some((s) => s.id === id)) && (
+          <Text style={styles.gateHint}>
+            All time unlocks when nothing is left to review in the last year — finish the last year
+            first.
+          </Text>
+        )}
 
       {scope === 'custom' && (
         <>
@@ -580,7 +645,10 @@ export function HomeScreen({ navigation }: Props) {
             <Pressable
               style={[
                 styles.saveScopeButton,
-                customName.trim() !== '' && { backgroundColor: theme.accent, borderColor: theme.accent },
+                customName.trim() !== '' && {
+                  backgroundColor: theme.accent,
+                  borderColor: theme.accent,
+                },
               ]}
               disabled={customName.trim() === ''}
               onPress={saveCustomScope}
@@ -637,7 +705,7 @@ export function HomeScreen({ navigation }: Props) {
             <Text style={styles.cardText}>
               {counts.remaining === 0
                 ? counts.handled > 0
-                  ? `All ${counts.handled} photos in this range are already handled ✦`
+                  ? `All ${counts.handled} photos in this range are already handled`
                   : 'No photos in this range.'
                 : `${counts.remaining} to review` +
                   (counts.handled > 0 ? ` · ${counts.handled} already handled` : '') +
@@ -679,7 +747,7 @@ export function HomeScreen({ navigation }: Props) {
                 <View style={styles.dayRowHeader}>
                   <Text style={styles.dayRowTitle}>{row.label}</Text>
                   <Text style={styles.dayRowPct}>
-                    {row.done === row.total ? 'done ✦' : `${row.done}/${row.total} · ${pct}%`}
+                    {row.done === row.total ? 'done' : `${row.done}/${row.total} · ${pct}%`}
                   </Text>
                 </View>
                 <StateProgressBar
@@ -731,7 +799,12 @@ const styles = StyleSheet.create({
   },
   gearIcon: { color: colors.textDim, fontSize: 22 },
   subtitle: { color: colors.textDim, fontSize: 16, marginBottom: 8 },
-  sectionLabel: { color: colors.textDim, fontSize: 13, textTransform: 'uppercase', letterSpacing: 1 },
+  sectionLabel: {
+    color: colors.textDim,
+    fontSize: 13,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
   card: {
     backgroundColor: colors.surface,
     borderRadius: touch.radius,
@@ -831,7 +904,6 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     padding: 14,
   },
-  editQueueIcon: { color: colors.edit, fontSize: 22, fontWeight: '700' },
   editQueueBody: { flex: 1 },
   editQueueTitle: { color: colors.text, fontSize: 16, fontWeight: '700' },
   editQueueHint: { color: colors.textDim, fontSize: 13 },

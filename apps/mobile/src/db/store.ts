@@ -5,14 +5,14 @@
  * State machine (PLAN.md, m0.2): SQLite `photos.state` is the source of
  * truth and everything converges on 'done':
  *
- *   unreviewed ──review──┬─▶ culled ─▶ (system delete) ─▶ trashed
+ *   unreviewed ──review──┬─▶ culled ─▶ (system trash) ─▶ trashed
  *                        └─▶ kept ──┬─▶ to_edit ─▶ done
  *                                   └─(session finish)─▶ done
  *
  * 'kept' + needs_edit = 1 is stored as 'to_edit' — the CASE expressions
  * below keep that invariant no matter which path writes the state.
  * 'confirmed' is deliberately never persisted (m0.1 decision: SQLite keeps
- * 'culled' until the system delete succeeds).
+ * 'culled' until the system trash request succeeds).
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
 import type { DuelRecord, PhotoState } from '@afterglow/core';
@@ -22,6 +22,25 @@ import type { StateCounts } from '../lib/progress';
 
 /** Max ids per IN (...) chunk — stays under SQLite's bind-parameter limit. */
 const IN_CHUNK = 500;
+
+export type FavouriteState = 'none' | 'queued_apply' | 'applied' | 'queued_remove' | 'error';
+
+export interface FavouriteIntentChange {
+  assetId: string;
+  state: FavouriteState;
+  target: boolean | null;
+}
+
+export interface NeedsEditIntentChange {
+  assetId: string;
+  needsEdit: boolean;
+}
+
+export interface PersistDecisionExtras {
+  duel?: DuelRecord;
+  favouriteChanges?: readonly FavouriteIntentChange[];
+  needsEditChanges?: readonly NeedsEditIntentChange[];
+}
 
 /**
  * DB-side photo scope (m0.4 stage 3). Day-keyed queries use the `day`
@@ -193,10 +212,33 @@ export async function persistDecision(
   snapshot: string,
   changedStates: readonly [assetId: string, state: PhotoState][],
   at: number,
-  duel?: DuelRecord,
+  extras: PersistDecisionExtras = {},
 ): Promise<void> {
   await db.withExclusiveTransactionAsync(async (txn) => {
     await txn.runAsync('UPDATE sessions SET snapshot = ? WHERE id = ?', snapshot, sessionId);
+    for (const change of extras.needsEditChanges ?? []) {
+      const flag = change.needsEdit ? 1 : 0;
+      await txn.runAsync(
+        `UPDATE photos
+         SET needs_edit = ?,
+             state = CASE
+               WHEN ? = 1 AND state = 'kept' THEN 'to_edit'
+               WHEN ? = 0 AND state = 'to_edit' THEN 'kept'
+               ELSE state
+             END,
+             to_edit_at = CASE
+               WHEN ? = 1 AND state = 'kept' AND to_edit_at IS NULL THEN ?
+               ELSE to_edit_at
+             END
+         WHERE asset_id = ?`,
+        flag,
+        flag,
+        flag,
+        flag,
+        at,
+        change.assetId,
+      );
+    }
     for (const [assetId, state] of changedStates) {
       await txn.runAsync(
         `UPDATE photos
@@ -204,25 +246,48 @@ export async function persistDecision(
              to_edit_at = CASE
                WHEN ? = 'kept' AND needs_edit = 1 AND to_edit_at IS NULL THEN ?
                ELSE to_edit_at
+             END,
+             reviewed_at = CASE
+               WHEN ? IN ('kept', 'culled') THEN COALESCE(reviewed_at, ?)
+               ELSE reviewed_at
+             END,
+             culled_at = CASE
+               WHEN ? = 'culled' THEN COALESCE(culled_at, ?)
+               ELSE culled_at
              END
          WHERE asset_id = ?`,
         state,
         state,
         state,
         at,
+        state,
+        at,
+        state,
+        at,
         assetId,
       );
     }
-    if (duel) {
+    if (extras.duel) {
       await txn.runAsync(
         `INSERT INTO duels (session_id, group_id, winner_id, loser_id, kept_both, at)
          VALUES (?, ?, ?, ?, ?, ?)`,
         sessionId,
-        duel.groupId,
-        duel.winnerId,
-        duel.loserId,
-        duel.keptBoth ? 1 : 0,
-        duel.at,
+        extras.duel.groupId,
+        extras.duel.winnerId,
+        extras.duel.loserId,
+        extras.duel.keptBoth ? 1 : 0,
+        extras.duel.at,
+      );
+    }
+    for (const change of extras.favouriteChanges ?? []) {
+      await txn.runAsync(
+        `UPDATE photos
+         SET favourite_state = ?, favourite_target = ?, favourite_changed_at = ?
+         WHERE asset_id = ?`,
+        change.state,
+        change.target === null ? null : change.target ? 1 : 0,
+        at,
+        change.assetId,
       );
     }
   });
@@ -272,9 +337,16 @@ export async function clearPhotoGroup(db: SQLiteDatabase, assetId: string): Prom
 }
 
 /** Manual "mark done" from the edit queue: to_edit → done. */
-export async function markEditDone(db: SQLiteDatabase, assetId: string): Promise<void> {
+export async function markEditDone(
+  db: SQLiteDatabase,
+  assetId: string,
+  at: number = Date.now(),
+): Promise<void> {
   await db.runAsync(
-    "UPDATE photos SET state = 'done', needs_edit = 0 WHERE asset_id = ? AND state = 'to_edit'",
+    `UPDATE photos
+     SET state = 'done', needs_edit = 0, edit_completed_at = COALESCE(edit_completed_at, ?)
+     WHERE asset_id = ? AND state = 'to_edit'`,
+    at,
     assetId,
   );
 }
@@ -378,26 +450,35 @@ export async function updateModTimeBaseline(
 export async function insertDetectedCopy(
   db: SQLiteDatabase,
   copy: { assetId: string; uri: string; takenAt: number; modTime: number; day: string },
+  detectedAt: number = Date.now(),
 ): Promise<void> {
   await db.runAsync(
-    `INSERT OR IGNORE INTO photos (asset_id, uri, taken_at, state, mod_time, day, needs_edit)
-     VALUES (?, ?, ?, 'done', ?, ?, 0)`,
+    `INSERT OR IGNORE INTO photos
+       (asset_id, uri, taken_at, state, mod_time, day, needs_edit, edit_completed_at, reviewed_at)
+     VALUES (?, ?, ?, 'done', ?, ?, 0, ?, ?)`,
     copy.assetId,
     copy.uri,
     copy.takenAt,
     copy.modTime,
     copy.day,
+    detectedAt,
+    detectedAt,
   );
 }
 
 /**
  * Record an out-of-session deletion (the "cull the original" path after an
  * edited copy was detected). Only ever called after the system delete
- * dialog succeeded.
+ * trash confirmation succeeded.
  */
 export async function markTrashedDirect(db: SQLiteDatabase, assetId: string): Promise<void> {
   await db.runAsync(
-    "UPDATE photos SET state = 'trashed', needs_edit = 0 WHERE asset_id = ?",
+    `UPDATE photos
+     SET state = 'trashed', needs_edit = 0,
+         reviewed_at = COALESCE(reviewed_at, ?), culled_at = COALESCE(culled_at, ?)
+     WHERE asset_id = ?`,
+    Date.now(),
+    Date.now(),
     assetId,
   );
 }
@@ -658,6 +739,167 @@ export async function getAllTimeReclaimedBytes(db: SQLiteDatabase): Promise<numb
     'SELECT SUM(reclaimed_bytes) AS n FROM sessions',
   );
   return row?.n ?? 0;
+}
+
+// ------------------------------------------------ favourite queue + lifetime metrics
+
+export interface FavouriteQueueRow {
+  asset_id: string;
+  uri: string;
+  favourite_state: FavouriteState;
+  favourite_target: number | null;
+}
+
+/** Favourite state for current-session UI; absent rows are `none`. */
+export async function getFavouriteStates(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+): Promise<Map<string, { state: FavouriteState; target: boolean | null }>> {
+  const out = new Map<string, { state: FavouriteState; target: boolean | null }>();
+  for (const ids of chunk(assetIds, IN_CHUNK)) {
+    if (ids.length === 0) continue;
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await db.getAllAsync<{
+      asset_id: string;
+      favourite_state: FavouriteState;
+      favourite_target: number | null;
+    }>(
+      `SELECT asset_id, favourite_state, favourite_target FROM photos
+       WHERE asset_id IN (${placeholders})`,
+      ...ids,
+    );
+    for (const row of rows) {
+      out.set(row.asset_id, {
+        state: row.favourite_state,
+        target: row.favourite_target === null ? null : row.favourite_target === 1,
+      });
+    }
+  }
+  return out;
+}
+
+/** Record user intent before opening Android's batch confirmation sheet. */
+export async function queueFavouriteChange(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+  favourite: boolean,
+  at: number,
+): Promise<void> {
+  for (const ids of chunk(assetIds, IN_CHUNK)) {
+    if (ids.length === 0) continue;
+    const placeholders = ids.map(() => '?').join(',');
+    await db.runAsync(
+      `UPDATE photos SET favourite_state = ?, favourite_target = ?, favourite_changed_at = ?
+       WHERE asset_id IN (${placeholders})`,
+      favourite ? 'queued_apply' : 'queued_remove',
+      favourite ? 1 : 0,
+      at,
+      ...ids,
+    );
+  }
+}
+
+/** Pending favourite work survives restarts and is safe to retry. */
+export async function getFavouriteQueue(db: SQLiteDatabase): Promise<FavouriteQueueRow[]> {
+  return db.getAllAsync<FavouriteQueueRow>(
+    `SELECT asset_id, uri, favourite_state, favourite_target FROM photos
+     WHERE favourite_state IN ('queued_apply', 'queued_remove', 'error')
+     ORDER BY favourite_changed_at, taken_at`,
+  );
+}
+
+export async function countFavouriteQueue(db: SQLiteDatabase): Promise<number> {
+  const row = await db.getFirstAsync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM photos
+     WHERE favourite_state IN ('queued_apply', 'queued_remove', 'error')`,
+  );
+  return row?.n ?? 0;
+}
+
+/** Commit a verified MediaStore outcome; removal retains lifetime history. */
+export async function markFavouriteBatchApplied(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+  favourite: boolean,
+  at: number,
+): Promise<void> {
+  for (const ids of chunk(assetIds, IN_CHUNK)) {
+    if (ids.length === 0) continue;
+    const placeholders = ids.map(() => '?').join(',');
+    await db.runAsync(
+      `UPDATE photos
+       SET favourite_state = ?,
+           favourite_target = NULL,
+           favourite_changed_at = ?,
+           favourite_applied_at = CASE
+             WHEN ? = 1 THEN COALESCE(favourite_applied_at, ?)
+             ELSE favourite_applied_at
+           END
+       WHERE asset_id IN (${placeholders})`,
+      favourite ? 'applied' : 'none',
+      at,
+      favourite ? 1 : 0,
+      at,
+      ...ids,
+    );
+  }
+}
+
+export async function markFavouriteBatchError(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+  target: boolean,
+  at: number,
+): Promise<void> {
+  for (const ids of chunk(assetIds, IN_CHUNK)) {
+    if (ids.length === 0) continue;
+    const placeholders = ids.map(() => '?').join(',');
+    await db.runAsync(
+      `UPDATE photos
+       SET favourite_state = 'error', favourite_target = ?, favourite_changed_at = ?
+       WHERE asset_id IN (${placeholders})`,
+      target ? 1 : 0,
+      at,
+      ...ids,
+    );
+  }
+}
+
+/**
+ * Exact lifetime dashboard semantics:
+ * - reviewed/culled/edit/favourite count unique tracked photos that have
+ *   ever reached the event (timestamps are first-event markers);
+ * - reclaimed bytes are the sum of successful trash batches.
+ */
+export interface LifetimeStats {
+  reviewed: number;
+  culled: number;
+  editsCompleted: number;
+  favouritesApplied: number;
+  reclaimedBytes: number;
+}
+
+export async function getLifetimeStats(db: SQLiteDatabase): Promise<LifetimeStats> {
+  const photo = await db.getFirstAsync<{
+    reviewed: number;
+    culled: number;
+    editsCompleted: number;
+    favouritesApplied: number;
+  }>(
+    `SELECT
+       SUM(CASE WHEN reviewed_at IS NOT NULL THEN 1 ELSE 0 END) AS reviewed,
+       SUM(CASE WHEN culled_at IS NOT NULL THEN 1 ELSE 0 END) AS culled,
+       SUM(CASE WHEN edit_completed_at IS NOT NULL THEN 1 ELSE 0 END) AS editsCompleted,
+       SUM(CASE WHEN favourite_applied_at IS NOT NULL THEN 1 ELSE 0 END) AS favouritesApplied
+     FROM photos`,
+  );
+  return {
+    reviewed: photo?.reviewed ?? 0,
+    culled: photo?.culled ?? 0,
+    editsCompleted: photo?.editsCompleted ?? 0,
+    favouritesApplied: photo?.favouritesApplied ?? 0,
+    reclaimedBytes: await getAllTimeReclaimedBytes(db),
+  };
 }
 
 // ----------------------------------------------------- perceptual hashes

@@ -12,6 +12,7 @@ Each package has its own CLAUDE.md / AGENTS.md with a **per-file map. Trust the 
 
 ```bash
 npm ci                                             # once
+npm run lint && npm run format:check               # repo-wide quality gates
 npm run build -w @afterglow/core                   # REQUIRED after core edits
 npm test -w @afterglow/core                        # core unit tests
 npm run typecheck -w afterglow-desktop && npm test -w afterglow-desktop && npm run build -w afterglow-desktop
@@ -26,13 +27,13 @@ Environment setup (Android toolchain/emulator, one command): [docs/DEVELOPMENT.m
 
 - **Core is pure**: no platform/FS APIs, no `Date.now()`/`Math.random()` — time is an injected `at`, randomness an injected `Rng`. ESM with explicit `.js` import extensions.
 - **Desktop security model**: contextIsolation + sandbox, preload/contextBridge only; media served via the `afterglow://` protocol with realpath containment; child processes via `execFile` argument vectors, never shell strings.
-- **Mobile delete-path conservatism**: the only thing that deletes photos is `MediaLibrary.deleteAssetsAsync` behind the cull-list confirm. Per-photo review states in SQLite are the durable truth; the in-flight session snapshot is disposable.
+- **Mobile trash-path conservatism**: both removal affordances use the local Android 11+ `MediaStore.createTrashRequest` module; there is no permanent-delete fallback. Per-photo review states in SQLite are the durable truth; the in-flight session snapshot is disposable.
 - **Assumptions discipline**: every autonomous decision goes into the numbered log `docs/assumptions-{core,desktop,mobile}.md`; the cross-train review shortlist is `docs/ASSUMPTIONS.md`. Read the relevant log before re-deciding something.
 - Style: split pure logic (unit-tested) from impure bindings; match the existing heavy header-comment style.
 
 ## Release flow
 
-Tags trigger CI to GitHub Releases: `desktop-v*` → Windows installer (+ `.scr` screensaver) & Linux AppImage/deb (`.github/workflows/desktop-release.yml`); `mobile-m*` → release APK (`mobile-release.yml`: `expo prebuild` + Gradle — `apps/mobile/android` is **gitignored prebuild output**). Versions: `apps/desktop/package.json`; mobile `app.json` (`version` + `android.versionCode`) and `apps/mobile/package.json`. The APK signs with the standard shared debug keystore — changing signing breaks testers' in-place upgrades. CI job logs need repo admin; Gradle failures are surfaced as check-run annotations instead. Work happens on branch `initial`.
+Tags trigger CI to GitHub Releases: `desktop-v*` → Windows installer (+ `.scr` screensaver) & Linux AppImage/deb (`.github/workflows/desktop-release.yml`); `mobile-m*` → release APK (`mobile-release.yml`: clean `expo prebuild` + Gradle — `apps/mobile/android` is **gitignored prebuild output**). Release scripts require exact tag/version mapping, monotonic Android versionCode, all expected artifacts, and SHA-256 manifests. GitLab delivery is deferred. Versions: `apps/desktop/package.json`; mobile `app.json` (`version` + `android.versionCode`) and `apps/mobile/package.json`. The APK signs with the standard shared debug keystore — changing signing breaks testers' in-place upgrades. Work happens on branch `initial`.
 
 ## Docs index (read on demand)
 
@@ -40,7 +41,7 @@ Tags trigger CI to GitHub Releases: `desktop-v*` → Windows installer (+ `.scr`
 |---|---|
 | PLAN.md | Product vision, feature semantics, roadmap/version numbering |
 | docs/DEVELOPMENT.md | Dev env setup, emulator, run/debug commands |
-| docs/ASSUMPTIONS.md | Shortlist of decisions needing human review |
+| docs/ASSUMPTIONS.md | Shortlist of open decisions needing human review (kept current; resolved items are pruned) |
 | docs/assumptions-{core,desktop,mobile}.md | Full per-train decision logs (append yours) |
-| docs/Feedback_YYYYMMDD.md / docs/Plan_YYYYMMDD.md | Dated tester feedback + the release plan answering it |
+| docs/Feedback_YYYYMMDD.md / docs/Plan_YYYYMMDD.md | Current tester feedback + the release plan answering it (removed once shipped) |
 | README.md | User/tester-facing: formats, key bindings, install notes |

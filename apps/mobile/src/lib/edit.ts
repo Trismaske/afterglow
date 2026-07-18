@@ -10,9 +10,8 @@
  *   which external apps can't be granted access to on modern Android).
  * - `flags` = FLAG_GRANT_READ_URI_PERMISSION | FLAG_GRANT_WRITE_URI_PERMISSION
  *   (0x1 | 0x2) so the editor can both read the photo and save over it.
- * - No `type`: per the SDK 57 docs, omitting it lets Android infer the
- *   exact MIME type from the content provider, which matches more editor
- *   intent filters than a hardcoded `image/*`.
+ * - `type: image/*`: explicit MIME matching is more reliable on Samsung
+ *   builds whose editor intent filter does not resolve from data alone.
  *
  * m0.5 (Samsung bug): when ACTION_EDIT resolves no activity, fall back to
  * ACTION_VIEW on the same URI (the default viewer's edit button is one tap
@@ -33,12 +32,15 @@ import { launchWithViewerFallback } from './editFallback';
 const FLAG_GRANT_READ_URI_PERMISSION = 0x00000001;
 const FLAG_GRANT_WRITE_URI_PERMISSION = 0x00000002;
 
-/** 'viewer' = the ACTION_VIEW fallback ran (caller toasts accordingly). */
-export type LaunchEditorResult = 'returned' | 'viewer' | 'unsupported' | 'failed';
+/** `outcome: viewer` means the ACTION_VIEW fallback ran. */
+export type LaunchEditorResult =
+  | { outcome: 'returned' | 'viewer' }
+  | { outcome: 'unsupported' }
+  | { outcome: 'failed'; editError: string; viewError: string; uri: string };
 
 /**
  * Fire ACTION_EDIT (falling back to ACTION_VIEW) for a content URI and
- * wait for the user to return. 'failed' means no installed app handles
+ * wait for the user to return. `outcome: failed` means no installed app handles
  * either intent for this photo. `onViewerLaunch` fires the moment the
  * viewer fallback is dispatched — the caller's toast hook.
  */
@@ -46,13 +48,23 @@ export async function launchEditor(
   contentUri: string,
   onViewerLaunch?: () => void,
 ): Promise<LaunchEditorResult> {
-  if (Platform.OS !== 'android') return 'unsupported';
-  return launchWithViewerFallback(
+  if (Platform.OS !== 'android') return { outcome: 'unsupported' };
+  if (!contentUri.startsWith('content://')) {
+    return {
+      outcome: 'failed',
+      editError: 'The selected asset did not resolve to a content URI.',
+      viewError: 'Viewer launch was not attempted.',
+      uri: contentUri,
+    };
+  }
+  const result = await launchWithViewerFallback(
     (action) =>
       IntentLauncher.startActivityAsync(action, {
         data: contentUri,
+        type: 'image/*',
         flags: FLAG_GRANT_READ_URI_PERMISSION | FLAG_GRANT_WRITE_URI_PERMISSION,
       }),
     onViewerLaunch,
   );
+  return result.outcome === 'failed' ? { ...result, uri: contentUri } : result;
 }

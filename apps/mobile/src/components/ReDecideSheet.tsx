@@ -14,14 +14,15 @@ import type { MediaItem } from '@afterglow/core';
 import { useSession, type RedecideTarget } from '../session/SessionContext';
 import { formatClockSeconds } from '../lib/format';
 import { colors, touch, useTheme } from '../theme';
+import { DecisionBadge } from './DecisionBadge';
 
 /** The three re-decidable verdicts ('to_edit' = kept + needs-edit flag). */
 export type DecidedState = 'kept' | 'to_edit' | 'culled';
 
 const CHIP_META: Record<RedecideTarget, { label: string; color: string; dim: string }> = {
-  keep: { label: '✓ Keep', color: colors.keep, dim: colors.keepDim },
-  to_edit: { label: '✎ To edit', color: colors.edit, dim: colors.editDim },
-  cull: { label: '✕ Cull', color: colors.cull, dim: colors.cullDim },
+  keep: { label: 'Keep', color: colors.keep, dim: colors.keepDim },
+  to_edit: { label: 'To edit', color: colors.edit, dim: colors.editDim },
+  cull: { label: 'Cull', color: colors.cull, dim: colors.cullDim },
 };
 
 const STATE_LABEL: Record<DecidedState, string> = {
@@ -54,10 +55,6 @@ export function ReDecideSheet({
   const pick = useCallback(
     async (target: RedecideTarget) => {
       if (!item || busy) return;
-      if (target === stateToTarget[current]) {
-        onClose();
-        return;
-      }
       setBusy(true);
       try {
         await redecide(item.id, target);
@@ -66,7 +63,7 @@ export function ReDecideSheet({
         setBusy(false);
       }
     },
-    [item, busy, current, redecide, onClose],
+    [item, busy, redecide, onClose],
   );
 
   if (!item) return null;
@@ -87,7 +84,7 @@ export function ReDecideSheet({
               <Text style={styles.stateLabel}>{STATE_LABEL[current]}</Text>
               <Text style={styles.when}>{formatClockSeconds(item.timestamp)}</Text>
               <Text style={styles.hint}>
-                Change your mind any time before the final delete confirmation.
+                Tap the current decision again to return this photo to unreviewed.
               </Text>
             </View>
           </View>
@@ -107,8 +104,17 @@ export function ReDecideSheet({
                   disabled={busy}
                   onPress={() => void pick(target)}
                 >
-                  <Text style={styles.chipText}>{meta.label}</Text>
-                  {active && <Text style={[styles.chipCurrent, { color: theme.accent }]}>current</Text>}
+                  <View style={styles.chipLabel}>
+                    <DecisionBadge
+                      kind={target === 'to_edit' ? 'edit' : target}
+                      size={20}
+                      style={styles.transparentBadge}
+                    />
+                    <Text style={styles.chipText}>{meta.label}</Text>
+                  </View>
+                  {active && (
+                    <Text style={[styles.chipCurrent, { color: theme.accent }]}>tap to clear</Text>
+                  )}
                 </Pressable>
               );
             })}
@@ -156,6 +162,8 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   chipText: { color: colors.text, fontSize: 15, fontWeight: '800' },
+  chipLabel: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  transparentBadge: { backgroundColor: 'transparent' },
   chipCurrent: { fontSize: 11, fontWeight: '700' },
   close: { minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   closeText: { color: colors.textDim, fontSize: 15, fontWeight: '600' },

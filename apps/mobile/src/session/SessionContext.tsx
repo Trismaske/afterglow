@@ -16,14 +16,7 @@
  * in SQLite are the durable truth, and per m0.3.1 an abandoned session's
  * interim rows are re-reviewed next session.
  */
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { useSQLiteContext } from 'expo-sqlite';
 import {
   DeckSession,
@@ -35,11 +28,18 @@ import {
   type PhotoState,
 } from '@afterglow/core';
 import type { LoadedPhoto } from '../lib/media';
-import { deleteAssets } from '../lib/media';
+import { trashAssets } from '../lib/media';
 import { fileSize, sha256OfFile } from '../lib/hash';
 import { dayKey } from '../lib/dates';
 import { ensureDhashes } from '../lib/similarityHashes';
 import { parseSimilarityThreshold, SIMILARITY_THRESHOLD_KEY } from '../lib/similarityPrefs';
+import { FifoPersistenceQueue } from './persistenceQueue';
+import {
+  isFavouriteSelected,
+  nextFavouriteIntent,
+  NO_FAVOURITE,
+  type FavouriteStatus,
+} from '../lib/favouriteState';
 import {
   abandonActiveSessions,
   addReclaimedBytes,
@@ -48,12 +48,13 @@ import {
   completeSession,
   createSession,
   getActiveSession,
+  getFavouriteStates,
   getNeedsEditAssets,
   getSetting,
   markKeptDone,
   persistDecision,
   setContentHash,
-  setNeedsEdit,
+  type PersistDecisionExtras,
 } from '../db/store';
 
 /** Gap that makes shots "the same moment" → one cull group. */
@@ -62,7 +63,7 @@ export const CULL_GROUP_GAP_MS = MOMENTS_GAP_MS; // 3 minutes
 /** m0.2 single-review actions ('to_edit' = keep + flag for the edit queue). */
 export type SingleReviewAction = 'keep' | 'cull' | 'to_edit';
 
-/** m0.5 re-decide targets — any decided photo, until final cull confirm. */
+/** Decision chips. Tapping the active chip clears back to unreviewed. */
 export type RedecideTarget = 'keep' | 'cull' | 'to_edit';
 
 export interface GroupInfo {
@@ -74,10 +75,24 @@ export interface GroupInfo {
 }
 
 export interface ConfirmResult {
-  /** True if the batch was deleted (or there was nothing to delete). */
+  /** True if the batch was moved to system trash (or was empty). */
   deleted: boolean;
+  status: 'applied' | 'cancelled' | 'unsupported' | 'failed';
+  error?: string;
   count: number;
   bytes: number;
+}
+
+interface PersistenceError {
+  message: string;
+  nonce: number;
+}
+
+interface PersistJob {
+  sessionId: number;
+  snapshot: string;
+  after: Map<string, PhotoState>;
+  extras: PersistDecisionExtras;
 }
 
 interface SessionContextValue {
@@ -89,6 +104,9 @@ interface SessionContextValue {
   reclaimedBytes: number;
   /** Monotonic counter bumped on every mutation (for memo deps). */
   version: number;
+  /** A decision write failed; the queued write must be retried before continuing. */
+  persistenceError: PersistenceError | null;
+  retryPersistence: () => void;
   groups: GroupInfo[];
   singleIds: string[];
   startSession: (
@@ -120,34 +138,23 @@ interface SessionContextValue {
   /** Compare tool outcome: cull the loser (records history + stages cull). */
   compareCull: (loserId: string, winnerId: string) => Promise<void>;
   decideSingle: (id: string, action: SingleReviewAction) => Promise<void>;
+  /** Keep every still-unreviewed single in one captured write. */
+  keepRemainingSingles: () => Promise<void>;
   /** Whether a photo carries the "keeper needs editing" flag. */
   needsEdit: (id: string) => boolean;
   /** Flip the needs-edit flag (persisted immediately; state remaps if kept). */
   toggleNeedsEdit: (id: string) => Promise<void>;
   /** How many photos in this session are flagged for editing. */
   editFlagCount: number;
-  /**
-   * Group that just completed with reconsider candidates (kept losers of
-   * explicit compares) — the Deck screen routes to the Reconsider screen
-   * when set. In-memory only: lost on app restart (the hint is
-   * opportunistic).
-   */
-  pendingReconsider: string | null;
-  clearPendingReconsider: () => void;
-  /**
-   * Second-pass cull from the Reconsider screen: a kept photo goes to the
-   * staged cull list (core cullKept — the deck model supports kept→culled
-   * directly; no snapshot rewrite needed anymore). Not a compare — no
-   * duel record is written.
-   */
-  reconsiderCull: (id: string) => Promise<void>;
+  favouriteStatus: (id: string) => FavouriteStatus;
+  toggleFavourite: (id: string) => Promise<void>;
+  /** Reload gallery-favourite state after the queue screen applies a batch. */
+  refreshFavouriteStates: () => Promise<void>;
   unstageCull: (id: string) => Promise<void>;
   /**
-   * m0.5 reversible decisions: change any DECIDED photo's verdict (kept /
-   * to-edit / staged-cull → any of the three) until the final cull
-   * confirmation. Built on existing transitions: core unstageCull
-   * (culled→kept) / cullKept (kept→culled) plus the app-side needs-edit
-   * flag for to_edit. No-op for unreviewed/confirmed/trashed photos.
+   * Change any decided photo's verdict until final trash confirmation.
+   * Tapping the currently active target clears it to unreviewed and reopens
+   * its group/singles queue; no hidden decision history is maintained.
    */
   redecide: (id: string, target: RedecideTarget) => Promise<void>;
   /** THE one delete path: confirm staged culls → system dialog → trash. */
@@ -173,37 +180,77 @@ function changedStates(
   return changes;
 }
 
+/** Keep one unreviewed photo regardless of grouped/single membership. */
+function keepUnreviewed(session: DeckSession, id: string): void {
+  const group = session.groupsInfo().find((candidate) => candidate.aliveIds.includes(id));
+  if (group) session.keep(id);
+  else if (session.toJSON().singleIds.includes(id)) session.decideSingle(id, 'keep');
+  else throw new Error(`keepUnreviewed: ${id} is not pending review`);
+}
+
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const db = useSQLiteContext();
   const sessionRef = useRef<DeckSession | null>(null);
-  const lastStatesRef = useRef<Map<string, PhotoState>>(new Map());
   const needsEditRef = useRef<Set<string>>(new Set());
+  const favouriteRef = useRef<Map<string, FavouriteStatus>>(new Map());
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [label, setLabel] = useState('');
   const [reclaimedBytes, setReclaimedBytes] = useState(0);
   const [version, setVersion] = useState(0);
-  const [pendingReconsider, setPendingReconsider] = useState<string | null>(null);
+  const [persistenceError, setPersistenceError] = useState<PersistenceError | null>(null);
+  const persistenceQueueRef = useRef<FifoPersistenceQueue<
+    Map<string, PhotoState>,
+    PersistJob
+  > | null>(null);
+  if (persistenceQueueRef.current === null) {
+    persistenceQueueRef.current = new FifoPersistenceQueue(
+      new Map(),
+      async (job, before) => {
+        await persistDecision(
+          db,
+          job.sessionId,
+          job.snapshot,
+          changedStates(before, job.after),
+          Date.now(),
+          job.extras,
+        );
+        return job.after;
+      },
+      (error) => {
+        setPersistenceError(
+          error === null
+            ? null
+            : {
+                message: error instanceof Error ? error.message : String(error),
+                nonce: Date.now(),
+              },
+        );
+      },
+    );
+  }
+  const persistenceQueue = persistenceQueueRef.current;
 
   const bump = useCallback(() => setVersion((v) => v + 1), []);
 
-  /** Persist a mutation the session just performed. */
+  /** Capture a mutation immediately, then persist it in strict FIFO order. */
   const persist = useCallback(
-    async (duel?: Parameters<typeof persistDecision>[5]) => {
+    (extras: PersistDecisionExtras = {}): Promise<void> => {
       const session = sessionRef.current;
-      if (!session || sessionId === null) return;
+      if (!session || sessionId === null) return Promise.resolve();
       const after = statesOf(session);
-      const changes = changedStates(lastStatesRef.current, after);
-      lastStatesRef.current = after;
-      await persistDecision(
-        db,
-        sessionId,
-        JSON.stringify(session.toJSON()),
-        changes,
-        Date.now(),
-        duel,
-      );
+      const snapshot = JSON.stringify(session.toJSON());
+      return persistenceQueue.enqueue({ sessionId, snapshot, after, extras });
     },
-    [db, sessionId],
+    [sessionId, persistenceQueue],
+  );
+
+  const retryPersistence = useCallback(() => {
+    persistenceQueue.retry();
+  }, [persistenceQueue]);
+
+  const waitForPersistence = useCallback(
+    (): Promise<void> => persistenceQueue.waitForIdle(),
+    [persistenceQueue],
   );
 
   const startSession = useCallback(
@@ -214,6 +261,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       photos: readonly LoadedPhoto[],
       onHashProgress?: (done: number, total: number) => void,
     ) => {
+      await waitForPersistence();
       const clusters: Cluster[] = clusterByGap(
         photos.map((p) => p.item),
         { gapMs: CULL_GROUP_GAP_MS },
@@ -229,9 +277,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         timeGroups.flatMap((c) => c.items).map((i) => photoById.get(i.id)!),
         onHashProgress,
       );
-      const threshold = parseSimilarityThreshold(
-        await getSetting(db, SIMILARITY_THRESHOLD_KEY),
-      );
+      const threshold = parseSimilarityThreshold(await getSetting(db, SIMILARITY_THRESHOLD_KEY));
       const refined = refineClustersBySimilarity(
         timeGroups,
         (id) => hashes.get(id) ?? null,
@@ -269,18 +315,22 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       });
 
       sessionRef.current = session;
-      lastStatesRef.current = statesOf(session);
+      persistenceQueue.resetCommitted(statesOf(session));
       needsEditRef.current = new Set();
+      favouriteRef.current = await getFavouriteStates(
+        db,
+        session.toJSON().items.map((item) => item.id),
+      );
       setSessionId(id);
       setLabel(newLabel);
       setReclaimedBytes(0);
-      setPendingReconsider(null);
       bump();
     },
-    [db, bump],
+    [db, bump, waitForPersistence, persistenceQueue],
   );
 
   const resumeSession = useCallback(async () => {
+    await waitForPersistence();
     const row = await getActiveSession(db);
     if (!row) return false;
     try {
@@ -288,10 +338,14 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       // deliberate upgrade behavior, see the module docs.
       const session = DeckSession.fromJSON(JSON.parse(row.snapshot));
       sessionRef.current = session;
-      lastStatesRef.current = statesOf(session);
+      persistenceQueue.resetCommitted(statesOf(session));
       needsEditRef.current = await getNeedsEditAssets(
         db,
         session.toJSON().items.map((i) => i.id),
+      );
+      favouriteRef.current = await getFavouriteStates(
+        db,
+        session.toJSON().items.map((item) => item.id),
       );
       setSessionId(row.id);
       setLabel(row.label);
@@ -303,18 +357,19 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       await abandonActiveSessions(db, Date.now());
       return false;
     }
-  }, [db, bump]);
+  }, [db, bump, waitForPersistence, persistenceQueue]);
 
   const discardActiveSession = useCallback(async () => {
+    await waitForPersistence();
     await abandonActiveSessions(db, Date.now());
     sessionRef.current = null;
     needsEditRef.current = new Set();
+    favouriteRef.current = new Map();
     setSessionId(null);
     setLabel('');
     setReclaimedBytes(0);
-    setPendingReconsider(null);
     bump();
-  }, [db, bump]);
+  }, [db, bump, waitForPersistence]);
 
   /** Content-hash fallback identity, computed only for staged culls. */
   const hashInBackground = useCallback(
@@ -332,21 +387,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     },
     [db],
   );
-
-  /**
-   * A group just completed — queue the reconsider hint if any kept photo
-   * lost an explicit compare (m0.4 rule; photos the user flagged
-   * needs-edit are exempt — they explicitly want those). A group finished
-   * with zero compares never prompts.
-   */
-  const maybeQueueReconsider = useCallback((groupId: string) => {
-    const session = sessionRef.current;
-    if (!session || !session.isGroupComplete(groupId)) return;
-    const candidates = session
-      .reconsiderCandidates(groupId)
-      .filter((item) => !needsEditRef.current.has(item.id));
-    if (candidates.length > 0) setPendingReconsider(groupId);
-  }, []);
 
   // ---------------------------------------------------------- deck actions
 
@@ -370,14 +410,12 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     async (id: string) => {
       const session = sessionRef.current;
       if (!session) throw new Error('deckCull: no active session');
-      const groupId = session.groupsInfo().find((g) => g.aliveIds.includes(id))?.id;
       session.cull(id); // throws if the id is not in a live deck
-      if (groupId) maybeQueueReconsider(groupId);
       bump();
       await persist();
       void hashInBackground(id);
     },
-    [persist, bump, maybeQueueReconsider, hashInBackground],
+    [persist, bump, hashInBackground],
   );
 
   const deckUndoCull = useCallback(
@@ -396,11 +434,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       const session = sessionRef.current;
       if (!session) throw new Error('keepRest: no active session');
       session.keepRest(groupId);
-      maybeQueueReconsider(groupId);
       bump();
       await persist();
     },
-    [persist, bump, maybeQueueReconsider],
+    [persist, bump],
   );
 
   const markBest = useCallback(
@@ -418,15 +455,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     async (id: string) => {
       const session = sessionRef.current;
       if (!session) throw new Error('makeSingle: no active session');
-      const groupId = session.groupsInfo().find((g) => g.aliveIds.includes(id))?.id;
       session.makeSingle(id);
-      if (groupId) maybeQueueReconsider(groupId);
       bump();
       await persist();
       // The photo is no longer "in a group" for day-progress accounting.
       await clearPhotoGroup(db, id).catch(() => {});
     },
-    [db, persist, bump, maybeQueueReconsider],
+    [db, persist, bump],
   );
 
   const recordCompare = useCallback(
@@ -435,7 +470,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       if (!session) throw new Error('recordCompare: no active session');
       const record = session.recordCompare(winnerId, loserId, true, Date.now());
       bump();
-      await persist(record);
+      await persist({ duel: record });
     },
     [persist, bump],
   );
@@ -445,27 +480,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       const session = sessionRef.current;
       if (!session) throw new Error('compareCull: no active session');
       const record = session.recordCompare(winnerId, loserId, false, Date.now());
-      const groupId = record.groupId;
       session.cull(loserId);
-      maybeQueueReconsider(groupId);
       bump();
-      await persist(record);
+      await persist({ duel: record });
       void hashInBackground(loserId);
-    },
-    [persist, bump, maybeQueueReconsider, hashInBackground],
-  );
-
-  const clearPendingReconsider = useCallback(() => setPendingReconsider(null), []);
-
-  const reconsiderCull = useCallback(
-    async (id: string) => {
-      const session = sessionRef.current;
-      if (!session) throw new Error('reconsiderCull: no active session');
-      if (session.getState(id) !== 'kept') return; // already culled/edited — nothing to do
-      session.cullKept(id);
-      bump();
-      await persist();
-      void hashInBackground(id);
     },
     [persist, bump, hashInBackground],
   );
@@ -475,21 +493,31 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       const session = sessionRef.current;
       if (!session) throw new Error('decideSingle: no active session');
       if (action === 'to_edit') {
-        // Core only knows keep/cull — the edit flag is app-side state.
-        // Set the flag BEFORE persisting so the state write lands as
-        // 'to_edit' (see persistDecision's CASE).
-        await setNeedsEdit(db, id, true, Date.now());
         needsEditRef.current.add(id);
         session.decideSingle(id, 'keep');
       } else {
         session.decideSingle(id, action);
       }
       bump();
-      await persist();
+      await persist(
+        action === 'to_edit' ? { needsEditChanges: [{ assetId: id, needsEdit: true }] } : undefined,
+      );
       if (action === 'cull') void hashInBackground(id);
     },
-    [db, persist, bump, hashInBackground],
+    [persist, bump, hashInBackground],
   );
+
+  const keepRemainingSingles = useCallback(async () => {
+    const session = sessionRef.current;
+    if (!session) throw new Error('keepRemainingSingles: no active session');
+    const pending = session
+      .toJSON()
+      .singleIds.filter((id) => session.getState(id) === 'unreviewed');
+    if (pending.length === 0) return;
+    for (const id of pending) session.decideSingle(id, 'keep');
+    bump();
+    await persist();
+  }, [persist, bump]);
 
   const needsEdit = useCallback(
     (id: string) => needsEditRef.current.has(id),
@@ -500,15 +528,52 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const toggleNeedsEdit = useCallback(
     async (id: string) => {
+      const session = sessionRef.current;
+      if (!session) throw new Error('toggleNeedsEdit: no active session');
       const flagged = needsEditRef.current.has(id);
       if (flagged) needsEditRef.current.delete(id);
-      else needsEditRef.current.add(id);
+      else {
+        needsEditRef.current.add(id);
+        if (session.getState(id) === 'unreviewed') keepUnreviewed(session, id);
+      }
       bump();
-      // setNeedsEdit also remaps an already-kept row to to_edit (and back).
-      await setNeedsEdit(db, id, !flagged, Date.now());
+      await persist({ needsEditChanges: [{ assetId: id, needsEdit: !flagged }] });
     },
-    [db, bump],
+    [persist, bump],
   );
+
+  const favouriteStatus = useCallback(
+    (id: string): FavouriteStatus => favouriteRef.current.get(id) ?? NO_FAVOURITE,
+    // favouriteRef is mutable; version is the render signal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [version],
+  );
+
+  const toggleFavourite = useCallback(
+    async (id: string) => {
+      const session = sessionRef.current;
+      if (!session) throw new Error('toggleFavourite: no active session');
+      const current = favouriteRef.current.get(id) ?? NO_FAVOURITE;
+      const change = nextFavouriteIntent(id, current);
+      if (isFavouriteSelected({ state: change.state, target: change.target })) {
+        if (session.getState(id) === 'unreviewed') keepUnreviewed(session, id);
+      }
+      favouriteRef.current.set(id, { state: change.state, target: change.target });
+      bump();
+      await persist({ favouriteChanges: [change] });
+    },
+    [persist, bump],
+  );
+
+  const refreshFavouriteStates = useCallback(async () => {
+    const session = sessionRef.current;
+    if (!session) return;
+    favouriteRef.current = await getFavouriteStates(
+      db,
+      session.toJSON().items.map((item) => item.id),
+    );
+    bump();
+  }, [db, bump]);
 
   const unstageCull = useCallback(
     async (id: string) => {
@@ -529,53 +594,76 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       // Only decided, pre-confirm photos are re-decidable; 'to_edit' is
       // app-side (core state 'kept' + needs-edit flag).
       if (state !== 'kept' && state !== 'culled') return;
+      const current: RedecideTarget =
+        state === 'culled' ? 'cull' : needsEditRef.current.has(id) ? 'to_edit' : 'keep';
+
+      // One invariant everywhere: tapping an active verdict clears it to
+      // the default state. A group item is reinserted and the group reopens;
+      // a single becomes pending again.
+      if (target === current) {
+        const clearedEdit = needsEditRef.current.delete(id);
+        session.clearDecision(id);
+        bump();
+        await persist(
+          clearedEdit ? { needsEditChanges: [{ assetId: id, needsEdit: false }] } : undefined,
+        );
+        return;
+      }
       if (target === 'cull') {
         if (state === 'kept') {
+          const clearedEdit = needsEditRef.current.delete(id);
           session.cullKept(id);
           bump();
-          await persist();
+          await persist(
+            clearedEdit ? { needsEditChanges: [{ assetId: id, needsEdit: false }] } : undefined,
+          );
           void hashInBackground(id);
         }
-        return; // already staged — nothing to do
+        return;
       }
       // keep / to_edit: align the app-side flag FIRST so any state write
       // lands as 'to_edit' vs 'kept' via the persistDecision/store CASE.
       const wantFlag = target === 'to_edit';
+      let editChanged = false;
       if (needsEditRef.current.has(id) !== wantFlag) {
+        editChanged = true;
         if (wantFlag) needsEditRef.current.add(id);
         else needsEditRef.current.delete(id);
-        await setNeedsEdit(db, id, wantFlag, Date.now());
       }
       if (state === 'culled') session.unstageCull(id); // culled → kept (+flag remap)
       bump();
-      await persist();
+      await persist(
+        editChanged ? { needsEditChanges: [{ assetId: id, needsEdit: wantFlag }] } : undefined,
+      );
     },
-    [db, persist, bump, hashInBackground],
+    [persist, bump, hashInBackground],
   );
 
   const confirmCulls = useCallback(async (): Promise<ConfirmResult> => {
     const session = sessionRef.current;
     if (!session || sessionId === null) throw new Error('confirmCulls: no active session');
     const staged = session.stagedCulls();
-    if (staged.length === 0) return { deleted: true, count: 0, bytes: 0 };
+    if (staged.length === 0) {
+      return { deleted: true, status: 'applied', count: 0, bytes: 0 };
+    }
 
     // Approximate storage reclaimed, measured before the files disappear.
     let bytes = 0;
     for (const item of staged) bytes += fileSize(item.uri);
 
     // Flip to `confirmed` in memory only — SQLite keeps `culled` until the
-    // system delete actually succeeds, so an app death mid-dialog resumes
+    // system trash request actually succeeds, so an app death mid-dialog resumes
     // with the batch still staged (and nothing silently lost).
     const ids = session.confirmAll();
 
-    const deleted = await deleteAssets(ids);
-    if (deleted) {
+    const result = await trashAssets(ids);
+    if (result.status === 'applied') {
       session.markTrashed(ids);
       await persist();
       await addReclaimedBytes(db, sessionId, bytes);
       setReclaimedBytes((b) => b + bytes);
       bump();
-      return { deleted: true, count: ids.length, bytes };
+      return { deleted: true, status: 'applied', count: ids.length, bytes };
     }
 
     // User cancelled the system dialog: roll `confirmed` back to `culled`
@@ -586,13 +674,18 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     const restored = DeckSession.fromJSON(snap);
     sessionRef.current = restored;
     bump();
-    await persistDecision(db, sessionId, JSON.stringify(restored.toJSON()),
-      ids.map((id) => [id, 'culled'] as [string, PhotoState]), Date.now());
-    lastStatesRef.current = statesOf(restored);
-    return { deleted: false, count: ids.length, bytes };
+    await persist();
+    return {
+      deleted: false,
+      status: result.status,
+      error: result.status === 'failed' ? result.error : undefined,
+      count: ids.length,
+      bytes,
+    };
   }, [db, sessionId, persist, bump]);
 
   const finishSession = useCallback(async () => {
+    await waitForPersistence();
     const session = sessionRef.current;
     if (sessionId === null) return;
     // Converge: keepers that don't need editing are done. Rows already
@@ -607,11 +700,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     await completeSession(db, sessionId, Date.now());
     sessionRef.current = null;
     needsEditRef.current = new Set();
+    favouriteRef.current = new Map();
     setSessionId(null);
     setLabel('');
-    setPendingReconsider(null);
     bump();
-  }, [db, sessionId, bump]);
+  }, [db, sessionId, bump, waitForPersistence]);
 
   const groups: GroupInfo[] = useMemo(() => {
     const session = sessionRef.current;
@@ -644,6 +737,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       label,
       reclaimedBytes,
       version,
+      persistenceError,
+      retryPersistence,
       groups,
       singleIds,
       startSession,
@@ -658,12 +753,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       recordCompare,
       compareCull,
       decideSingle,
+      keepRemainingSingles,
       needsEdit,
       toggleNeedsEdit,
       editFlagCount,
-      pendingReconsider,
-      clearPendingReconsider,
-      reconsiderCull,
+      favouriteStatus,
+      toggleFavourite,
+      refreshFavouriteStates,
       unstageCull,
       redecide,
       confirmCulls,
@@ -674,6 +770,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       label,
       reclaimedBytes,
       version,
+      persistenceError,
+      retryPersistence,
       groups,
       singleIds,
       startSession,
@@ -688,12 +786,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       recordCompare,
       compareCull,
       decideSingle,
+      keepRemainingSingles,
       needsEdit,
       toggleNeedsEdit,
       editFlagCount,
-      pendingReconsider,
-      clearPendingReconsider,
-      reconsiderCull,
+      favouriteStatus,
+      toggleFavourite,
+      refreshFavouriteStates,
       unstageCull,
       redecide,
       confirmCulls,

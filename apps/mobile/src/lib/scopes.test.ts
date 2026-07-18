@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  allTimeUnlocked,
-  DAY_MS,
-  remainingToReview,
-  rollingRange,
-  SCOPE_DEFS,
-} from './scopes';
+import { allTimeUnlocked, DAY_MS, remainingToReview, rollingRange, SCOPE_DEFS } from './scopes';
 
 const NOW = Date.UTC(2026, 6, 17, 15, 30, 0); // arbitrary mid-afternoon
 

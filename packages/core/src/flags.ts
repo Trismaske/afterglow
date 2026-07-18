@@ -49,7 +49,11 @@ export function addFlag(state: FlagQueueState, entry: FlagEntry): FlagQueueState
 }
 
 /** Remove one flag by (path, flagType). No-op if absent. */
-export function removeFlag(state: FlagQueueState, path: string, flagType: FlagType): FlagQueueState {
+export function removeFlag(
+  state: FlagQueueState,
+  path: string,
+  flagType: FlagType,
+): FlagQueueState {
   const entries = state.entries.filter((e) => !(e.path === path && e.flagType === flagType));
   return entries.length === state.entries.length ? state : { entries };
 }

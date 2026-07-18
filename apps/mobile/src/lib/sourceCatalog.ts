@@ -105,7 +105,13 @@ export interface ResolvedSources {
 export async function resolveSources(db: SQLiteDatabase): Promise<ResolvedSources> {
   const stored = parsePhotoSourceSetting(await getSetting(db, PHOTO_SOURCES_KEY));
   if (stored?.mode === 'all') {
-    return { setting: stored, isDefault: false, albumIds: null, roots: null, label: sourceLabel(stored) };
+    return {
+      setting: stored,
+      isDefault: false,
+      albumIds: null,
+      roots: null,
+      label: sourceLabel(stored),
+    };
   }
   const dirs = await listSourceDirs();
   if (stored) {

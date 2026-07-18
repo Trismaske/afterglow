@@ -50,7 +50,10 @@ describe('diffIndex', () => {
 
   it('extracts new files and drops deleted ones', () => {
     const prev = asMap([entry('/gone.jpg', 100, 5), entry('/kept.jpg', 100, 5)]);
-    const { reused, toExtract } = diffIndex(prev, [stat('/kept.jpg', 100, 5), stat('/new.jpg', 300, 9)]);
+    const { reused, toExtract } = diffIndex(prev, [
+      stat('/kept.jpg', 100, 5),
+      stat('/new.jpg', 300, 9),
+    ]);
     expect(reused.map((e) => e.path)).toEqual(['/kept.jpg']);
     expect(toExtract.map((s) => s.path)).toEqual(['/new.jpg']);
     // deleted file appears in neither bucket
@@ -59,7 +62,10 @@ describe('diffIndex', () => {
   });
 
   it('handles an empty previous index (first run: extract everything)', () => {
-    const { reused, toExtract } = diffIndex(new Map(), [stat('/a.jpg', 1, 1), stat('/b.jpg', 2, 2)]);
+    const { reused, toExtract } = diffIndex(new Map(), [
+      stat('/a.jpg', 1, 1),
+      stat('/b.jpg', 2, 2),
+    ]);
     expect(reused).toEqual([]);
     expect(toExtract.length).toBe(2);
   });
@@ -180,8 +186,7 @@ describe('buildIndex', () => {
   it('skips files that vanish or fail extraction, and warns', async () => {
     const warnings: string[] = [];
     const result = await buildIndex(['/a.jpg', '/vanished.jpg', '/broken.jpg'], new Map(), {
-      statFile: async (p) =>
-        p === '/vanished.jpg' ? null : stat(p, 1, 1),
+      statFile: async (p) => (p === '/vanished.jpg' ? null : stat(p, 1, 1)),
       extract: async (s) => {
         if (s.path === '/broken.jpg') throw new Error('boom');
         return { timestampMs: 7, source: 'mtime' as const };

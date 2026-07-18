@@ -28,7 +28,10 @@ describe('parseRegSz', () => {
   it('returns null when the value is absent or the output is an error blurb', () => {
     expect(parseRegSz('', 'SCRNSAVE.EXE')).toBeNull();
     expect(
-      parseRegSz('ERROR: The system was unable to find the specified registry key or value.', 'SCRNSAVE.EXE'),
+      parseRegSz(
+        'ERROR: The system was unable to find the specified registry key or value.',
+        'SCRNSAVE.EXE',
+      ),
     ).toBeNull();
     expect(parseRegSz(sample, 'ScreenSaveActive')).toBeNull();
   });

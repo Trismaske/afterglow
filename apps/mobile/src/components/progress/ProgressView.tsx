@@ -136,7 +136,7 @@ export function ProgressView({
           {b.total === 0
             ? 'No photos here.'
             : b.done === b.total
-              ? `Inbox zero — all ${b.total} photos done ✦`
+              ? `Inbox zero — all ${b.total} photos done`
               : `${b.done} of ${b.total} photos done · ${pct}%`}
         </Text>
 
@@ -160,7 +160,10 @@ export function ProgressView({
             return (
               <Pressable
                 key={state}
-                style={[styles.stateRow, active && [styles.stateRowActive, { borderColor: accent }]]}
+                style={[
+                  styles.stateRow,
+                  active && [styles.stateRowActive, { borderColor: accent }],
+                ]}
                 onPress={() => toggleFilter(state)}
               >
                 <View style={[styles.swatch, { backgroundColor: meta.color }]} />
@@ -174,8 +177,8 @@ export function ProgressView({
           })}
         </View>
         <Text style={styles.footnote}>
-          Tap a state to filter the photos below — tap again for all states. Tap a photo to
-          change its state.
+          Tap a state to filter the photos below — tap again for all states. Tap a photo to change
+          its state.
         </Text>
 
         {renderCta?.(b)}

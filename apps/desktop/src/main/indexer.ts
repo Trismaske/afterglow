@@ -62,7 +62,10 @@ export interface IndexDiff {
  * - new, or mtime/size changed      → toExtract
  * - in `prev` but not in `current`  → dropped (deleted files)
  */
-export function diffIndex(prev: ReadonlyMap<string, IndexEntry>, current: readonly FileStat[]): IndexDiff {
+export function diffIndex(
+  prev: ReadonlyMap<string, IndexEntry>,
+  current: readonly FileStat[],
+): IndexDiff {
   const reused: IndexEntry[] = [];
   const toExtract: FileStat[] = [];
   for (const stat of current) {
@@ -110,7 +113,10 @@ export function indexFromJSON(raw: unknown): Map<string, IndexEntry> {
 }
 
 /** Serializable form of the index (stable order for clean diffs on disk). */
-export function indexToJSON(entries: readonly IndexEntry[]): { version: number; entries: IndexEntry[] } {
+export function indexToJSON(entries: readonly IndexEntry[]): {
+  version: number;
+  entries: IndexEntry[];
+} {
   return {
     version: INDEX_VERSION,
     entries: [...entries].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
@@ -118,7 +124,10 @@ export function indexToJSON(entries: readonly IndexEntry[]): { version: number; 
 }
 
 /** Load index.json; a missing or corrupt file yields an empty index. */
-export async function loadIndex(dir: string, onWarn?: (msg: string, err?: unknown) => void): Promise<Map<string, IndexEntry>> {
+export async function loadIndex(
+  dir: string,
+  onWarn?: (msg: string, err?: unknown) => void,
+): Promise<Map<string, IndexEntry>> {
   const file = path.join(dir, INDEX_FILENAME);
   let text: string;
   try {
@@ -214,16 +223,20 @@ export async function buildIndex(
 
   const { reused, toExtract } = diffIndex(prev, stats);
 
-  const extracted = await mapLimit(toExtract, concurrency, async (stat): Promise<IndexEntry | null> => {
-    if (isCancelled()) return null;
-    try {
-      const { timestampMs, source } = await extract(stat);
-      return { ...stat, timestampMs, source };
-    } catch (err) {
-      deps.onWarn?.(`could not extract a date for ${stat.path}, skipping`, err);
-      return null;
-    }
-  });
+  const extracted = await mapLimit(
+    toExtract,
+    concurrency,
+    async (stat): Promise<IndexEntry | null> => {
+      if (isCancelled()) return null;
+      try {
+        const { timestampMs, source } = await extract(stat);
+        return { ...stat, timestampMs, source };
+      } catch (err) {
+        deps.onWarn?.(`could not extract a date for ${stat.path}, skipping`, err);
+        return null;
+      }
+    },
+  );
   if (isCancelled()) return null;
 
   return [...reused, ...extracted.filter((e): e is IndexEntry => e !== null)];

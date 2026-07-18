@@ -53,7 +53,7 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
 11. **Permissions:** `expo-media-library` config plugin with
     `granularPermissions: ["photo"]` → READ_MEDIA_IMAGES on Android 13+,
     READ_EXTERNAL_STORAGE on older; runtime request via `usePermissions({
-    granularPermissions: ['photo'] })`. Deletion needs no extra permission —
+granularPermissions: ['photo'] })`. Deletion needs no extra permission —
     Android 11+ uses the system delete-request dialog. iOS strings included
     but untested (Android-first).
 12. **Testers need a dev build** (`npx expo run:android` or an EAS dev
@@ -86,12 +86,12 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
    the source of truth for photo state". Core's `SingleAction` widening to
    `'to_edit'` is left for whenever core is next opened up.
 2. **Convergence rule:** photos the user kept but did not flag become
-   `done` when the session *finishes* (Summary → Finish runs kept → done
+   `done` when the session _finishes_ (Summary → Finish runs kept → done
    for the session's photos). Abandoned sessions leave rows `kept`, which
    counts as "still converging" in the progress views and gets re-reviewed
    next session.
 3. **Session re-scan reconciliation (m0.1 #14 resolved):** starting a new
-   session over a range now *excludes* photos already `to_edit`, `done` or
+   session over a range now _excludes_ photos already `to_edit`, `done` or
    `trashed`; interim states (`unreviewed`, `kept`, `culled` from an
    abandoned session) are re-included and reset to `unreviewed` (a staged
    cull from an abandoned session must be re-earned — safer than carrying a
@@ -123,7 +123,7 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
    is always available (PLAN.md risk mitigation); real edit detection is
    m0.3.
 8. **Needs-edit flag semantics in duels:** the ✎ toggle on a duel card
-   flags the *photo*, not the decision. If the photo is later culled the
+   flags the _photo_, not the decision. If the photo is later culled the
    flag is moot (culled wins); if it is un-culled from the cull list it
    comes back as `to_edit`, not plain kept — the CASE remap makes this hold
    everywhere without special-casing.
@@ -142,9 +142,9 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
 ## m0.3
 
 1. **Duel-history source of truth (m0.2 open question resolved):** the
-   `duels` SQLite table is the *durable* record (append-only archive across
+   `duels` SQLite table is the _durable_ record (append-only archive across
    sessions, future mining); the core snapshot's `duelHistory` is
-   *in-session working state* that feeds `autoCullCandidates()`. They are
+   _in-session working state_ that feeds `autoCullCandidates()`. They are
    written in the same exclusive transaction so they can't diverge
    mid-session; if they ever did, the snapshot wins for the active session.
    Neither was dropped: the table is queryable SQL the snapshot blob isn't,
@@ -177,7 +177,7 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
    tracked in SQLite are excluded — that's what stops burst siblings from
    false-positive timestamp matches AND prevents re-prompting (a detected
    copy is inserted as `done`, so it's tracked forever after). A candidate
-   must also have been *written* (modificationTime) after flagging.
+   must also have been _written_ (modificationTime) after flagging.
 6. **Copy-prompt outcomes:** "Keep original" → original `done`;
    "Cull original" → the standard system-trash dialog (`deleteAssets` is
    still the app's only delete call — now reachable from exactly two
@@ -212,7 +212,7 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
     is center-anchored (no focal-point math) and clamped to 1×–8×;
     pan clamps to the scaled bounds; pinching below ~1× springs back.
     Gestures compose as Exclusive(Simultaneous(pinch, pan), tap) per RNGH
-    2.x docs. Buttons act on the *visible* candidate ("✕ Cull B",
+    2.x docs. Buttons act on the _visible_ candidate ("✕ Cull B",
     "★ B is better") — clearer than positional buttons on a flip UI.
     Long-press-to-inspect died; the zoom replaces it.
 12. **Reanimated 4 / worklets setup relies on babel-preset-expo defaults**
@@ -220,7 +220,7 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
     app) and `GestureHandlerRootView` now wraps the app root. Verified via
     Metro export; real gesture feel needs the on-device run.
 13. **Streak definition:** consecutive local days ending today (or
-    yesterday, while today is unfinished) with ≥ 1 *finished* session —
+    yesterday, while today is unfinished) with ≥ 1 _finished_ session —
     `sessions.finished` (migration v3) distinguishes Finish-button
     completion from abandonment. Pre-m0.3 completed sessions can't be told
     apart retroactively and optimistically count as finished. Summary
@@ -243,11 +243,11 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
    Default scope = "Last day".
 2. **All-time gating rule as implemented:** the All-time chip is visible
    but disabled until `remaining(lastYear) == 0`, where `remaining =
-   max(0, mediaStoreCount − handledCount)`, `handledCount` = DB rows in
+max(0, mediaStoreCount − handledCount)`, `handledCount` = DB rows in
    the range with state `to_edit` or `done` (**`trashed` rows are
    excluded** — they've left MediaStore, so they're absent from both
    sides of the subtraction; `unreviewed`/`kept`/`culled` interim rows
-   count as *not* reviewed, matching the m0.2 re-review rule). Ranges
+   count as _not_ reviewed, matching the m0.2 re-review rule). Ranges
    nest, so last-year-clear ⇒ only the >365-day backlog remains. A hint
    under the chips explains the gate while locked. The gate re-checks on
    every Home focus; if new photos re-lock it while "All time" is
@@ -255,7 +255,7 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
 3. **Scope counts are approximate by design (and cheap).** Remaining =
    MediaStore `totalCount` queries (per source bucket) minus one SQL
    aggregate — no asset lists are loaded to render Home. Known skew: a
-   `done` photo later deleted *outside* the app still counts as handled
+   `done` photo later deleted _outside_ the app still counts as handled
    (no external-delete reconciliation exists), so remaining can
    undercount and the gate can unlock slightly early; the clamp at 0
    hides the opposite skew. The exact reviewable set is still computed
@@ -307,7 +307,7 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
    root as "included via a parent folder".
 8. **Every MediaStore query site now respects the source filter**
    (audited: Home scope counts + gate, session loading, Recent-days
-   totals, DayProgress totals, edited-copy candidate scans) *and* the
+   totals, DayProgress totals, edited-copy candidate scans) _and_ the
    DB-side counterparts (`countHandledInRange`, `getDaySummaries`,
    `getDayStateCounts`) filter by uri. Consequence for edit detection,
    documented in detect.ts: an editor that saves its copy **outside**
@@ -337,7 +337,7 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
 2. **Similarity refinement = connected components, chain-linking
    deliberate.** Within a time cluster, photos whose hashes are ≤
    threshold apart are edges; refined groups are the connected
-   components, so A~B~C stays one group even when A!~C — a drifting
+   components, so A~~B~~C stays one group even when A!~C — a drifting
    burst (pan, walking subject) is still one moment. Threshold 0 =
    only bit-identical connect; ≥64 = cluster unchanged.
 3. **Null-hash rule (exact):** a photo whose hash is missing/failed
@@ -487,7 +487,7 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
     are still exempt from reconsider prompts (the user explicitly wants
     them).
 22. **Day and Global progress share one body** (`components/progress/
-    ProgressView`): state summary (tappable filters) + filtered photo
+ProgressView`): state summary (tappable filters) + filtered photo
     grid + per-photo state editor sheet. DB-side scoping is a
     `PhotoScope` union: DayProgress keeps the m0.2 `day = ?` column
     scoping (so its counts match the Recent-days rollups exactly);
@@ -537,8 +537,8 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
     in-group interim states count as still-reviewable, matching the
     m0.2 re-review rule.
 28. **Home headline counts "done" strictly:** N = done + trashed rows,
-    M = MediaStore count + trashed rows — to_edit is *handled* but not
-    *done*, so the headline can read 90% while "0 to review" (edit
+    M = MediaStore count + trashed rows — to_edit is _handled_ but not
+    _done_, so the headline can read 90% while "0 to review" (edit
     queue still open). Same cheap count queries as m0.3.1 (one
     MediaStore totalCount pass + one SQL aggregate; no asset lists on
     Home). The Progress row shows the same percentage and computes the
@@ -575,9 +575,9 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
    #3d301f ≈ old #3d3116). Invalid hex anywhere degrades to amber
    rather than throwing.
 3. **System palette via a LOCAL Expo module** (`modules/
-   material-you-accent`, Kotlin, Android-only): a synchronous
+material-you-accent`, Kotlin, Android-only): a synchronous
    `getSystemAccents()` returning `android.R.color.system_accent1_
-   {200,500,700}` as #rrggbb, `null` below API 31 (SDK_INT < S) or
+{200,500,700}` as #rrggbb, `null` below API 31 (SDK_INT < S) or
    without a context. `expo-module.config.json` declares platforms:
    ["android"] only — the scaffolded "apple" entry was dropped (no
    Swift file exists; declaring it would break iOS builds). JS side
@@ -640,7 +640,7 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
    scale.
 3. **Fine-tune slider is hand-built** (`components/FineSlider.tsx`):
    no slider dependency exists in the app and `@react-native-community/
-   slider` is a native module — adding it would break the existing dev
+slider` is a native module — adding it would break the existing dev
    client without a rebuild, so the track is a RNGH pan/tap surface
    (horizontal `activeOffsetX` activation so vertical scrolling wins,
    revert-on-cancel) with − / + buttons for true single-step precision
@@ -803,3 +803,69 @@ Merged into `ASSUMPTIONS.md` at the end of the build.
     background `#0F172A`) — the same chevron-on-dark-slate set as the new
     desktop icon, generated from `android-icon-foreground.png`. Takes
     effect on the next APK build; light originals remain in assets/.
+
+## m0.6 repository-review integration (2026-07-18)
+
+22. **One deterministic verdict reset:** active Keep, To edit and Cull chips
+    all return the photo to `unreviewed`; grouped photos re-enter/reopen their
+    deck and singles return to pending. A hidden previous-state stack was
+    rejected because it complicates snapshot recovery and makes identical UI
+    actions depend on invisible history. Best/favourite are orthogonal flags.
+23. **Recoverable trash only:** Expo legacy delete is no longer a removal
+    path. The local `media-store-actions` module uses Android 11+
+    `createTrashRequest` for both cull batches and edited originals. Below API
+    30 the destructive affordance is disabled/unsupported; there is no
+    permanent fallback. Approval, cancellation and operational failure are
+    distinct. Samsung trash/restore remains a release acceptance test.
+24. **Favourite state is retryable and reversible:** the durable states are
+    none, queued_apply, applied, queued_remove and error. Android 11+ applies
+    one `createFavoriteRequest` batch, then every `IS_FAVORITE` flag must
+    verify before SQLite commits. Clearing an applied heart queues an explicit
+    unfavourite. Gallery presentation is not promised until Samsung verifies.
+25. **Persistence is a FIFO barrier:** each mutation captures its snapshot,
+    state map and optional compare record immediately. Jobs persist in order;
+    the committed-state cursor advances only after the exclusive transaction.
+    A failed head job remains queued behind a non-cancelable retry alert, so
+    later state cannot leapfrog or erase its delta.
+26. **Schema v6 metrics are first-event/unique-photo semantics:** reviewed,
+    culled, edit-completed and favourite-applied retain their first durable
+    timestamp even if the current verdict changes; reclaimed bytes are summed
+    only after successful trash approval. Current/longest streak use unique
+    finished-session local days.
+27. **Release policy:** GitHub Releases only; GitLab deferred. m0.6 stays one
+    public tag with six internal gates. CI now includes clean Expo prebuild +
+    Gradle validation, immutable Action SHAs, deterministic tag/version and
+    versionCode checks, required artifacts and SHA-256 checksum manifests.
+28. **Editor evidence order:** direct EDIT/VIEW launch does not justify a
+    speculative `<queries>` block. Both intents now send `image/*`, require a
+    content URI, and retain exact failures. A native chooser is added only if
+    Samsung still fails; `<queries>` only if future code queries handlers.
+29. **Completed groups advance without a second pass (late 2026-07-18 tester
+    feedback):** the automatic Reconsider screen repeated the group with fewer
+    actions and made review feel slower and less predictable. Any group that
+    becomes complete now advances to the next unfinished group, wrapping only
+    when groups were reviewed out of order, then continues to Singles/culls.
+    Opening an already-completed group still intentionally enters browse mode.
+    Compare history remains stored for best-of-group and future consumers; it
+    no longer interrupts the review flow.
+30. **Pinch/pager hand-off refinement:** the deck now registers its pinch
+    simultaneously with the FlatList's native gesture and freezes paging at
+    two-pointer `onBegin`, rather than waiting for pinch scale movement. The
+    overlay/reset model in #17 is unchanged, so cancellation and photo changes
+    still cannot strand the pager. Compare keeps its shared-image transform.
+31. **Recent-days MediaStore request count:** before m0.6, Home focus issued
+    seven `first: 1` MediaStore requests per selected bucket (one per day).
+    It now performs one seven-day ranged request per bucket in the common
+    <=200-photo case, paging only for busier weeks, then tallies local days in
+    one tested pure pass. This is a targeted request-count improvement, not a
+    claim that every possible week fits one page.
+32. **Material glyph audit supersedes #18/#19:** SDK 57 already supplies
+    `@expo/vector-icons`; Home, decisions, review/edit actions, selection
+    checks, best and favourite affordances now use MaterialCommunityIcons.
+    Unicode/emoji glyphs no longer carry meaning in app headers or buttons.
+33. **OEM acceptance remains external:** this Linux release host can validate
+    clean Gradle builds and emulator flows, but cannot prove Samsung Gallery
+    editor resolution, trash/restore presentation, favourite visibility,
+    pinch feel, or upgrade-in-place on Samsung hardware. Those checks stay
+    explicit tester acceptance items; the release notes must not claim them as
+    locally verified.

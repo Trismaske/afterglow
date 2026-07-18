@@ -1,5 +1,5 @@
 # afterglow
-An Electron based cross platform screensaver app that shows RAW files (with their edits applied from sidecar XMPs) as well as videos (muted) and normal photos.
+Two apps: **Afterglow Desktop**, an Electron fullscreen ambient slideshow with smart "moments" ordering, muted video, and flag-to-queue photo capture (RAW with sidecar edits applied is the roadmap flagship, coming in v0.6); and **Afterglow Companion**, an Android photo-culling app that drives every phone photo to a reviewed end-state.
 
 See [PLAN.md](PLAN.md) for the product plan and release roadmap, and
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full developer setup —
@@ -15,15 +15,16 @@ in `apps/desktop/CLAUDE.md`, `apps/mobile/AGENTS.md`, and
 
 A fullscreen ambient photo display. Shows photos and muted videos from
 folders you pick, recursively scanned, with crossfade transitions. Any mouse
-movement, click or keypress exits — except the keys below, which quietly
-capture organization work while you watch (v0.2).
+movement, click or keypress leaves the show (back to the settings screen on
+a manual launch) — except the keys below, which navigate or quietly capture
+organization work while you watch.
 
 ### Supported formats (the honest list)
 
 - **Images:** JPEG, PNG, WebP. **HEIC is not supported on desktop for now**
   (Chromium has no HEIC decoder; it works in the Android companion). GIF and
   RAW come in later releases per the roadmap.
-- **Videos (v0.4):** MP4, WebM, MOV — always muted. These are the containers
+- **Videos:** MP4, WebM, MOV — always muted. These are the containers
   Chromium can decode natively; **AVI and MKV are not supported** and never
   will be claimed. A `.mov` (or anything else) holding a codec Chromium
   lacks — HEVC, ProRes — is skipped with a console note and the show simply
@@ -36,7 +37,7 @@ advance immediately. Videos join moments/clusters like photos, ordered by
 their file date (video containers aren't EXIF-parsed), and the overlay and
 flag keys (D/E/M/R) work on them exactly like on photos.
 
-Since v0.3 the show is smart-ordered by default: a background EXIF index
+The show is smart-ordered by default: a background EXIF index
 (capture dates, persisted to `index.json` and refreshed incrementally on
 every start) feeds the story engine, so a burst of shots taken within a few
 minutes of each other plays back-to-back as one "moment" instead of being
@@ -138,10 +139,11 @@ Windows + Linux artifacts on every `desktop-v*` tag.
 
 ## Afterglow Companion (Android) — quickstart
 
-The mobile app clears a day's camera roll down to keepers: burst groups are
-reviewed as pairwise photo duels ("cull one, or keep both and pick the
-better"), staged culls are deleted in one confirmed batch to the system
-trash. See [apps/mobile/README.md](apps/mobile/README.md) for the flow and
+The mobile app clears your camera roll down to keepers: burst groups
+(time-clustered, refined by perceptual similarity) are reviewed as a swipe
+deck — cull, keep, flag to-edit, or A/B-compare with synchronized zoom —
+and staged culls are deleted in one confirmed batch to the system trash.
+See [apps/mobile/README.md](apps/mobile/README.md) for the flow and
 how to run it — it needs an Android development build
 (`npx expo run:android`), **not Expo Go**.
 

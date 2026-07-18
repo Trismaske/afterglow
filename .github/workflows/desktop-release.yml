@@ -4,33 +4,10 @@ on:
   push:
     tags:
       - 'desktop-v*'
-  pull_request:
-    paths:
-      - 'apps/desktop/**'
-      - 'packages/core/**'
-      - 'package-lock.json'
-      - '.github/workflows/desktop-release.yml'
 
 jobs:
-  # Lightweight checks on PRs.
-  ci:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run build -w @afterglow/core
-      - run: npm run typecheck -w afterglow-desktop
-      - run: npm test -w afterglow-desktop
-      - run: npm run build -w afterglow-desktop
-
   # Installers on desktop-v* tags, uploaded to a GitHub Release.
   release:
-    if: startsWith(github.ref, 'refs/tags/desktop-v')
     permissions:
       contents: write
     strategy:
@@ -39,29 +16,40 @@ jobs:
         include:
           - os: windows-latest
             builder-args: --win
+            release-files: |
+              apps/desktop/release/*.exe
+              apps/desktop/release/SHA256SUMS-win32.txt
           - os: ubuntu-latest
             builder-args: --linux
+            release-files: |
+              apps/desktop/release/*.AppImage
+              apps/desktop/release/*.deb
+              apps/desktop/release/SHA256SUMS-linux.txt
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          node-version: 22
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.13.0
           cache: npm
       - run: npm ci
+      - run: node scripts/release-preflight.mjs desktop "${{ github.ref_name }}"
       - run: npm run build -w @afterglow/core
+      - run: npm run lint
+      - run: npm run format:check
       - run: npm run typecheck -w afterglow-desktop
       - run: npm test -w afterglow-desktop
       - run: npm run build -w afterglow-desktop
       - name: Package installers
         run: npx electron-builder ${{ matrix.builder-args }} --publish never
         working-directory: apps/desktop
+      - name: Verify artifacts and write checksums
+        run: node scripts/release-artifacts.mjs desktop apps/desktop/release
       - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          files: |
-            apps/desktop/release/*.exe
-            apps/desktop/release/*.AppImage
-            apps/desktop/release/*.deb
-          fail_on_unmatched_files: false
+          files: ${{ matrix.release-files }}
+          fail_on_unmatched_files: true
           generate_release_notes: true

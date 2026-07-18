@@ -48,10 +48,13 @@ export function DayProgressScreen({ route, navigation }: Props) {
           prefs,
         );
         if (reviewable.length === 0) return; // counts were stale; focus refresh will catch up
-        await sessionCtx.startSession(range.label, range.startMs, range.endMs, reviewable, (
-          done,
-          total,
-        ) => setAnalyzing({ done, total }));
+        await sessionCtx.startSession(
+          range.label,
+          range.startMs,
+          range.endMs,
+          reviewable,
+          (done, total) => setAnalyzing({ done, total }),
+        );
         navigation.navigate('Groups');
       } finally {
         setStarting(false);
@@ -95,7 +98,7 @@ export function DayProgressScreen({ route, navigation }: Props) {
                 : 'Loading photos…'
               : remaining > 0
                 ? `Review this day · ${remaining} to review`
-                : 'Nothing left to review ✦'
+                : 'Nothing left to review'
           }
           color={colors.keep}
           disabled={starting || remaining === 0}

@@ -38,6 +38,8 @@ export const colors = {
   cullDim: '#5a2a2a',
   edit: '#5f8fe8',
   editDim: '#22334f',
+  fav: '#e668a7',
+  favDim: '#4f2238',
 } as const;
 
 export const touch = {

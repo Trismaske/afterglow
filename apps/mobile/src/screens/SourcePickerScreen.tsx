@@ -9,6 +9,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import {
@@ -91,10 +92,7 @@ export function SourcePickerScreen({ navigation }: Props) {
     });
   }, []);
 
-  const totalPhotos = useMemo(
-    () => (rows ?? []).reduce((sum, r) => sum + r.photoCount, 0),
-    [rows],
-  );
+  const totalPhotos = useMemo(() => (rows ?? []).reduce((sum, r) => sum + r.photoCount, 0), [rows]);
 
   const valid = allFolders || selected.size > 0;
 
@@ -122,8 +120,8 @@ export function SourcePickerScreen({ navigation }: Props) {
         contentContainerStyle={[styles.content, { paddingBottom: 16 }]}
       >
         <Text style={styles.hint}>
-          Reviews only look at photos in the selected folders. Selecting a folder includes
-          its subfolders.
+          Reviews only look at photos in the selected folders. Selecting a folder includes its
+          subfolders.
         </Text>
 
         <Pressable
@@ -135,9 +133,9 @@ export function SourcePickerScreen({ navigation }: Props) {
             <Text style={styles.rowHint}>every photo on the device</Text>
           </View>
           <Text style={styles.rowCount}>{totalPhotos}</Text>
-          <Text style={[styles.check, allFolders && [styles.checkActive, { color: theme.accent }]]}>
-            {allFolders ? '✓' : ''}
-          </Text>
+          <View style={styles.check}>
+            {allFolders && <MaterialCommunityIcons name="check" size={22} color={theme.accent} />}
+          </View>
         </Pressable>
 
         {rows === null && <Text style={styles.loading}>Listing photo folders…</Text>}
@@ -147,8 +145,7 @@ export function SourcePickerScreen({ navigation }: Props) {
 
         {rows?.map((row) => {
           const isSelected = !allFolders && selected.has(row.dir);
-          const included =
-            !allFolders && !isSelected && isUnderAnyRoot(row.dir, roots);
+          const included = !allFolders && !isSelected && isUnderAnyRoot(row.dir, roots);
           return (
             <Pressable
               key={row.dir}
@@ -160,13 +157,19 @@ export function SourcePickerScreen({ navigation }: Props) {
                 {row.missing ? (
                   <Text style={styles.rowHint}>no photos found — tap to unselect</Text>
                 ) : included ? (
-                  <Text style={[styles.rowIncluded, { color: theme.accent }]}>included via a parent folder</Text>
+                  <Text style={[styles.rowIncluded, { color: theme.accent }]}>
+                    included via a parent folder
+                  </Text>
                 ) : null}
               </View>
               {!row.missing && <Text style={styles.rowCount}>{row.photoCount}</Text>}
-              <Text style={[styles.check, (isSelected || included) && [styles.checkActive, { color: theme.accent }]]}>
-                {isSelected ? '✓' : included ? '·' : ''}
-              </Text>
+              <View style={styles.check}>
+                {isSelected ? (
+                  <MaterialCommunityIcons name="check" size={22} color={theme.accent} />
+                ) : included ? (
+                  <MaterialCommunityIcons name="circle-small" size={22} color={theme.accent} />
+                ) : null}
+              </View>
             </Pressable>
           );
         })}
@@ -207,7 +210,6 @@ const styles = StyleSheet.create({
   rowHint: { color: colors.textDim, fontSize: 12 },
   rowIncluded: { fontSize: 12 },
   rowCount: { color: colors.textDim, fontSize: 13 },
-  check: { width: 22, textAlign: 'center', color: colors.textDim, fontSize: 16 },
-  checkActive: { fontWeight: '800' },
+  check: { width: 22, alignItems: 'center', justifyContent: 'center' },
   footer: { paddingHorizontal: 16, paddingTop: 8 },
 });

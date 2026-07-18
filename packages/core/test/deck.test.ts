@@ -55,7 +55,12 @@ describe('DeckSession — deck basics', () => {
     s.cull('p0'); // remove before cursor → cursor shifts left with the photo
     expect(s.groupInfo('g1').aliveIds).toEqual(['p2', 'p3']);
     expect(s.groupInfo('g1').cursor).toBe(0);
-    expect(s.stagedCulls().map((i) => i.id).sort()).toEqual(['p0', 'p1']);
+    expect(
+      s
+        .stagedCulls()
+        .map((i) => i.id)
+        .sort(),
+    ).toEqual(['p0', 'p1']);
   });
 
   it('culling the last alive photo completes the group', () => {
@@ -65,6 +70,27 @@ describe('DeckSession — deck basics', () => {
     expect(s.isGroupComplete('g1')).toBe(true);
     expect(s.currentGroupId()).toBeNull();
     expect(s.isComplete()).toBe(true);
+  });
+
+  it('keeps one member without finishing the rest and can clear it', () => {
+    const s = deck(3);
+    s.keep('p1');
+    expect(s.getState('p1')).toBe('kept');
+    expect(s.groupInfo('g1').aliveIds).toEqual(['p0', 'p2']);
+    expect(s.groupInfo('g1').complete).toBe(false);
+
+    s.clearDecision('p1');
+    expect(s.getState('p1')).toBe('unreviewed');
+    expect(s.groupInfo('g1').aliveIds).toEqual(['p0', 'p1', 'p2']);
+  });
+
+  it('keeping the final undecided member completes the group', () => {
+    const s = deck(3);
+    s.cull('p0');
+    s.cull('p1');
+    s.keep('p2');
+    expect(s.groupInfo('g1').complete).toBe(true);
+    expect(s.getState('p2')).toBe('kept');
   });
 
   it('culling the last-position photo clamps the cursor', () => {
@@ -237,6 +263,59 @@ describe('DeckSession — staging, cullKept, confirm flow', () => {
     expect(() => s.cullKept('p0')).toThrow(/expected kept/);
   });
 
+  it('unkeep clears a kept group member and re-opens the group', () => {
+    const s = deck(3);
+    s.keepRest('g1');
+    s.unkeep('p1');
+    expect(s.getState('p1')).toBe('unreviewed');
+    expect(s.isGroupComplete('g1')).toBe(false);
+    expect(s.groupInfo('g1').aliveIds).toEqual(['p0', 'p1', 'p2']); // never left
+    s.keepRest('g1'); // finishable again
+    expect(s.getState('p1')).toBe('kept');
+    expect(s.isGroupComplete('g1')).toBe(true);
+  });
+
+  it('unkeep after a cull → unstageCull round trip re-enters the deck', () => {
+    const s = deck(3);
+    s.cull('p1'); // leaves aliveIds
+    s.keepRest('g1');
+    s.unstageCull('p1'); // kept, but still outside the deck
+    s.unkeep('p1');
+    expect(s.getState('p1')).toBe('unreviewed');
+    expect(s.groupInfo('g1').aliveIds).toEqual(['p0', 'p1', 'p2']); // reinserted in order
+    expect(s.groupInfo('g1').cursor).toBe(1); // lands on the cleared photo
+    expect(s.isGroupComplete('g1')).toBe(false);
+  });
+
+  it('unkeep returns a kept single to the pending queue', () => {
+    const s = DeckSession.create({ groups: [], singles: burst(2, 0, 1000) });
+    s.decideSingle('p0', 'keep');
+    expect(s.nextSingle()?.id).toBe('p1');
+    s.unkeep('p0');
+    expect(s.getState('p0')).toBe('unreviewed');
+    expect(s.nextSingle()?.id).toBe('p0');
+    expect(() => s.unkeep('p1')).toThrow(/expected kept/);
+  });
+
+  it('clearDecision returns a staged group cull to unreviewed in its deck', () => {
+    const s = deck(3);
+    s.cull('p1');
+    s.keepRest('g1');
+    s.clearDecision('p1');
+    expect(s.getState('p1')).toBe('unreviewed');
+    expect(s.groupInfo('g1').aliveIds).toEqual(['p0', 'p1', 'p2']);
+    expect(s.groupInfo('g1').cursor).toBe(1);
+    expect(s.isGroupComplete('g1')).toBe(false);
+  });
+
+  it('clearDecision returns a staged single cull to the pending queue', () => {
+    const s = DeckSession.create({ groups: [], singles: burst(2, 0, 1000) });
+    s.decideSingle('p0', 'cull');
+    s.clearDecision('p0');
+    expect(s.getState('p0')).toBe('unreviewed');
+    expect(s.nextSingle()?.id).toBe('p0');
+  });
+
   it('confirmAll → markTrashed walks the staged batch through the states', () => {
     const s = deck(3);
     s.cull('p0');
@@ -278,11 +357,17 @@ describe('DeckSession — serialization', () => {
 
   it('rejects malformed input', () => {
     expect(() => DeckSession.fromJSON(null)).toThrow(/not an object/);
-    expect(() => DeckSession.fromJSON({ kind: 'deck', version: 2 })).toThrow(
-      /unsupported version/,
-    );
+    expect(() => DeckSession.fromJSON({ kind: 'deck', version: 2 })).toThrow(/unsupported version/);
     expect(() =>
-      DeckSession.fromJSON({ kind: 'deck', version: 1, items: [], groups: [], singleIds: [], states: { ghost: 'kept' }, compareHistory: [] }),
+      DeckSession.fromJSON({
+        kind: 'deck',
+        version: 1,
+        items: [],
+        groups: [],
+        singleIds: [],
+        states: { ghost: 'kept' },
+        compareHistory: [],
+      }),
     ).toThrow(/unknown id/);
   });
 
@@ -291,5 +376,37 @@ describe('DeckSession — serialization', () => {
     const snap = s.toJSON();
     snap.groups[0].cursor = 99;
     expect(DeckSession.fromJSON(snap).groupInfo('g1').cursor).toBe(2);
+  });
+
+  it('rejects duplicate ids and invalid state values', () => {
+    const duplicate = deck(2).toJSON();
+    duplicate.items.push({ ...duplicate.items[0] });
+    expect(() => DeckSession.fromJSON(duplicate)).toThrow(/duplicate photo id/);
+
+    const badState = deck(2).toJSON() as unknown as { states: Record<string, string> };
+    badState.states.p0 = 'banana';
+    expect(() => DeckSession.fromJSON(badState)).toThrow(/invalid state/);
+  });
+
+  it('rejects inconsistent group membership and compare history', () => {
+    const missingAlive = deck(2).toJSON();
+    missingAlive.groups[0].aliveIds = ['p1'];
+    expect(() => DeckSession.fromJSON(missingAlive)).toThrow(/outside its deck/);
+
+    const badCompare = deck(2).toJSON();
+    badCompare.compareHistory.push({
+      groupId: 'g1',
+      winnerId: 'p0',
+      loserId: 'ghost',
+      keptBoth: true,
+      at: 1,
+    });
+    expect(() => DeckSession.fromJSON(badCompare)).toThrow(/compare photos/);
+  });
+
+  it('rejects non-finite cursors instead of producing NaN state', () => {
+    const snap = deck(2).toJSON();
+    snap.groups[0].cursor = Number.NaN;
+    expect(() => DeckSession.fromJSON(snap)).toThrow(/malformed group/);
   });
 });

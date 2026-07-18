@@ -1,60 +1,76 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; img-src afterglow:; media-src afterglow:; script-src 'self'; style-src 'self'">
-  <title>Afterglow</title>
-  <link rel="stylesheet" href="styles.css">
-</head>
-<body>
-  <section id="settings" class="screen hidden">
-    <h1>Afterglow</h1>
-    <div class="settings-grid">
-      <span class="settings-label">Folders</span>
-      <div class="settings-field">
-        <div id="folders" class="folder-list"></div>
-        <button id="choose" type="button">Choose folders…</button>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src afterglow:; media-src afterglow:; script-src 'self'; style-src 'self'"
+    />
+    <title>Afterglow</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <section id="settings" class="screen hidden">
+      <h1>Afterglow</h1>
+      <div class="settings-grid">
+        <span class="settings-label">Folders</span>
+        <div class="settings-field">
+          <div id="folders" class="folder-list"></div>
+          <button id="choose" type="button">Choose folders…</button>
+        </div>
+        <label class="settings-label" for="duration">Slide duration</label>
+        <div class="settings-field">
+          <input id="duration" type="number" min="2" max="3600" step="1" />
+          <span class="unit">seconds</span>
+        </div>
+        <label class="settings-label" for="order-mode">Ordering</label>
+        <div class="settings-field">
+          <select id="order-mode">
+            <option value="smart">Smart — moments play together</option>
+            <option value="shuffle">Shuffle</option>
+          </select>
+        </div>
+        <label class="settings-label" for="gap">Moment gap</label>
+        <div class="settings-field">
+          <input id="gap" type="number" min="1" max="720" step="1" />
+          <span class="unit"
+            >minutes — shots taken within this many minutes of the previous shot join the same
+            moment</span
+          >
+        </div>
+        <label class="settings-label" for="cap">Cluster cap</label>
+        <div class="settings-field">
+          <input id="cap" type="number" min="2" max="100" step="1" />
+          <span class="unit">photos per moment · 2–100</span>
+        </div>
+        <label class="settings-label" for="video-max">Video cap</label>
+        <div class="settings-field">
+          <input id="video-max" type="number" min="0" max="600" step="1" />
+          <span class="unit">seconds per video (videos play muted) · 0 = full length</span>
+        </div>
+        <!-- Windows only (v0.5): shown from the renderer when platform === 'win32'. -->
+        <span id="scr-label" class="settings-label hidden">Screensaver</span>
+        <div id="scr-field" class="settings-field hidden">
+          <button id="scr-toggle" type="button">Set as default screensaver</button>
+          <span id="scr-status" class="unit"></span>
+        </div>
       </div>
-      <label class="settings-label" for="duration">Slide duration</label>
-      <div class="settings-field">
-        <input id="duration" type="number" min="2" max="3600" step="1"> <span class="unit">seconds</span>
-      </div>
-      <label class="settings-label" for="order-mode">Ordering</label>
-      <div class="settings-field">
-        <select id="order-mode">
-          <option value="smart">Smart — moments play together</option>
-          <option value="shuffle">Shuffle</option>
-        </select>
-      </div>
-      <label class="settings-label" for="gap">Moment gap</label>
-      <div class="settings-field">
-        <input id="gap" type="number" min="1" max="720" step="1"> <span class="unit">minutes — shots taken within this many minutes of the previous shot join the same moment</span>
-      </div>
-      <label class="settings-label" for="cap">Cluster cap</label>
-      <div class="settings-field">
-        <input id="cap" type="number" min="2" max="100" step="1"> <span class="unit">photos per moment · 2–100</span>
-      </div>
-      <label class="settings-label" for="video-max">Video cap</label>
-      <div class="settings-field">
-        <input id="video-max" type="number" min="0" max="600" step="1"> <span class="unit">seconds per video (videos play muted) · 0 = full length</span>
-      </div>
-      <!-- Windows only (v0.5): shown from the renderer when platform === 'win32'. -->
-      <span id="scr-label" class="settings-label hidden">Screensaver</span>
-      <div id="scr-field" class="settings-field hidden">
-        <button id="scr-toggle" type="button">Set as default screensaver</button>
-        <span id="scr-status" class="unit"></span>
-      </div>
+      <button id="start" type="button">Start slideshow</button>
+      <p class="settings-hint">
+        During the show — S: settings &nbsp;·&nbsp; O: overlay &nbsp;·&nbsp; Q: flag queue
+        &nbsp;·&nbsp; ←/→: prev/next &nbsp;·&nbsp; ↑/↓: restart/skip moment &nbsp;·&nbsp;
+        D/E/M/R/N/T: flag &nbsp;·&nbsp; any other input leaves the show
+      </p>
+    </section>
+    <section id="message" class="screen hidden"></section>
+    <div id="stage" class="hidden"></div>
+    <div id="overlay" class="hidden" aria-hidden="true"></div>
+    <!-- v0.5 shortcut legend: flashed at show start, then follows the overlay toggle. -->
+    <div id="legend" class="hidden" aria-hidden="true">
+      O overlay · Q queue · S settings · ← prev · → next · ↑ restart moment · ↓ next moment · D
+      delete · E edit · M move · R review · N rename · T date
     </div>
-    <button id="start" type="button">Start slideshow</button>
-    <p class="settings-hint">During the show — S: settings &nbsp;·&nbsp; O: overlay &nbsp;·&nbsp; Q: flag queue &nbsp;·&nbsp; ←/→: prev/next &nbsp;·&nbsp; ↑/↓: restart/skip moment &nbsp;·&nbsp; D/E/M/R/N/T: flag &nbsp;·&nbsp; any other input leaves the show</p>
-  </section>
-  <section id="message" class="screen hidden"></section>
-  <div id="stage" class="hidden"></div>
-  <div id="overlay" class="hidden" aria-hidden="true"></div>
-  <!-- v0.5 shortcut legend: flashed at show start, then follows the overlay toggle. -->
-  <div id="legend" class="hidden" aria-hidden="true">O overlay · Q queue · S settings · ← prev · → next · ↑ restart moment · ↓ next moment · D delete · E edit · M move · R review · N rename · T date</div>
-  <div id="toast" role="status"></div>
-  <script src="index.js"></script>
-</body>
+    <div id="toast" role="status"></div>
+    <script src="index.js"></script>
+  </body>
 </html>

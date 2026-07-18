@@ -25,10 +25,14 @@ const api: AfterglowApi = {
   rendererReady: () => ipcRenderer.send(CHANNELS.rendererReady),
   getLaunchInfo: () => ipcRenderer.invoke(CHANNELS.launchInfo) as Promise<LaunchInfo>,
   setShowActive: (active: boolean) => ipcRenderer.send(CHANNELS.showState, active),
-  screensaverStatus: () => ipcRenderer.invoke(CHANNELS.screensaverStatus) as Promise<ScreensaverStatus>,
-  screensaverRegister: () => ipcRenderer.invoke(CHANNELS.screensaverRegister) as Promise<ScreensaverResult>,
-  screensaverUnregister: () => ipcRenderer.invoke(CHANNELS.screensaverUnregister) as Promise<ScreensaverResult>,
-  getItemInfo: (url: string) => ipcRenderer.invoke(CHANNELS.getItemInfo, url) as Promise<ItemInfo | null>,
+  screensaverStatus: () =>
+    ipcRenderer.invoke(CHANNELS.screensaverStatus) as Promise<ScreensaverStatus>,
+  screensaverRegister: () =>
+    ipcRenderer.invoke(CHANNELS.screensaverRegister) as Promise<ScreensaverResult>,
+  screensaverUnregister: () =>
+    ipcRenderer.invoke(CHANNELS.screensaverUnregister) as Promise<ScreensaverResult>,
+  getItemInfo: (url: string) =>
+    ipcRenderer.invoke(CHANNELS.getItemInfo, url) as Promise<ItemInfo | null>,
   updateSettings: (patch: SettingsPatch) =>
     ipcRenderer.invoke(CHANNELS.updateSettings, patch) as Promise<Settings>,
   onIndexReady: (cb: (items: LibraryItem[]) => void) => {

@@ -56,10 +56,16 @@ describe('normalizeSettings', () => {
   });
 
   it('clamps and rounds momentGapMinutes and clusterCap', () => {
-    expect(normalizeSettings({ momentGapMinutes: 0 }).momentGapMinutes).toBe(MIN_MOMENT_GAP_MINUTES);
-    expect(normalizeSettings({ momentGapMinutes: 1e6 }).momentGapMinutes).toBe(MAX_MOMENT_GAP_MINUTES);
+    expect(normalizeSettings({ momentGapMinutes: 0 }).momentGapMinutes).toBe(
+      MIN_MOMENT_GAP_MINUTES,
+    );
+    expect(normalizeSettings({ momentGapMinutes: 1e6 }).momentGapMinutes).toBe(
+      MAX_MOMENT_GAP_MINUTES,
+    );
     expect(normalizeSettings({ momentGapMinutes: 4.6 }).momentGapMinutes).toBe(5);
-    expect(normalizeSettings({ momentGapMinutes: 'x' }).momentGapMinutes).toBe(DEFAULT_SETTINGS.momentGapMinutes);
+    expect(normalizeSettings({ momentGapMinutes: 'x' }).momentGapMinutes).toBe(
+      DEFAULT_SETTINGS.momentGapMinutes,
+    );
     expect(normalizeSettings({ clusterCap: 0 }).clusterCap).toBe(MIN_CLUSTER_CAP);
     expect(normalizeSettings({ clusterCap: 9999 }).clusterCap).toBe(MAX_CLUSTER_CAP);
     expect(normalizeSettings({ clusterCap: NaN }).clusterCap).toBe(DEFAULT_SETTINGS.clusterCap);
@@ -70,7 +76,9 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings({ videoMaxSeconds: 1 }).videoMaxSeconds).toBe(MIN_VIDEO_MAX_SECONDS);
     expect(normalizeSettings({ videoMaxSeconds: 1e9 }).videoMaxSeconds).toBe(MAX_VIDEO_MAX_SECONDS);
     expect(normalizeSettings({ videoMaxSeconds: 44.7 }).videoMaxSeconds).toBe(45);
-    expect(normalizeSettings({ videoMaxSeconds: 'x' }).videoMaxSeconds).toBe(DEFAULT_SETTINGS.videoMaxSeconds);
+    expect(normalizeSettings({ videoMaxSeconds: 'x' }).videoMaxSeconds).toBe(
+      DEFAULT_SETTINGS.videoMaxSeconds,
+    );
     expect(normalizeSettings({}).videoMaxSeconds).toBe(DEFAULT_SETTINGS.videoMaxSeconds);
   });
 
@@ -81,15 +89,23 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings({ videoMaxSeconds: 0.4 }).videoMaxSeconds).toBe(0);
     // ...but nothing else may silently become "uncapped"
     expect(normalizeSettings({ videoMaxSeconds: -5 }).videoMaxSeconds).toBe(MIN_VIDEO_MAX_SECONDS);
-    expect(normalizeSettings({ videoMaxSeconds: NaN }).videoMaxSeconds).toBe(DEFAULT_SETTINGS.videoMaxSeconds);
-    expect(normalizeSettings({ videoMaxSeconds: '0' }).videoMaxSeconds).toBe(DEFAULT_SETTINGS.videoMaxSeconds);
+    expect(normalizeSettings({ videoMaxSeconds: NaN }).videoMaxSeconds).toBe(
+      DEFAULT_SETTINGS.videoMaxSeconds,
+    );
+    expect(normalizeSettings({ videoMaxSeconds: '0' }).videoMaxSeconds).toBe(
+      DEFAULT_SETTINGS.videoMaxSeconds,
+    );
     // the sentinel survives a patch round-trip and disk persistence paths
     expect(applySettingsPatch(DEFAULT_SETTINGS, { videoMaxSeconds: 0 }).videoMaxSeconds).toBe(0);
   });
 
   it('clamps slide duration and rejects non-finite values', () => {
-    expect(normalizeSettings({ slideDurationSeconds: 0 }).slideDurationSeconds).toBe(MIN_SLIDE_SECONDS);
-    expect(normalizeSettings({ slideDurationSeconds: 1e9 }).slideDurationSeconds).toBe(MAX_SLIDE_SECONDS);
+    expect(normalizeSettings({ slideDurationSeconds: 0 }).slideDurationSeconds).toBe(
+      MIN_SLIDE_SECONDS,
+    );
+    expect(normalizeSettings({ slideDurationSeconds: 1e9 }).slideDurationSeconds).toBe(
+      MAX_SLIDE_SECONDS,
+    );
     expect(normalizeSettings({ slideDurationSeconds: NaN }).slideDurationSeconds).toBe(
       DEFAULT_SETTINGS.slideDurationSeconds,
     );
@@ -165,7 +181,11 @@ describe('loadSettings / saveSettings', () => {
   it('writes atomically: no temp files left behind, target always valid', async () => {
     const dir = await tmpDir();
     await saveSettings(dir, { ...DEFAULT_SETTINGS, mediaFolders: ['/a'] });
-    await saveSettings(dir, { ...DEFAULT_SETTINGS, mediaFolders: ['/b'], slideDurationSeconds: 10 });
+    await saveSettings(dir, {
+      ...DEFAULT_SETTINGS,
+      mediaFolders: ['/b'],
+      slideDurationSeconds: 10,
+    });
     const entries = await fs.readdir(dir);
     expect(entries).toEqual([SETTINGS_FILENAME]);
     expect((await loadSettings(dir)).mediaFolders).toEqual(['/b']);

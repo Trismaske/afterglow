@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [main, initial]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  repository:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - run: npm ci
+      - run: git diff --check
+      - run: npm audit --audit-level=high
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run build -w @afterglow/core
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build -w afterglow-desktop
+      - name: Metro bundle proof
+        run: npx expo export --platform android --output-dir /tmp/expo-export
+        working-directory: apps/mobile
+
+  android-native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - run: npm run build -w @afterglow/core
+      - name: Generate clean Android project
+        run: npx expo prebuild --platform android --clean --no-install
+        working-directory: apps/mobile
+      - name: Compile native debug and release apps
+        # Package sequentially: APK compression can consume most of Gradle's
+        # configured heap, so concurrent debug/release packaging is flaky on
+        # the hosted runner even when compilation itself is healthy.
+        run: |
+          ./gradlew :app:assembleDebug --stacktrace --console=plain
+          ./gradlew :app:assembleRelease --stacktrace --console=plain
+        working-directory: apps/mobile/android
+        env:
+          NODE_ENV: production

@@ -13,14 +13,14 @@ export type RootStackParamList = {
    * On-demand A/B flip + synced-zoom compare tool for two deck photos.
    * The verdict buttons record a compare (DuelRecord-shaped) and may cull.
    */
-  Compare: { groupId: string; aId: string; bId: string };
-  /** Auto-cull hint: second pass over a group's kept compare-losers. */
-  Reconsider: { groupId: string };
+  Compare: { groupId?: string; aId: string; bId: string; singles?: boolean };
   Singles: undefined;
   CullList: undefined;
   Summary: undefined;
   /** To-edit queue: every photo flagged "needs edit", across all days. */
   EditQueue: undefined;
+  /** Durable system-gallery favourite/unfavourite work. */
+  FavouritesQueue: undefined;
   /** Day-scoped inbox-zero progress. `day` is a local "YYYY-MM-DD" key. */
   DayProgress: { day: string };
   /**

@@ -1,10 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  formatClockMillis,
-  formatClockPrecise,
-  formatClockSeconds,
-  millisNeeded,
-} from './format';
+import { formatClockMillis, formatClockPrecise, formatClockSeconds, millisNeeded } from './format';
 
 /** Local-time timestamp with explicit seconds/millis. */
 function ts(h: number, m: number, s: number, ms = 0): number {

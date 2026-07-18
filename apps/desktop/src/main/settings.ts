@@ -80,7 +80,12 @@ export function normalizeSettings(raw: unknown): Settings {
     MAX_MOMENT_GAP_MINUTES,
     DEFAULT_SETTINGS.momentGapMinutes,
   );
-  out.clusterCap = clampInt(obj.clusterCap, MIN_CLUSTER_CAP, MAX_CLUSTER_CAP, DEFAULT_SETTINGS.clusterCap);
+  out.clusterCap = clampInt(
+    obj.clusterCap,
+    MIN_CLUSTER_CAP,
+    MAX_CLUSTER_CAP,
+    DEFAULT_SETTINGS.clusterCap,
+  );
   // v0.5: an explicit 0 means "play videos full length" (no cap). Everything
   // else clamps to 2–600 as before; non-numeric input falls back to the
   // default, so a blank field can never silently become "uncapped".
@@ -88,7 +93,12 @@ export function normalizeSettings(raw: unknown): Settings {
   if (typeof vm === 'number' && Number.isFinite(vm) && Math.round(vm) === 0) {
     out.videoMaxSeconds = VIDEO_FULL_LENGTH;
   } else {
-    out.videoMaxSeconds = clampInt(vm, MIN_VIDEO_MAX_SECONDS, MAX_VIDEO_MAX_SECONDS, DEFAULT_SETTINGS.videoMaxSeconds);
+    out.videoMaxSeconds = clampInt(
+      vm,
+      MIN_VIDEO_MAX_SECONDS,
+      MAX_VIDEO_MAX_SECONDS,
+      DEFAULT_SETTINGS.videoMaxSeconds,
+    );
   }
   return out;
 }

@@ -15,14 +15,7 @@
  * "All time" only adds the older backlog.
  */
 
-export type ScopeKey =
-  | 'day1'
-  | 'days7'
-  | 'days30'
-  | 'months6'
-  | 'year1'
-  | 'all'
-  | 'custom';
+export type ScopeKey = 'day1' | 'days7' | 'days30' | 'months6' | 'year1' | 'all' | 'custom';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 

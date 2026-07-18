@@ -83,7 +83,12 @@ export function createFlagController(deps: FlagControllerDeps): FlagController {
       if (!flagType || currentItem === null) return false;
       const now = deps.now();
 
-      if (pending && pending.item === currentItem && pending.flagType === flagType && now <= pending.until) {
+      if (
+        pending &&
+        pending.item === currentItem &&
+        pending.flagType === flagType &&
+        now <= pending.until
+      ) {
         pending = null;
         deps.remove(currentItem, flagType);
         deps.toast(`${capitalize(FLAG_LABEL[flagType])} flag removed`);

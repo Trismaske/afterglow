@@ -47,10 +47,7 @@ export const ACCENT_PRESETS: readonly AccentPreset[] = [
   { id: 'rose', label: 'Rose', hex: '#e589b4' },
 ] as const;
 
-const CHOICE_IDS: readonly AccentChoice[] = [
-  'system',
-  ...ACCENT_PRESETS.map((p) => p.id),
-];
+const CHOICE_IDS: readonly AccentChoice[] = ['system', ...ACCENT_PRESETS.map((p) => p.id)];
 
 /** Parse a persisted choice; absent or unknown values fall back to the default. */
 export function parseAccentChoice(raw: string | null): AccentChoice {
@@ -73,8 +70,8 @@ export function serializeAccentChoice(choice: AccentChoice): string {
 export function resolveAccentBase(choice: AccentChoice, systemAccent: string | null): string {
   const base =
     choice === 'system'
-      ? systemAccent ?? AMBER_ACCENT
-      : ACCENT_PRESETS.find((p) => p.id === choice)?.hex ?? AMBER_ACCENT;
+      ? (systemAccent ?? AMBER_ACCENT)
+      : (ACCENT_PRESETS.find((p) => p.id === choice)?.hex ?? AMBER_ACCENT);
   return parseHexColor(base) ? base : AMBER_ACCENT;
 }
 

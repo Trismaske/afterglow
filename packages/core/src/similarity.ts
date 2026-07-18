@@ -38,9 +38,7 @@ export function dhash64(luma: readonly (readonly number[])[]): string {
     bitCount += row.length - 1;
   }
   if (bitCount !== DHASH_BITS) {
-    throw new Error(
-      `dhash64: grid must yield exactly ${DHASH_BITS} comparisons, got ${bitCount}`,
-    );
+    throw new Error(`dhash64: grid must yield exactly ${DHASH_BITS} comparisons, got ${bitCount}`);
   }
   let hash = 0n;
   for (const row of luma) {

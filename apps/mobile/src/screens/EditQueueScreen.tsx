@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -58,11 +59,14 @@ export function EditQueueScreen(_props: Props) {
         // viewer instead (its edit button is one tap away), with a toast
         // over the opening viewer. Only a double failure shows the error.
         const result = await launchEditor(contentUri, () => showToast(VIEWER_FALLBACK_TOAST));
-        if (result === 'failed') {
-          Alert.alert(NO_EDITOR_TITLE, NO_EDITOR_MESSAGE);
+        if (result.outcome === 'failed') {
+          Alert.alert(
+            NO_EDITOR_TITLE,
+            `${NO_EDITOR_MESSAGE}\n\nDiagnostics\nURI: ${result.uri}\nACTION_EDIT: ${result.editError}\nACTION_VIEW: ${result.viewError}`,
+          );
           return;
         }
-        if (result === 'returned' || result === 'viewer') {
+        if (result.outcome === 'returned' || result.outcome === 'viewer') {
           // Editors rarely report a useful result code, so ask instead of
           // guessing. Auto-detection of saved edits is m0.3.
           Alert.alert('Done editing?', 'Mark this photo as done and clear it from the queue?', [
@@ -96,8 +100,9 @@ export function EditQueueScreen(_props: Props) {
               disabled={busyId !== null}
               onPress={() => void openEditor(item)}
             >
+              <MaterialCommunityIcons name="pencil" size={18} color={colors.edit} />
               <Text style={styles.rowButtonText}>
-                {busyId === item.asset_id ? 'Opening…' : '✎ Edit'}
+                {busyId === item.asset_id ? 'Opening…' : 'Edit'}
               </Text>
             </Pressable>
             <Pressable
@@ -105,7 +110,8 @@ export function EditQueueScreen(_props: Props) {
               disabled={busyId !== null}
               onPress={() => void markDone(item.asset_id)}
             >
-              <Text style={styles.rowButtonText}>✓ Mark done</Text>
+              <MaterialCommunityIcons name="check" size={18} color={colors.keep} />
+              <Text style={styles.rowButtonText}>Mark done</Text>
             </Pressable>
           </View>
         </View>
@@ -131,7 +137,7 @@ export function EditQueueScreen(_props: Props) {
         ListEmptyComponent={
           rows !== null && rows.length === 0 ? (
             <Text style={styles.emptyText}>
-              Flag keepers with “✎ needs edit” during review and they show up here.
+              Flag keepers with “needs edit” during review and they show up here.
             </Text>
           ) : null
         }
@@ -169,6 +175,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 8,
+    flexDirection: 'row',
+    gap: 5,
   },
   editButton: { backgroundColor: colors.editDim, borderWidth: 1, borderColor: colors.edit },
   doneButton: { backgroundColor: colors.keepDim, borderWidth: 1, borderColor: colors.keep },

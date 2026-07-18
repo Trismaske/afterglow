@@ -66,12 +66,30 @@ main#list {
   letter-spacing: 0.06em;
 }
 
-.badge-delete { background: #3d1414; color: #ff9d9d; }
-.badge-edit   { background: #14283d; color: #9dc9ff; }
-.badge-move   { background: #3d3114; color: #ffd98f; }
-.badge-review { background: #1c3d14; color: #b3ff9d; }
-.badge-rename { background: #2d143d; color: #d99dff; }
-.badge-date   { background: #143d38; color: #9dffe8; }
+.badge-delete {
+  background: #3d1414;
+  color: #ff9d9d;
+}
+.badge-edit {
+  background: #14283d;
+  color: #9dc9ff;
+}
+.badge-move {
+  background: #3d3114;
+  color: #ffd98f;
+}
+.badge-review {
+  background: #1c3d14;
+  color: #b3ff9d;
+}
+.badge-rename {
+  background: #2d143d;
+  color: #d99dff;
+}
+.badge-date {
+  background: #143d38;
+  color: #9dffe8;
+}
 
 .item {
   flex: 1;

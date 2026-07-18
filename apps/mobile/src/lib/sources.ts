@@ -30,9 +30,7 @@
  *    degrades to "All folders" there (Android-first, per PLAN.md).
  */
 
-export type PhotoSourceSetting =
-  | { mode: 'all' }
-  | { mode: 'dirs'; dirs: string[] };
+export type PhotoSourceSetting = { mode: 'all' } | { mode: 'dirs'; dirs: string[] };
 
 /** settings-table key for the persisted photo-source selection. */
 export const PHOTO_SOURCES_KEY = 'photo_sources';

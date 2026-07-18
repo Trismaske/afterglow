@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { currentStreak, dayKey, previousDayKey } from './dates';
+import { currentStreak, dayKey, previousDayKey, streakStats } from './dates';
 
 describe('previousDayKey', () => {
   it('steps back one day', () => {
@@ -34,9 +34,7 @@ describe('currentStreak', () => {
   });
 
   it('ignores duplicates and ordering', () => {
-    expect(
-      currentStreak(['2026-07-15', '2026-07-17', '2026-07-16', '2026-07-16'], today),
-    ).toBe(3);
+    expect(currentStreak(['2026-07-15', '2026-07-17', '2026-07-16', '2026-07-16'], today)).toBe(3);
   });
 
   it('crosses month boundaries', () => {
@@ -48,5 +46,20 @@ describe('dayKey', () => {
   it('is lexicographically sortable (zero-padded)', () => {
     const jan5 = dayKey(new Date(2026, 0, 5).getTime());
     expect(jan5).toBe('2026-01-05');
+  });
+});
+
+describe('streakStats', () => {
+  it('reports current and longest runs independently', () => {
+    expect(
+      streakStats(
+        ['2026-07-17', '2026-07-16', '2026-07-10', '2026-07-09', '2026-07-08', '2026-07-09'],
+        '2026-07-18',
+      ),
+    ).toEqual({ current: 2, longest: 3 });
+  });
+
+  it('returns zeroes for no finished sessions', () => {
+    expect(streakStats([], '2026-07-18')).toEqual({ current: 0, longest: 0 });
   });
 });

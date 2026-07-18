@@ -7,7 +7,16 @@
  * refuses anything outside the configured media folders.
  */
 
-import { app, BrowserWindow, dialog, ipcMain, net, powerSaveBlocker, protocol, shell } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  net,
+  powerSaveBlocker,
+  protocol,
+  shell,
+} from 'electron';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
@@ -35,7 +44,13 @@ import { getImageDates } from './metadata';
 import { closeQueueWindow, getQueueWindow, isQueueWindow, openQueueWindow } from './queue-window';
 import { isMediaFile, scanMedia } from './scan';
 import { getScreensaverStatus, registerScreensaver, unregisterScreensaver } from './screensaver';
-import { applySettingsPatch, DEFAULT_SETTINGS, loadSettings, normalizeSettings, saveSettings } from './settings';
+import {
+  applySettingsPatch,
+  DEFAULT_SETTINGS,
+  loadSettings,
+  normalizeSettings,
+  saveSettings,
+} from './settings';
 
 const SMOKE = process.argv.includes('--smoke');
 /**
@@ -78,7 +93,10 @@ if (LAUNCH_MODE !== 'preview-quit' && !app.requestSingleInstanceLock()) {
 
 // Must be registered before app is ready.
 protocol.registerSchemesAsPrivileged([
-  { scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+  {
+    scheme: MEDIA_SCHEME,
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+  },
 ]);
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
@@ -250,7 +268,9 @@ function registerIpc(): void {
       void scan()
         .then((files) => startIndexing(files))
         .catch((err) => warn('background rescan failed; playing the persisted index', err));
-      console.log(`[afterglow] warm start from persisted index (${prev.size} files); rescanning in background`);
+      console.log(
+        `[afterglow] warm start from persisted index (${prev.size} files); rescanning in background`,
+      );
       return shuffled([...prev.keys()], Math.random).map(toMediaUrl);
     }
     // Cold start (no index yet): scan synchronously as before.
@@ -305,26 +325,35 @@ function registerIpc(): void {
     return { path: filePath, ...dates };
   });
 
-  ipcMain.handle(CHANNELS.setOverlayEnabled, async (_event, enabled: unknown): Promise<Settings> => {
-    settings = { ...settings, overlayEnabled: enabled === true };
-    await saveSettings(app.getPath('userData'), settings);
-    return settings;
-  });
+  ipcMain.handle(
+    CHANNELS.setOverlayEnabled,
+    async (_event, enabled: unknown): Promise<Settings> => {
+      settings = { ...settings, overlayEnabled: enabled === true };
+      await saveSettings(app.getPath('userData'), settings);
+      return settings;
+    },
+  );
 
-  ipcMain.handle(CHANNELS.flagAdd, async (_event, url: unknown, flagType: unknown): Promise<boolean> => {
-    if (!flagStore || !isFlagType(flagType)) return false;
-    const filePath = await libraryPathFromUrl(url);
-    if (!filePath) return false;
-    return flagStore.add({ path: filePath, flagType, at: Date.now() });
-  });
+  ipcMain.handle(
+    CHANNELS.flagAdd,
+    async (_event, url: unknown, flagType: unknown): Promise<boolean> => {
+      if (!flagStore || !isFlagType(flagType)) return false;
+      const filePath = await libraryPathFromUrl(url);
+      if (!filePath) return false;
+      return flagStore.add({ path: filePath, flagType, at: Date.now() });
+    },
+  );
 
-  ipcMain.handle(CHANNELS.flagRemove, async (_event, url: unknown, flagType: unknown): Promise<boolean> => {
-    if (!flagStore || !isFlagType(flagType)) return false;
-    if (typeof url !== 'string') return false;
-    const filePath = fromMediaUrl(url);
-    if (!filePath) return false;
-    return flagStore.remove(filePath, flagType);
-  });
+  ipcMain.handle(
+    CHANNELS.flagRemove,
+    async (_event, url: unknown, flagType: unknown): Promise<boolean> => {
+      if (!flagStore || !isFlagType(flagType)) return false;
+      if (typeof url !== 'string') return false;
+      const filePath = fromMediaUrl(url);
+      if (!filePath) return false;
+      return flagStore.remove(filePath, flagType);
+    },
+  );
 
   ipcMain.on(CHANNELS.openQueue, () => {
     openQueueWindow(notifyQueueState);
@@ -337,13 +366,16 @@ function registerIpc(): void {
     return flagStore.list();
   });
 
-  ipcMain.handle(CHANNELS.queueRemove, async (event, filePath: unknown, flagType: unknown): Promise<QueueEntry[]> => {
-    if (!flagStore || !isQueueWindow(event.sender)) return [];
-    if (typeof filePath === 'string' && isFlagType(flagType)) {
-      await flagStore.remove(filePath, flagType);
-    }
-    return flagStore.list();
-  });
+  ipcMain.handle(
+    CHANNELS.queueRemove,
+    async (event, filePath: unknown, flagType: unknown): Promise<QueueEntry[]> => {
+      if (!flagStore || !isQueueWindow(event.sender)) return [];
+      if (typeof filePath === 'string' && isFlagType(flagType)) {
+        await flagStore.remove(filePath, flagType);
+      }
+      return flagStore.list();
+    },
+  );
 
   // shell.* only ever runs for paths currently in the flag queue, and only
   // for the queue window's own webContents.
@@ -425,7 +457,10 @@ function armSmokeHarness(win: BrowserWindow): void {
       console.log(`[${label}:${level}] ${message}`);
       if (level === 'error') failure = failure ?? `${label} console error: ${message}`;
       if (message.includes('[afterglow] video started')) sawVideoStarted = true;
-      if (message.includes('[afterglow] video ended') || message.includes('[afterglow] video capped')) {
+      if (
+        message.includes('[afterglow] video ended') ||
+        message.includes('[afterglow] video capped')
+      ) {
         sawVideoFinished = true;
       }
     });
@@ -473,7 +508,11 @@ function armSmokeHarness(win: BrowserWindow): void {
       if (!Array.isArray(parsed.entries) || parsed.entries.length === 0) {
         return `index.json on disk holds no entries: ${raw}`;
       }
-      if (!parsed.entries.every((e) => typeof e.timestampMs === 'number' && Number.isFinite(e.timestampMs))) {
+      if (
+        !parsed.entries.every(
+          (e) => typeof e.timestampMs === 'number' && Number.isFinite(e.timestampMs),
+        )
+      ) {
         return `index.json contains entries without a usable timestamp: ${raw}`;
       }
     } catch (err) {
@@ -554,7 +593,10 @@ void app.whenReady().then(async () => {
     settings = { ...settings, mediaFolders: [process.env.AFTERGLOW_SMOKE_MEDIA] };
     const capOverride = Number(process.env.AFTERGLOW_SMOKE_VIDEO_CAP_S);
     if (Number.isFinite(capOverride)) {
-      settings = { ...normalizeSettings({ ...settings, videoMaxSeconds: capOverride }), mediaFolders: settings.mediaFolders };
+      settings = {
+        ...normalizeSettings({ ...settings, videoMaxSeconds: capOverride }),
+        mediaFolders: settings.mediaFolders,
+      };
     }
   }
   await refreshMediaRoots();

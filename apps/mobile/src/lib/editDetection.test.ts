@@ -107,9 +107,9 @@ describe('matchEditedCopies', () => {
   });
 
   it('rejects files written before the photo was flagged', () => {
-    expect(
-      matchEditedCopies(original, [candidate({ modificationTime: 1_999_999 })]),
-    ).toHaveLength(0);
+    expect(matchEditedCopies(original, [candidate({ modificationTime: 1_999_999 })])).toHaveLength(
+      0,
+    );
     expect(matchEditedCopies(original, [candidate({ modificationTime: 0 })])).toHaveLength(0);
   });
 

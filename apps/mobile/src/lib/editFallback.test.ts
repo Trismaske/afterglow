@@ -10,7 +10,9 @@ describe('launchWithViewerFallback', () => {
   it("returns 'returned' when ACTION_EDIT launches, without trying the viewer", async () => {
     const launch = vi.fn().mockResolvedValue(undefined);
     const onViewer = vi.fn();
-    await expect(launchWithViewerFallback(launch, onViewer)).resolves.toBe('returned');
+    await expect(launchWithViewerFallback(launch, onViewer)).resolves.toEqual({
+      outcome: 'returned',
+    });
     expect(launch).toHaveBeenCalledTimes(1);
     expect(launch).toHaveBeenCalledWith(ACTION_EDIT);
     expect(onViewer).not.toHaveBeenCalled();
@@ -21,14 +23,20 @@ describe('launchWithViewerFallback', () => {
       if (action === ACTION_EDIT) throw new Error('no activity');
     });
     const onViewer = vi.fn();
-    await expect(launchWithViewerFallback(launch, onViewer)).resolves.toBe('viewer');
+    await expect(launchWithViewerFallback(launch, onViewer)).resolves.toEqual({
+      outcome: 'viewer',
+    });
     expect(launch.mock.calls.map(([a]) => a)).toEqual([ACTION_EDIT, ACTION_VIEW]);
     expect(onViewer).toHaveBeenCalledTimes(1);
   });
 
   it("returns 'failed' only when BOTH intents reject", async () => {
     const launch = vi.fn().mockRejectedValue(new Error('no activity'));
-    await expect(launchWithViewerFallback(launch)).resolves.toBe('failed');
+    await expect(launchWithViewerFallback(launch)).resolves.toEqual({
+      outcome: 'failed',
+      editError: 'no activity',
+      viewError: 'no activity',
+    });
     expect(launch.mock.calls.map(([a]) => a)).toEqual([ACTION_EDIT, ACTION_VIEW]);
   });
 
@@ -49,7 +57,7 @@ describe('launchWithViewerFallback', () => {
     await Promise.resolve();
     expect(order).toEqual(['toast']); // toast fired while the viewer is open
     resolveView();
-    await expect(outcome).resolves.toBe('viewer');
+    await expect(outcome).resolves.toEqual({ outcome: 'viewer' });
     expect(order).toEqual(['toast', 'view-returned']);
   });
 
@@ -57,7 +65,7 @@ describe('launchWithViewerFallback', () => {
     const launch = vi.fn(async (action: string) => {
       if (action === ACTION_EDIT) throw new Error('no activity');
     });
-    await expect(launchWithViewerFallback(launch)).resolves.toBe('viewer');
+    await expect(launchWithViewerFallback(launch)).resolves.toEqual({ outcome: 'viewer' });
   });
 
   it('error copy no longer tells the user to "enable" anything', () => {

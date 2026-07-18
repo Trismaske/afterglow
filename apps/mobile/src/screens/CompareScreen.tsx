@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -22,6 +22,8 @@ import {
 import { showToast } from '../lib/toast';
 import { colors, touch, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded } from '../lib/format';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { isFavouriteSelected } from '../lib/favouriteState';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Compare'>;
 
@@ -45,7 +47,7 @@ function clamp(value: number, max: number): number {
  *   "3/9" numbering) instead of A/B, so testers can find the photo again
  *   after leaving compare.
  * - "N is better" now visibly means something: it stars N best-of-group
- *   (markBest) and records the compare (feeding Reconsider), with a toast
+ *   (markBest) and records the compare history, with a toast
  *   saying so. In a TWO-photo group it also offers to cull the other —
  *   confirm dialog with "Don't ask again" (suppression persisted in
  *   settings; resettable from Settings → auto-cull thereafter).
@@ -55,9 +57,19 @@ export function CompareScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const db = useSQLiteContext();
-  const { groupId, aId, bId } = route.params;
-  const { session, recordCompare, compareCull, markBest, needsEdit, toggleNeedsEdit } =
-    useSession();
+  const { groupId, aId, bId, singles = false } = route.params;
+  const {
+    session,
+    recordCompare,
+    compareCull,
+    markBest,
+    needsEdit,
+    toggleNeedsEdit,
+    decideSingle,
+    redecide,
+    favouriteStatus,
+    toggleFavourite,
+  } = useSession();
   const [busy, setBusy] = useState(false);
   const [showB, setShowB] = useState(false);
   const [autoCull, setAutoCull] = useState(false);
@@ -86,22 +98,26 @@ export function CompareScreen({ navigation, route }: Props) {
   // m0.5: group positions as labels (1-based over the deck's alive order,
   // frozen at mount — membership can't change while this screen is up).
   const groupInfo = useMemo(() => {
-    if (!session) return null;
+    if (!session || !groupId || singles) return null;
     try {
       return session.groupInfo(groupId);
     } catch {
       return null;
     }
-  }, [session, groupId]);
+  }, [session, groupId, singles]);
   const posOf = useCallback(
     (id: string): string => {
+      if (singles && session) {
+        const index = session.toJSON().singleIds.indexOf(id);
+        return index >= 0 ? String(index + 1) : '?';
+      }
       if (!groupInfo) return '?';
       const alive = groupInfo.aliveIds.indexOf(id);
       if (alive >= 0) return String(alive + 1);
       const member = groupInfo.memberIds.indexOf(id);
       return member >= 0 ? String(member + 1) : '?';
     },
-    [groupInfo],
+    [groupInfo, session, singles],
   );
   const aliveCount = groupInfo?.aliveIds.length ?? 0;
 
@@ -194,9 +210,10 @@ export function CompareScreen({ navigation, route }: Props) {
   /** Star the winner + keep both, with the m0.5 visibility toast. */
   const betterKeepBoth = useCallback(
     async (winnerId: string, loserId: string) => {
+      if (!groupId) return;
       await markBest(groupId, winnerId);
       await recordCompare(winnerId, loserId);
-      showToast(`★ Photo ${posOf(winnerId)} starred best of group — compare recorded`);
+      showToast(`Photo ${posOf(winnerId)} starred best of group — compare recorded`);
       navigation.goBack();
     },
     [groupId, markBest, recordCompare, posOf, navigation],
@@ -205,9 +222,10 @@ export function CompareScreen({ navigation, route }: Props) {
   /** Star the winner + stage the two-photo-group loser. */
   const betterCullLoser = useCallback(
     async (winnerId: string, loserId: string) => {
+      if (!groupId) return;
       await markBest(groupId, winnerId);
       await compareCull(loserId, winnerId);
-      showToast(`★ Photo ${posOf(winnerId)} kept — photo ${posOf(loserId)} staged to cull`);
+      showToast(`Photo ${posOf(winnerId)} kept — photo ${posOf(loserId)} staged to cull`);
       navigation.goBack();
     },
     [groupId, markBest, compareCull, posOf, navigation],
@@ -216,6 +234,18 @@ export function CompareScreen({ navigation, route }: Props) {
   const decideBetter = useCallback(
     async (winnerId: string, loserId: string) => {
       if (busy) return;
+      if (singles && session) {
+        setBusy(true);
+        try {
+          const state = session.getState(winnerId);
+          if (state === 'unreviewed') await decideSingle(winnerId, 'keep');
+          else if (state !== 'kept' || needsEdit(winnerId)) await redecide(winnerId, 'keep');
+          navigation.goBack();
+        } finally {
+          setBusy(false);
+        }
+        return;
+      }
       // Two-photo group: "better" implies the other loses the group —
       // offer the cull (or just do it once the dialog was suppressed).
       if (aliveCount === 2) {
@@ -239,7 +269,19 @@ export function CompareScreen({ navigation, route }: Props) {
         setBusy(false);
       }
     },
-    [busy, aliveCount, autoCull, betterCullLoser, betterKeepBoth],
+    [
+      aliveCount,
+      autoCull,
+      betterCullLoser,
+      betterKeepBoth,
+      busy,
+      decideSingle,
+      navigation,
+      needsEdit,
+      redecide,
+      session,
+      singles,
+    ],
   );
 
   const resolveCullOffer = useCallback(
@@ -272,13 +314,19 @@ export function CompareScreen({ navigation, route }: Props) {
       if (busy) return;
       setBusy(true);
       try {
-        await compareCull(loserId, winnerId);
+        if (singles && session) {
+          const state = session.getState(loserId);
+          if (state === 'unreviewed') await decideSingle(loserId, 'cull');
+          else if (state !== 'culled') await redecide(loserId, 'cull');
+        } else {
+          await compareCull(loserId, winnerId);
+        }
         navigation.goBack();
       } finally {
         setBusy(false);
       }
     },
-    [busy, compareCull, navigation],
+    [busy, compareCull, decideSingle, navigation, redecide, session, singles],
   );
 
   if (!session || !pair) {
@@ -288,6 +336,7 @@ export function CompareScreen({ navigation, route }: Props) {
   const visible = showB ? pair.b : pair.a;
   const hidden = showB ? pair.a : pair.b;
   const visibleLabel = posOf(visible.id);
+  const favourite = isFavouriteSelected(favouriteStatus(visible.id));
 
   // Seconds always; millis when the two candidates share a second and the
   // data has sub-second resolution (same rule as the deck labels).
@@ -365,12 +414,29 @@ export function CompareScreen({ navigation, route }: Props) {
           disabled={busy}
           onPress={() => void toggleNeedsEdit(visible.id)}
         >
+          <MaterialCommunityIcons
+            name={needsEdit(visible.id) ? 'pencil' : 'pencil-outline'}
+            size={18}
+            color={needsEdit(visible.id) ? colors.edit : colors.textDim}
+          />
           <Text style={[styles.editTagText, needsEdit(visible.id) && styles.editTagTextActive]}>
-            {needsEdit(visible.id)
-              ? `✎ ${visibleLabel} needs edit ✓`
-              : `✎ ${visibleLabel} needs edit`}
+            {visibleLabel} needs edit
           </Text>
         </Pressable>
+        {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
+          <Pressable
+            style={[styles.editTag, favourite && styles.favouriteTagActive]}
+            hitSlop={8}
+            disabled={busy}
+            onPress={() => void toggleFavourite(visible.id)}
+          >
+            <MaterialCommunityIcons
+              name={favourite ? 'heart' : 'heart-outline'}
+              size={18}
+              color={favourite ? colors.fav : colors.textDim}
+            />
+          </Pressable>
+        )}
       </View>
 
       <View style={styles.actionRow}>
@@ -379,14 +445,22 @@ export function CompareScreen({ navigation, route }: Props) {
           disabled={busy}
           onPress={() => void decideCull(visible.id, hidden.id)}
         >
-          <Text style={styles.actionText}>✕ Cull {visibleLabel}</Text>
+          <MaterialCommunityIcons name="close" size={21} color={colors.cull} />
+          <Text style={styles.actionText}>Cull {visibleLabel}</Text>
         </Pressable>
         <Pressable
           style={[styles.actionButton, styles.betterButton]}
           disabled={busy}
           onPress={() => void decideBetter(visible.id, hidden.id)}
         >
-          <Text style={styles.actionText}>★ {visibleLabel} is better</Text>
+          <MaterialCommunityIcons
+            name={singles ? 'check' : 'star'}
+            size={21}
+            color={singles ? colors.keep : theme.accent}
+          />
+          <Text style={styles.actionText}>
+            {singles ? `Keep ${visibleLabel}` : `${visibleLabel} is better`}
+          </Text>
         </Pressable>
       </View>
       <Pressable style={styles.closeButton} disabled={busy} onPress={() => navigation.goBack()}>
@@ -406,8 +480,8 @@ export function CompareScreen({ navigation, route }: Props) {
               Keep only photo {cullOffer ? posOf(cullOffer.winnerId) : ''}?
             </Text>
             <Text style={styles.offerText}>
-              It becomes the group's best. Photo {cullOffer ? posOf(cullOffer.loserId) : ''} goes
-              to the cull list — deleted only after you confirm the list.
+              It becomes the group's best. Photo {cullOffer ? posOf(cullOffer.loserId) : ''} goes to
+              the cull list — deleted only after you confirm the list.
             </Text>
             <Pressable
               style={styles.offerCheckRow}
@@ -420,7 +494,9 @@ export function CompareScreen({ navigation, route }: Props) {
                   dontAskAgain && { backgroundColor: theme.accent, borderColor: theme.accent },
                 ]}
               >
-                {dontAskAgain && <Text style={[styles.offerCheckmark, { color: theme.onAccent }]}>✓</Text>}
+                {dontAskAgain && (
+                  <MaterialCommunityIcons name="check" size={15} color={theme.onAccent} />
+                )}
               </View>
               <Text style={styles.offerCheckLabel}>
                 Don't ask again — "better" always culls the other photo
@@ -450,7 +526,13 @@ export function CompareScreen({ navigation, route }: Props) {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 12, gap: 10, paddingTop: 8 },
+  root: {
+    flex: 1,
+    backgroundColor: colors.background,
+    paddingHorizontal: 12,
+    gap: 10,
+    paddingTop: 8,
+  },
   header: { gap: 2, paddingHorizontal: 4 },
   headerTitle: { color: colors.text, fontSize: 16, fontWeight: '700' },
   headerHint: { color: colors.textDim, fontSize: 12 },
@@ -472,7 +554,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
     paddingVertical: 4,
   },
-  abBadgeText: { color: colors.text, fontSize: 13, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  abBadgeText: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
   subRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   abChips: { flexDirection: 'row', gap: 6 },
   abChip: {
@@ -487,6 +574,9 @@ const styles = StyleSheet.create({
   },
   abChipText: { color: colors.textDim, fontSize: 15, fontWeight: '700' },
   editTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     backgroundColor: colors.surface,
     borderRadius: 10,
     paddingHorizontal: 12,
@@ -495,6 +585,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   editTagActive: { backgroundColor: colors.editDim, borderColor: colors.edit },
+  favouriteTagActive: { backgroundColor: colors.favDim, borderColor: colors.fav },
   editTagText: { color: colors.textDim, fontSize: 13, fontWeight: '700' },
   editTagTextActive: { color: colors.edit },
   actionRow: { flexDirection: 'row', gap: 10 },
@@ -504,6 +595,8 @@ const styles = StyleSheet.create({
     borderRadius: touch.radius,
     alignItems: 'center',
     justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 7,
   },
   cullButton: { backgroundColor: colors.cullDim },
   betterButton: { backgroundColor: '#1f3a2a' },
@@ -546,7 +639,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  offerCheckmark: { fontSize: 14, fontWeight: '800' },
   offerCheckLabel: { color: colors.textDim, fontSize: 13, flex: 1, lineHeight: 18 },
   offerButtons: { flexDirection: 'row', gap: 10 },
   offerButton: {

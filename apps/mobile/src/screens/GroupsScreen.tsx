@@ -1,15 +1,15 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { MediaItem } from '@afterglow/core';
 import type { RootStackParamList } from '../navigation';
 import { useSession, type GroupInfo } from '../session/SessionContext';
 import { BigButton } from '../components/BigButton';
-import { ReDecideSheet, type DecidedState } from '../components/ReDecideSheet';
+import { DecisionBadge, type DecisionKind } from '../components/DecisionBadge';
 import { colors, touch, useTheme } from '../theme';
 import { formatClock } from '../lib/format';
+import { isFavouriteSelected } from '../lib/favouriteState';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Groups'>;
 
@@ -20,8 +20,8 @@ const STRIP_THUMBS = 6;
  * singles bucket, and a "Continue" button for the linear default flow.
  * m0.5 ("trust the user"): every group row is tappable and opens THAT
  * group's deck — any order, singles any time (even before groups),
- * completed groups re-open in browse/re-decide mode. Tapping a decided
- * thumbnail offers its state chips (ReDecideSheet), and "End session &
+ * completed groups re-open in browse/re-decide mode. The entire group card,
+ * including every thumbnail, has one navigation action; "End session &
  * apply" banks all decisions made so far by jumping straight to the
  * staged-cull confirmation (unreviewed photos simply stay unreviewed
  * for a later session).
@@ -29,8 +29,7 @@ const STRIP_THUMBS = 6;
 export function GroupsScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
-  const { session, label, groups, singleIds, version, needsEdit } = useSession();
-  const [redecide, setRedecide] = useState<{ item: MediaItem; state: DecidedState } | null>(null);
+  const { session, label, groups, singleIds, version, needsEdit, favouriteStatus } = useSession();
 
   const stats = useMemo(() => {
     if (!session) return null;
@@ -55,34 +54,27 @@ export function GroupsScreen({ navigation }: Props) {
     return stats.culled > 0 ? `Review cull list (${stats.culled})` : 'Finish up';
   }, [session, stats, nextStep]);
 
-  /** Decided-photo tap → state chips; unreviewed tap → open the group. */
-  const onThumbPress = useCallback(
-    (group: GroupInfo, item: MediaItem) => {
-      if (!session) return;
-      const state = session.getState(item.id);
-      if (state === 'kept' || state === 'culled') {
-        setRedecide({ item, state });
-      } else if (state === 'unreviewed') {
-        navigation.navigate('Deck', { groupId: group.id });
-      }
+  const decisionKind = useCallback(
+    (id: string): DecisionKind | null => {
+      if (!session) return null;
+      const state = session.getState(id);
+      if (state === 'culled') return 'cull';
+      if (state === 'kept') return needsEdit(id) ? 'edit' : 'keep';
+      return null;
     },
-    [session, navigation],
+    [needsEdit, session],
   );
-
-  const redecideState: DecidedState = useMemo(() => {
-    if (!redecide || !session) return 'kept';
-    // 'to_edit' is app-side: core kept + needs-edit flag.
-    if (redecide.state === 'kept') {
-      return needsEdit(redecide.item.id) ? 'to_edit' : 'kept';
-    }
-    return redecide.state;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [redecide, session, needsEdit, version]);
 
   const renderGroup = useCallback(
     ({ item: group, index }: { item: GroupInfo; index: number }) => {
       // A group can be emptied entirely via "not related — single".
       const first = group.items[0];
+      const displayItems = group.bestId
+        ? [
+            ...group.items.filter((photo) => photo.id === group.bestId),
+            ...group.items.filter((photo) => photo.id !== group.bestId),
+          ]
+        : group.items;
       return (
         <Pressable
           style={styles.groupRow}
@@ -94,29 +86,33 @@ export function GroupsScreen({ navigation }: Props) {
               {first ? ` · ${formatClock(first.timestamp)}` : ''}
             </Text>
             <Text style={[styles.groupStatus, group.complete && styles.groupStatusDone]}>
-              {group.complete ? 'reviewed ✓ · tap to revisit' : 'pending ›'}
+              {group.complete ? 'Reviewed · tap to revisit' : 'Pending'}
             </Text>
           </View>
           <View style={styles.strip}>
-            {group.items.slice(0, STRIP_THUMBS).map((item) => (
-              <Pressable
-                key={item.id}
-                style={styles.thumbWrap}
-                onPress={() => onThumbPress(group, item)}
-              >
-                <Image
-                  source={{ uri: item.uri }}
-                  style={[styles.thumb, item.id === group.bestId && [styles.thumbBest, { borderColor: theme.accent }]]}
-                  contentFit="cover"
-                  recyclingKey={item.id}
-                />
-                {session && session.getState(item.id) === 'culled' && (
-                  <View style={styles.thumbCullBadge}>
-                    <Text style={styles.thumbCullBadgeText}>✕</Text>
-                  </View>
-                )}
-              </Pressable>
-            ))}
+            {displayItems.slice(0, STRIP_THUMBS).map((item) => {
+              const decision = decisionKind(item.id);
+              return (
+                <View key={item.id} style={styles.thumbWrap} pointerEvents="none">
+                  <Image
+                    source={{ uri: item.uri }}
+                    style={[
+                      styles.thumb,
+                      item.id === group.bestId && [styles.thumbBest, { borderColor: theme.accent }],
+                    ]}
+                    contentFit="cover"
+                    recyclingKey={item.id}
+                  />
+                  {decision && <DecisionBadge kind={decision} style={styles.decisionBadge} />}
+                  {item.id === group.bestId && (
+                    <DecisionBadge kind="best" accent={theme.accent} style={styles.bestBadge} />
+                  )}
+                  {isFavouriteSelected(favouriteStatus(item.id)) && (
+                    <DecisionBadge kind="fav" style={styles.favouriteBadge} />
+                  )}
+                </View>
+              );
+            })}
             {group.items.length > STRIP_THUMBS && (
               <View style={[styles.thumb, styles.thumbMore]}>
                 <Text style={styles.thumbMoreText}>+{group.items.length - STRIP_THUMBS}</Text>
@@ -126,7 +122,7 @@ export function GroupsScreen({ navigation }: Props) {
         </Pressable>
       );
     },
-    [theme.accent, navigation, onThumbPress, session],
+    [decisionKind, favouriteStatus, navigation, theme.accent],
   );
 
   if (!session || !stats) {
@@ -156,7 +152,7 @@ export function GroupsScreen({ navigation }: Props) {
               <Text
                 style={[styles.groupStatus, stats.singlesPending === 0 && styles.groupStatusDone]}
               >
-                {stats.singlesPending === 0 ? 'reviewed ✓' : `${stats.singlesPending} pending ›`}
+                {stats.singlesPending === 0 ? 'Reviewed' : `${stats.singlesPending} pending`}
               </Text>
             </View>
           </Pressable>
@@ -179,13 +175,6 @@ export function GroupsScreen({ navigation }: Props) {
           </Pressable>
         )}
       </View>
-      {redecide && (
-        <ReDecideSheet
-          item={redecide.item}
-          current={redecideState}
-          onClose={() => setRedecide(null)}
-        />
-      )}
     </View>
   );
 }
@@ -213,18 +202,13 @@ const styles = StyleSheet.create({
   thumbWrap: { flex: 1 },
   thumb: { width: '100%', aspectRatio: 1, borderRadius: 8, backgroundColor: colors.surfaceRaised },
   thumbBest: { borderWidth: 2 },
-  thumbCullBadge: {
+  decisionBadge: {
     position: 'absolute',
     top: 2,
     right: 2,
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: colors.cullDim,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
-  thumbCullBadgeText: { color: colors.cull, fontSize: 10, fontWeight: '800' },
+  bestBadge: { position: 'absolute', top: 2, left: 2 },
+  favouriteBadge: { position: 'absolute', bottom: 2, left: 2 },
   thumbMore: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   thumbMoreText: { color: colors.textDim, fontWeight: '700' },
   footer: { paddingTop: 8, gap: 8 },

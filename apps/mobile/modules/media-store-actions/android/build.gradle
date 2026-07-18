@@ -1,0 +1,23 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.mediastoreactions'
+version = '0.1.0'
+
+android {
+  namespace "expo.modules.mediastoreactions"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+dependencies {
+  // Same activity-result dependency/version used by Expo Media Library 57.
+  implementation 'androidx.activity:activity-ktx:1.11.0'
+}

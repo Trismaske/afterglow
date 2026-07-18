@@ -200,7 +200,12 @@ window.afterglow.onIndexReady((items: LibraryItem[]) => {
   if (!swappable || !currentSettings) return;
   if (currentSettings.orderMode !== 'smart') {
     if (items.length > 0) {
-      swappable.swap(createPlaylist(items.map((item) => item.url), Math.random));
+      swappable.swap(
+        createPlaylist(
+          items.map((item) => item.url),
+          Math.random,
+        ),
+      );
       console.log(`[afterglow] playlist refreshed from rescan (${items.length} files)`);
     }
     return;
@@ -212,7 +217,9 @@ window.afterglow.onIndexReady((items: LibraryItem[]) => {
   });
   if (!smart) return;
   swappable.swap(smart);
-  console.log(`[afterglow] smart order engaged: ${smart.clusterCount} moments across ${smart.size} photos`);
+  console.log(
+    `[afterglow] smart order engaged: ${smart.clusterCount} moments across ${smart.size} photos`,
+  );
 });
 
 function showOnly(el: HTMLElement | null): void {
@@ -325,7 +332,9 @@ async function startShow(settings: Settings): Promise<void> {
   swappable = null;
   const urls = await window.afterglow.getPlaylist();
   if (urls.length === 0) {
-    showMessage(`Afterglow found no images in your folders. ${exitHint()} Then check the folders in settings.`);
+    showMessage(
+      `Afterglow found no images in your folders. ${exitHint()} Then check the folders in settings.`,
+    );
     return;
   }
   document.body.classList.remove('interactive');
@@ -348,8 +357,10 @@ async function startShow(settings: Settings): Promise<void> {
     playlist: swappable,
     slideDurationMs: Math.max(1000, settings.slideDurationSeconds * 1000),
     // 0 = play full length (v0.5): pass the sentinel straight through.
-    videoMaxDurationMs: settings.videoMaxSeconds === 0 ? 0 : Math.max(1000, settings.videoMaxSeconds * 1000),
-    onAllFailed: () => showMessage(`Afterglow could not display any of the media it found. ${exitHint()}`),
+    videoMaxDurationMs:
+      settings.videoMaxSeconds === 0 ? 0 : Math.max(1000, settings.videoMaxSeconds * 1000),
+    onAllFailed: () =>
+      showMessage(`Afterglow could not display any of the media it found. ${exitHint()}`),
     onShown: (url) => {
       currentUrl = url;
       flags.itemChanged();

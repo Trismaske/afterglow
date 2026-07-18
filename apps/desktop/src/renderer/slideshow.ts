@@ -243,7 +243,8 @@ export class Slideshow {
         video.onerror = null;
         this.videoWatch = null;
         if (reason === 'ended') this.opts.logInfo?.(`video ended: ${url}`);
-        else if (reason === 'cap') this.opts.logInfo?.(`video capped after ${this.opts.videoMaxDurationMs} ms: ${url}`);
+        else if (reason === 'cap')
+          this.opts.logInfo?.(`video capped after ${this.opts.videoMaxDurationMs} ms: ${url}`);
         else this.opts.log?.(`video failed during playback, advancing: ${url}`);
         void this.stepForward();
       },

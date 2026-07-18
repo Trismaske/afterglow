@@ -17,18 +17,10 @@
  * from a metadata-only mod-time bump.
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
-import {
-  getAssetDetails,
-  loadCandidatesCreatedBetween,
-  type CandidateAsset,
-} from './media';
+import { getAssetDetails, loadCandidatesCreatedBetween, type CandidateAsset } from './media';
 import { sha256OfFile } from './hash';
 import { resolveSources } from './sourceCatalog';
-import {
-  classifyInPlace,
-  CREATION_TOLERANCE_MS,
-  matchEditedCopies,
-} from './editDetection';
+import { classifyInPlace, CREATION_TOLERANCE_MS, matchEditedCopies } from './editDetection';
 import { dayKey } from './dates';
 import {
   getEditDetectionRows,

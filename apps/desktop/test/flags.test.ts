@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { UNDO_WINDOW_MS, createFlagController, flagTypeForKey, isShowHotkey } from '../src/renderer/flags';
+import {
+  UNDO_WINDOW_MS,
+  createFlagController,
+  flagTypeForKey,
+  isShowHotkey,
+} from '../src/renderer/flags';
 
 describe('flagTypeForKey', () => {
   it('maps D/E/M/R case-insensitively', () => {
@@ -26,7 +31,26 @@ describe('flagTypeForKey', () => {
 
 describe('isShowHotkey', () => {
   it('exempts flag keys plus O, Q and S, both cases', () => {
-    for (const key of ['d', 'e', 'm', 'r', 'n', 't', 'o', 'q', 's', 'D', 'E', 'M', 'R', 'N', 'T', 'O', 'Q', 'S']) {
+    for (const key of [
+      'd',
+      'e',
+      'm',
+      'r',
+      'n',
+      't',
+      'o',
+      'q',
+      's',
+      'D',
+      'E',
+      'M',
+      'R',
+      'N',
+      'T',
+      'O',
+      'Q',
+      'S',
+    ]) {
       expect(isShowHotkey(key)).toBe(true);
     }
   });

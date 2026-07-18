@@ -48,7 +48,10 @@ export interface FlagStoreOptions {
 }
 
 /** Read + parse flags.json; missing/corrupt files yield an empty queue. */
-export async function loadFlagQueue(dir: string, onWarn?: FlagStoreOptions['onWarn']): Promise<FlagQueueState> {
+export async function loadFlagQueue(
+  dir: string,
+  onWarn?: FlagStoreOptions['onWarn'],
+): Promise<FlagQueueState> {
   const file = path.join(dir, FLAGS_FILENAME);
   let text: string;
   try {
@@ -74,7 +77,11 @@ async function writeFlagQueue(dir: string, state: FlagQueueState): Promise<void>
 }
 
 /** Create a store over an already-loaded queue (see {@link loadFlagQueue}). */
-export function createFlagStore(dir: string, initial: FlagQueueState, opts: FlagStoreOptions = {}): FlagStore {
+export function createFlagStore(
+  dir: string,
+  initial: FlagQueueState,
+  opts: FlagStoreOptions = {},
+): FlagStore {
   let state = initial;
   let writeChain: Promise<void> = Promise.resolve();
 
@@ -90,7 +97,8 @@ export function createFlagStore(dir: string, initial: FlagQueueState, opts: Flag
 
   return {
     list: () => listFlags(state),
-    has: (filePath, flagType) => state.entries.some((e) => e.path === filePath && e.flagType === flagType),
+    has: (filePath, flagType) =>
+      state.entries.some((e) => e.path === filePath && e.flagType === flagType),
     hasPath: (filePath) => state.entries.some((e) => e.path === filePath),
     async add(entry) {
       const next = addFlag(state, entry);

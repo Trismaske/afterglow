@@ -51,6 +51,11 @@ export interface StateBreakdown {
   done: number;
 }
 
+/** Empty share left in a segmented progress bar; never goes negative. */
+export function progressRemainder(total: number, counts: readonly number[]): number {
+  return Math.max(0, total - counts.reduce((sum, count) => sum + Math.max(0, count), 0));
+}
+
 /**
  * Everything converges to done: photos MediaStore has for the scope but
  * the DB has never tracked count as unreviewed; trashed photos are gone
@@ -84,13 +89,7 @@ export function donePct(b: StateBreakdown): number {
 export type ProgressFilter = 'all' | EffectiveState;
 
 /** The state a photo *shows* in progress UIs (grid badges, filters). */
-export type EffectiveState =
-  | 'unreviewed'
-  | 'in_group'
-  | 'kept'
-  | 'to_edit'
-  | 'staged'
-  | 'done';
+export type EffectiveState = 'unreviewed' | 'in_group' | 'kept' | 'to_edit' | 'staged' | 'done';
 
 /**
  * Effective state of an alive MediaStore photo given its DB row (absent

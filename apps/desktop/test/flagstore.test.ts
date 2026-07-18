@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { FLAGS_FILENAME, createFlagStore, loadFlagQueue, openFlagStore } from '../src/main/flagstore';
+import {
+  FLAGS_FILENAME,
+  createFlagStore,
+  loadFlagQueue,
+  openFlagStore,
+} from '../src/main/flagstore';
 import { createFlagQueue } from '@afterglow/core';
 
 async function tmpDir(): Promise<string> {

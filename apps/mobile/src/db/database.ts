@@ -13,6 +13,7 @@
  * half-applied migration.
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
+import { EMPTY_RESOLVER, migrateToV8, type LegacyIdentityResolver } from './migrationV8';
 
 export const DATABASE_NAME = 'afterglow.db';
 
@@ -135,10 +136,29 @@ export const MIGRATIONS: readonly string[] = [
   `,
 ];
 
-export const SCHEMA_VERSION = MIGRATIONS.length;
+/** Static-SQL portion of the schema (v1–v7). */
+export const STATIC_SCHEMA_VERSION = MIGRATIONS.length;
 
-export async function migrateDatabase(db: SQLiteDatabase): Promise<void> {
+/** Full schema version including the orchestrated v8 step (migrationV8.ts). */
+export const SCHEMA_VERSION = STATIC_SCHEMA_VERSION + 1;
+
+export interface MigrateOptions {
+  /** Volume-aware legacy identity resolver (P5#1). Native on device; a
+   * fake in tests; EMPTY_RESOLVER quarantines every legacy row and is only
+   * correct for fresh installs. */
+  resolver?: LegacyIdentityResolver;
+  /** Clock injection — migration timestamps must be reproducible. */
+  at?: number;
+}
+
+export async function migrateDatabase(
+  db: SQLiteDatabase,
+  options: MigrateOptions = {},
+): Promise<void> {
   await db.execAsync('PRAGMA journal_mode = WAL');
+  // C#3: declared foreign keys are meaningless unless enforcement is on —
+  // every connection, not just migrating ones (this is the open path).
+  await db.execAsync('PRAGMA foreign_keys = ON');
   const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
   let current = row?.user_version ?? 0;
   if (!Number.isInteger(current) || current < 0 || current > SCHEMA_VERSION) {
@@ -146,12 +166,17 @@ export async function migrateDatabase(db: SQLiteDatabase): Promise<void> {
       `Unsupported database schema version ${String(current)} (app supports ${SCHEMA_VERSION})`,
     );
   }
-  while (current < SCHEMA_VERSION) {
+  while (current < STATIC_SCHEMA_VERSION) {
     const next = current + 1;
     await db.withExclusiveTransactionAsync(async (txn) => {
       await txn.execAsync(MIGRATIONS[current]);
       await txn.execAsync(`PRAGMA user_version = ${next}`);
     });
     current++;
+  }
+  if (current < SCHEMA_VERSION) {
+    // v8 is a two-phase orchestrated migration, not static SQL — see
+    // migrationV8.ts for the protocol (P5#1, P6#1, P7#2, P4#4).
+    await migrateToV8(db, options.resolver ?? EMPTY_RESOLVER, options.at ?? 0);
   }
 }

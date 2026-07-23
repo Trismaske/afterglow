@@ -5,7 +5,7 @@
  * migration tests extend this file as gate 1 lands.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { MIGRATIONS, SCHEMA_VERSION, migrateDatabase } from './database';
+import { MIGRATIONS, SCHEMA_VERSION, STATIC_SCHEMA_VERSION, migrateDatabase } from './database';
 import { foreignKeyCheck, openTestDb, userVersion, type TestDb } from './testDb';
 import type { SQLiteDatabase } from 'expo-sqlite';
 
@@ -42,7 +42,7 @@ describe('shipped migrations on real SQLite', () => {
     expect(foreignKeyCheck(d)).toEqual([]);
   });
 
-  it('every migration step is individually valid SQL', async () => {
+  it('every static migration step is individually valid SQL', async () => {
     const d = db();
     let version = 0;
     for (const step of MIGRATIONS) {
@@ -54,7 +54,7 @@ describe('shipped migrations on real SQLite', () => {
         d.raw.exec('COMMIT');
       }).not.toThrow();
     }
-    expect(version).toBe(SCHEMA_VERSION);
+    expect(version).toBe(STATIC_SCHEMA_VERSION);
   });
 
   it('m0.2 backfill derives day from taken_at and settles m0.1 kept rows', async () => {
@@ -71,7 +71,9 @@ describe('shipped migrations on real SQLite', () => {
       )
       .run(takenAt);
     await migrateDatabase(asExpo(d));
-    const row = d.raw.prepare("SELECT day, state FROM photos WHERE asset_id = 'a1'").get() as {
+    // The v8 identity step may rename the row (EMPTY_RESOLVER quarantines);
+    // the m0.2 backfill semantics under test are id-independent.
+    const row = d.raw.prepare('SELECT day, state FROM photos LIMIT 1').get() as {
       day: string;
       state: string;
     };

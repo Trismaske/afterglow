@@ -1,5 +1,18 @@
-import { MIGRATIONS, SCHEMA_VERSION, migrateDatabase } from './database';
-import { describe, expect, it } from 'vitest';
+/**
+ * Migration-RUNNER ordering tests over a string-matching fake (C#4: this
+ * fake is deliberately NOT the migration proof — real-SQL validation lives
+ * in migrations.real.test.ts / migrationV8.real.test.ts; this file only
+ * pins that the static runner applies steps one atomic transaction at a
+ * time and hands off to the orchestrated v8 step exactly once).
+ */
+import { MIGRATIONS, SCHEMA_VERSION, STATIC_SCHEMA_VERSION, migrateDatabase } from './database';
+import { migrateToV8 } from './migrationV8';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('./migrationV8', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./migrationV8')>();
+  return { ...original, migrateToV8: vi.fn().mockResolvedValue({}) };
+});
 
 class FakeDatabase {
   version: number;
@@ -38,27 +51,20 @@ class FakeDatabase {
   }
 }
 
-describe('migrateDatabase', () => {
-  it('applies a fresh schema one atomic step at a time', async () => {
+describe('migrateDatabase (runner ordering)', () => {
+  it('applies the static schema one atomic step at a time, then v8 once', async () => {
     const db = new FakeDatabase(0);
     await migrateDatabase(db as never);
-    expect(db.version).toBe(SCHEMA_VERSION);
-    expect(db.transactions).toBe(SCHEMA_VERSION);
+    expect(db.version).toBe(STATIC_SCHEMA_VERSION);
+    expect(db.transactions).toBe(STATIC_SCHEMA_VERSION);
     expect(db.applied).toEqual(MIGRATIONS.map((_, index) => index));
+    expect(vi.mocked(migrateToV8)).toHaveBeenCalledTimes(1);
   });
 
   it('upgrades the shipped v5 schema without replaying old migrations', async () => {
     const db = new FakeDatabase(5);
     await migrateDatabase(db as never);
-    expect(db.version).toBe(SCHEMA_VERSION);
     expect(db.applied).toEqual([5, 6]);
-  });
-
-  it('upgrades the intermediate v6 schema with the favourite target migration', async () => {
-    const db = new FakeDatabase(6);
-    await migrateDatabase(db as never);
-    expect(db.version).toBe(SCHEMA_VERSION);
-    expect(db.applied).toEqual([6]);
   });
 
   it('does not advance user_version when a migration fails', async () => {

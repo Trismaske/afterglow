@@ -334,8 +334,24 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     [session, singleIds, singlesMode, version],
   );
 
+  // m0.7 (#20): only advance out of Singles when completion happened
+  // DURING this visit. A fully-reviewed singles pseudo-group opened from
+  // the Groups screen is a deliberate revisit and stays in browse mode —
+  // exactly like reopening a completed group.
+  const singlesEnteredCompleteRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!singlesMode) {
+      singlesEnteredCompleteRef.current = null;
+      return;
+    }
+    if (singlesEnteredCompleteRef.current === null) {
+      singlesEnteredCompleteRef.current = singlesPending === 0;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [singlesMode]);
   useEffect(() => {
     if (!session || !singlesMode || singlesPending > 0 || busy || !isFocused) return;
+    if (singlesEnteredCompleteRef.current === true) return; // deliberate revisit
     if (session.currentGroupId()) navigation.goBack();
     else navigation.replace('CullList');
   }, [busy, isFocused, navigation, session, singlesMode, singlesPending]);

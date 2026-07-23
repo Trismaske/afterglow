@@ -439,27 +439,14 @@ export function HomeScreen({ navigation }: Props) {
         setAnalyzing(null);
       }
     };
-    if (hasResumable) {
-      // m0.5 order/roles: destructive "Start new" leftmost, Cancel in the
-      // middle, "Continue existing" as the rightmost default action.
-      Alert.alert(
-        'Replace unfinished session?',
-        'Starting a new session keeps every decision you already made — reviewed keepers ' +
-          'are saved, and the unreviewed rest waits for a later session. Nothing gets deleted.',
-        [
-          { text: 'Start new', style: 'destructive', onPress: () => void begin() },
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Continue existing',
-            isPreferred: true,
-            onPress: () => navigation.navigate('Groups'),
-          },
-        ],
-      );
-    } else {
-      await begin();
-    }
-  }, [counts, starting, hasResumable, sessionCtx, scope, rangeFor, db, navigation]);
+    // m0.7 item H (#1): replacement is SILENT — the carry policy means
+    // nothing is ever lost (keepers bank, staged culls stay in the durable
+    // global cull queue, and re-drawn photos keep their verdicts). The
+    // unfinished-session card's "Resume review" button remains the
+    // continue path, so no confirmation stands between the user and a
+    // fresh session.
+    await begin();
+  }, [counts, starting, sessionCtx, scope, rangeFor, db, navigation]);
 
   const openProgress = useCallback(() => {
     // Compute the rolling range at tap time — same convention as reviews.

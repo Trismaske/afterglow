@@ -18,6 +18,7 @@ import { SummaryScreen } from './src/screens/SummaryScreen';
 import { EditQueueScreen } from './src/screens/EditQueueScreen';
 import { FavouritesQueueScreen } from './src/screens/FavouritesQueueScreen';
 import { ShareQueueScreen } from './src/screens/ShareQueueScreen';
+import { OrganizeQueueScreen } from './src/screens/OrganizeQueueScreen';
 import { DayProgressScreen } from './src/screens/DayProgressScreen';
 import { ProgressScreen } from './src/screens/ProgressScreen';
 import { SourcePickerScreen } from './src/screens/SourcePickerScreen';
@@ -100,6 +101,11 @@ function ThemedNavigator() {
           name="ShareQueue"
           component={ShareQueueScreen}
           options={{ title: 'Share queue' }}
+        />
+        <Stack.Screen
+          name="OrganizeQueue"
+          component={OrganizeQueueScreen}
+          options={{ title: 'Organize queue' }}
         />
         <Stack.Screen
           name="DayProgress"

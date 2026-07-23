@@ -21,23 +21,8 @@ import { tallyPhotoDays } from './recentMedia';
  * primary external storage **(autonomous: single-volume assumption,
  * refined in gate 3)**.
  */
-export const PRIMARY_VOLUME = 'external_primary';
-
-export function canonicalPhotoId(volumeName: string, rawId: string): string {
-  return `${volumeName}/${rawId}`;
-}
-
-/** The raw MediaStore id of a canonical id (tolerant of legacy bare ids). */
-export function rawIdOf(canonicalId: string): string {
-  const slash = canonicalId.lastIndexOf('/');
-  return slash < 0 ? canonicalId : canonicalId.slice(slash + 1);
-}
-
-/** The volume of a canonical id (bare legacy ids map to primary). */
-export function volumeOf(canonicalId: string): string {
-  const slash = canonicalId.lastIndexOf('/');
-  return slash < 0 ? PRIMARY_VOLUME : canonicalId.slice(0, slash);
-}
+export { PRIMARY_VOLUME, canonicalPhotoId, rawIdOf, volumeOf } from './mediaIdentity';
+import { PRIMARY_VOLUME, canonicalPhotoId, rawIdOf, volumeOf } from './mediaIdentity';
 
 /** A camera-roll photo: the core item plus MediaStore extras we persist.
  * `item.id` is the canonical volume-qualified id. */

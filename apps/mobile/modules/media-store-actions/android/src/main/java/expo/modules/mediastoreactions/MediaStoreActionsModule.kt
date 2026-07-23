@@ -106,6 +106,127 @@ class MediaStoreActionsModule : Module() {
       launch(uris, MediaStoreAction.WRITE, true)
     }
 
+    // Volume-aware album catalog (m0.7 item E, C#2): the JS-side catalog
+    // keys by lower-cased relative path and erases volume identity, so the
+    // organize boundary needs this native query. Counts are per
+    // (volume, bucket); the same DCIM/Camera path on primary and SD
+    // storage yields two distinct entries.
+    AsyncFunction("listImageAlbums") {
+      val context = appContext.reactContext
+        ?: throw IllegalStateException("Android context unavailable")
+      val out = mutableListOf<Map<String, Any?>>()
+      val volumes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        MediaStore.getExternalVolumeNames(context)
+      } else {
+        setOf("external")
+      }
+      for (volume in volumes) {
+        val uri = MediaStore.Images.Media.getContentUri(volume)
+        val counts = HashMap<Long, Triple<String, String, Int>>()
+        try {
+          context.contentResolver.query(
+            uri,
+            arrayOf(
+              MediaStore.Images.Media.BUCKET_ID,
+              MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
+              MediaStore.Images.Media.RELATIVE_PATH,
+            ),
+            null,
+            null,
+            null,
+          )?.use { cursor ->
+            val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_ID)
+            val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
+            val pathCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.RELATIVE_PATH)
+            while (cursor.moveToNext()) {
+              val bucket = cursor.getLong(idCol)
+              val name = cursor.getString(nameCol) ?: continue
+              val path = cursor.getString(pathCol) ?: continue
+              val prev = counts[bucket]
+              counts[bucket] = Triple(name, path, (prev?.third ?: 0) + 1)
+            }
+          }
+        } catch (error: Exception) {
+          // A failed volume yields no entries — callers treat partial
+          // catalogs as fail-closed for organize targets.
+          continue
+        }
+        for ((bucket, entry) in counts) {
+          out.add(
+            mapOf(
+              "volumeName" to volume,
+              "bucketId" to bucket.toString(),
+              "displayName" to entry.first,
+              "relativePath" to entry.second,
+              "photoCount" to entry.third,
+            ),
+          )
+        }
+      }
+      out
+    }
+
+    // Organize move (m0.7 item E, R#6): RELATIVE_PATH update per URI,
+    // verified by re-query. Callers obtain write access first
+    // (createWriteRequest); a move to the current path is reported
+    // "already" so retries recognize completion without another prompt
+    // (N#8).
+    AsyncFunction("moveToRelativePath") { uriStrings: List<Uri>, relativePath: String ->
+      val context = appContext.reactContext
+        ?: throw IllegalStateException("Android context unavailable")
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+        return@AsyncFunction uriStrings.map {
+          mapOf("uri" to it.toString(), "status" to "unsupported", "message" to "Requires Android 11")
+        }
+      }
+      val resolver = context.contentResolver
+      uriStrings.map { uri ->
+        try {
+          val current = resolver.query(
+            uri,
+            arrayOf(MediaStore.MediaColumns.RELATIVE_PATH, MediaStore.MediaColumns.DATA),
+            null,
+            null,
+            null,
+          )?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+          if (current != null && current.trimEnd('/') == relativePath.trimEnd('/')) {
+            mapOf("uri" to uri.toString(), "status" to "already", "message" to "already at target")
+          } else {
+            val values = android.content.ContentValues().apply {
+              put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+            }
+            resolver.update(uri, values, null, null)
+            // Verify: the row must now report the target path.
+            val after = resolver.query(
+              uri,
+              arrayOf(MediaStore.MediaColumns.RELATIVE_PATH, MediaStore.MediaColumns.DATA),
+              null,
+              null,
+              null,
+            )?.use { c ->
+              if (c.moveToFirst()) Pair(c.getString(0), c.getString(1)) else null
+            }
+            if (after != null && after.first.trimEnd('/') == relativePath.trimEnd('/')) {
+              mapOf(
+                "uri" to uri.toString(),
+                "status" to "moved",
+                "message" to "verified",
+                "newData" to (after.second ?: ""),
+              )
+            } else {
+              mapOf("uri" to uri.toString(), "status" to "error", "message" to "verification failed")
+            }
+          }
+        } catch (error: Exception) {
+          mapOf(
+            "uri" to uri.toString(),
+            "status" to "error",
+            "message" to "${error.javaClass.simpleName}: ${error.message}",
+          )
+        }
+      }
+    }
+
     // Multi-pass share (m0.7 item E, N#5/C#10): ACTION_SEND for one URI,
     // ACTION_SEND_MULTIPLE for more, read grant on every URI, wrapped in a
     // chooser. Resolves at DISPATCH (never waits for the sheet) so the JS

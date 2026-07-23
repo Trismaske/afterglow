@@ -31,6 +31,25 @@ interface NativeApi {
   probeLaunch(uri: string, action: string, withWrite: boolean): Promise<ProbeLaunchResult>;
   requestWriteAccess(uris: string[]): Promise<{ status: MediaStoreActionStatus }>;
   shareUris(uris: string[]): Promise<{ result: 'dispatched' | 'error'; message: string }>;
+  listImageAlbums(): Promise<VolumeAlbum[]>;
+  moveToRelativePath(uris: string[], relativePath: string): Promise<MoveResult[]>;
+}
+
+/** One (volume, bucket) album entry — volume identity preserved (C#2). */
+export interface VolumeAlbum {
+  volumeName: string;
+  bucketId: string;
+  displayName: string;
+  relativePath: string;
+  photoCount: number;
+}
+
+export interface MoveResult {
+  uri: string;
+  status: 'moved' | 'already' | 'error' | 'unsupported';
+  message: string;
+  /** The post-move file path when status is 'moved' (photos.uri repair). */
+  newData?: string;
 }
 
 const native = requireOptionalNativeModule<NativeApi>('MediaStoreActions');
@@ -95,6 +114,27 @@ export async function requestMediaWriteAccess(
 ): Promise<{ status: MediaStoreActionStatus }> {
   if (!available()) return { status: 'unsupported' };
   return native!.requestWriteAccess(contentUris(uris));
+}
+
+/** The volume-aware album catalog (C#2). Empty on non-Android. */
+export async function listImageAlbums(): Promise<VolumeAlbum[]> {
+  if (!diagnosticsAvailable()) return [];
+  return native!.listImageAlbums();
+}
+
+/** Verified RELATIVE_PATH moves (R#6). Callers hold write access first. */
+export async function moveMediaToRelativePath(
+  uris: string[],
+  relativePath: string,
+): Promise<MoveResult[]> {
+  if (!available()) {
+    return uris.map((uri) => ({
+      uri,
+      status: 'unsupported' as const,
+      message: 'Requires Android 11',
+    }));
+  }
+  return native!.moveToRelativePath(contentUris(uris), relativePath);
 }
 
 /** Fire the share sheet (SEND / SEND_MULTIPLE with read grants). Resolves

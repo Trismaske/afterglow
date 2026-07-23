@@ -19,10 +19,28 @@
 /** settings-table key for the persisted threshold. */
 export const SIMILARITY_THRESHOLD_KEY = 'similarity_threshold';
 
-/** Hamming distances are 0..64 bits. */
-export const MAX_SIMILARITY_THRESHOLD = 64;
+/**
+ * m0.7 (R#8): the slider tops out at 63. The old `64 = time-only grouping`
+ * special value was discontinuous (63 ≈ everything similar, 64 = suddenly
+ * pure time clustering) — legacy time-only grouping is now the separate
+ * `SIMILARITY_TIME_ONLY_KEY` toggle. A stored 64 re-maps to 63 (standing
+ * re-map policy).
+ */
+export const MAX_SIMILARITY_THRESHOLD = 63;
 
 export const DEFAULT_SIMILARITY_THRESHOLD = 20;
+
+/** '1' = legacy time-only grouping (clusterByGap verbatim, no similarity). */
+export const SIMILARITY_TIME_ONLY_KEY = 'similarity_time_only';
+
+export function parseTimeOnly(raw: string | null): boolean {
+  return raw === '1';
+}
+
+/** m0.7 item B: extra bits allowed for pairs shot within the moments gap
+ * — time can only ever ADMIT a borderline pair, never exclude
+ * (autonomous: +6, tuned on device). */
+export const TIME_BONUS_BITS = 6;
 
 export interface SimilarityStep {
   value: number;
@@ -47,10 +65,11 @@ export const SIMILARITY_STEPS: readonly SimilarityStep[] = [
 export function parseSimilarityThreshold(raw: string | null): number {
   if (raw === null || raw.trim() === '') return DEFAULT_SIMILARITY_THRESHOLD;
   const n = Number(raw);
-  if (!Number.isInteger(n) || n < 0 || n > MAX_SIMILARITY_THRESHOLD) {
+  if (!Number.isInteger(n) || n < 0 || n > 64) {
     return DEFAULT_SIMILARITY_THRESHOLD;
   }
-  return n;
+  // Standing re-map: the retired 64 sentinel clamps to the new maximum.
+  return Math.min(n, MAX_SIMILARITY_THRESHOLD);
 }
 
 export function serializeSimilarityThreshold(threshold: number): string {

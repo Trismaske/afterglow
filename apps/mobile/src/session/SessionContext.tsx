@@ -21,8 +21,8 @@ import { useSQLiteContext } from 'expo-sqlite';
 import {
   DeckSession,
   clusterByGap,
+  groupBySimilarity,
   MOMENTS_GAP_MS,
-  refineClustersBySimilarity,
   type Cluster,
   type MediaItem,
   type PhotoState,
@@ -32,7 +32,13 @@ import { trashAssets } from '../lib/media';
 import { fileSize, sha256OfFile } from '../lib/hash';
 import { dayKey } from '../lib/dates';
 import { ensureDhashes } from '../lib/similarityHashes';
-import { parseSimilarityThreshold, SIMILARITY_THRESHOLD_KEY } from '../lib/similarityPrefs';
+import {
+  parseSimilarityThreshold,
+  parseTimeOnly,
+  SIMILARITY_THRESHOLD_KEY,
+  SIMILARITY_TIME_ONLY_KEY,
+  TIME_BONUS_BITS,
+} from '../lib/similarityPrefs';
 import { FifoPersistenceQueue } from './persistenceQueue';
 import {
   isFavouriteSelected,
@@ -262,33 +268,37 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       onHashProgress?: (done: number, total: number) => void,
     ) => {
       await waitForPersistence();
-      const clusters: Cluster[] = clusterByGap(
-        photos.map((p) => p.item),
-        { gapMs: CULL_GROUP_GAP_MS },
-      );
-      // m0.4: time clusters are refined by perceptual similarity (dHash)
-      // so visually unrelated quick-succession shots don't share a group.
-      // Hashes are computed lazily — only for photos inside multi-photo
-      // time clusters — and cached in SQLite (similarityHashes.ts).
-      const timeGroups = clusters.filter((c) => c.items.length >= 2);
-      const photoById = new Map(photos.map((p) => [p.item.id, p]));
-      const { hashes } = await ensureDhashes(
-        db,
-        timeGroups.flatMap((c) => c.items).map((i) => photoById.get(i.id)!),
-        onHashProgress,
-      );
-      const threshold = parseSimilarityThreshold(await getSetting(db, SIMILARITY_THRESHOLD_KEY));
-      const refined = refineClustersBySimilarity(
-        timeGroups,
-        (id) => hashes.get(id) ?? null,
-        threshold,
-      );
-      const groups = refined.filter((c) => c.items.length >= 2);
+      // m0.7 item B: SIMILARITY-FIRST grouping. Components form over the
+      // whole draw — time proximity only relaxes the bar (never excludes),
+      // so the same subject shot on different days still groups (#24). The
+      // legacy time-only toggle keeps clusterByGap verbatim as an escape
+      // hatch (R#8: a separate mode, not slider value 64).
+      const timeOnly = parseTimeOnly(await getSetting(db, SIMILARITY_TIME_ONLY_KEY));
+      let components: Cluster[];
+      if (timeOnly) {
+        components = clusterByGap(
+          photos.map((p) => p.item),
+          { gapMs: CULL_GROUP_GAP_MS },
+        );
+      } else {
+        // Every drawn photo is hashed (cached in SQLite); a hashless photo
+        // becomes a singleton by the core null-hash rule.
+        const { hashes } = await ensureDhashes(db, [...photos], onHashProgress);
+        const threshold = parseSimilarityThreshold(await getSetting(db, SIMILARITY_THRESHOLD_KEY));
+        components = groupBySimilarity(
+          photos.map((p) => p.item),
+          (id) => hashes.get(id) ?? null,
+          {
+            threshold,
+            timeBonusMs: CULL_GROUP_GAP_MS,
+            timeBonusBits: TIME_BONUS_BITS,
+          },
+        );
+      }
+      const groups = components.filter((c) => c.items.length >= 2);
       // Singleton components join the singles bucket, chronological order.
-      const singles = [
-        ...clusters.filter((c) => c.items.length === 1),
-        ...refined.filter((c) => c.items.length === 1),
-      ]
+      const singles = components
+        .filter((c) => c.items.length === 1)
         .map((c) => c.items[0])
         .sort((a, b) => a.timestamp - b.timestamp || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const session = DeckSession.create({ groups, singles });

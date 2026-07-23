@@ -38,9 +38,10 @@ describe('parseSimilarityThreshold', () => {
     }
   });
 
-  it('accepts any integer 0..64, including the edges', () => {
+  it('accepts integers 0..63; the retired 64 sentinel re-maps to 63 (R#8)', () => {
     expect(parseSimilarityThreshold('0')).toBe(0);
-    expect(parseSimilarityThreshold('64')).toBe(64);
+    expect(parseSimilarityThreshold('63')).toBe(63);
+    expect(parseSimilarityThreshold('64')).toBe(63); // standing re-map policy
     expect(parseSimilarityThreshold('33')).toBe(33);
   });
 

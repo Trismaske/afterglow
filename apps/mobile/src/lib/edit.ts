@@ -1,70 +1,100 @@
 /**
- * Launch the user's photo editor of choice for one photo, via Android's
- * implicit ACTION_EDIT intent (expo-intent-launcher, SDK 57).
+ * Editor / gallery launch (m0.7 item A — mechanism selected by the gate-0
+ * device matrix, run on the Samsung tester device and the emulator with
+ * identical results):
  *
- * Decisions (documented per m0.2 spec):
- * - Action is the raw string `android.intent.action.EDIT` —
- *   `startActivityAsync` accepts `ActivityAction | string` and SDK 57 ships
- *   no ACTION_EDIT constant (its enum is settings screens only).
- * - `data` is the photo's `content://` MediaStore URI (never `file://`,
- *   which external apps can't be granted access to on modern Android).
- * - `flags` = FLAG_GRANT_READ_URI_PERMISSION | FLAG_GRANT_WRITE_URI_PERMISSION
- *   (0x1 | 0x2) so the editor can both read the photo and save over it.
- * - `type: image/*`: explicit MIME matching is more reliable on Samsung
- *   builds whose editor intent filter does not resolve from data alone.
+ * - Attaching FLAG_GRANT_WRITE_URI_PERMISSION without holding write access
+ *   throws SecurityException AT DISPATCH on Android 16 (stock behavior,
+ *   not OEM) — m0.6 attached it to both EDIT and VIEW, so both failed.
+ * - After one MediaStore.createWriteRequest approval the same EDIT
+ *   read+write intent dispatches fine. The request auto-approves without
+ *   a dialog when the app already has write access.
  *
- * m0.5 (Samsung bug): when ACTION_EDIT resolves no activity, fall back to
- * ACTION_VIEW on the same URI (the default viewer's edit button is one tap
- * away) before ever surfacing an error — the chain lives in
- * editFallback.ts (pure, unit-tested). Both intents get the same grant
- * flags so the viewer's built-in editor can save over the photo too.
+ * So `launchEditor` is write-request-first: request write access, then
+ * dispatch ACTION_EDIT with read(+write when granted). Denial degrades to
+ * read-only EDIT — editors then save a copy, which m0.3 edit detection
+ * tracks. `launchViewer` is the explicit read-only ACTION_VIEW path ("Open
+ * in gallery") — the viewer's own edit button uses its own write powers.
  *
- * The returned promise resolves when the user comes back to Afterglow.
- * Editors are inconsistent about result codes (most return Canceled even
- * after saving), so callers must not treat the result as "was it edited" —
- * that's what the manual "Mark done" button and m0.3's edit detection are
- * for.
+ * Both promises resolve when the user returns to Afterglow. Editors are
+ * inconsistent about result codes, so callers must never treat the result
+ * as "was it edited" — that's manual Mark done + edit detection.
  */
 import { Platform } from 'react-native';
 import * as IntentLauncher from 'expo-intent-launcher';
-import { launchWithViewerFallback } from './editFallback';
+import { requestMediaWriteAccess } from '../../modules/media-store-actions';
+import { ACTION_EDIT, ACTION_VIEW } from './editActions';
 
 const FLAG_GRANT_READ_URI_PERMISSION = 0x00000001;
 const FLAG_GRANT_WRITE_URI_PERMISSION = 0x00000002;
 
-/** `outcome: viewer` means the ACTION_VIEW fallback ran. */
-export type LaunchEditorResult =
-  | { outcome: 'returned' | 'viewer' }
+export type EditLaunchResult =
+  | { outcome: 'returned'; writeGranted: boolean }
   | { outcome: 'unsupported' }
-  | { outcome: 'failed'; editError: string; viewError: string; uri: string };
+  | { outcome: 'failed'; error: string; uri: string };
+
+export type ViewLaunchResult =
+  | { outcome: 'returned' }
+  | { outcome: 'unsupported' }
+  | { outcome: 'failed'; error: string; uri: string };
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /**
- * Fire ACTION_EDIT (falling back to ACTION_VIEW) for a content URI and
- * wait for the user to return. `outcome: failed` means no installed app handles
- * either intent for this photo. `onViewerLaunch` fires the moment the
- * viewer fallback is dispatched — the caller's toast hook.
+ * Write-request-first ACTION_EDIT. `onDispatch` fires the moment the
+ * intent is accepted (toast hook), before the user's editor round-trip.
  */
 export async function launchEditor(
   contentUri: string,
-  onViewerLaunch?: () => void,
-): Promise<LaunchEditorResult> {
+  onDispatch?: (writeGranted: boolean) => void,
+): Promise<EditLaunchResult> {
   if (Platform.OS !== 'android') return { outcome: 'unsupported' };
   if (!contentUri.startsWith('content://')) {
     return {
       outcome: 'failed',
-      editError: 'The selected asset did not resolve to a content URI.',
-      viewError: 'Viewer launch was not attempted.',
+      error: 'The selected asset did not resolve to a content URI.',
       uri: contentUri,
     };
   }
-  const result = await launchWithViewerFallback(
-    (action) =>
-      IntentLauncher.startActivityAsync(action, {
-        data: contentUri,
-        type: 'image/*',
-        flags: FLAG_GRANT_READ_URI_PERMISSION | FLAG_GRANT_WRITE_URI_PERMISSION,
-      }),
-    onViewerLaunch,
-  );
-  return result.outcome === 'failed' ? { ...result, uri: contentUri } : result;
+  // Gate-0 mechanism: obtain write access BEFORE attaching the write flag.
+  // 'cancelled' (user denied) and 'unsupported' (pre-R) degrade to
+  // read-only; the editor will save-as-copy and detection tracks it.
+  const { status } = await requestMediaWriteAccess([contentUri]);
+  const writeGranted = status === 'applied';
+  try {
+    const pending = IntentLauncher.startActivityAsync(ACTION_EDIT, {
+      data: contentUri,
+      type: 'image/*',
+      flags: FLAG_GRANT_READ_URI_PERMISSION | (writeGranted ? FLAG_GRANT_WRITE_URI_PERMISSION : 0),
+    });
+    onDispatch?.(writeGranted);
+    await pending;
+    return { outcome: 'returned', writeGranted };
+  } catch (error) {
+    return { outcome: 'failed', error: message(error), uri: contentUri };
+  }
+}
+
+/** Read-only ACTION_VIEW — the "Open in gallery" button. */
+export async function launchViewer(contentUri: string): Promise<ViewLaunchResult> {
+  if (Platform.OS !== 'android') return { outcome: 'unsupported' };
+  if (!contentUri.startsWith('content://')) {
+    return {
+      outcome: 'failed',
+      error: 'The selected asset did not resolve to a content URI.',
+      uri: contentUri,
+    };
+  }
+  try {
+    await IntentLauncher.startActivityAsync(ACTION_VIEW, {
+      data: contentUri,
+      type: 'image/*',
+      flags: FLAG_GRANT_READ_URI_PERMISSION,
+    });
+    return { outcome: 'returned' };
+  } catch (error) {
+    return { outcome: 'failed', error: message(error), uri: contentUri };
+  }
 }

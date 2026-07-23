@@ -9,8 +9,8 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { getToEditPhotos, markEditDone, type ToEditRow } from '../db/store';
 import { getEditableContentUri } from '../lib/media';
-import { launchEditor } from '../lib/edit';
-import { NO_EDITOR_MESSAGE, NO_EDITOR_TITLE, VIEWER_FALLBACK_TOAST } from '../lib/editFallback';
+import { launchEditor, launchViewer } from '../lib/edit';
+import { NO_EDITOR_MESSAGE, NO_EDITOR_TITLE } from '../lib/editActions';
 import { EditDiagnosticsSheet } from '../components/EditDiagnosticsSheet';
 import { showToast } from '../lib/toast';
 import { labelForDayKey } from '../lib/dates';
@@ -22,7 +22,10 @@ type Props = NativeStackScreenProps<RootStackParamList, 'EditQueue'>;
 /**
  * The to-edit queue (PLAN.md: Android has no virtual gallery albums, so
  * the queue lives in-app). Every photo flagged "needs edit", across all
- * days. Edit fires ACTION_EDIT into the user's editor of choice; Mark done
+ * days. Two explicit launch buttons per row (m0.7 item A, tester
+ * decision): **Edit** fires write-request-first ACTION_EDIT (Google
+ * Photos-style editors); **Gallery** opens the read-only viewer whose own
+ * edit button has its own write powers (Samsung Gallery-style). Mark done
  * is always available manually (edit *detection* is m0.3).
  */
 export function EditQueueScreen(_props: Props) {
@@ -53,43 +56,71 @@ export function EditQueueScreen(_props: Props) {
     [db, reload],
   );
 
+  const askMarkDone = useCallback(
+    (assetId: string) => {
+      // Editors rarely report a useful result code, so ask instead of
+      // guessing. Auto-detection of saved edits is m0.3.
+      Alert.alert('Done editing?', 'Mark this photo as done and clear it from the queue?', [
+        { text: 'Not yet', style: 'cancel' },
+        { text: 'Mark done', onPress: () => void markDone(assetId) },
+      ]);
+    },
+    [markDone],
+  );
+
+  const failureAlert = useCallback(
+    (assetId: string, action: string, error: string, uri: string) => {
+      Alert.alert(
+        NO_EDITOR_TITLE,
+        `${NO_EDITOR_MESSAGE}\n\nDiagnostics\nURI: ${uri}\n${action}: ${error}`,
+        [
+          { text: 'Close', style: 'cancel' },
+          { text: 'Run permission matrix', onPress: () => setMatrixAssetId(assetId) },
+        ],
+      );
+    },
+    [],
+  );
+
   const openEditor = useCallback(
     async (row: ToEditRow) => {
       if (busyId) return;
       setBusyId(row.asset_id);
       try {
         const contentUri = await getEditableContentUri(row.asset_id);
-        // m0.5 Samsung fallback: no ACTION_EDIT handler → open the default
-        // viewer instead (its edit button is one tap away), with a toast
-        // over the opening viewer. Only a double failure shows the error.
-        const result = await launchEditor(contentUri, () => showToast(VIEWER_FALLBACK_TOAST));
+        // m0.7 item A: write-request-first EDIT (gate-0 matrix mechanism).
+        const result = await launchEditor(contentUri, (writeGranted) => {
+          if (!writeGranted) showToast('Editing read-only — saves become a copy');
+        });
         if (result.outcome === 'failed') {
-          Alert.alert(
-            NO_EDITOR_TITLE,
-            `${NO_EDITOR_MESSAGE}\n\nDiagnostics\nURI: ${result.uri}\nACTION_EDIT: ${result.editError}\nACTION_VIEW: ${result.viewError}`,
-            [
-              { text: 'Close', style: 'cancel' },
-              {
-                text: 'Run permission matrix',
-                onPress: () => setMatrixAssetId(row.asset_id),
-              },
-            ],
-          );
+          failureAlert(row.asset_id, 'ACTION_EDIT', result.error, result.uri);
           return;
         }
-        if (result.outcome === 'returned' || result.outcome === 'viewer') {
-          // Editors rarely report a useful result code, so ask instead of
-          // guessing. Auto-detection of saved edits is m0.3.
-          Alert.alert('Done editing?', 'Mark this photo as done and clear it from the queue?', [
-            { text: 'Not yet', style: 'cancel' },
-            { text: 'Mark done', onPress: () => void markDone(row.asset_id) },
-          ]);
-        }
+        if (result.outcome === 'returned') askMarkDone(row.asset_id);
       } finally {
         setBusyId(null);
       }
     },
-    [busyId, markDone],
+    [busyId, askMarkDone, failureAlert],
+  );
+
+  const openGallery = useCallback(
+    async (row: ToEditRow) => {
+      if (busyId) return;
+      setBusyId(row.asset_id);
+      try {
+        const contentUri = await getEditableContentUri(row.asset_id);
+        const result = await launchViewer(contentUri);
+        if (result.outcome === 'failed') {
+          failureAlert(row.asset_id, 'ACTION_VIEW', result.error, result.uri);
+          return;
+        }
+        if (result.outcome === 'returned') askMarkDone(row.asset_id);
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [busyId, askMarkDone, failureAlert],
   );
 
   const renderItem = useCallback(
@@ -118,18 +149,26 @@ export function EditQueueScreen(_props: Props) {
               </Text>
             </Pressable>
             <Pressable
+              style={[styles.rowButton, styles.galleryButton]}
+              disabled={busyId !== null}
+              onPress={() => void openGallery(item)}
+            >
+              <MaterialCommunityIcons name="image-outline" size={18} color={colors.text} />
+              <Text style={styles.rowButtonText}>Gallery</Text>
+            </Pressable>
+            <Pressable
               style={[styles.rowButton, styles.doneButton]}
               disabled={busyId !== null}
               onPress={() => void markDone(item.asset_id)}
             >
               <MaterialCommunityIcons name="check" size={18} color={colors.keep} />
-              <Text style={styles.rowButtonText}>Mark done</Text>
+              <Text style={styles.rowButtonText}>Done</Text>
             </Pressable>
           </View>
         </View>
       </View>
     ),
-    [busyId, openEditor, markDone],
+    [busyId, openEditor, openGallery, markDone],
   );
 
   return (
@@ -194,6 +233,11 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   editButton: { backgroundColor: colors.editDim, borderWidth: 1, borderColor: colors.edit },
+  galleryButton: {
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
   doneButton: { backgroundColor: colors.keepDim, borderWidth: 1, borderColor: colors.keep },
   rowButtonText: { color: colors.text, fontSize: 14, fontWeight: '700' },
   emptyText: { color: colors.textDim, fontSize: 15, textAlign: 'center', marginTop: 40 },

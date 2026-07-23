@@ -28,7 +28,9 @@ import {
   type PhotoState,
 } from '@afterglow/core';
 import type { LoadedPhoto } from '../lib/media';
-import { trashAssets } from '../lib/media';
+import { getEditableContentUri, trashAssets } from '../lib/media';
+import { isMediaTrashed } from '../../modules/media-store-actions';
+import { markBatchLaunching, prepareTrashBatch, resolveTrashBatch } from '../db/trashStore';
 import { fileSize, sha256OfFile } from '../lib/hash';
 import { dayKey } from '../lib/dates';
 import { ensureDhashes } from '../lib/similarityHashes';
@@ -660,40 +662,76 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       return { deleted: true, status: 'applied', count: 0, bytes: 0 };
     }
 
-    // Approximate storage reclaimed, measured before the files disappear.
-    let bytes = 0;
-    for (const item of staged) bytes += fileSize(item.uri);
+    // m0.7 item H (P7#4/P8#3/P8#4): the attempt is DURABLE before native
+    // dispatch — batch + measured bytes + one reservation per photo — so a
+    // process death anywhere leaves a recoverable record and ambiguous
+    // absence can never claim credit. Bounded per OS request (P5#4).
+    const batch = await prepareTrashBatch(
+      db,
+      staged.map((item) => ({ photoId: item.id, measuredBytes: fileSize(item.uri) })),
+      sessionId,
+      Date.now(),
+    );
+    if (!batch) return { deleted: true, status: 'applied', count: 0, bytes: 0 };
 
-    // Flip to `confirmed` in memory only — SQLite keeps `culled` until the
-    // system trash request actually succeeds, so an app death mid-dialog resumes
-    // with the batch still staged (and nothing silently lost).
-    const ids = session.confirmAll();
-
+    await markBatchLaunching(db, batch.batchId, Date.now());
+    const ids = batch.members.map((m) => m.photoId);
     const result = await trashAssets(ids);
-    if (result.status === 'applied') {
-      session.markTrashed(ids);
+
+    const resolved = await resolveTrashBatch(db, {
+      batchId: batch.batchId,
+      verify: async (photoId) => {
+        const trashed = await isMediaTrashed(await getEditableContentUri(photoId));
+        // Tri-state (C#1): a query failure is 'unknown', never 'absent'.
+        if (trashed === true) return 'absent';
+        if (trashed === false) return 'present';
+        return 'unknown';
+      },
+      dialog:
+        result.status === 'applied'
+          ? 'applied'
+          : result.status === 'cancelled'
+            ? 'cancelled'
+            : result.status === 'unsupported'
+              ? 'unsupported'
+              : 'failed',
+      at: Date.now(),
+    });
+
+    // Mirror verified outcomes into the live core snapshot.
+    const trashedIds = ids.filter(
+      (id) =>
+        resolved.outcomes[id] === 'trashed' ||
+        resolved.outcomes[id] === 'absent_after_interrupted_launch',
+    );
+    if (trashedIds.length > 0) {
+      const confirmed = session.confirmAll();
+      session.markTrashed(confirmed.filter((id) => trashedIds.includes(id)));
+      // Anything confirmed but not verified rolls back to culled.
+      const snap = session.toJSON();
+      for (const id of confirmed) {
+        if (!trashedIds.includes(id)) snap.states[id] = 'culled';
+      }
+      sessionRef.current = DeckSession.fromJSON(snap);
       await persist();
-      await addReclaimedBytes(db, sessionId, bytes);
-      setReclaimedBytes((b) => b + bytes);
+      await addReclaimedBytes(db, sessionId, resolved.creditedBytes);
+      setReclaimedBytes((b) => b + resolved.creditedBytes);
       bump();
-      return { deleted: true, status: 'applied', count: ids.length, bytes };
+      return {
+        deleted: true,
+        status: 'applied',
+        count: trashedIds.length,
+        bytes: resolved.creditedBytes,
+      };
     }
 
-    // User cancelled the system dialog: roll `confirmed` back to `culled`
-    // by rewriting the snapshot (core has no un-confirm — deliberate; the
-    // snapshot format is the supported escape hatch).
-    const snap = session.toJSON();
-    for (const id of ids) snap.states[id] = 'culled';
-    const restored = DeckSession.fromJSON(snap);
-    sessionRef.current = restored;
     bump();
-    await persist();
     return {
       deleted: false,
       status: result.status,
       error: result.status === 'failed' ? result.error : undefined,
       count: ids.length,
-      bytes,
+      bytes: 0,
     };
   }, [db, sessionId, persist, bump]);
 

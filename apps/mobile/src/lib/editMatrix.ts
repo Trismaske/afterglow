@@ -20,7 +20,7 @@
  * module never touches React Native so the branch logic stays unit-tested.
  */
 
-import { ACTION_EDIT, ACTION_VIEW } from './editFallback';
+import { ACTION_EDIT, ACTION_VIEW } from './editActions';
 
 export type MatrixStepId =
   'view_read' | 'edit_read' | 'edit_readwrite' | 'write_request' | 'edit_readwrite_after_grant';

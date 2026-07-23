@@ -35,7 +35,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "NODE_OPTIONS=--experimental-sqlite vitest run",
     "android:run": "expo run:android",
     "start": "expo start",
     "android": "expo run:android",

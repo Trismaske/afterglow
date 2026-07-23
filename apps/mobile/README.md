@@ -138,7 +138,9 @@ into a new session).
   `duels` compare history, `sessions` with the serialized core snapshot,
   `photo_hashes` dHash cache, and a key/value `settings` table (source
   folders, similarity, sessions, scopes, accent). Schema changes ship as
-  append-only `PRAGMA user_version` migrations (`src/db/database.ts`).
+  a fresh-baseline DDL: before v1, schema changes bump SCHEMA_VERSION and
+  the open path destructively resets mismatched databases
+  (`src/db/database.ts` — pre-v1 velocity policy).
 - The needs-edit flag is app-side state (`photos.needs_edit`): core only
   knows kept/culled, and every state write remaps kept + flag → `to_edit`
   in one CASE expression, so the flag survives review, group completion

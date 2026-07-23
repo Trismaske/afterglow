@@ -33,7 +33,7 @@ Environment setup (Android toolchain/emulator, one command): [docs/DEVELOPMENT.m
 
 ## Release flow
 
-Tags trigger CI to GitHub Releases: `desktop-v*` → Windows installer (+ `.scr` screensaver) & Linux AppImage/deb (`.github/workflows/desktop-release.yml`); `mobile-m*` → release APK (`mobile-release.yml`: clean `expo prebuild` + Gradle — `apps/mobile/android` is **gitignored prebuild output**). Release scripts require exact tag/version mapping, monotonic Android versionCode, all expected artifacts, and SHA-256 manifests. GitLab delivery is deferred. Versions: `apps/desktop/package.json`; mobile `app.json` (`version` + `android.versionCode`) and `apps/mobile/package.json`. The APK signs with the standard shared debug keystore — changing signing breaks testers' in-place upgrades. Work happens on branch `initial`.
+Tags trigger CI to GitHub Releases: `desktop-v*` → Windows installer (+ `.scr` screensaver) & Linux AppImage/deb (`.github/workflows/desktop-release.yml`); `mobile-m*` → release APK (`mobile-release.yml`: clean `expo prebuild` + Gradle — `apps/mobile/android` is **gitignored prebuild output**). Release scripts require exact tag/version mapping, monotonic Android versionCode, all expected artifacts, and SHA-256 manifests. GitLab delivery is deferred. Versions: `apps/desktop/package.json`; mobile `app.json` (`version` + `android.versionCode`) and `apps/mobile/package.json`. The APK signs with the standard shared debug keystore. Pre-v1 policy: no upgrade/back-compat constraints — signing, identifiers, and databases may change freely between 0.x releases (testers reinstall); this hardens at v1. Work happens on branch `initial`.
 
 ## Docs index (read on demand)
 

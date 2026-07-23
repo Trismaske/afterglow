@@ -9,6 +9,7 @@ import {
   Text,
   View,
   Platform,
+  TextInput,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
@@ -35,7 +36,12 @@ import { formatClockPrecise, millisNeeded } from '../lib/format';
 import { completedDuringVisit, destinationAfterGroup } from '../lib/groupFlow';
 import { DecisionBadge, DECISION_GLYPHS, type DecisionKind } from '../components/DecisionBadge';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { isFavouriteSelected } from '../lib/favouriteState';
+import { isFavouriteSelected, shouldOfferFavouriteHandoff } from '../lib/favouriteState';
+import { useSQLiteContext } from 'expo-sqlite';
+import { addToShareQueue, isInShareQueue, removeFromShareQueue } from '../db/shareStore';
+import { newAlbumPath, queueOrganize } from '../db/organizeStore';
+import { listImageAlbums, type VolumeAlbum } from '../../modules/media-store-actions';
+import { PRIMARY_VOLUME } from '../lib/mediaIdentity';
 
 type DeckProps = NativeStackScreenProps<RootStackParamList, 'Deck'>;
 type SinglesProps = NativeStackScreenProps<RootStackParamList, 'Singles'>;
@@ -111,6 +117,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     keepRemainingSingles,
     favouriteStatus,
     toggleFavourite,
+    keepOne,
     version,
   } = useSession();
   const [busy, setBusy] = useState(false);
@@ -415,6 +422,61 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
 
   const isBest = !!current && !singlesMode && info?.bestId === current.id;
 
+  // m0.7 item E queue row: Share toggle + Organize picker.
+  const db = useSQLiteContext();
+  const [shareQueued, setShareQueued] = useState(false);
+  const [organizePicker, setOrganizePicker] = useState(false);
+  const [albums, setAlbums] = useState<VolumeAlbum[]>([]);
+  const [newAlbumName, setNewAlbumName] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    if (currentId) {
+      void isInShareQueue(db, currentId).then((queued) => {
+        if (!cancelled) setShareQueued(queued);
+      });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [db, currentId, version]);
+
+  const toggleShare = useCallback(async () => {
+    if (!current) return;
+    if (shareQueued) {
+      await removeFromShareQueue(db, current.id);
+      setShareQueued(false);
+    } else {
+      const added = await addToShareQueue(db, current.id, Date.now());
+      setShareQueued(added);
+    }
+  }, [db, current, shareQueued]);
+
+  const openOrganizePicker = useCallback(async () => {
+    const catalog = await listImageAlbums();
+    setAlbums(
+      catalog
+        .filter((a) => a.volumeName === PRIMARY_VOLUME)
+        .sort((a, b) => b.photoCount - a.photoCount),
+    );
+    setNewAlbumName('');
+    setOrganizePicker(true);
+  }, []);
+
+  const chooseOrganizeTarget = useCallback(
+    async (relativePath: string) => {
+      if (!current) return;
+      const error = await queueOrganize(
+        db,
+        current.id,
+        { volumeName: PRIMARY_VOLUME, relativePath },
+        Date.now(),
+      );
+      if (error) Alert.alert('Cannot use that album', error);
+      setOrganizePicker(false);
+    },
+    [db, current],
+  );
+
   const finishGroup = useCallback(() => {
     if (!groupId) return;
     void run(() => keepRest(groupId));
@@ -424,14 +486,18 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     if (!groupId || !current) return;
     void run(async () => {
       await markBest(groupId, isBest ? null : current.id);
-      if (!isBest && Platform.OS === 'android' && Number(Platform.Version) >= 30) {
+      // m0.7 item F (#10): the hand-off is WRITE-ONLY — never offered for
+      // an already-favourited photo (toggleFavourite would UN-favourite
+      // it), and "Not now" stays a strict no-op.
+      const offer = shouldOfferFavouriteHandoff(favouriteStatus(current.id));
+      if (!isBest && offer && Platform.OS === 'android' && Number(Platform.Version) >= 30) {
         Alert.alert('Best of this group', 'Would you also like to favourite it in your gallery?', [
           { text: 'Not now', style: 'cancel' },
           { text: 'Favourite', onPress: () => void toggleFavourite(current.id) },
         ]);
       }
     });
-  }, [current, groupId, isBest, markBest, run, toggleFavourite]);
+  }, [current, favouriteStatus, groupId, isBest, markBest, run, toggleFavourite]);
 
   const openCompare = useCallback(
     (againstId?: string) => {
@@ -638,13 +704,6 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
                   color: colors.keep,
                 },
                 {
-                  target: 'to_edit',
-                  label: 'To edit',
-                  kind: 'edit',
-                  dim: colors.editDim,
-                  color: colors.edit,
-                },
-                {
                   target: 'cull',
                   label: 'Cull',
                   kind: 'cull',
@@ -674,118 +733,33 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
                 </Pressable>
               );
             })}
-          </View>
-          <View style={styles.secondaryRow}>
-            {singlesMode && deckItems.length > 1 && (
-              <Pressable
-                style={styles.secondaryButton}
-                disabled={busy}
-                onPress={() => openCompare()}
-              >
-                <MaterialCommunityIcons
-                  name="compare-horizontal"
-                  size={19}
-                  color={colors.textDim}
-                />
-                <Text style={styles.secondaryText}>Compare with…</Text>
-              </Pressable>
-            )}
-            {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
-              <Pressable
-                style={[styles.secondaryButton, favourite && styles.secondaryButtonFavourite]}
-                disabled={busy}
-                onPress={() => void run(() => toggleFavourite(current.id))}
-              >
-                <MaterialCommunityIcons
-                  name={favourite ? 'heart' : 'heart-outline'}
-                  size={19}
-                  color={favourite ? colors.fav : colors.textDim}
-                />
-                <Text style={[styles.secondaryText, favourite && styles.secondaryTextFavourite]}>
-                  {favourite ? 'Favourite queued' : 'Favourite'}
-                </Text>
-              </Pressable>
-            )}
-            {!singlesMode && groupId && (
-              <Pressable
-                style={[
-                  styles.secondaryButton,
-                  isBest && { backgroundColor: theme.accentMuted, borderColor: theme.accent },
-                ]}
-                disabled={busy}
-                onPress={toggleBest}
-              >
-                <MaterialCommunityIcons
-                  name={isBest ? 'star' : 'star-outline'}
-                  size={19}
-                  color={isBest ? theme.accent : colors.textDim}
-                />
-                <Text style={[styles.secondaryText, isBest && { color: theme.accent }]}>Best</Text>
-              </Pressable>
-            )}
-          </View>
-          {singlesMode && singlesPending > 0 && (
-            <BigButton
-              label={busy ? 'Saving…' : `Keep remaining (${singlesPending})`}
-              color={colors.keep}
-              disabled={busy}
-              onPress={() => void run(keepRemainingSingles)}
-            />
-          )}
-        </>
-      ) : (
-        <>
-          <View style={styles.actionRow}>
-            <Pressable
-              style={[styles.actionButton, styles.cullButton]}
-              disabled={busy}
-              onPress={cullCurrent}
-            >
-              <MaterialCommunityIcons name="close" size={21} color={colors.cull} />
-              <Text style={styles.actionText}>Cull</Text>
-            </Pressable>
             <Pressable
               style={[styles.actionButton, styles.compareButton]}
-              disabled={busy || keepCount < 2}
+              disabled={busy || deckItems.length < 2}
               onPress={() => openCompare()}
             >
-              <MaterialCommunityIcons name="compare-horizontal" size={21} color={colors.textDim} />
-              <Text style={[styles.actionText, keepCount < 2 && styles.actionTextDisabled]}>
-                Compare{keepCount > 2 ? ' with…' : ''}
+              <MaterialCommunityIcons name="compare-horizontal" size={20} color={colors.textDim} />
+              <Text style={[styles.actionText, deckItems.length < 2 && styles.actionTextDisabled]}>
+                Compare
               </Text>
             </Pressable>
-            <Pressable
-              style={[
-                styles.actionButton,
-                styles.bestButton,
-                isBest && { backgroundColor: theme.accentMuted, borderColor: theme.accent },
-              ]}
-              disabled={busy}
-              onPress={toggleBest}
-            >
-              <MaterialCommunityIcons
-                name={isBest ? 'star' : 'star-outline'}
-                size={21}
-                color={isBest ? theme.accent : colors.textDim}
-              />
-              <Text style={[styles.actionText, isBest && { color: theme.accent }]}>Best</Text>
-            </Pressable>
           </View>
-
           <View style={styles.secondaryRow}>
             <Pressable
               style={[styles.secondaryButton, flagged && styles.secondaryButtonEdit]}
               disabled={busy}
-              onPress={() => void toggleNeedsEdit(current.id)}
+              onPress={() =>
+                void run(() =>
+                  singlesMode ? decideSingleCurrent('to_edit') : redecide(current.id, 'to_edit'),
+                )
+              }
             >
               <MaterialCommunityIcons
                 name="pencil"
                 size={18}
                 color={flagged ? colors.edit : colors.textDim}
               />
-              <Text style={[styles.secondaryText, flagged && styles.secondaryTextEdit]}>
-                {flagged ? 'Needs edit' : 'To edit'}
-              </Text>
+              <Text style={[styles.secondaryText, flagged && styles.secondaryTextEdit]}>Edit</Text>
             </Pressable>
             {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
               <Pressable
@@ -806,6 +780,155 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
             <Pressable
               style={styles.secondaryButton}
               disabled={busy}
+              onPress={() => void openOrganizePicker()}
+            >
+              <MaterialCommunityIcons name="folder-move-outline" size={18} color={colors.textDim} />
+              <Text style={styles.secondaryText}>Organize</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.secondaryButton, shareQueued && styles.secondaryButtonEdit]}
+              disabled={busy}
+              onPress={() => void toggleShare()}
+            >
+              <MaterialCommunityIcons
+                name={shareQueued ? 'share-variant' : 'share-variant-outline'}
+                size={18}
+                color={shareQueued ? colors.edit : colors.textDim}
+              />
+              <Text style={[styles.secondaryText, shareQueued && styles.secondaryTextEdit]}>
+                Share
+              </Text>
+            </Pressable>
+            {!singlesMode && groupId && (
+              <Pressable
+                style={[
+                  styles.secondaryButton,
+                  isBest && { backgroundColor: theme.accentMuted, borderColor: theme.accent },
+                ]}
+                disabled={busy}
+                onPress={toggleBest}
+              >
+                <MaterialCommunityIcons
+                  name={isBest ? 'star' : 'star-outline'}
+                  size={18}
+                  color={isBest ? theme.accent : colors.textDim}
+                />
+                <Text style={[styles.secondaryText, isBest && { color: theme.accent }]}>Best</Text>
+              </Pressable>
+            )}
+          </View>
+          {singlesMode && singlesPending > 0 && (
+            <BigButton
+              label={busy ? 'Saving…' : `Keep remaining (${singlesPending})`}
+              color={colors.keep}
+              disabled={busy}
+              onPress={() => void run(keepRemainingSingles)}
+            />
+          )}
+        </>
+      ) : (
+        <>
+          <View style={styles.actionRow}>
+            <Pressable
+              style={[styles.actionButton, { backgroundColor: colors.keepDim }]}
+              disabled={busy}
+              onPress={() => void run(() => keepOne(current.id))}
+            >
+              <MaterialCommunityIcons name={DECISION_GLYPHS.keep} size={21} color={colors.keep} />
+              <Text style={styles.actionText}>Keep</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.actionButton, styles.compareButton]}
+              disabled={busy || keepCount < 2}
+              onPress={() => openCompare()}
+            >
+              <MaterialCommunityIcons name="compare-horizontal" size={21} color={colors.textDim} />
+              <Text style={[styles.actionText, keepCount < 2 && styles.actionTextDisabled]}>
+                Compare{keepCount > 2 ? ' with…' : ''}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.actionButton, styles.cullButton]}
+              disabled={busy}
+              onPress={cullCurrent}
+            >
+              <MaterialCommunityIcons name="close" size={21} color={colors.cull} />
+              <Text style={styles.actionText}>Cull</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.secondaryRow}>
+            <Pressable
+              style={[styles.secondaryButton, flagged && styles.secondaryButtonEdit]}
+              disabled={busy}
+              onPress={() => void toggleNeedsEdit(current.id)}
+            >
+              <MaterialCommunityIcons
+                name="pencil"
+                size={18}
+                color={flagged ? colors.edit : colors.textDim}
+              />
+              <Text style={[styles.secondaryText, flagged && styles.secondaryTextEdit]}>Edit</Text>
+            </Pressable>
+            {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
+              <Pressable
+                style={[styles.secondaryButton, favourite && styles.secondaryButtonFavourite]}
+                disabled={busy}
+                onPress={() => void run(() => toggleFavourite(current.id))}
+              >
+                <MaterialCommunityIcons
+                  name={favourite ? 'heart' : 'heart-outline'}
+                  size={18}
+                  color={favourite ? colors.fav : colors.textDim}
+                />
+                <Text style={[styles.secondaryText, favourite && styles.secondaryTextFavourite]}>
+                  Favourite
+                </Text>
+              </Pressable>
+            )}
+            <Pressable
+              style={styles.secondaryButton}
+              disabled={busy}
+              onPress={() => void openOrganizePicker()}
+            >
+              <MaterialCommunityIcons name="folder-move-outline" size={18} color={colors.textDim} />
+              <Text style={styles.secondaryText}>Organize</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.secondaryButton, shareQueued && styles.secondaryButtonEdit]}
+              disabled={busy}
+              onPress={() => void toggleShare()}
+            >
+              <MaterialCommunityIcons
+                name={shareQueued ? 'share-variant' : 'share-variant-outline'}
+                size={18}
+                color={shareQueued ? colors.edit : colors.textDim}
+              />
+              <Text style={[styles.secondaryText, shareQueued && styles.secondaryTextEdit]}>
+                Share
+              </Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.secondaryRow}>
+            <Pressable
+              style={[
+                styles.secondaryButton,
+                isBest && { backgroundColor: theme.accentMuted, borderColor: theme.accent },
+              ]}
+              disabled={busy}
+              onPress={toggleBest}
+            >
+              <MaterialCommunityIcons
+                name={isBest ? 'star' : 'star-outline'}
+                size={18}
+                color={isBest ? theme.accent : colors.textDim}
+              />
+              <Text style={[styles.secondaryText, isBest && { color: theme.accent }]}>Best</Text>
+            </Pressable>
+            <Pressable
+              style={styles.secondaryButton}
+              disabled={busy}
               onPress={() => void run(() => makeSingle(current.id))}
             >
               <MaterialCommunityIcons name="image-move" size={18} color={colors.textDim} />
@@ -814,13 +937,65 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
           </View>
 
           <BigButton
-            label={busy ? 'Saving…' : `Keep rest (${keepCount})`}
+            label={busy ? 'Saving…' : `Keep remaining (${keepCount})`}
             color={colors.keep}
             disabled={busy}
             onPress={finishGroup}
           />
         </>
       )}
+
+      {/* m0.7 item E: album picker for the deck Organize button. */}
+      <Modal
+        visible={organizePicker}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setOrganizePicker(false)}
+      >
+        <Pressable style={styles.pickerBackdrop} onPress={() => setOrganizePicker(false)}>
+          <Pressable style={styles.pickerCard} onPress={() => {}}>
+            <Text style={styles.pickerTitle}>Move to album</Text>
+            <ScrollView style={{ maxHeight: 280 }}>
+              {albums.map((album) => (
+                <Pressable
+                  key={`${album.volumeName}:${album.bucketId}`}
+                  style={styles.albumRow}
+                  onPress={() => void chooseOrganizeTarget(album.relativePath)}
+                >
+                  <MaterialCommunityIcons name="folder-image" size={18} color={colors.textDim} />
+                  <Text style={styles.albumName}>{album.displayName}</Text>
+                  <Text style={styles.albumCount}>{album.photoCount}</Text>
+                </Pressable>
+              ))}
+              {albums.length === 0 && (
+                <Text style={styles.albumEmpty}>No albums found — create one below.</Text>
+              )}
+            </ScrollView>
+            <View style={styles.albumNewRow}>
+              <TextInput
+                style={styles.albumNewInput}
+                placeholder="New album name"
+                placeholderTextColor={colors.textDim}
+                value={newAlbumName}
+                onChangeText={setNewAlbumName}
+              />
+              <Pressable
+                style={styles.pickerClose}
+                disabled={!newAlbumPath(newAlbumName)}
+                onPress={() => {
+                  const path = newAlbumPath(newAlbumName);
+                  if (path) void chooseOrganizeTarget(path);
+                }}
+              >
+                <Text style={styles.pickerCloseText}>Create</Text>
+              </Pressable>
+            </View>
+            <Pressable style={styles.pickerClose} onPress={() => setOrganizePicker(false)}>
+              <Text style={styles.pickerCloseText}>Cancel</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* m0.5: explicit opponent picker for the Compare tool. */}
       <Modal
@@ -1025,5 +1200,27 @@ const styles = StyleSheet.create({
   },
   pickerIndexText: { color: colors.text, fontSize: 11, fontWeight: '800' },
   pickerClose: { minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+  albumRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  albumName: { color: colors.text, fontSize: 15, flex: 1 },
+  albumCount: { color: colors.textDim, fontSize: 13 },
+  albumEmpty: { color: colors.textDim, fontSize: 14, paddingVertical: 12 },
+  albumNewRow: { flexDirection: 'row', gap: 8, alignItems: 'center', marginTop: 8 },
+  albumNewInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 10,
+    color: colors.text,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 15,
+  },
   pickerCloseText: { color: colors.textDim, fontSize: 14, fontWeight: '700' },
 });

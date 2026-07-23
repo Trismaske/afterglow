@@ -7,6 +7,16 @@ export interface FavouriteStatus {
 
 export const NO_FAVOURITE: FavouriteStatus = { state: 'none', target: null };
 
+/**
+ * m0.7 item F (#10): the best-of-group hand-off is WRITE-ONLY. It is
+ * offered only when the photo is not already favourited (in any selected
+ * or queued sense) — starring an already-favourited photo must never
+ * prompt, and "Not now" is always a strict no-op.
+ */
+export function shouldOfferFavouriteHandoff(status: FavouriteStatus): boolean {
+  return !isFavouriteSelected(status);
+}
+
 /** What the heart should communicate, including queued/error intent. */
 export function isFavouriteSelected(status: FavouriteStatus): boolean {
   if (status.state === 'applied' || status.state === 'queued_apply') return true;

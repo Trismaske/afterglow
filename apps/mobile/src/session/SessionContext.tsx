@@ -133,6 +133,8 @@ interface SessionContextValue {
   deckSetCursor: (groupId: string, index: number) => void;
   /** Cull the photo out of its deck onto the staged cull list. */
   deckCull: (id: string) => Promise<void>;
+  /** m0.7 #19: Keep the CURRENT photo (deck advances past it). */
+  keepOne: (id: string) => Promise<void>;
   /** Brief-undo for a deck cull: back into the deck, unreviewed. */
   deckUndoCull: (id: string) => Promise<void>;
   /** Finish the group: alive unreviewed members are kept. */
@@ -431,6 +433,17 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       void hashInBackground(id);
     },
     [persist, bump, hashInBackground],
+  );
+
+  const keepOne = useCallback(
+    async (id: string) => {
+      const session = sessionRef.current;
+      if (!session) throw new Error('keepOne: no active session');
+      keepUnreviewed(session, id); // group deck keep or single keep
+      bump();
+      await persist();
+    },
+    [persist, bump],
   );
 
   const deckUndoCull = useCallback(
@@ -797,6 +810,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       discardActiveSession,
       deckSetCursor,
       deckCull,
+      keepOne,
       deckUndoCull,
       keepRest,
       markBest,
@@ -830,6 +844,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       discardActiveSession,
       deckSetCursor,
       deckCull,
+      keepOne,
       deckUndoCull,
       keepRest,
       markBest,

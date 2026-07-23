@@ -90,6 +90,13 @@ export class DeckSession {
       }
       groupIds.add(group.id);
       if (group.items.length === 0) continue;
+      // C#6 (m0.7): a group is >= 2 related photos — a singleton input
+      // group is canonicalized to a single instead of a one-member group.
+      if (group.items.length === 1) {
+        register(group.items[0], `group ${group.id}`);
+        session.singleIds.push(group.items[0].id);
+        continue;
+      }
       for (const item of group.items) register(item, `group ${group.id}`);
       session.groups.push({
         groupId: group.id,
@@ -126,6 +133,9 @@ export class DeckSession {
 
   /** Move the deck cursor (clamped to the alive range). */
   setCursor(groupId: string, index: number): void {
+    if (!Number.isInteger(index)) {
+      throw new Error(`setCursor: index must be a finite integer, got ${String(index)}`);
+    }
     const group = this.group(groupId);
     group.cursor = clampCursor(index, group.aliveIds.length);
   }
@@ -232,6 +242,14 @@ export class DeckSession {
     group.memberIds = group.memberIds.filter((m) => m !== id);
     this.removeFromDeck(group, id);
     this.singleIds.push(id);
+    // C#6 (m0.7): a group is >= 2 related photos. Ejecting down to one
+    // member dissolves the group — the survivor becomes a single too,
+    // keeping its current state (a culled survivor stays staged).
+    if (group.memberIds.length <= 1) {
+      const survivor = group.memberIds[0];
+      this.groups = this.groups.filter((g) => g !== group);
+      if (survivor !== undefined) this.singleIds.push(survivor);
+    }
   }
 
   /**
@@ -344,6 +362,15 @@ export class DeckSession {
   cullKept(id: string): void {
     this.requireState(id, 'kept', 'cullKept');
     this.states.set(id, 'culled');
+    // C#5 (m0.7): a keeper re-decided as culled must also leave its deck
+    // and give up a best star — a snapshot with a culled photo still in
+    // aliveIds/bestId is rejected by fromJSON, so a process restart after
+    // this exact path used to abandon the whole session as corrupt.
+    const group = this.groups.find((g) => g.memberIds.includes(id));
+    if (group) {
+      if (group.aliveIds.includes(id)) this.removeFromDeck(group, id);
+      if (group.bestId === id) group.bestId = null;
+    }
   }
 
   /**
@@ -502,7 +529,7 @@ export class DeckSession {
         !Array.isArray(value.memberIds) ||
         !Array.isArray(value.aliveIds) ||
         typeof value.cursor !== 'number' ||
-        !Number.isFinite(value.cursor) ||
+        !Number.isInteger(value.cursor) ||
         typeof value.complete !== 'boolean' ||
         !(value.bestId === null || typeof value.bestId === 'string')
       ) {
@@ -541,6 +568,15 @@ export class DeckSession {
       }
       if (value.bestId !== null && !alive.has(value.bestId)) {
         throw new Error(`DeckSession.fromJSON: best photo is not alive in ${value.groupId}`);
+      }
+      if (value.complete === true) {
+        for (const id of memberIds) {
+          if (states.get(id) === 'unreviewed') {
+            throw new Error(
+              `DeckSession.fromJSON: complete group ${value.groupId} holds unreviewed ${id}`,
+            );
+          }
+        }
       }
       membersByGroup.set(value.groupId, members);
       groups.push({

@@ -184,12 +184,90 @@ describe('DeckSession — markBest / makeSingle', () => {
     expect(s.getState('p1')).toBe('culled');
   });
 
-  it('makeSingle of the last alive member completes the group', () => {
+  it('makeSingle that leaves one member dissolves the group (C#6, #22/#23)', () => {
     const s = deck(2);
     s.cull('p0');
     s.makeSingle('p1');
-    expect(s.isGroupComplete('g1')).toBe(true);
-    expect(s.groupInfo('g1').memberIds).toEqual(['p0']);
+    // The group is gone entirely; the culled survivor is a single and
+    // its staged cull is untouched.
+    expect(s.groupsInfo().map((g) => g.id)).not.toContain('g1');
+    expect(s.toJSON().singleIds).toEqual(expect.arrayContaining(['p0', 'p1']));
+    expect(s.getState('p0')).toBe('culled');
+    expect(s.getState('p1')).toBe('unreviewed');
+    // The snapshot round-trips (the dissolved shape is valid).
+    expect(() => DeckSession.fromJSON(s.toJSON())).not.toThrow();
+  });
+
+  it('a singleton input group is canonicalized to a single (C#6)', () => {
+    const s = DeckSession.create({
+      groups: [{ id: 'g1', items: [item('solo', 1000)], start: 1000, end: 1000 }],
+      singles: [],
+    });
+    expect(s.groupsInfo()).toEqual([]);
+    expect(s.toJSON().singleIds).toEqual(['solo']);
+  });
+});
+
+describe('DeckSession — C#5 cullKept restart round trips', () => {
+  it('keep group → cull kept → serialize → restore succeeds', () => {
+    const s = deck(3);
+    s.keepRest('g1');
+    s.cullKept('p1');
+    expect(s.getState('p1')).toBe('culled');
+    const restored = DeckSession.fromJSON(s.toJSON());
+    expect(restored.getState('p1')).toBe('culled');
+  });
+
+  it('the same path when the photo is best clears the star and round-trips', () => {
+    const s = deck(3);
+    s.markBest('g1', 'p1');
+    s.keepRest('g1');
+    s.cullKept('p1');
+    expect(s.groupInfo('g1').bestId).toBeNull();
+    expect(() => DeckSession.fromJSON(s.toJSON())).not.toThrow();
+  });
+
+  it('cull → keep → clear decision round-trips', () => {
+    const s = deck(3);
+    s.cull('p0');
+    s.unstageCull('p0'); // culled → kept
+    s.clearDecision('p0'); // kept → unreviewed, back in deck
+    expect(s.getState('p0')).toBe('unreviewed');
+    expect(() => DeckSession.fromJSON(s.toJSON())).not.toThrow();
+  });
+
+  it('every re-decision transition survives a serialize/restore cycle', () => {
+    const s = deck(3);
+    s.keepRest('g1');
+    for (const transition of [
+      () => s.cullKept('p0'),
+      () => s.unstageCull('p0'),
+      () => s.cullKept('p2'),
+      () => s.clearDecision('p2'),
+    ]) {
+      transition();
+      expect(() => DeckSession.fromJSON(s.toJSON())).not.toThrow();
+    }
+  });
+});
+
+describe('DeckSession — C#13 validation', () => {
+  it('setCursor rejects non-integer input', () => {
+    const s = deck(3);
+    expect(() => s.setCursor('g1', 1.5)).toThrow('finite integer');
+    expect(() => s.setCursor('g1', NaN)).toThrow('finite integer');
+    expect(() => s.setCursor('g1', Infinity)).toThrow('finite integer');
+    s.setCursor('g1', 1); // integers clamp as before
+  });
+
+  it('fromJSON rejects a float cursor and a complete group holding unreviewed members', () => {
+    const s = deck(3);
+    const float = s.toJSON();
+    float.groups[0].cursor = 0.5;
+    expect(() => DeckSession.fromJSON(float)).toThrow(/malformed group/);
+    const inconsistent = deck(3).toJSON();
+    inconsistent.groups[0].complete = true; // members still unreviewed
+    expect(() => DeckSession.fromJSON(inconsistent)).toThrow(/holds unreviewed/);
   });
 });
 

@@ -46,6 +46,10 @@ export interface ReviewableLoad {
   reviewable: LoadedPhoto[];
   /** Photos in range already converged (to_edit / done / trashed). */
   handled: number;
+  /** Staged culls in range — carried in the durable global cull queue
+   * (P4#1), not drawn. (Gate 2's candidate window re-includes them as
+   * badged context; until then they are reachable via the cull list.) */
+  carried: number;
   /** True when more reviewable photos remain beyond the cap. */
   capped: boolean;
 }
@@ -70,9 +74,9 @@ const tsOf = (p: LoadedPhoto) => p.item.timestamp;
  * Load the photos in [startMs, endMs] still needing review, selected per
  * `prefs` (draw order + cap + group-boundary softening). `albumIds`
  * null = all folders; otherwise one paged pass per bucket. Converged
- * states stay converged; interim states (unreviewed / kept / culled from
- * an abandoned session) are re-included, matching the m0.2
- * reconciliation rule.
+ * states stay converged; interim unreviewed/kept rows are re-included.
+ * Staged culls are CARRIED (m0.7 policy change): they stay in the durable
+ * global cull queue and are counted, not drawn — never reset.
  */
 export async function loadReviewablePhotos(
   db: SQLiteDatabase,
@@ -86,6 +90,7 @@ export async function loadReviewablePhotos(
   const buckets: (string | undefined)[] = albumIds ? [...albumIds] : [undefined];
   const merged: LoadedPhoto[] = [];
   let handled = 0;
+  let carried = 0;
   let earlyStopped = false;
 
   for (const album of buckets) {
@@ -103,6 +108,7 @@ export async function loadReviewablePhotos(
         for (const photo of page) {
           const state = states.get(photo.item.id);
           if (state === 'to_edit' || state === 'done' || state === 'trashed') handled++;
+          else if (state === 'culled') carried++;
           else bucketReviewable.push(photo);
         }
         if (!bucketNeedsMore(bucketReviewable, tsOf, cap, wholeGroups, MOMENTS_GAP_MS)) {
@@ -121,5 +127,5 @@ export async function loadReviewablePhotos(
   const { selected, capped } = applySessionCap(merged, tsOf, cap, wholeGroups, MOMENTS_GAP_MS);
   // Review presentation is always chronological.
   if (descending) selected.reverse();
-  return { reviewable: selected, handled, capped: earlyStopped || capped };
+  return { reviewable: selected, handled, carried, capped: earlyStopped || capped };
 }

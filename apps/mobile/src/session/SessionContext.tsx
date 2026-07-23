@@ -46,7 +46,7 @@ import {
   bankActiveSessionKeepers,
   clearPhotoGroup,
   completeSession,
-  createSession,
+  replaceActiveSession,
   getActiveSession,
   getFavouriteStates,
   getNeedsEditAssets,
@@ -296,23 +296,26 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       const groupIdByAsset = new Map<string, string>();
       for (const g of groups) for (const item of g.items) groupIdByAsset.set(item.id, g.id);
 
-      // m0.5: decisions are never silently discarded — the replaced
-      // session's keepers converge to done first (its per-photo states
-      // and compare history are already in SQLite after every decision).
-      await bankActiveSessionKeepers(db);
-      await abandonActiveSessions(db, Date.now());
-      const id = await createSession(db, {
-        label: newLabel,
-        rangeStart,
-        rangeEnd,
-        snapshot: JSON.stringify(session.toJSON()),
-        photos: photos.map((p) => ({
-          ...p,
-          groupId: groupIdByAsset.get(p.item.id) ?? null,
-          day: dayKey(p.item.timestamp),
-        })),
-        createdAt: Date.now(),
-      });
+      // m0.7 (N#2, P4#1): replacement is ONE atomic transaction — bank the
+      // old session's keepers, abandon it, create the new session. Staged
+      // culls are carried in the durable global cull queue, so replacement
+      // is silent; a failure anywhere leaves the old session resumable.
+      const id = await replaceActiveSession(
+        db,
+        {
+          label: newLabel,
+          rangeStart,
+          rangeEnd,
+          snapshot: JSON.stringify(session.toJSON()),
+          photos: photos.map((p) => ({
+            ...p,
+            groupId: groupIdByAsset.get(p.item.id) ?? null,
+            day: dayKey(p.item.timestamp),
+          })),
+          createdAt: Date.now(),
+        },
+        Date.now(),
+      );
 
       sessionRef.current = session;
       persistenceQueue.resetCommitted(statesOf(session));

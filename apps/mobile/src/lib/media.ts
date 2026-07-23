@@ -12,9 +12,39 @@ import type { MediaItem } from '@afterglow/core';
 import { trashMedia, type MediaStoreActionStatus } from '../../modules/media-store-actions';
 import { tallyPhotoDays } from './recentMedia';
 
-/** A camera-roll photo: the core item plus MediaStore extras we persist. */
+/**
+ * Canonical volume-qualified identity (m0.7 gate 1, P4#2): every photo id
+ * that leaves this adapter is `<volume>/<raw MediaStore id>`. This is THE
+ * ingestion boundary (P5#1) — the legacy Expo asset's bare raw id never
+ * reaches the core model or SQLite keys. Until the gate-3 native catalog
+ * adds multi-volume awareness, everything the legacy Expo query returns is
+ * primary external storage **(autonomous: single-volume assumption,
+ * refined in gate 3)**.
+ */
+export const PRIMARY_VOLUME = 'external_primary';
+
+export function canonicalPhotoId(volumeName: string, rawId: string): string {
+  return `${volumeName}/${rawId}`;
+}
+
+/** The raw MediaStore id of a canonical id (tolerant of legacy bare ids). */
+export function rawIdOf(canonicalId: string): string {
+  const slash = canonicalId.lastIndexOf('/');
+  return slash < 0 ? canonicalId : canonicalId.slice(slash + 1);
+}
+
+/** The volume of a canonical id (bare legacy ids map to primary). */
+export function volumeOf(canonicalId: string): string {
+  const slash = canonicalId.lastIndexOf('/');
+  return slash < 0 ? PRIMARY_VOLUME : canonicalId.slice(0, slash);
+}
+
+/** A camera-roll photo: the core item plus MediaStore extras we persist.
+ * `item.id` is the canonical volume-qualified id. */
 export interface LoadedPhoto {
   item: MediaItem;
+  rawId: string;
+  volumeName: string;
   filename: string;
   modTime: number;
   width: number;
@@ -26,7 +56,7 @@ const PAGE_SIZE = 200;
 function toLoadedPhoto(asset: MediaLibrary.Asset): LoadedPhoto {
   return {
     item: {
-      id: asset.id,
+      id: canonicalPhotoId(PRIMARY_VOLUME, asset.id),
       // Some sources report 0 creationTime; fall back to modification
       // time so clustering stays best-effort instead of lumping them
       // all at epoch.
@@ -34,6 +64,8 @@ function toLoadedPhoto(asset: MediaLibrary.Asset): LoadedPhoto {
       uri: asset.uri,
       kind: 'photo',
     },
+    rawId: asset.id,
+    volumeName: PRIMARY_VOLUME,
     filename: asset.filename,
     modTime: asset.modificationTime,
     width: asset.width,
@@ -191,10 +223,11 @@ export interface AssetDetails {
  */
 export async function getAssetDetails(assetId: string): Promise<AssetDetails | null> {
   try {
-    const info = await MediaLibrary.getAssetInfoAsync(assetId);
+    // Accepts canonical volume-qualified ids; Expo wants the raw id.
+    const info = await MediaLibrary.getAssetInfoAsync(rawIdOf(assetId));
     if (!info) return null;
     return {
-      id: info.id,
+      id: canonicalPhotoId(volumeOf(assetId), info.id),
       filename: info.filename,
       creationTime: info.creationTime,
       modificationTime: info.modificationTime,
@@ -246,7 +279,7 @@ export async function loadCandidatesCreatedBetween(
       for (const asset of page.assets) {
         loaded++;
         out.push({
-          id: asset.id,
+          id: canonicalPhotoId(PRIMARY_VOLUME, asset.id),
           filename: asset.filename,
           creationTime: asset.creationTime,
           modificationTime: asset.modificationTime,
@@ -280,11 +313,13 @@ export interface EditableContentUri {
 }
 
 export async function getEditableContentUriDetailed(assetId: string): Promise<EditableContentUri> {
+  // Accepts canonical volume-qualified ids; Expo wants the raw id.
+  const rawId = rawIdOf(assetId);
   try {
-    return { uri: await MediaLibrary.getAssetContentUriAsync(assetId), source: 'expo' };
+    return { uri: await MediaLibrary.getAssetContentUriAsync(rawId), source: 'expo' };
   } catch (error) {
     return {
-      uri: `content://media/external/images/media/${assetId}`,
+      uri: `content://media/${volumeOf(assetId)}/images/media/${rawId}`,
       source: 'synthetic-fallback',
       resolveError: error instanceof Error ? error.message : String(error),
     };

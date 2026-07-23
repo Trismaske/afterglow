@@ -18,6 +18,7 @@ import java.io.Serializable
 enum class MediaStoreAction : Serializable {
   TRASH,
   FAVOURITE,
+  WRITE,
 }
 
 data class MediaStoreActionInput(
@@ -38,6 +39,10 @@ class MediaStoreActionContract(
     val request = when (input.action) {
       MediaStoreAction.TRASH -> MediaStore.createTrashRequest(contentResolver, input.uris, input.value)
       MediaStoreAction.FAVOURITE -> MediaStore.createFavoriteRequest(contentResolver, input.uris, input.value)
+      // Gate-0 diagnostic (m0.7 item A): ask Android to delegate write access
+      // to other apps' media — the documented Android 11+ mechanism when the
+      // caller holds broad read but cannot itself grant write.
+      MediaStoreAction.WRITE -> MediaStore.createWriteRequest(contentResolver, input.uris)
     }
     val sender = IntentSenderRequest.Builder(request.intentSender).build()
     return Intent(ACTION_INTENT_SENDER_REQUEST).putExtra(EXTRA_INTENT_SENDER_REQUEST, sender)

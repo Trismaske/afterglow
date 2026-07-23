@@ -11,6 +11,7 @@ import { getToEditPhotos, markEditDone, type ToEditRow } from '../db/store';
 import { getEditableContentUri } from '../lib/media';
 import { launchEditor } from '../lib/edit';
 import { NO_EDITOR_MESSAGE, NO_EDITOR_TITLE, VIEWER_FALLBACK_TOAST } from '../lib/editFallback';
+import { EditDiagnosticsSheet } from '../components/EditDiagnosticsSheet';
 import { showToast } from '../lib/toast';
 import { labelForDayKey } from '../lib/dates';
 import { formatClock } from '../lib/format';
@@ -29,6 +30,9 @@ export function EditQueueScreen(_props: Props) {
   const db = useSQLiteContext();
   const [rows, setRows] = useState<ToEditRow[] | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Gate-0 (m0.7 item A): the editor-launch diagnostic matrix, opened from
+  // the failure alert or by long-pressing Edit (proactive/emulator path).
+  const [matrixAssetId, setMatrixAssetId] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setRows(await getToEditPhotos(db));
@@ -63,6 +67,13 @@ export function EditQueueScreen(_props: Props) {
           Alert.alert(
             NO_EDITOR_TITLE,
             `${NO_EDITOR_MESSAGE}\n\nDiagnostics\nURI: ${result.uri}\nACTION_EDIT: ${result.editError}\nACTION_VIEW: ${result.viewError}`,
+            [
+              { text: 'Close', style: 'cancel' },
+              {
+                text: 'Run permission matrix',
+                onPress: () => setMatrixAssetId(row.asset_id),
+              },
+            ],
           );
           return;
         }
@@ -99,6 +110,7 @@ export function EditQueueScreen(_props: Props) {
               style={[styles.rowButton, styles.editButton]}
               disabled={busyId !== null}
               onPress={() => void openEditor(item)}
+              onLongPress={() => setMatrixAssetId(item.asset_id)}
             >
               <MaterialCommunityIcons name="pencil" size={18} color={colors.edit} />
               <Text style={styles.rowButtonText}>
@@ -142,6 +154,9 @@ export function EditQueueScreen(_props: Props) {
           ) : null
         }
       />
+      {matrixAssetId !== null ? (
+        <EditDiagnosticsSheet assetId={matrixAssetId} onClose={() => setMatrixAssetId(null)} />
+      ) : null}
     </View>
   );
 }

@@ -270,12 +270,29 @@ export async function loadCandidatesCreatedBetween(
  * Android). Falls back to constructing the standard external-images URI
  * from the MediaStore id if the native lookup fails.
  */
-export async function getEditableContentUri(assetId: string): Promise<string> {
+/** How a content URI was obtained. The synthetic fallback shape matches the
+ * URI in the captured Samsung editor failure, so gate-0 diagnostics must
+ * know which path produced it. */
+export interface EditableContentUri {
+  uri: string;
+  source: 'expo' | 'synthetic-fallback';
+  resolveError?: string;
+}
+
+export async function getEditableContentUriDetailed(assetId: string): Promise<EditableContentUri> {
   try {
-    return await MediaLibrary.getAssetContentUriAsync(assetId);
-  } catch {
-    return `content://media/external/images/media/${assetId}`;
+    return { uri: await MediaLibrary.getAssetContentUriAsync(assetId), source: 'expo' };
+  } catch (error) {
+    return {
+      uri: `content://media/external/images/media/${assetId}`,
+      source: 'synthetic-fallback',
+      resolveError: error instanceof Error ? error.message : String(error),
+    };
   }
+}
+
+export async function getEditableContentUri(assetId: string): Promise<string> {
+  return (await getEditableContentUriDetailed(assetId)).uri;
 }
 
 export interface TrashAssetsResult {

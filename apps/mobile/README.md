@@ -130,7 +130,8 @@ into a new session).
   core package. The older pairwise duel bracket (`CullSession`) remains
   exported in core but the app no longer uses it.
 - `src/lib/media.ts` is the only MediaStore adapter
-  (`expo-media-library/legacy` — see `docs/assumptions-mobile.md` #1) and
+  (`expo-media-library/legacy`, deliberately — migrating to the new SDK
+  query API is tracked in PLAN.md's trigger-based backlog) and
   contains the app's single delete call.
 - SQLite (expo-sqlite async API) is the source of truth: `photos` keyed by
   MediaStore asset id (lazy SHA-256 content hash as fallback identity),
@@ -144,7 +145,7 @@ into a new session).
   and un-culling.
 - `src/lib/edit.ts` + `editFallback.ts` document the editor-launch
   decisions: raw `ACTION_EDIT` string, `content://` URI, read+write grant
-  flags, MIME omitted so Android infers it, `ACTION_VIEW` fallback.
+  flags, explicit `image/*` MIME, `ACTION_VIEW` fallback.
   Editor result codes are untrustworthy, so nothing auto-marks done.
 - Rendering via `expo-image`; gestures via react-native-gesture-handler +
   reanimated 4 (compare flip/zoom and the deck's pinch-zoom overlay share

@@ -81,12 +81,13 @@ They are separate apps with separate release trains, but the intelligence — ti
 (no state) ──not in a group──▶ single review ─┴──────────┴─▶ done
 ```
 
-- **Cull groups:** time-proximity clustering, refined by perceptual similarity (dHash) so a group really is one scene; strictness is a preset-chips + fine-tune-slider setting.
+- **Cull groups:** similarity-first (dHash connected components across the session draw) — time proximity relaxes the similarity bar but never excludes, so the same scene shot across days still groups; strictness is a preset-chips + fine-tune-slider setting, with legacy time-only grouping available as a separate toggle. Groups persist, so completed days re-show them. 1-photo groups are singles.
 - **Group review — swipe deck:** each group is a swipeable deck — cull (with undo), keep the rest, flag to-edit, star a best, or eject an unrelated photo to the singles bucket. Groups can be entered in any order, singles first is fine, and every decision is reversible until the final cull confirmation. Completing a group advances directly to the next unfinished group; deliberately reopening an already-completed group remains in browse/re-decide mode.
 - **Compare:** any two group members go full-screen A/B — tap to flip (better than side-by-side on a phone), synchronized pinch-zoom for sharpness/eyes checks, labels keep the photos' group numbers. "X is better" stars the best-of-group; in a two-photo group it offers to cull the loser. Every verdict is stored cheaply as compare history — no extra comparisons — so later features can mine it.
-- **Cull list:** staged, reviewable, then one final confirmation → batch move into the **system trash** (recovery duration is gallery-managed; single system dialog; Android 11+ only).
+- **Cull list:** a durable global queue — staged culls survive session replacement and re-drawn photos surface with their prior verdict (policy change 2026-07-23). Reviewable, then one final confirmation → batch move into the **system trash** (recovery duration is gallery-managed; one system dialog per bounded batch) on Android 11+; below API 30, permanent delete behind unmissable warnings (m0.8 — no system trash exists there).
 - **Single review:** photos outside any group get a swipe pass — cull / to-edit / done.
-- **To-edit queue:** in-app list (Android has no virtual gallery albums); each entry has an Edit button firing `ACTION_EDIT` into the user's editor of choice — fewer taps than finding it in the gallery. Manual "mark done" always available.
+- **The queue family** — every queue is a durable, reviewable in-app list: **to-edit** (per-photo — Edit button fires `ACTION_EDIT` into the user's editor; manual "mark done" always available), **favourite** (applied in one batch via `MediaStore.createFavoriteRequest`, surfaces as the gallery's heart), **organize** (applied in one batch — move to a chosen album via `createWriteRequest` + `RELATIVE_PATH`), **share** (a persistent working set shared in multiple sharesheet passes over chosen subsets).
+- **History:** a re-decidable, filterable current-state feed of photos still present, plus share-sheet events.
 - **Edit detection on app open:** two heuristics, because Android editors differ. Samsung Gallery (and similar) edit **in place** — same file, changed content — detected via MediaStore generation/`date_modified`/hash change → auto-mark `done`. Other editors (Google Photos, Snapseed) save a **copy** — detected via sibling-name/timestamp sniffing → copy marked `done`, app asks whether to keep or cull the original.
 - **Sessions & progress:** review sessions drawn from a chosen scope — rolling ranges (last day/week/month/…) or custom named ranges ("Japan — Jan 31 to Mar 6") — capped per session (settings: size, group-boundary softness, oldest/newest first) and bankable at any point via "End session & apply"; summary (reviewed / culled / storage reclaimed), streaks, per-day and global progress browsing.
 - Later: iOS (deferred post-1.0 until there are iOS users/testers).
@@ -109,7 +110,7 @@ afterglow/
 ├── packages/core/        # @afterglow/core — shared pure-TS logic + its tests
 ├── apps/desktop/         # Electron app (main, preload, renderer)
 ├── apps/mobile/          # Expo React Native app
-├── docs/                 # development setup, assumptions logs
+├── docs/                 # development setup, release plans, open-question TODO
 └── .github/workflows/    # CI: lint/test + release builds
 ```
 
@@ -117,7 +118,7 @@ afterglow/
 
 ## Release roadmap
 
-Two trains. v0.1–v0.5 and m0.1–m0.5 have shipped; next up: the desktop RAW pipeline (v0.6) and the mobile feedback release (m0.6).
+Two trains. v0.1–v0.5 and m0.1–m0.6 have shipped; next up: the desktop RAW pipeline (v0.6) and the mobile feedback release (m0.7).
 
 ### Desktop train
 
@@ -141,7 +142,7 @@ This-day-in-history and month/year modes; all-displays support; overlay/settings
 **v0.9 — Screensaver: Linux + macOS, auto-update** (Windows shipped in v0.5)
 Linux idle hooks (systemd/X11); macOS hot-corner + launcher guidance (no `.saver` from Electron). Auto-update (electron-updater) lands here too.
 
-**v1.0** — hardening, docs, signing decisions, whatever the testers demanded loudest.
+**v1.0** — hardening, docs, code signing (Windows certificate / macOS notarization — until then SmartScreen "More info → Run anyway" stays the documented tester path), whatever the testers demanded loudest.
 
 ### Mobile train
 
@@ -151,23 +152,34 @@ Linux idle hooks (systemd/X11); macOS hot-corner + launcher guidance (no `.saver
 - **m0.3 / m0.3.1** — edit detection on app open, auto-cull hints, A/B flip compare + synchronized zoom; review-scope ranges, gated All-time, source folders.
 - **m0.4** — perceptual-similarity grouping (dHash), **swipe-deck group review replacing the duel bracket** (bracket retained in core), progress browsing, Material You theming.
 - **m0.5** — feedback release: editor launch fallback (`ACTION_EDIT` → `ACTION_VIEW`), looser similarity scale (12/16/20/26/32) + 0–64 fine-tune slider, decisions reversible until the final confirm, session flow freedom (any order, banked decisions, "End session & apply"), Sessions settings (cap 50 default, group-boundary softness, oldest/newest first), compare fixes (best-of-group semantics, "Compare with…" picker, group-number labels), custom named review scopes, deck pinch-zoom, gear icon.
+- **m0.6** — feedback + feature-completion release: decision indicators everywhere with re-tap-to-clear, group cards reopen the group, singles unified into the deck as a pseudo-group, completed groups advance immediately, favourites queue (♥, batched `createFavoriteRequest` native module), lifetime stats + streaks, progress-bar fix, startup/analysis perf pass, Material icon language, editor-launch diagnostics (fix itself carried to m0.7 — see below).
 
-**m0.6 — Feedback release + feature completion (next)**
-The 2026-07-18 tester round — full plan in [docs/Plan_20260718.md](docs/Plan_20260718.md):
-- **Editor launch fix** (still broken on Samsung): `<queries>` package-visibility manifest block + explicit `image/*` MIME on the EDIT/VIEW intents, plus surfacing the real failure message.
-- **Decision indicators everywhere**: ✕ cull / ✓ keep / ✎ to-edit / ★ best on photos in both the Groups strips and the deck (edit takes display precedence; deck footer states every verdict); re-tapping a decision **clears it** (small new core transition for kept → unreviewed).
-- **Group cards open the group again** (re-deciding moved inside the deck's browse mode).
-- **Singles unified into the deck layout** — the singles bucket becomes one pseudo-group: thumbnail strip, free scrolling, zoom, Compare between singles.
-- **Progress-bar fix**: segmented bars now scale against the day's total (previously any progress rendered as a full bar).
-- **All-time hint** only while the chip is visible-and-locked; **pinch-zoom activation smoothing** (timeboxed); similarity scale unchanged (field-verified) with a clearer slider explainer.
-- **Favourites queue (♥)** — distinct from ★ best (relative winner vs. absolute quality; a group's best isn't automatically a favourite, and one group can yield several): heart photos anywhere, batch-apply to the system gallery's favourite via `MediaStore.createFavoriteRequest` (one confirm dialog, delete-flow shape; small local native module, Android 11+).
-- **Stats & streak depth** (pulled forward from m0.7): lifetime reviewed/culled/reclaimed, edits, favourites, current + longest streak.
-- **Startup/analysis perf** (pulled forward from m0.7): consolidate Home's per-day count queries, dHash batching/yield, cold-start pass.
-- **Icon design pass**: dark app icon ships; Material icons (`@expo/vector-icons`) replace the emoji gear and render the new decision indicators — one icon language.
+**m0.7 — Feedback release: trust the groups, work the queues (next)**
+The 2026-07-23 tester round — full canonical plan in [docs/Plan_20260723.md](docs/Plan_20260723.md):
+- **Editor launch root-cause fix** (top priority, proof-first): m0.6 diagnostics captured a URI-grant `SecurityException` on Samsung — a gate-0 diagnostic matrix (read vs write mode, `createWriteRequest` delegation) selects the mechanism before the fix commits; honest error copy.
+- **Grouping v2 — similarity-first**: similarity-connected components across the session draw (bounded-session contract); time proximity only relaxes the bar, never excludes (same subject shot days apart still groups); slider value = base bits allowed to differ, legacy time-only grouping demoted to a separate settings toggle; anti-chain fixture corpus; 1-photo groups dissolve to singles; emptied groups and 0-photo singles cards disappear.
+- **Durable groups**: run-keyed group membership persists to SQLite (schema v8, one membership truth, durable best-of-group); completed days re-show their groups in browse/re-decide mode; cross-day groups open complete.
+- **Deck relayout + queue family**: big three Keep / Compare / Cull; queue row Edit · Favourite · Organize · Share. New **organize queue** (move to a `(volume, relative path)` target via `createWriteRequest` + `RELATIVE_PATH`, one confirm, post-move DB repair) and **share queue** with **multi-pass sharing** (persistent working set; share overlapping subsets to different people via repeated sharesheet passes (`ACTION_SEND` for one photo, `ACTION_SEND_MULTIPLE` for more) with pass-count badges + optional labels; honest `sheet_opened` state, never claims delivery); "Gallery favorites" renamed **Favourite queue** with view + remove-from-queue; ♥ visible in progress.
+- **One deck, one viewer**: culled photos stay badged instead of disappearing; singles auto-advance and reopen after completion; completed and unreviewed groups share one layout; a standard full-screen photo viewer serves deck browse, progress, history and queues; double-tap zoom reset; date+time everywhere.
+- **History screen**: reverse-chronological re-decidable current-state feed plus share events, reconciled against MediaStore (outside deletes drop out, Gallery restores return to review).
+- **Atomic session replacement that carries staged culls** (policy change 2026-07-23: kept, edit, *and* staged-cull decisions all survive — no notice; the cull list becomes a durable global queue and in-range staged culls re-enter draws badged with their prior verdict); **recent days** = 3 recent + 2 unreviewed + older-days indicator backed by a cached day index; **day-count audit** against pinned formulas with kept/done merged into "reviewed"; ★ no longer clobbers ♥.
+- **Hardening folded in from the once-planned 0.7.1** (one tester round): atomic compound Compare verdicts, durable edited-copy "decide later" prompts, deck runtime validation, one-transaction favourite batches, History keyset pagination, limited-access "Manage selected photos" affordance, patch-tag release-preflight fix.
 
-**After m0.6** the mobile train is feature-complete: hardening and tester-driven fixes to 1.0. **iOS evaluation is deferred post-1.0 until further notice** (no iOS users or testers today).
+**m0.8 — Videos + next feedback round**
+Videos enter review (deferred from m0.7 by decision, singles-first: playback, keep/cull/queues; grouping later if warranted), plus whatever the m0.7 round surfaces, dormant shared-core debt (mix-engine weight contract, legacy `CullSession` hardening, retrospective selector validation), and **Android ≤ 10 culling via permanent delete** behind unmissable warnings (policy change 2026-07-23 — no system trash below API 30; ships with the matching trash-invariant doc updates). **After m0.8**: hardening and tester-driven fixes to 1.0 — including the planned **one-time signing break to a real release keystore** (testers reinstall; a data export/import path is considered first so review history survives) and merging `initial` → `main` as the pre-1.0 era closes. **iOS evaluation is deferred post-1.0 until further notice** (no iOS users or testers today).
 
 ---
+
+## Trigger-based backlog
+
+Vetted 2026-07-23 (assumptions review). Build these only when their trigger fires; no release target until then.
+
+- **Desktop `indexReady` IPC push** — pushes the whole library over IPC; chunk/incrementalize when a library passes ~100k photos.
+- **Desktop startup speed** — v0.5's warm-start-from-index was the first pass; if still slow, a profiling pass rides with v0.6 (the RAW pre-render queue touches the same path).
+- **`.scr` thin stub** — the screensaver is currently a full copy of the installed exe; a thin stub can replace the copy in a later release without touching registration logic. Cost today: one duplicated exe on disk.
+- **Desktop video capture dates** — videos index by file mtime only; container-metadata creation dates are a possible refinement. Low priority.
+- **`expo-media-library/legacy` migration** — mobile deliberately uses the legacy module for queries (battle-tested cursor paging); migrate to the SDK's class-based Query/Asset API when Expo deprecates the legacy path in earnest (m0.8+). All access funnels through `src/lib/media.ts`, so it stays a one-file migration.
+- **GitLab releases** — deferred until further notice; GitHub Releases is the sole delivery path. Do not add GitLab CI/remotes without a new decision.
 
 ## Risks
 

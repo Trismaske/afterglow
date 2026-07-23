@@ -43,4 +43,4 @@ Electron, vanilla TS (no framework), esbuild. Three processes: **main** (Node), 
 
 ## Verify
 
-`npm run typecheck|test|build -w afterglow-desktop`; headless e2e: `xvfb-run -a npx electron apps/desktop --smoke --show` (env knobs `AFTERGLOW_SMOKE_*` — see main/index.ts; fixture runs documented in docs/assumptions-desktop.md). Packaging: `electron-builder.yml` (NSIS include `build/installer.nsh`; `package.json` `homepage` is required by the deb target). Tests live in `test/*.test.ts`, one file per module.
+`npm run typecheck|test|build -w afterglow-desktop`; headless e2e: `xvfb-run -a npx electron apps/desktop --smoke --show` (env knobs `AFTERGLOW_SMOKE_*` — see main/index.ts). Packaging: `electron-builder.yml` (NSIS include `build/installer.nsh`; `package.json` `homepage` is required by the deb target; `electronVersion` is pinned there because electron is hoisted to the workspace root — bump it in sync whenever electron is upgraded). Tests live in `test/*.test.ts`, one file per module.

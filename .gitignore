@@ -154,3 +154,6 @@ apps/desktop/release/
 
 # Expo local module gradle output
 apps/mobile/modules/*/android/build/
+
+# Local tester evidence (referenced by docs/Feedback_*.md, never committed)
+screenshots/

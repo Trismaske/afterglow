@@ -85,7 +85,8 @@ cursor, completion and a starred best.
   never won one (excluding the best) — is retained analysis for future
   consumers and does not interrupt the current mobile flow.
 - **Singles:** `nextSingle()` / `decideSingle(id, action)` with
-  `SingleAction = 'keep' | 'cull' | 'to_edit'`.
+  `SingleAction = 'keep' | 'cull'` — `to_edit` is layered on top by the
+  mobile app's SQLite states, not core.
 - **Staged culls:** `stagedCulls()`, `confirmAll()` (`culled → confirmed`,
   returns ids), then the app deletes and calls `markTrashed(ids)` (atomic —
   a bad id mutates nothing).

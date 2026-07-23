@@ -28,7 +28,7 @@ Environment setup (Android toolchain/emulator, one command): [docs/DEVELOPMENT.m
 - **Core is pure**: no platform/FS APIs, no `Date.now()`/`Math.random()` — time is an injected `at`, randomness an injected `Rng`. ESM with explicit `.js` import extensions.
 - **Desktop security model**: contextIsolation + sandbox, preload/contextBridge only; media served via the `afterglow://` protocol with realpath containment; child processes via `execFile` argument vectors, never shell strings.
 - **Mobile trash-path conservatism**: both removal affordances use the local Android 11+ `MediaStore.createTrashRequest` module; there is no permanent-delete fallback. Per-photo review states in SQLite are the durable truth; the in-flight session snapshot is disposable.
-- **Assumptions discipline**: every autonomous decision goes into the numbered log `docs/assumptions-{core,desktop,mobile}.md`; the cross-train review shortlist is `docs/ASSUMPTIONS.md`. Read the relevant log before re-deciding something.
+- **Assumptions discipline**: planning-stage autonomous calls are flagged inline as **(autonomous)** in the current release plan (`docs/Plan_YYYYMMDD.md`) — those flags are the authoritative pre-implementation log. The plan's "Autonomous decisions" appendix numbers decisions as they are implemented, plus new judgment calls made mid-build. Getting entries human-vetted is a top priority: once approved, a decision is no longer an assumption — prune it (items needing future work move into a release plan or PLAN.md's roadmap/trigger-based backlog; settled behavior lives in PLAN.md/code headers). Read the plan's flags/appendix and PLAN.md's backlog before re-deciding something.
 - Style: split pure logic (unit-tested) from impure bindings; match the existing heavy header-comment style.
 
 ## Release flow
@@ -41,7 +41,6 @@ Tags trigger CI to GitHub Releases: `desktop-v*` → Windows installer (+ `.scr`
 |---|---|
 | PLAN.md | Product vision, feature semantics, roadmap/version numbering |
 | docs/DEVELOPMENT.md | Dev env setup, emulator, run/debug commands |
-| docs/ASSUMPTIONS.md | Shortlist of open decisions needing human review (kept current; resolved items are pruned) |
-| docs/assumptions-{core,desktop,mobile}.md | Full per-train decision logs (append yours) |
+| docs/TODO.md | Open questions parked for their own investigation |
 | docs/Feedback_YYYYMMDD.md / docs/Plan_YYYYMMDD.md | Current tester feedback + the release plan answering it (removed once shipped) |
 | README.md | User/tester-facing: formats, key bindings, install notes |

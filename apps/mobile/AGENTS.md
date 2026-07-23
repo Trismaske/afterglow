@@ -22,6 +22,7 @@ Core `DeckSession` (see packages/core/CLAUDE.md) holds the in-flight review; `se
 | similarityPrefs.ts                   | Similarity chips 12/16/20/26/32 (default 20), 0–64 threshold, labels                                         |
 | similarityHashes.ts / dhashDecode.ts | dHash pipeline: expo-image-manipulator shrink (impure) / decode→luma→hash (pure)                             |
 | edit.ts / editFallback.ts            | ACTION_EDIT launch (impure) / EDIT→VIEW fallback chain + copy (pure)                                         |
+| editMatrix.ts                        | Gate-0 editor-launch diagnostic matrix: probe sequencing, write-request branch, shareable report (pure)      |
 | detect.ts / editDetection.ts         | Edit detection on Home focus (MediaStore+SQLite wiring) / pure decision heuristics                           |
 | sources.ts / sourceCatalog.ts        | Photo-source folder targeting (pure) / MediaStore album catalog + persisted selection                        |
 | dates.ts                             | Day/range scope date math, local time                                                                        |
@@ -34,12 +35,14 @@ Core `DeckSession` (see packages/core/CLAUDE.md) holds the in-flight review; `se
 
 `session/persistenceQueue.ts` is the pure, failure-injected FIFO barrier used
 by SessionContext. `modules/media-store-actions` is the Android 11+ native
-trash/favourite boundary; `modules/material-you-accent` reads the system tone.
+trash/favourite boundary plus the gate-0 editor-launch diagnostics
+(environment/permission probes, intent dispatch probes, `createWriteRequest`);
+`modules/material-you-accent` reads the system tone.
 
 ## src/screens/ + components/
 
-Home (scope chips, session start/replace dialog, progress/edit/favourite queues) · Groups (whole-card navigation, decision badges, End-session-&-apply) · Deck/Singles (one scrollable review deck, automatic next-group advance, pinch-zoom overlay, Compare-with picker) · Compare (A/B flip, sync zoom, group/singles labels, verdicts) · CullList (staged culls, re-decide, confirm → system trash) · EditQueue (ACTION_EDIT + viewer fallback) · FavouritesQueue (verified batched gallery apply/remove) · Summary (session + lifetime stats) · Progress/DayProgress (state browsing) · Settings (source, similarity chips+slider, Sessions section, scope manager, accent, reset confirmations) · SourcePicker. Components: DecisionBadge, ReDecideSheet, FineSlider, BigButton, StateProgressBar, progress/* (grid, view, state editor, stateMeta).
+Home (scope chips, session start/replace dialog, progress/edit/favourite queues) · Groups (whole-card navigation, decision badges, End-session-&-apply) · Deck/Singles (one scrollable review deck, automatic next-group advance, pinch-zoom overlay, Compare-with picker) · Compare (A/B flip, sync zoom, group/singles labels, verdicts) · CullList (staged culls, re-decide, confirm → system trash) · EditQueue (ACTION_EDIT + viewer fallback) · FavouritesQueue (verified batched gallery apply/remove) · Summary (session + lifetime stats) · Progress/DayProgress (state browsing) · Settings (source, similarity chips+slider, Sessions section, scope manager, accent, reset confirmations) · SourcePicker. Components: DecisionBadge, ReDecideSheet, FineSlider, BigButton, StateProgressBar, EditDiagnosticsSheet (gate-0 matrix driver), progress/* (grid, view, state editor, stateMeta).
 
 ## Verify
 
-`npm run typecheck -w afterglow-companion`; `npm test -w afterglow-companion`; bundle proof `npx expo export --platform android` (from apps/mobile); native proof `npx expo prebuild --platform android --clean --no-install && cd android && ./gradlew :app:assembleDebug`. Device/emulator workflow + gesture checks: docs/DEVELOPMENT.md; on-device checklist lives in docs/assumptions-mobile.md. Release APK: `cd android && ./gradlew assembleRelease` (debug-keystore signed — do not change signing).
+`npm run typecheck -w afterglow-companion`; `npm test -w afterglow-companion`; bundle proof `npx expo export --platform android` (from apps/mobile); native proof `npx expo prebuild --platform android --clean --no-install && cd android && ./gradlew :app:assembleDebug`. Device/emulator workflow + gesture checks: docs/DEVELOPMENT.md; on-device/Samsung acceptance checklist lives in the current release plan's gates (docs/Plan_YYYYMMDD.md). Release APK: `cd android && ./gradlew assembleRelease` (debug-keystore signed — do not change signing).

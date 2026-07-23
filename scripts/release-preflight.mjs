@@ -21,7 +21,9 @@ if (kind === 'desktop') {
   }
   const [major, minor, patch] = pkg.version.split('.').map(Number);
   if (![major, minor, patch].every(Number.isInteger)) throw new Error('Invalid mobile semver');
-  const expected = `mobile-m${major}.${minor}`;
+  // P4#5 (m0.7): patch zero keeps the historical short tag; a non-zero
+  // patch carries it — 0.7.0 → mobile-m0.7, 0.7.1 → mobile-m0.7.1.
+  const expected = patch === 0 ? `mobile-m${major}.${minor}` : `mobile-m${major}.${minor}.${patch}`;
   if (tag !== expected) throw new Error(`Mobile tag ${tag} must exactly match ${expected}`);
 
   const versionCode = app.expo.android?.versionCode;

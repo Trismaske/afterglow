@@ -141,7 +141,6 @@ export function EditQueueScreen(_props: Props) {
               style={[styles.rowButton, styles.editButton]}
               disabled={busyId !== null}
               onPress={() => void openEditor(item)}
-              onLongPress={() => setMatrixAssetId(item.asset_id)}
             >
               <MaterialCommunityIcons name="pencil" size={18} color={colors.edit} />
               <Text style={styles.rowButtonText}>

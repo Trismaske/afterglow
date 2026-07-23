@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -6,6 +6,12 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MediaItem } from '@afterglow/core';
 import type { RootStackParamList } from '../navigation';
 import { useSession } from '../session/SessionContext';
+import { useSQLiteContext } from 'expo-sqlite';
+import { getStagedCulls, type StagedCullRow } from '../db/store';
+import { markBatchLaunching, prepareTrashBatch, resolveTrashBatch } from '../db/trashStore';
+import { getEditableContentUri, trashAssets } from '../lib/media';
+import { fileSize } from '../lib/hash';
+import { isMediaTrashed } from '../../modules/media-store-actions';
 import { BigButton } from '../components/BigButton';
 import { ReDecideSheet } from '../components/ReDecideSheet';
 import { colors, touch } from '../theme';
@@ -21,23 +27,87 @@ type Props = NativeStackScreenProps<RootStackParamList, 'CullList'>;
  */
 export function CullListScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
-  const { session, confirmCulls, version } = useSession();
+  const { session, sessionId, version, reconcileTrashed } = useSession();
+  const db = useSQLiteContext();
   const [busy, setBusy] = useState(false);
   const [redecideItem, setRedecideItem] = useState<MediaItem | null>(null);
+  const [globalRows, setGlobalRows] = useState<StagedCullRow[]>([]);
   const systemTrashSupported = Platform.OS === 'android' && Number(Platform.Version) >= 30;
 
-  const staged = useMemo(
-    () => session?.stagedCulls() ?? [],
-    // The session object mutates in place; version is its render signal.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session, version],
+  // P4#1: the DURABLE GLOBAL cull queue is the confirmation truth — it
+  // includes carried culls from replaced sessions, which the active
+  // snapshot cannot see.
+  useEffect(() => {
+    let cancelled = false;
+    void getStagedCulls(db).then((rows) => {
+      if (!cancelled) setGlobalRows(rows);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [db, version, busy]);
+
+  const staged: MediaItem[] = useMemo(
+    () =>
+      globalRows.map((row) => ({
+        id: row.asset_id,
+        uri: row.uri,
+        timestamp: row.taken_at,
+        kind: 'photo' as const,
+      })),
+    [globalRows],
   );
 
   const runConfirm = useCallback(async () => {
     if (busy) return;
     setBusy(true);
     try {
-      const result = await confirmCulls();
+      // Durable trash lifecycle over the GLOBAL queue (P7#4/P8#3/P8#4):
+      // prepare (reserve + measure) → launching → system dialog →
+      // tri-state verify → outcomes; the active snapshot mirrors verified
+      // members afterwards.
+      const batch = await prepareTrashBatch(
+        db,
+        globalRows.map((row) => ({ photoId: row.asset_id, measuredBytes: fileSize(row.uri) })),
+        sessionId,
+        Date.now(),
+      );
+      if (!batch) {
+        navigation.replace('Summary');
+        return;
+      }
+      await markBatchLaunching(db, batch.batchId, Date.now());
+      const ids = batch.members.map((m) => m.photoId);
+      const dialog = await trashAssets(ids);
+      const resolved = await resolveTrashBatch(db, {
+        batchId: batch.batchId,
+        verify: async (photoId) => {
+          const trashed = await isMediaTrashed(await getEditableContentUri(photoId));
+          if (trashed === true) return 'absent';
+          if (trashed === false) return 'present';
+          return 'unknown';
+        },
+        dialog:
+          dialog.status === 'applied'
+            ? 'applied'
+            : dialog.status === 'cancelled'
+              ? 'cancelled'
+              : dialog.status === 'unsupported'
+                ? 'unsupported'
+                : 'failed',
+        at: Date.now(),
+      });
+      const trashedIds = ids.filter(
+        (id) =>
+          resolved.outcomes[id] === 'trashed' ||
+          resolved.outcomes[id] === 'absent_after_interrupted_launch',
+      );
+      await reconcileTrashed(trashedIds);
+      const result = {
+        deleted: trashedIds.length > 0,
+        status: dialog.status,
+        error: dialog.status === 'failed' ? dialog.error : undefined,
+      };
       if (result.deleted) {
         navigation.replace('Summary');
       } else if (result.status === 'cancelled') {
@@ -60,7 +130,7 @@ export function CullListScreen({ navigation }: Props) {
     } finally {
       setBusy(false);
     }
-  }, [busy, confirmCulls, navigation]);
+  }, [busy, db, globalRows, sessionId, reconcileTrashed, navigation]);
 
   const onConfirmPress = useCallback(() => {
     if (staged.length === 0) {
@@ -79,9 +149,55 @@ export function CullListScreen({ navigation }: Props) {
     );
   }, [staged.length, navigation, runConfirm]);
 
+  const inSession = useCallback(
+    (id: string) => {
+      if (!session) return false;
+      try {
+        session.getState(id);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [session],
+  );
+
+  const restoreCarried = useCallback(
+    (item: MediaItem) => {
+      Alert.alert(
+        'Carried cull',
+        'This photo was staged in an earlier session. Restore it to unreviewed (it will be drawn again), or keep it staged?',
+        [
+          { text: 'Keep staged', style: 'cancel' },
+          {
+            text: 'Restore to unreviewed',
+            onPress: () =>
+              void db
+                .runAsync(
+                  "UPDATE photos SET state = 'unreviewed', activity_at = ? WHERE asset_id = ? AND state = 'culled'",
+                  Date.now(),
+                  item.id,
+                )
+                .then(() => getStagedCulls(db))
+                .then(setGlobalRows),
+          },
+        ],
+      );
+    },
+    [db],
+  );
+
+  const onTilePress = useCallback(
+    (item: MediaItem) => {
+      if (inSession(item.id)) setRedecideItem(item);
+      else restoreCarried(item);
+    },
+    [inSession, restoreCarried],
+  );
+
   const renderItem = useCallback(
     ({ item }: { item: MediaItem }) => (
-      <Pressable style={styles.tile} onPress={() => setRedecideItem(item)} disabled={busy}>
+      <Pressable style={styles.tile} onPress={() => onTilePress(item)} disabled={busy}>
         <Image
           source={{ uri: item.uri }}
           style={styles.tileImage}
@@ -93,12 +209,8 @@ export function CullListScreen({ navigation }: Props) {
         </View>
       </Pressable>
     ),
-    [busy],
+    [busy, onTilePress],
   );
-
-  if (!session) {
-    return <View style={styles.root} />;
-  }
 
   return (
     <View style={[styles.root, { paddingTop: insets.top + 12 }]}>

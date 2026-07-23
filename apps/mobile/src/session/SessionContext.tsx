@@ -169,6 +169,9 @@ interface SessionContextValue {
   redecide: (id: string, target: RedecideTarget) => Promise<void>;
   /** THE one delete path: confirm staged culls → system dialog → trash. */
   confirmCulls: () => Promise<ConfirmResult>;
+  /** Mirror externally-confirmed trash outcomes into the live snapshot
+   * (global cull-queue confirmation, P4#1) — no-op for non-members. */
+  reconcileTrashed: (ids: readonly string[]) => Promise<void>;
   /** Finish: remaining keepers converge to done; to_edit stays queued. */
   finishSession: () => Promise<void>;
 }
@@ -748,6 +751,31 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     };
   }, [db, sessionId, persist, bump]);
 
+  const reconcileTrashed = useCallback(
+    async (ids: readonly string[]) => {
+      const session = sessionRef.current;
+      if (!session || ids.length === 0) return;
+      const snap = session.toJSON();
+      let changed = false;
+      for (const id of ids) {
+        if (snap.states[id] === 'culled' || snap.states[id] === 'confirmed') {
+          snap.states[id] = 'trashed';
+          // A trashed member cannot stay alive in any deck.
+          for (const group of snap.groups) {
+            group.aliveIds = group.aliveIds.filter((m) => m !== id);
+            if (group.bestId === id) group.bestId = null;
+          }
+          changed = true;
+        }
+      }
+      if (!changed) return;
+      sessionRef.current = DeckSession.fromJSON(snap);
+      bump();
+      await persist();
+    },
+    [bump, persist],
+  );
+
   const finishSession = useCallback(async () => {
     await waitForPersistence();
     const session = sessionRef.current;
@@ -828,6 +856,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       unstageCull,
       redecide,
       confirmCulls,
+      reconcileTrashed,
       finishSession,
     }),
     [
@@ -862,6 +891,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       unstageCull,
       redecide,
       confirmCulls,
+      reconcileTrashed,
       finishSession,
     ],
   );

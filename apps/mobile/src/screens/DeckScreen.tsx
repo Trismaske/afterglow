@@ -261,7 +261,20 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
         savedTx.value = tx.value;
         savedTy.value = ty.value;
       });
-    return Gesture.Simultaneous(pinch, pan);
+    // m0.7 (#18): double-tap resets zoom while zoomed.
+    const doubleTap = Gesture.Tap()
+      .numberOfTaps(2)
+      .enabled(zoomed)
+      .onEnd(() => {
+        scale.value = withTiming(1);
+        savedScale.value = 1;
+        tx.value = withTiming(0);
+        ty.value = withTiming(0);
+        savedTx.value = 0;
+        savedTy.value = 0;
+        runOnJS(setZoomed)(false);
+      });
+    return Gesture.Simultaneous(pinch, pan, doubleTap);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pagerGesture, zoomed]);
 
@@ -555,9 +568,22 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
           : 'keep'
         : null;
 
-  const decideSingleCurrent = (target: RedecideTarget) => {
-    if (currentState === 'unreviewed') return decideSingle(current.id, target);
-    return redecide(current.id, target);
+  const decideSingleCurrent = async (target: RedecideTarget) => {
+    const wasUnreviewed = currentState === 'unreviewed';
+    if (wasUnreviewed) await decideSingle(current.id, target);
+    else await redecide(current.id, target);
+    // m0.7 (#5): after deciding in the singles deck, advance to the next
+    // still-undecided photo (wrapping forward from the current position).
+    if (singlesMode && wasUnreviewed && session) {
+      const items = deckItems;
+      for (let step = 1; step < items.length; step++) {
+        const index = (cursor + step) % items.length;
+        if (session.getState(items[index].id) === 'unreviewed') {
+          jumpTo(index);
+          break;
+        }
+      }
+    }
   };
 
   return (

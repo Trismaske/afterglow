@@ -17,6 +17,8 @@ import DateTimePicker, { type DateTimePickerEvent } from '@react-native-communit
 import * as MediaLibrary from 'expo-media-library';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
+import { countShareQueue } from '../db/shareStore';
+import { countOrganizeQueue } from '../db/organizeStore';
 import { customRange, labelForDayKey, recentDayKeys, rangeOfDayKey } from '../lib/dates';
 import { allTimeUnlocked, remainingToReview, rollingRange } from '../lib/scopes';
 import {
@@ -103,6 +105,8 @@ export function HomeScreen({ navigation }: Props) {
   /** Perceptual-hash progress while a session is being built (m0.4). */
   const [analyzing, setAnalyzing] = useState<{ done: number; total: number } | null>(null);
   const [editCount, setEditCount] = useState(0);
+  const [shareCount, setShareCount] = useState(0);
+  const [organizeCount, setOrganizeCount] = useState(0);
   const [favouriteCount, setFavouriteCount] = useState(0);
   const [dayRows, setDayRows] = useState<DayRow[] | null>(null);
   const [detectionNotice, setDetectionNotice] = useState<string | null>(null);
@@ -271,13 +275,17 @@ export function HomeScreen({ navigation }: Props) {
     useCallback(() => {
       let cancelled = false;
       (async () => {
-        const [toEdit, favouriteQueue] = await Promise.all([
+        const [toEdit, favouriteQueue, shareQueue, organizeQueue] = await Promise.all([
           countToEdit(db),
           countFavouriteQueue(db),
+          countShareQueue(db),
+          countOrganizeQueue(db),
         ]);
         if (cancelled) return;
         setEditCount(toEdit);
         setFavouriteCount(favouriteQueue);
+        setShareCount(shareQueue);
+        setOrganizeCount(organizeQueue);
 
         const src = permission?.granted ? await resolveSources(db).catch(() => null) : null;
         if (cancelled) return;
@@ -571,6 +579,42 @@ export function HomeScreen({ navigation }: Props) {
           {favouriteCount > 0 && (
             <View style={[styles.badge, { backgroundColor: colors.favDim }]}>
               <Text style={[styles.badgeText, { color: colors.fav }]}>{favouriteCount}</Text>
+            </View>
+          )}
+        </Pressable>
+      )}
+
+      <Pressable style={styles.editQueueRow} onPress={() => navigation.navigate('ShareQueue')}>
+        <MaterialCommunityIcons name="share-variant" size={22} color={colors.edit} />
+        <View style={styles.editQueueBody}>
+          <Text style={styles.editQueueTitle}>Share queue</Text>
+          <Text style={styles.editQueueHint}>
+            {shareCount === 0
+              ? 'Queue photos to share in passes'
+              : `${shareCount} photo${shareCount === 1 ? '' : 's'} ready to share`}
+          </Text>
+        </View>
+        {shareCount > 0 && (
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>{shareCount}</Text>
+          </View>
+        )}
+      </Pressable>
+
+      {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
+        <Pressable style={styles.editQueueRow} onPress={() => navigation.navigate('OrganizeQueue')}>
+          <MaterialCommunityIcons name="folder-move" size={22} color={colors.textDim} />
+          <View style={styles.editQueueBody}>
+            <Text style={styles.editQueueTitle}>Organize queue</Text>
+            <Text style={styles.editQueueHint}>
+              {organizeCount === 0
+                ? 'Queue photos to move into albums'
+                : `${organizeCount} photo${organizeCount === 1 ? '' : 's'} waiting to move`}
+            </Text>
+          </View>
+          {organizeCount > 0 && (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{organizeCount}</Text>
             </View>
           )}
         </Pressable>

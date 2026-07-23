@@ -143,6 +143,28 @@ export function CompareScreen({ navigation, route }: Props) {
     [flip],
   );
 
+  // m0.7 (#18): double-tap resets zoom when zoomed; when not zoomed it
+  // falls through (fails fast) so the flip tap keeps its snappiness.
+  const doubleTapGesture = useMemo(
+    () =>
+      Gesture.Tap()
+        .numberOfTaps(2)
+        .onTouchesDown((_event, manager) => {
+          if (scale.value <= 1.02) manager.fail();
+        })
+        .onEnd((_event, success) => {
+          if (!success) return;
+          scale.value = withTiming(1);
+          savedScale.value = 1;
+          tx.value = withTiming(0);
+          ty.value = withTiming(0);
+          savedTx.value = 0;
+          savedTy.value = 0;
+        }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
   const pinchGesture = useMemo(
     () =>
       Gesture.Pinch()
@@ -193,8 +215,13 @@ export function CompareScreen({ navigation, route }: Props) {
   );
 
   const composedGesture = useMemo(
-    () => Gesture.Exclusive(Gesture.Simultaneous(pinchGesture, panGesture), tapGesture),
-    [pinchGesture, panGesture, tapGesture],
+    () =>
+      Gesture.Exclusive(
+        Gesture.Simultaneous(pinchGesture, panGesture),
+        doubleTapGesture,
+        tapGesture,
+      ),
+    [pinchGesture, panGesture, doubleTapGesture, tapGesture],
   );
 
   const zoomStyle = useAnimatedStyle(() => ({

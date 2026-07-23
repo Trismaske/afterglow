@@ -17,6 +17,7 @@ import { CullListScreen } from './src/screens/CullListScreen';
 import { SummaryScreen } from './src/screens/SummaryScreen';
 import { EditQueueScreen } from './src/screens/EditQueueScreen';
 import { FavouritesQueueScreen } from './src/screens/FavouritesQueueScreen';
+import { ShareQueueScreen } from './src/screens/ShareQueueScreen';
 import { DayProgressScreen } from './src/screens/DayProgressScreen';
 import { ProgressScreen } from './src/screens/ProgressScreen';
 import { SourcePickerScreen } from './src/screens/SourcePickerScreen';
@@ -93,7 +94,12 @@ function ThemedNavigator() {
         <Stack.Screen
           name="FavouritesQueue"
           component={FavouritesQueueScreen}
-          options={{ title: 'Gallery favourites' }}
+          options={{ title: 'Favourite queue' }}
+        />
+        <Stack.Screen
+          name="ShareQueue"
+          component={ShareQueueScreen}
+          options={{ title: 'Share queue' }}
         />
         <Stack.Screen
           name="DayProgress"

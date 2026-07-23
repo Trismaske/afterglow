@@ -21,6 +21,10 @@ export type RootStackParamList = {
   EditQueue: undefined;
   /** Durable system-gallery favourite/unfavourite work. */
   FavouritesQueue: undefined;
+  /** Multi-pass share queue (m0.7): persistent working set, sheet passes. */
+  ShareQueue: undefined;
+  /** Organize queue (m0.7): album moves via createWriteRequest. */
+  OrganizeQueue: undefined;
   /** Day-scoped inbox-zero progress. `day` is a local "YYYY-MM-DD" key. */
   DayProgress: { day: string };
   /**

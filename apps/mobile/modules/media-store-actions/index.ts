@@ -30,6 +30,7 @@ interface NativeApi {
   editDiagnostics(uri: string): Promise<EditDiagnosticsReport>;
   probeLaunch(uri: string, action: string, withWrite: boolean): Promise<ProbeLaunchResult>;
   requestWriteAccess(uris: string[]): Promise<{ status: MediaStoreActionStatus }>;
+  shareUris(uris: string[]): Promise<{ result: 'dispatched' | 'error'; message: string }>;
 }
 
 const native = requireOptionalNativeModule<NativeApi>('MediaStoreActions');
@@ -94,4 +95,13 @@ export async function requestMediaWriteAccess(
 ): Promise<{ status: MediaStoreActionStatus }> {
   if (!available()) return { status: 'unsupported' };
   return native!.requestWriteAccess(contentUris(uris));
+}
+
+/** Fire the share sheet (SEND / SEND_MULTIPLE with read grants). Resolves
+ * at dispatch — the C#10 at-most-once accounting boundary. */
+export async function shareMediaUris(
+  uris: string[],
+): Promise<{ result: 'dispatched' | 'error' | 'unsupported'; message: string }> {
+  if (!diagnosticsAvailable()) return { result: 'unsupported', message: 'Not on Android' };
+  return native!.shareUris(contentUris(uris));
 }

@@ -561,7 +561,7 @@ export function HomeScreen({ navigation }: Props) {
         >
           <MaterialCommunityIcons name="heart" size={22} color={colors.fav} />
           <View style={styles.editQueueBody}>
-            <Text style={styles.editQueueTitle}>Gallery favourites</Text>
+            <Text style={styles.editQueueTitle}>Favourite queue</Text>
             <Text style={styles.editQueueHint}>
               {favouriteCount === 0
                 ? 'No favourite changes waiting'

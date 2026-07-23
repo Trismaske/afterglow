@@ -105,6 +105,37 @@ class MediaStoreActionsModule : Module() {
     AsyncFunction("requestWriteAccess") Coroutine { uris: List<Uri> ->
       launch(uris, MediaStoreAction.WRITE, true)
     }
+
+    // Multi-pass share (m0.7 item E, N#5/C#10): ACTION_SEND for one URI,
+    // ACTION_SEND_MULTIPLE for more, read grant on every URI, wrapped in a
+    // chooser. Resolves at DISPATCH (never waits for the sheet) so the JS
+    // side can durably promote `launching` → `sheet_opened` immediately —
+    // the at-most-once accounting boundary.
+    AsyncFunction("shareUris") { uris: List<Uri> ->
+      val activity = appContext.currentActivity
+        ?: return@AsyncFunction mapOf("result" to "error", "message" to "No current activity")
+      val send = if (uris.size == 1) {
+        Intent(Intent.ACTION_SEND).apply {
+          type = "image/*"
+          putExtra(Intent.EXTRA_STREAM, uris[0])
+        }
+      } else {
+        Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+          type = "image/*"
+          putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+        }
+      }
+      send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      val chooser = Intent.createChooser(send, null).apply {
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      }
+      try {
+        activity.startActivity(chooser)
+        mapOf("result" to "dispatched", "message" to "sheet dispatch accepted")
+      } catch (error: Exception) {
+        mapOf("result" to "error", "message" to "${error.javaClass.simpleName}: ${error.message}")
+      }
+    }
   }
 
   private fun permissionLabel(result: Int): String =

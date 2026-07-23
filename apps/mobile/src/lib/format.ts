@@ -19,6 +19,21 @@ export function formatClock(ms: number): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
+/**
+ * m0.7 (#21): date + time together wherever a timestamp shows —
+ * "17 Jul · 14:32" (current year) or "17 Jul 2025 · 14:32" (other years).
+ */
+export function formatDayClock(ms: number, now: Date = new Date()): string {
+  const d = new Date(ms);
+  const sameYear = d.getFullYear() === now.getFullYear();
+  const day = d.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    ...(sameYear ? {} : { year: 'numeric' }),
+  });
+  return `${day} · ${formatClock(ms)}`;
+}
+
 function pad2(n: number): string {
   return String(n).padStart(2, '0');
 }

@@ -620,6 +620,14 @@ export function HomeScreen({ navigation }: Props) {
         </Pressable>
       )}
 
+      <Pressable style={styles.editQueueRow} onPress={() => navigation.navigate('History')}>
+        <MaterialCommunityIcons name="history" size={22} color={colors.textDim} />
+        <View style={styles.editQueueBody}>
+          <Text style={styles.editQueueTitle}>History</Text>
+          <Text style={styles.editQueueHint}>Past decisions on photos still present</Text>
+        </View>
+      </Pressable>
+
       <Text style={styles.sectionLabel}>Review scope</Text>
       <View style={styles.scopeWrap}>
         {[

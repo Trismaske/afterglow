@@ -683,6 +683,125 @@ export async function resolveCopyMatch(
   );
 }
 
+// ---------------------------------------------------------------- History
+// m0.7 item G: a reconciled current-state feed ordered by activity_at,
+// with share-sheet batches interleaved as true events. Keyset pagination
+// over (activity_at, asset_id) — offset paging would skip/duplicate rows
+// once a mutation moves a row's sort key (C#15).
+
+export interface HistoryPhotoRow {
+  kind: 'photo';
+  asset_id: string;
+  uri: string;
+  state: PhotoState | 'done' | 'to_edit';
+  needs_edit: number;
+  favourite_state: FavouriteState;
+  organize_state: string;
+  day: string | null;
+  activity_at: number;
+}
+
+export interface HistoryShareRow {
+  kind: 'share';
+  batch_id: number;
+  opened_at: number;
+  label: string | null;
+  member_count: number;
+  thumb_uris: string[];
+}
+
+export type HistoryRow = HistoryPhotoRow | HistoryShareRow;
+
+export type HistoryFilter =
+  'all' | 'kept' | 'culled' | 'to_edit' | 'favourite' | 'organized' | 'shared';
+
+export interface HistoryPage {
+  rows: HistoryRow[];
+  /** Keyset cursor for the next page; null when exhausted. */
+  next: { activityAt: number; assetId: string } | null;
+}
+
+const HISTORY_PAGE = 40;
+
+/**
+ * One keyset page of the History feed. Photo rows require presence
+ * (is_present = 1 — trashed/deleted photos drop out; restore brings them
+ * back) and at least one recorded decision (activity_at beyond the draw).
+ * Share events are merged in by opened_at on the first page window.
+ */
+export async function getHistoryPage(
+  db: SQLiteDatabase,
+  filter: HistoryFilter,
+  after: { activityAt: number; assetId: string } | null,
+): Promise<HistoryPage> {
+  const filterSql =
+    filter === 'kept'
+      ? "AND state IN ('kept', 'done') AND needs_edit = 0"
+      : filter === 'culled'
+        ? "AND state = 'culled'"
+        : filter === 'to_edit'
+          ? "AND state = 'to_edit'"
+          : filter === 'favourite'
+            ? "AND favourite_state IN ('queued_apply', 'applied')"
+            : filter === 'organized'
+              ? "AND organize_state = 'applied'"
+              : "AND state <> 'unreviewed'";
+  const keyset = after ? 'AND (activity_at < ? OR (activity_at = ? AND asset_id < ?))' : '';
+  const params: (string | number)[] = after
+    ? [after.activityAt, after.activityAt, after.assetId]
+    : [];
+  const photos =
+    filter === 'shared'
+      ? []
+      : await db.getAllAsync<Omit<HistoryPhotoRow, 'kind'>>(
+          `SELECT asset_id, uri, state, needs_edit, favourite_state, organize_state, day, activity_at
+           FROM photos
+           WHERE is_present = 1 AND activity_at IS NOT NULL ${filterSql} ${keyset}
+           ORDER BY activity_at DESC, asset_id DESC
+           LIMIT ${HISTORY_PAGE}`,
+          ...params,
+        );
+  const shareRows =
+    (filter === 'all' || filter === 'shared') && after === null
+      ? await db.getAllAsync<{
+          batch_id: number;
+          opened_at: number;
+          label: string | null;
+          member_count: number;
+        }>(
+          `SELECT b.id AS batch_id, b.opened_at, b.label,
+             (SELECT COUNT(*) FROM share_batch_members m WHERE m.batch_id = b.id) AS member_count
+           FROM share_batches b
+           WHERE b.state = 'sheet_opened'
+           ORDER BY b.opened_at DESC
+           LIMIT ${HISTORY_PAGE}`,
+        )
+      : [];
+  const shares: HistoryShareRow[] = [];
+  for (const row of shareRows) {
+    const thumbs = await db.getAllAsync<{ uri: string }>(
+      `SELECT p.uri FROM share_batch_members m JOIN photos p ON p.asset_id = m.photo_id
+       WHERE m.batch_id = ? LIMIT 4`,
+      row.batch_id,
+    );
+    shares.push({ kind: 'share', ...row, thumb_uris: thumbs.map((t) => t.uri) });
+  }
+  const photoRows: HistoryPhotoRow[] = photos.map((p) => ({ kind: 'photo', ...p }));
+  const merged: HistoryRow[] = [...photoRows, ...shares].sort((a, b) => {
+    const ta = a.kind === 'photo' ? a.activity_at : a.opened_at;
+    const tb = b.kind === 'photo' ? b.activity_at : b.opened_at;
+    return tb - ta;
+  });
+  const last = photoRows[photoRows.length - 1];
+  return {
+    rows: merged,
+    next:
+      photoRows.length === HISTORY_PAGE && last
+        ? { activityAt: last.activity_at, assetId: last.asset_id }
+        : null,
+  };
+}
+
 /** Number of photos waiting in the to-edit queue. */
 export async function countToEdit(db: SQLiteDatabase): Promise<number> {
   const row = await db.getFirstAsync<{ n: number }>(

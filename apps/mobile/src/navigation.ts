@@ -25,6 +25,8 @@ export type RootStackParamList = {
   ShareQueue: undefined;
   /** Organize queue (m0.7): album moves via createWriteRequest. */
   OrganizeQueue: undefined;
+  /** History (m0.7): re-decidable current-state feed + share events. */
+  History: undefined;
   /** Day-scoped inbox-zero progress. `day` is a local "YYYY-MM-DD" key. */
   DayProgress: { day: string };
   /**

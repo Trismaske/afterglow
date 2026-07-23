@@ -19,6 +19,7 @@ import { EditQueueScreen } from './src/screens/EditQueueScreen';
 import { FavouritesQueueScreen } from './src/screens/FavouritesQueueScreen';
 import { ShareQueueScreen } from './src/screens/ShareQueueScreen';
 import { OrganizeQueueScreen } from './src/screens/OrganizeQueueScreen';
+import { HistoryScreen } from './src/screens/HistoryScreen';
 import { DayProgressScreen } from './src/screens/DayProgressScreen';
 import { ProgressScreen } from './src/screens/ProgressScreen';
 import { SourcePickerScreen } from './src/screens/SourcePickerScreen';
@@ -107,6 +108,7 @@ function ThemedNavigator() {
           component={OrganizeQueueScreen}
           options={{ title: 'Organize queue' }}
         />
+        <Stack.Screen name="History" component={HistoryScreen} options={{ title: 'History' }} />
         <Stack.Screen
           name="DayProgress"
           component={DayProgressScreen}

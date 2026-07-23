@@ -120,6 +120,92 @@ function makeCluster(items: MediaItem[]): Cluster {
  * pair connects (clusters come back unchanged). Must be a non-negative
  * finite number.
  */
+export interface GroupBySimilarityOptions {
+  /** Base "fingerprint bits allowed to differ" (the slider value). */
+  threshold: number;
+  /** Two shots within this window get the bonus (default 0 = no bonus). */
+  timeBonusMs?: number;
+  /** Extra bits allowed for pairs inside the window (m0.7 default +6). */
+  timeBonusBits?: number;
+}
+
+/**
+ * Similarity-FIRST grouping (m0.7 item B): connected components over the
+ * whole given set, no time-cluster boundaries. Two hashed photos connect
+ * when `hamming <= threshold`, or `hamming <= threshold + timeBonusBits`
+ * when shot within `timeBonusMs` of each other — time proximity only ever
+ * RELAXES the bar; it never excludes, so the same subject shot on
+ * different days still groups (#24).
+ *
+ * Null-hash rule (m0.7, stricter than refineClustersBySimilarity's):
+ * a photo with no hash never joins a similarity component — it emerges as
+ * a singleton. Without a bounding time cluster, attaching by timestamp
+ * would let one unhashed photo bridge unrelated subjects.
+ *
+ * Chain-linking is deliberate (A~B~C stays together even when A≁C — a
+ * drifting burst is one moment), and the corpus tests pin that unrelated
+ * endpoints only ever merge through a genuinely-similar bridge.
+ *
+ * Determinism: input order is irrelevant — items are sorted
+ * chronologically (ties by id) first. Components come back ordered by
+ * earliest member; members are chronological within each component.
+ */
+export function groupBySimilarity(
+  items: readonly MediaItem[],
+  hashOf: (id: string) => string | null | undefined,
+  options: GroupBySimilarityOptions,
+): Cluster[] {
+  const { threshold, timeBonusMs = 0, timeBonusBits = 0 } = options;
+  if (!Number.isFinite(threshold) || threshold < 0) {
+    throw new Error(`groupBySimilarity: threshold must be a non-negative number, got ${threshold}`);
+  }
+  if (!Number.isFinite(timeBonusMs) || timeBonusMs < 0) {
+    throw new Error(`groupBySimilarity: timeBonusMs must be a non-negative number`);
+  }
+  if (!Number.isFinite(timeBonusBits) || timeBonusBits < 0) {
+    throw new Error(`groupBySimilarity: timeBonusBits must be a non-negative number`);
+  }
+  const sorted = [...items].sort(
+    (a, b) => a.timestamp - b.timestamp || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
+  const hashes = sorted.map((item) => hashOf(item.id) ?? null);
+
+  const parent = sorted.map((_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) {
+      parent[i] = parent[parent[i]];
+      i = parent[i];
+    }
+    return i;
+  };
+  const union = (a: number, b: number): void => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
+  };
+
+  for (let a = 0; a < sorted.length; a++) {
+    if (hashes[a] === null) continue;
+    for (let b = a + 1; b < sorted.length; b++) {
+      if (hashes[b] === null) continue;
+      const withinWindow = Math.abs(sorted[a].timestamp - sorted[b].timestamp) <= timeBonusMs;
+      const allowed = threshold + (withinWindow ? timeBonusBits : 0);
+      if (hammingDistance(hashes[a]!, hashes[b]!) <= allowed) union(a, b);
+    }
+  }
+
+  const components = new Map<number, MediaItem[]>();
+  for (let i = 0; i < sorted.length; i++) {
+    const root = find(i);
+    const bucket = components.get(root);
+    if (bucket) bucket.push(sorted[i]);
+    else components.set(root, [sorted[i]]);
+  }
+  // Map insertion follows sorted order, and each component's root is its
+  // earliest member, so insertion order = earliest-member chronological.
+  return [...components.values()].map(makeCluster);
+}
+
 export function refineClustersBySimilarity(
   clusters: readonly Cluster[],
   hashOf: (id: string) => string | null | undefined,

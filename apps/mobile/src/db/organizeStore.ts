@@ -155,6 +155,7 @@ export async function commitOrganizeOutcomes(
              organize_volume = NULL,
              organize_path = NULL,
              uri = CASE WHEN ? <> '' THEN ? ELSE uri END,
+             mod_time = NULL,
              activity_at = ?
            WHERE asset_id = ?`,
           at,

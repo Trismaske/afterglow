@@ -26,7 +26,9 @@ import {
   getEditDetectionRows,
   getStatesForAssets,
   insertDetectedCopy,
+  getPendingCopyMatches,
   markEditDone,
+  recordCopyMatch,
   setContentHash,
   updateModTimeBaseline,
   type EditDetectionRow,
@@ -78,9 +80,14 @@ export async function runEditDetection(db: SQLiteDatabase): Promise<EditDetectio
     }
     if (verdict === 'check-hash') {
       const current = await sha256OfFile(details.localUri ?? row.uri);
-      if (current === null || current !== row.content_hash) {
-        // Content changed — or became unreadable, in which case the moved
-        // mod time is the best signal we have. Either way: edited.
+      if (current === null) {
+        // C#9: an unreadable/hash-failed file is NOT evidence its pixels
+        // changed — stay queued/unknown; the baseline is left alone so the
+        // next run re-checks.
+        live.push({ row, filename: details.filename });
+        continue;
+      }
+      if (current !== row.content_hash) {
         await markEditDone(db, row.asset_id);
         result.autoDone++;
         continue;
@@ -151,6 +158,7 @@ export async function runEditDetection(db: SQLiteDatabase): Promise<EditDetectio
         modTime: copy.modificationTime,
         day: dayKey(takenAt),
       });
+      await recordCopyMatch(db, l.row.asset_id, copy.id, Date.now());
       result.copies.push({
         originalAssetId: l.row.asset_id,
         originalFilename: l.filename,
@@ -163,6 +171,23 @@ export async function runEditDetection(db: SQLiteDatabase): Promise<EditDetectio
       const used = new Set(matches.map((m) => m.id));
       candidates = candidates.filter((c) => !used.has(c.id));
     }
+  }
+  // C#12: previously detected matches whose prompt was deferred re-emit
+  // until resolved — a "Decide later" is a postponement, not a dismissal.
+  const pending = await getPendingCopyMatches(db);
+  const emitted = new Set(result.copies.map((c) => `${c.originalAssetId} ${c.copyAssetId}`));
+  for (const match of pending) {
+    if (emitted.has(`${match.original_id} ${match.copy_id}`)) continue;
+    const original = live.find((l) => l.row.asset_id === match.original_id);
+    if (!original) continue; // original resolved/left the queue
+    const copyDetails = await getAssetDetails(match.copy_id);
+    if (!copyDetails) continue;
+    result.copies.push({
+      originalAssetId: match.original_id,
+      originalFilename: original.filename,
+      copyAssetId: match.copy_id,
+      copyFilename: copyDetails.filename,
+    });
   }
   return result;
 }

@@ -638,6 +638,51 @@ export async function markTrashedDirect(db: SQLiteDatabase, assetId: string): Pr
   );
 }
 
+/** C#12: durable original ↔ detected-copy matches so "Decide later" can
+ * resume. One best copy per original: the first recorded match wins
+ * (INSERT OR IGNORE); resolving/dismissing updates the state. */
+export async function recordCopyMatch(
+  db: SQLiteDatabase,
+  originalId: string,
+  copyId: string,
+  at: number,
+): Promise<void> {
+  await db.runAsync(
+    `INSERT OR IGNORE INTO edit_copy_matches (original_id, copy_id, state, detected_at)
+     VALUES (?, ?, 'pending', ?)`,
+    originalId,
+    copyId,
+    at,
+  );
+}
+
+export interface PendingCopyMatch {
+  original_id: string;
+  copy_id: string;
+}
+
+/** One pending match per original (earliest detected wins). */
+export async function getPendingCopyMatches(db: SQLiteDatabase): Promise<PendingCopyMatch[]> {
+  return db.getAllAsync<PendingCopyMatch>(
+    `SELECT original_id, copy_id FROM edit_copy_matches
+     WHERE state = 'pending'
+     GROUP BY original_id HAVING MIN(detected_at)`,
+  );
+}
+
+/** The user decided (keep or cull the original): the match resolves. */
+export async function resolveCopyMatch(
+  db: SQLiteDatabase,
+  originalId: string,
+  copyId: string,
+): Promise<void> {
+  await db.runAsync(
+    "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND copy_id = ?",
+    originalId,
+    copyId,
+  );
+}
+
 /** Number of photos waiting in the to-edit queue. */
 export async function countToEdit(db: SQLiteDatabase): Promise<number> {
   const row = await db.getFirstAsync<{ n: number }>(
@@ -971,33 +1016,40 @@ export async function countFavouriteQueue(db: SQLiteDatabase): Promise<number> {
   return row?.n ?? 0;
 }
 
-/** Commit a verified MediaStore outcome; removal retains lifetime history. */
+/** Commit a verified MediaStore outcome; removal retains lifetime history.
+ * C#14/P5#4: every SQL chunk for ONE verified OS batch commits in ONE
+ * exclusive transaction — a late chunk failure can never record a partial
+ * verified outcome. */
 export async function markFavouriteBatchApplied(
   db: SQLiteDatabase,
   assetIds: readonly string[],
   favourite: boolean,
   at: number,
 ): Promise<void> {
-  for (const ids of chunk(assetIds, IN_CHUNK)) {
-    if (ids.length === 0) continue;
-    const placeholders = ids.map(() => '?').join(',');
-    await db.runAsync(
-      `UPDATE photos
-       SET favourite_state = ?,
-           favourite_target = NULL,
-           favourite_changed_at = ?,
-           favourite_applied_at = CASE
-             WHEN ? = 1 THEN COALESCE(favourite_applied_at, ?)
-             ELSE favourite_applied_at
-           END
-       WHERE asset_id IN (${placeholders})`,
-      favourite ? 'applied' : 'none',
-      at,
-      favourite ? 1 : 0,
-      at,
-      ...ids,
-    );
-  }
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    for (const ids of chunk(assetIds, IN_CHUNK)) {
+      if (ids.length === 0) continue;
+      const placeholders = ids.map(() => '?').join(',');
+      await txn.runAsync(
+        `UPDATE photos
+         SET favourite_state = ?,
+             favourite_target = NULL,
+             favourite_changed_at = ?,
+             favourite_applied_at = CASE
+               WHEN ? = 1 THEN COALESCE(favourite_applied_at, ?)
+               ELSE favourite_applied_at
+             END,
+             activity_at = ?
+         WHERE asset_id IN (${placeholders})`,
+        favourite ? 'applied' : 'none',
+        at,
+        favourite ? 1 : 0,
+        at,
+        at,
+        ...ids,
+      );
+    }
+  });
 }
 
 export async function markFavouriteBatchError(
@@ -1006,18 +1058,22 @@ export async function markFavouriteBatchError(
   target: boolean,
   at: number,
 ): Promise<void> {
-  for (const ids of chunk(assetIds, IN_CHUNK)) {
-    if (ids.length === 0) continue;
-    const placeholders = ids.map(() => '?').join(',');
-    await db.runAsync(
-      `UPDATE photos
-       SET favourite_state = 'error', favourite_target = ?, favourite_changed_at = ?
-       WHERE asset_id IN (${placeholders})`,
-      target ? 1 : 0,
-      at,
-      ...ids,
-    );
-  }
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    for (const ids of chunk(assetIds, IN_CHUNK)) {
+      if (ids.length === 0) continue;
+      const placeholders = ids.map(() => '?').join(',');
+      await txn.runAsync(
+        `UPDATE photos
+         SET favourite_state = 'error', favourite_target = ?, favourite_changed_at = ?,
+             activity_at = ?
+         WHERE asset_id IN (${placeholders})`,
+        target ? 1 : 0,
+        at,
+        at,
+        ...ids,
+      );
+    }
+  });
 }
 
 /**

@@ -75,9 +75,12 @@ export function computeBreakdown(mediaStoreTotal: number, db: StateCounts): Stat
   };
 }
 
-/** Photos in the scope still needing review (feeds the day-review CTA). */
+/** Photos in the scope still needing review (feeds the day-review CTA).
+ * Staged culls count as handled: they are CARRIED in the durable global
+ * cull queue and a draw never re-presents them (m0.7 P4#1) — counting
+ * them as remaining would enable a review CTA that loads nothing. */
 export function remainingReviewable(b: StateBreakdown): number {
-  return Math.max(0, b.total - b.done - b.toEdit);
+  return Math.max(0, b.total - b.done - b.toEdit - b.staged);
 }
 
 /** Whole-percent done share; an empty scope counts as 100% (inbox zero). */

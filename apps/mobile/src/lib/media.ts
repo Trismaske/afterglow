@@ -9,7 +9,12 @@
  */
 import * as MediaLibrary from 'expo-media-library/legacy';
 import type { MediaItem } from '@afterglow/core';
-import { trashMedia, type MediaStoreActionStatus } from '../../modules/media-store-actions';
+import {
+  getMediaPresence,
+  mediaStoreActionsAvailable,
+  trashMedia,
+  type MediaStoreActionStatus,
+} from '../../modules/media-store-actions';
 import { tallyPhotoDays } from './recentMedia';
 
 /**
@@ -313,6 +318,43 @@ export async function getEditableContentUriDetailed(assetId: string): Promise<Ed
 
 export async function getEditableContentUri(assetId: string): Promise<string> {
   return (await getEditableContentUriDetailed(assetId)).uri;
+}
+
+/**
+ * Tri-state presence check for the trash lifecycle (C#1) — shared by the
+ * confirm flow and startup recovery. 'absent' only on an AUTHORITATIVE
+ * result: the row reports IS_TRASHED = 1, or a successful full-access
+ * query proves the id left MediaStore entirely (e.g. the system removed
+ * the trashed row before an interrupted launch recovered). Every failure
+ * or partial-access path is 'unknown' — ambiguity must not earn
+ * reclaimed-bytes credit or release a photo as gone.
+ */
+export async function verifyTrashedTriState(
+  assetId: string,
+): Promise<'present' | 'absent' | 'unknown'> {
+  const presence = await checkMediaPresence(assetId);
+  if (presence === 'trashed' || presence === 'absent') return 'absent';
+  if (presence === 'present') return 'present';
+  return 'unknown';
+}
+
+/**
+ * Fail-closed presence check for feed reconciliation (History's
+ * "deleted outside Afterglow drop out" contract). 'absent' comes ONLY
+ * from the native quad-state query's successful-empty result (the asset
+ * id is authoritatively gone from MediaStore, trashed rows included) —
+ * every failure path (module missing, pre-R, null cursor, exception) is
+ * 'unknown' and callers must change nothing.
+ */
+export async function checkMediaPresence(
+  assetId: string,
+): Promise<'present' | 'trashed' | 'absent' | 'unknown'> {
+  if (!mediaStoreActionsAvailable()) return 'unknown';
+  try {
+    return await getMediaPresence(await getEditableContentUri(assetId));
+  } catch {
+    return 'unknown';
+  }
 }
 
 export interface TrashAssetsResult {

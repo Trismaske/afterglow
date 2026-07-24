@@ -198,9 +198,37 @@ describe('DeckSession — markBest / makeSingle', () => {
     expect(() => DeckSession.fromJSON(s.toJSON())).not.toThrow();
   });
 
+  it('makeSingle reports the ids that left grouping (ejected + dissolve survivor)', () => {
+    const s3 = deck(3);
+    expect(s3.makeSingle('p1')).toEqual(['p1']);
+    const s2 = deck(2);
+    expect(s2.makeSingle('p0')).toEqual(['p0', 'p1']);
+  });
+
+  it('makeSingle prunes compare records involving the ejected photo — snapshot round-trips', () => {
+    const s = deck(3);
+    s.recordCompare('p0', 'p1', true, 10);
+    s.recordCompare('p1', 'p2', true, 20);
+    s.makeSingle('p0');
+    // p0's record left with it; the p1/p2 record survives in the live group.
+    expect(s.compareHistory).toEqual([
+      { groupId: 'g1', winnerId: 'p1', loserId: 'p2', keptBoth: true, at: 20 },
+    ]);
+    expect(() => DeckSession.fromJSON(s.toJSON())).not.toThrow();
+  });
+
+  it('dissolving a compared group drops its compare records — snapshot round-trips', () => {
+    const s = deck(2);
+    s.recordCompare('p0', 'p1', true, 10);
+    s.makeSingle('p1');
+    expect(s.compareHistory).toEqual([]);
+    expect(s.groupsInfo()).toEqual([]);
+    expect(() => DeckSession.fromJSON(s.toJSON())).not.toThrow();
+  });
+
   it('a singleton input group is canonicalized to a single (C#6)', () => {
     const s = DeckSession.create({
-      groups: [{ id: 'g1', items: [item('solo', 1000)], start: 1000, end: 1000 }],
+      groups: [{ id: 'g1', items: [item('solo', 1000)] }],
       singles: [],
     });
     expect(s.groupsInfo()).toEqual([]);

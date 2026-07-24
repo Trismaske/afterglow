@@ -8,12 +8,8 @@ import type { RootStackParamList } from '../navigation';
 import { useSession } from '../session/SessionContext';
 import { useSQLiteContext } from 'expo-sqlite';
 import { getStagedCulls, type StagedCullRow } from '../db/store';
-import { markBatchLaunching, prepareTrashBatch, resolveTrashBatch } from '../db/trashStore';
-import { getEditableContentUri, trashAssets } from '../lib/media';
-import { fileSize } from '../lib/hash';
-import { isMediaTrashed } from '../../modules/media-store-actions';
 import { BigButton } from '../components/BigButton';
-import { ReDecideSheet } from '../components/ReDecideSheet';
+import { ReDecideSheet, type DecidedState } from '../components/ReDecideSheet';
 import { colors, touch } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'CullList'>;
@@ -25,13 +21,24 @@ type Props = NativeStackScreenProps<RootStackParamList, 'CullList'>;
  * app that deletes anything; on Android 11+ the system dialog moves the
  * batch to recoverable system trash (retention is gallery-controlled).
  */
-export function CullListScreen({ navigation }: Props) {
+export function CullListScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
-  const { session, sessionId, version, reconcileTrashed } = useSession();
+  const { session, version, confirmStagedCulls, needsEdit, redecide } = useSession();
+  // Home-card entry is queue MAINTENANCE: it returns Home afterwards and
+  // must never funnel an unfinished session into the Summary/finish flow.
+  const fromHome = route.params?.fromHome === true;
   const db = useSQLiteContext();
   const [busy, setBusy] = useState(false);
   const [redecideItem, setRedecideItem] = useState<MediaItem | null>(null);
-  const [globalRows, setGlobalRows] = useState<StagedCullRow[]>([]);
+  // null = the queue query hasn't resolved — an empty array must mean a
+  // truly empty queue, or the footer's Finish/Done button could navigate
+  // away during the loading frame before staged rows appear.
+  const [globalRows, setGlobalRows] = useState<StagedCullRow[] | null>(null);
+  // A failed query must stay distinct from an empty queue: rows remain
+  // null (footer disabled) so Finish/Done can never fire while durable
+  // culls might exist unseen.
+  const [loadFailed, setLoadFailed] = useState(false);
+  const loading = globalRows === null;
   const systemTrashSupported = Platform.OS === 'android' && Number(Platform.Version) >= 30;
 
   // P4#1: the DURABLE GLOBAL cull queue is the confirmation truth — it
@@ -39,9 +46,24 @@ export function CullListScreen({ navigation }: Props) {
   // snapshot cannot see.
   useEffect(() => {
     let cancelled = false;
-    void getStagedCulls(db).then((rows) => {
-      if (!cancelled) setGlobalRows(rows);
-    });
+    getStagedCulls(db).then(
+      (rows) => {
+        if (!cancelled) {
+          setLoadFailed(false);
+          setGlobalRows(rows);
+        }
+      },
+      () => {
+        if (!cancelled) {
+          // Also invalidate rows from an EARLIER successful load — stale
+          // tiles must not stay interactive (a tap could re-stage a
+          // photo whose decision just changed).
+          setGlobalRows(null);
+          setLoadFailed(true);
+          Alert.alert('Could not load the cull queue', 'Leave and reopen this screen to retry.');
+        }
+      },
+    );
     return () => {
       cancelled = true;
     };
@@ -49,7 +71,7 @@ export function CullListScreen({ navigation }: Props) {
 
   const staged: MediaItem[] = useMemo(
     () =>
-      globalRows.map((row) => ({
+      (globalRows ?? []).map((row) => ({
         id: row.asset_id,
         uri: row.uri,
         timestamp: row.taken_at,
@@ -62,79 +84,74 @@ export function CullListScreen({ navigation }: Props) {
     if (busy) return;
     setBusy(true);
     try {
-      // Durable trash lifecycle over the GLOBAL queue (P7#4/P8#3/P8#4):
-      // prepare (reserve + measure) → launching → system dialog →
-      // tri-state verify → outcomes; the active snapshot mirrors verified
-      // members afterwards.
-      const batch = await prepareTrashBatch(
-        db,
-        globalRows.map((row) => ({ photoId: row.asset_id, measuredBytes: fileSize(row.uri) })),
-        sessionId,
-        Date.now(),
-      );
-      if (!batch) {
-        navigation.replace('Summary');
-        return;
-      }
-      await markBatchLaunching(db, batch.batchId, Date.now());
-      const ids = batch.members.map((m) => m.photoId);
-      const dialog = await trashAssets(ids);
-      const resolved = await resolveTrashBatch(db, {
-        batchId: batch.batchId,
-        verify: async (photoId) => {
-          const trashed = await isMediaTrashed(await getEditableContentUri(photoId));
-          if (trashed === true) return 'absent';
-          if (trashed === false) return 'present';
-          return 'unknown';
-        },
-        dialog:
-          dialog.status === 'applied'
-            ? 'applied'
-            : dialog.status === 'cancelled'
-              ? 'cancelled'
-              : dialog.status === 'unsupported'
-                ? 'unsupported'
-                : 'failed',
-        at: Date.now(),
-      });
-      const trashedIds = ids.filter(
-        (id) =>
-          resolved.outcomes[id] === 'trashed' ||
-          resolved.outcomes[id] === 'absent_after_interrupted_launch',
-      );
-      await reconcileTrashed(trashedIds);
-      const result = {
-        deleted: trashedIds.length > 0,
-        status: dialog.status,
-        error: dialog.status === 'failed' ? dialog.error : undefined,
-      };
-      if (result.deleted) {
-        navigation.replace('Summary');
+      // The session context owns the durable trash lifecycle; it loops the
+      // whole global queue in bounded batches (one system dialog each) and
+      // mirrors verified outcomes into the active snapshot.
+      const result = await confirmStagedCulls();
+      if (result.status === 'applied' && result.remaining === 0) {
+        // The session-ending flow lands on the session Summary; Home-card
+        // maintenance returns Home (also: Summary renders blank without a
+        // session).
+        if (session && !fromHome) navigation.replace('Summary');
+        else navigation.goBack();
       } else if (result.status === 'cancelled') {
+        // Earlier applied batches may hold verified moves AND
+        // inconclusive verifications — the aggregate must surface both:
+        // "untouched" is only honest when nothing was attempted
+        // ambiguously.
+        const ambiguity =
+          result.unresolvedCount > 0
+            ? ` ${result.unresolvedCount} could not be verified and may already be in the system trash.`
+            : '';
         Alert.alert(
-          'Nothing moved to trash',
-          'The system confirmation was cancelled. Your photos are untouched and still staged.',
+          result.trashedCount > 0 ? 'Partly moved to trash' : 'Nothing confirmed moved',
+          result.trashedCount > 0
+            ? `${result.trashedCount} photo${result.trashedCount === 1 ? '' : 's'} moved before the system confirmation was cancelled. ${result.remaining} remain staged.${ambiguity}`
+            : result.unresolvedCount > 0
+              ? `The system confirmation was cancelled. ${result.unresolvedCount} earlier photo${result.unresolvedCount === 1 ? '' : 's'} could not be verified — they remain staged and may already be in the system trash.`
+              : 'The system confirmation was cancelled. Your photos are untouched and still staged.',
         );
       } else if (result.status === 'unsupported') {
         Alert.alert(
           'System trash unavailable',
           'Afterglow does not permanently delete photos. Moving culls to trash requires Android 11 or later.',
         );
-      } else {
+      } else if (result.status === 'failed') {
+        // A later batch failing must not hide earlier verified moves —
+        // nor the ambiguity of members whose verification stayed unknown
+        // (a post-dispatch failure may have trashed them already).
+        const progress =
+          result.trashedCount > 0
+            ? `${result.trashedCount} photo${result.trashedCount === 1 ? '' : 's'} were already moved to trash; ${result.remaining} remain staged. `
+            : '';
+        const ambiguity =
+          result.unresolvedCount > 0
+            ? ` ${result.unresolvedCount} photo${result.unresolvedCount === 1 ? '' : 's'} could not be verified and may already be in the system trash.`
+            : '';
         Alert.alert(
-          'Could not move photos to trash',
-          result.error ??
-            'Android MediaStore returned an unexpected error. Your culls remain staged.',
+          result.trashedCount > 0 ? 'Partly moved to trash' : 'Could not move photos to trash',
+          progress +
+            (result.error ??
+              'Android MediaStore returned an unexpected error. Your culls remain staged.') +
+            ambiguity,
+        );
+      } else {
+        // Dialog applied but photos could not be verified as trashed —
+        // conservative: they stay staged rather than claiming success.
+        Alert.alert(
+          'Could not verify the move',
+          `${result.remaining} photo${result.remaining === 1 ? '' : 's'} could not be confirmed as trashed and remain staged.`,
         );
       }
     } finally {
       setBusy(false);
     }
-  }, [busy, db, globalRows, sessionId, reconcileTrashed, navigation]);
+  }, [busy, confirmStagedCulls, navigation, session, fromHome]);
 
   const onConfirmPress = useCallback(() => {
     if (staged.length === 0) {
-      navigation.replace('Summary');
+      if (session && !fromHome) navigation.replace('Summary');
+      else navigation.goBack();
       return;
     }
     // The app-level warning is followed by Android's MediaStore-owned
@@ -147,7 +164,7 @@ export function CullListScreen({ navigation }: Props) {
         { text: 'Move to trash', style: 'destructive', onPress: () => void runConfirm() },
       ],
     );
-  }, [staged.length, navigation, runConfirm]);
+  }, [staged.length, navigation, runConfirm, session, fromHome]);
 
   const inSession = useCallback(
     (id: string) => {
@@ -160,6 +177,23 @@ export function CullListScreen({ navigation }: Props) {
       }
     },
     [session],
+  );
+
+  // The sheet must show the SESSION's current verdict — a durable
+  // 'culled' row can coexist with a 'kept' snapshot state (e.g. an
+  // inconclusive edited-copy cull) and the redecide chips act on the
+  // session's truth, so a hard-coded 'culled' would invert the taps.
+  const currentOf = useCallback(
+    (id: string): DecidedState => {
+      try {
+        const state = session?.getState(id);
+        if (state === 'culled') return 'culled';
+        return needsEdit(id) ? 'to_edit' : 'kept';
+      } catch {
+        return 'culled';
+      }
+    },
+    [session, needsEdit],
   );
 
   const restoreCarried = useCallback(
@@ -189,10 +223,23 @@ export function CullListScreen({ navigation }: Props) {
 
   const onTilePress = useCallback(
     (item: MediaItem) => {
-      if (inSession(item.id)) setRedecideItem(item);
-      else restoreCarried(item);
+      if (inSession(item.id)) {
+        void (async () => {
+          // Heal the divergence an interrupted edited-copy cull can
+          // leave (durable row culled, snapshot still kept): mirror the
+          // staging into the session BEFORE the sheet opens, so every
+          // chip acts on consistent state — Keep then truly unstages
+          // the durable row (a flag-only change would leave it culled).
+          try {
+            if (session!.getState(item.id) !== 'culled') await redecide(item.id, 'cull');
+          } catch {
+            // leave the sheet to the session's current view
+          }
+          setRedecideItem(item);
+        })();
+      } else restoreCarried(item);
     },
-    [inSession, restoreCarried],
+    [inSession, restoreCarried, session, redecide],
   );
 
   const renderItem = useCallback(
@@ -216,11 +263,15 @@ export function CullListScreen({ navigation }: Props) {
     <View style={[styles.root, { paddingTop: insets.top + 12 }]}>
       <Text style={styles.title}>Cull list</Text>
       <Text style={styles.subtitle}>
-        {!systemTrashSupported && staged.length > 0
-          ? 'System trash requires Android 11 or later. Culls remain staged and untouched.'
-          : staged.length === 0
-            ? 'Nothing staged for deletion.'
-            : `${staged.length} staged · tap any photo to change its decision`}
+        {loadFailed
+          ? 'Could not load the cull queue.'
+          : loading
+            ? 'Loading…'
+            : !systemTrashSupported && staged.length > 0
+              ? 'System trash requires Android 11 or later. Culls remain staged and untouched.'
+              : staged.length === 0
+                ? 'Nothing staged for deletion.'
+                : `${staged.length} staged · tap any photo to change its decision`}
       </Text>
       <FlatList
         data={staged}
@@ -230,7 +281,9 @@ export function CullListScreen({ navigation }: Props) {
         columnWrapperStyle={staged.length > 0 ? styles.column : undefined}
         contentContainerStyle={styles.list}
         ListEmptyComponent={
-          <Text style={styles.emptyText}>Everything you reviewed is a keeper.</Text>
+          loading ? null : (
+            <Text style={styles.emptyText}>Everything you reviewed is a keeper.</Text>
+          )
         }
       />
       <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
@@ -238,17 +291,25 @@ export function CullListScreen({ navigation }: Props) {
           label={
             busy
               ? 'Moving to trash…'
-              : staged.length === 0
-                ? 'Finish session'
-                : `Trash ${staged.length} photo${staged.length === 1 ? '' : 's'}`
+              : loading
+                ? 'Loading…'
+                : staged.length === 0
+                  ? session && !fromHome
+                    ? 'Finish session'
+                    : 'Done'
+                  : `Trash ${staged.length} photo${staged.length === 1 ? '' : 's'}`
           }
           color={staged.length === 0 ? colors.keep : colors.cull}
-          disabled={busy || (!systemTrashSupported && staged.length > 0)}
+          disabled={busy || loading || (!systemTrashSupported && staged.length > 0)}
           onPress={onConfirmPress}
         />
       </View>
       {redecideItem && (
-        <ReDecideSheet item={redecideItem} current="culled" onClose={() => setRedecideItem(null)} />
+        <ReDecideSheet
+          item={redecideItem}
+          current={currentOf(redecideItem.id)}
+          onClose={() => setRedecideItem(null)}
+        />
       )}
     </View>
   );

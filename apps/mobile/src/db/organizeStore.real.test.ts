@@ -124,6 +124,8 @@ describe('commitOrganizeOutcomes', () => {
           status: 'moved',
           message: 'verified',
           newData: '/storage/emulated/0/Pictures/Trips/x.jpg',
+          volumeName: 'external_primary',
+          relativePath: 'Pictures/Trips/',
         },
       ],
       AT + 5,
@@ -163,7 +165,15 @@ describe('commitOrganizeOutcomes', () => {
     );
     await commitOrganizeOutcomes(
       asExpo(d),
-      [{ photoId: 'p1', status: 'already', message: 'already at target' }],
+      [
+        {
+          photoId: 'p1',
+          status: 'already',
+          message: 'already at target',
+          volumeName: 'external_primary',
+          relativePath: 'Pictures/Trips/',
+        },
+      ],
       AT + 5,
     );
     const row = d.raw
@@ -171,6 +181,50 @@ describe('commitOrganizeOutcomes', () => {
       .get() as Record<string, unknown>;
     expect(row.organize_state).toBe('applied');
     expect(row.uri).toBe('file:///dcim/x.jpg'); // no newData → uri untouched
+  });
+
+  it('a mid-move retarget keeps the NEWER intent; only the uri refreshes', async () => {
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    await queueOrganize(
+      asExpo(d),
+      'p1',
+      { volumeName: 'external_primary', relativePath: 'Pictures/Trips/' },
+      AT,
+    );
+    // The user retargets while an old apply continuation is in flight.
+    await queueOrganize(
+      asExpo(d),
+      'p1',
+      { volumeName: 'external_primary', relativePath: 'Pictures/Other/' },
+      AT + 2,
+    );
+    // The stale continuation commits its OLD executed intent.
+    await commitOrganizeOutcomes(
+      asExpo(d),
+      [
+        {
+          photoId: 'p1',
+          status: 'moved',
+          message: 'verified',
+          newData: '/storage/emulated/0/Pictures/Trips/x.jpg',
+          volumeName: 'external_primary',
+          relativePath: 'Pictures/Trips/',
+        },
+      ],
+      AT + 5,
+    );
+    const row = d.raw
+      .prepare(
+        "SELECT organize_state, organize_path, organize_applied_at, uri FROM photos WHERE asset_id = 'p1'",
+      )
+      .get() as Record<string, unknown>;
+    // The newer intent survives, unapplied; the uri reflects the file's
+    // real (old-target) location.
+    expect(row.organize_state).toBe('queued');
+    expect(row.organize_path).toBe('Pictures/Other/');
+    expect(row.organize_applied_at).toBeNull();
+    expect(row.uri).toBe('file:///storage/emulated/0/Pictures/Trips/x.jpg');
   });
 
   it('error keeps the durable target for retry', async () => {
@@ -184,7 +238,15 @@ describe('commitOrganizeOutcomes', () => {
     );
     await commitOrganizeOutcomes(
       asExpo(d),
-      [{ photoId: 'p1', status: 'error', message: 'boom' }],
+      [
+        {
+          photoId: 'p1',
+          status: 'error',
+          message: 'boom',
+          volumeName: 'external_primary',
+          relativePath: 'Pictures/Trips/',
+        },
+      ],
       AT + 5,
     );
     const queue = await getOrganizeQueue(asExpo(d));

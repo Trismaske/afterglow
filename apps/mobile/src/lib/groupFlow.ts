@@ -24,15 +24,25 @@ export function completedDuringVisit(
 /**
  * Continue forward from a completed group, wrapping only when the user
  * reviewed groups out of order. Completed groups are never reopened by the
- * automatic flow.
+ * automatic flow. A DISSOLVED group (pair broken by "Not related", C#6) is
+ * no longer in `groups` — pass its former index so the scan still starts
+ * from its old position instead of the top of the list.
  */
 export function destinationAfterGroup(
   groups: readonly GroupProgress[],
   completedGroupId: string,
   hasPendingSingles: boolean,
+  dissolvedFormerIndex?: number,
 ): GroupCompletionDestination {
   const completedIndex = groups.findIndex((group) => group.id === completedGroupId);
-  const start = completedIndex >= 0 ? completedIndex : -1;
+  // After a dissolve the array shifted: the group now AT the former index
+  // is the immediate successor, so the scan starts one before it.
+  const start =
+    completedIndex >= 0
+      ? completedIndex
+      : dissolvedFormerIndex !== undefined && dissolvedFormerIndex >= 0
+        ? dissolvedFormerIndex - 1
+        : -1;
 
   for (let offset = 1; offset <= groups.length; offset += 1) {
     const group = groups[(start + offset) % groups.length];

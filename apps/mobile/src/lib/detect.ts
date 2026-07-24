@@ -17,18 +17,24 @@
  * from a metadata-only mod-time bump.
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
-import { getAssetDetails, loadCandidatesCreatedBetween, type CandidateAsset } from './media';
+import {
+  checkMediaPresence,
+  getAssetDetails,
+  loadCandidatesCreatedBetween,
+  type CandidateAsset,
+} from './media';
+import { reconcileExternallyRemoved } from '../db/trashStore';
 import { sha256OfFile } from './hash';
 import { resolveSources } from './sourceCatalog';
 import { classifyInPlace, CREATION_TOLERANCE_MS, matchEditedCopies } from './editDetection';
 import { dayKey } from './dates';
 import {
+  dismissCopyMatch,
   getEditDetectionRows,
   getStatesForAssets,
-  insertDetectedCopy,
+  insertDetectedCopyWithMatch,
   getPendingCopyMatches,
   markEditDone,
-  recordCopyMatch,
   setContentHash,
   updateModTimeBaseline,
   type EditDetectionRow,
@@ -94,11 +100,19 @@ export async function runEditDetection(db: SQLiteDatabase): Promise<EditDetectio
       }
       // Metadata-only change: move the baseline forward, stay queued.
       await updateModTimeBaseline(db, row.asset_id, details.modificationTime);
-    } else if (!row.content_hash && hashBudget > 0) {
-      // Unchanged and unhashed: bank a baseline for future tiebreaks.
-      hashBudget--;
-      const hash = await sha256OfFile(details.localUri ?? row.uri);
-      if (hash) await setContentHash(db, row.asset_id, hash).catch(() => {});
+    } else {
+      if (row.mod_time == null) {
+        // Fresh baseline for a re-queued photo (done → to_edit reset it):
+        // record the current file state so only FUTURE edits count — the
+        // previous cycle's edit was already consumed.
+        await updateModTimeBaseline(db, row.asset_id, details.modificationTime);
+      }
+      if (!row.content_hash && hashBudget > 0) {
+        // Unchanged and unhashed: bank a baseline for future tiebreaks.
+        hashBudget--;
+        const hash = await sha256OfFile(details.localUri ?? row.uri);
+        if (hash) await setContentHash(db, row.asset_id, hash).catch(() => {});
+      }
     }
     live.push({ row, filename: details.filename });
   }
@@ -149,27 +163,38 @@ export async function runEditDetection(db: SQLiteDatabase): Promise<EditDetectio
       },
       candidates,
     );
-    for (const copy of matches) {
+    // One best copy per original (C#12): only the first match records —
+    // this run, and across runs (the insert skips an original with any
+    // existing match). One transaction: a crash can never leave a
+    // tracked copy without its pending match (the prompt would be
+    // unrecoverable). Unchosen candidates stay untracked and reviewable.
+    const [copy] = matches;
+    if (copy) {
       const takenAt = copy.creationTime || copy.modificationTime;
-      await insertDetectedCopy(db, {
-        assetId: copy.id,
-        uri: copy.uri,
-        takenAt,
-        modTime: copy.modificationTime,
-        day: dayKey(takenAt),
-      });
-      await recordCopyMatch(db, l.row.asset_id, copy.id, Date.now());
-      result.copies.push({
-        originalAssetId: l.row.asset_id,
-        originalFilename: l.filename,
-        copyAssetId: copy.id,
-        copyFilename: copy.filename,
-      });
-    }
-    // A copy belongs to one original — remove used candidates.
-    if (matches.length > 0) {
-      const used = new Set(matches.map((m) => m.id));
-      candidates = candidates.filter((c) => !used.has(c.id));
+      const recorded = await insertDetectedCopyWithMatch(
+        db,
+        l.row.asset_id,
+        {
+          assetId: copy.id,
+          uri: copy.uri,
+          takenAt,
+          modTime: copy.modificationTime,
+          day: dayKey(takenAt),
+        },
+        Date.now(),
+      );
+      if (recorded) {
+        result.copies.push({
+          originalAssetId: l.row.asset_id,
+          originalFilename: l.filename,
+          copyAssetId: copy.id,
+          copyFilename: copy.filename,
+        });
+        // A copy belongs to one RECORDED original — an unrecorded
+        // candidate stays available for later originals (burst
+        // timestamps often match several).
+        candidates = candidates.filter((c) => c.id !== copy.id);
+      }
     }
   }
   // C#12: previously detected matches whose prompt was deferred re-emit
@@ -181,7 +206,23 @@ export async function runEditDetection(db: SQLiteDatabase): Promise<EditDetectio
     const original = live.find((l) => l.row.asset_id === match.original_id);
     if (!original) continue; // original resolved/left the queue
     const copyDetails = await getAssetDetails(match.copy_id);
-    if (!copyDetails) continue;
+    if (!copyDetails) {
+      // getAssetDetails is null for BOTH a missing asset and a transient
+      // lookup failure — only an authoritative absence may dismiss the
+      // only pending match (fail-closed, like every removal decision).
+      // Confirmed absence also converges the copy's tracked 'done' row
+      // (presence, intents, counts) via the shared removal cleanup.
+      const presence = await checkMediaPresence(match.copy_id);
+      if (presence === 'absent' || presence === 'trashed') {
+        // Reconcile the copy's tracked row FIRST: a crash between the
+        // two leaves the pending match as the retry signal (the next
+        // scan lands here again); the reverse order would strand a
+        // 'done' row for an absent photo with no way back.
+        await reconcileExternallyRemoved(db, [match.copy_id], Date.now());
+        await dismissCopyMatch(db, match.original_id, match.copy_id);
+      }
+      continue;
+    }
     result.copies.push({
       originalAssetId: match.original_id,
       originalFilename: original.filename,

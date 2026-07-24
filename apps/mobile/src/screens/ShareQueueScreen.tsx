@@ -93,10 +93,21 @@ export function ShareQueueScreen(_props: Props) {
       setBusy(true);
       try {
         // C#10 at-most-once: durable `launching` row BEFORE dispatch;
-        // promote immediately after the native dispatch report.
+        // promote immediately after the native dispatch report. A
+        // REJECTED dispatch (bridge failure) fails the batch like a
+        // reported error — otherwise the durable row would stay stuck in
+        // `launching` until the next process restart's recovery.
         const batchId = await createShareBatch(db, shareIds, Date.now());
         const uris = await Promise.all(shareIds.map(getEditableContentUri));
-        const dispatch = await shareMediaUris(uris);
+        let dispatch: Awaited<ReturnType<typeof shareMediaUris>>;
+        try {
+          dispatch = await shareMediaUris(uris);
+        } catch (error) {
+          dispatch = {
+            result: 'error',
+            message: error instanceof Error ? error.message : String(error),
+          };
+        }
         if (dispatch.result === 'dispatched') {
           await promoteShareBatch(db, batchId, Date.now());
           showToast(`Sheet opened for ${shareIds.length} — queue kept for more sharing`);
@@ -158,7 +169,7 @@ export function ShareQueueScreen(_props: Props) {
   }, [db, rows, reload]);
 
   const removeSelected = useCallback(async () => {
-    for (const id of selected) await removeFromShareQueue(db, id);
+    for (const id of selected) await removeFromShareQueue(db, id, Date.now());
     setSelected(new Set());
     await reload();
   }, [db, selected, reload]);

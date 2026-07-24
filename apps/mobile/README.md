@@ -25,9 +25,11 @@ keepers and carries your staged culls — nothing is ever lost or
 re-earned. Every decision is reversible until the final cull
 confirmation.
 
-> **Pre-1.0 testers:** upgrades between 0.x releases reset the app's
-> local database (review history, queues, settings). Your photos are
-> never touched — only Afterglow's own bookkeeping starts fresh.
+> **Pre-1.0 testers:** a 0.x upgrade resets the app's local database
+> (review history, queues, settings) whenever the release changes the
+> schema baseline — patch releases that keep the baseline (e.g. 0.7.1)
+> keep your data. Your photos are never touched either way — only
+> Afterglow's own bookkeeping can start fresh.
 
 ## Running it (dev build required — NOT Expo Go)
 
@@ -84,9 +86,12 @@ the release APK from the latest `mobile-m*` GitHub Release.
    staged across sessions, including culls carried from replaced
    sessions. Tap any photo to change its verdict. On Android 11+ the
    system dialog moves the batch to Android's system trash in verified
-   batches (recovery duration is controlled by the system gallery).
-   Below Android 11, Afterglow does not offer a permanent-delete
-   fallback.
+   batches (recovery duration is controlled by the system gallery; a
+   queue larger than one batch continues dialog-by-dialog until done,
+   m0.7.1). Below Android 11, Afterglow does not offer a
+   permanent-delete fallback. Whenever culls are staged, a **Cull list
+   card on Home** opens the queue directly — no session needed
+   (m0.7.1).
 8. **Favourites queue** — hearts from Deck, Singles, browse mode, and Compare
    collect here. Android 11+ applies or removes them from system gallery
    favourites in verified, retryable batches.
@@ -115,7 +120,10 @@ the release APK from the latest `mobile-m*` GitHub Release.
     Moves are repeatable — a photo can be moved again later.
 13. **History** — a filterable feed of past decisions on photos still
     present (kept / staged / to-edit / favourite / organized / share
-    sheets), newest first. Photos deleted outside Afterglow drop out.
+    sheets), newest first, paging through everything including share
+    events (m0.7.1). Tap a photo to change its state with the standard
+    editor (m0.7.1; photos in the active session are managed from the
+    session screens). Photos deleted outside Afterglow drop out.
 14. **Progress** — per-day and global inbox-zero views: counts for
     unreviewed / in groups / kept / to edit / staged / done, a photo grid
     filterable by state, and a per-photo state editor for out-of-session

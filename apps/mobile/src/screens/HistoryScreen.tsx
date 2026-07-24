@@ -1,12 +1,13 @@
 /**
  * History (m0.7 item G, #4): a reverse-chronological, filterable
  * current-state feed of decisions on photos still present, with
- * share-sheet events interleaved. Ordered by activity_at with keyset
- * pagination (C#15); trashed/deleted photos drop out (restore brings them
- * back via reconciliation); re-deciding happens through the standard
- * decision affordances on the photo rows.
+ * share-sheet events interleaved. Ordered by activity_at with two-stream
+ * keyset pagination (C#15); trashed/deleted photos drop out (restore
+ * brings them back via reconciliation); tapping a photo row opens the
+ * standard state editor (StateEditorSheet — active-session photos are
+ * read-only there and managed from the session screens).
  */
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -15,9 +16,20 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
-import { getHistoryPage, type HistoryFilter, type HistoryRow } from '../db/store';
+import {
+  getHistoryPage,
+  type HistoryCursor,
+  type HistoryFilter,
+  type HistoryRow,
+} from '../db/store';
+import { reconcileExternallyRemoved } from '../db/trashStore';
+import { checkMediaPresence } from '../lib/media';
+import { classifyPhotoState } from '../lib/progress';
 import { formatDayClock } from '../lib/format';
+import { useSession } from '../session/SessionContext';
 import { DecisionBadge, type DecisionKind } from '../components/DecisionBadge';
+import { StateEditorSheet } from '../components/progress/StateEditorSheet';
+import type { GridPhoto } from '../components/progress/PhotoStateGrid';
 import { colors, touch } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'History'>;
@@ -42,18 +54,63 @@ function badgeOf(row: Extract<HistoryRow, { kind: 'photo' }>): DecisionKind | nu
 export function HistoryScreen(_props: Props) {
   const insets = useSafeAreaInsets();
   const db = useSQLiteContext();
+  const { session, reconcileTrashed } = useSession();
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [rows, setRows] = useState<HistoryRow[] | null>(null);
-  const [next, setNext] = useState<{ activityAt: number; assetId: string } | null>(null);
+  const [next, setNext] = useState<HistoryCursor | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [selected, setSelected] = useState<GridPhoto | null>(null);
+  // Monotonic request token: a reload invalidates every in-flight fetch
+  // (an older filter's result finishing last must not win the state).
+  const requestRef = useRef(0);
+
+  // The screen contract: photos deleted or trashed OUTSIDE Afterglow drop
+  // out. Only Afterglow's own trash resolution clears is_present, so each
+  // fetched page is reconciled against MediaStore — fail-closed: only an
+  // authoritative 'trashed'/'absent' answer converges the row (exactly
+  // like a verified trash outcome, without credit); 'unknown' changes
+  // nothing.
+  const reconcilePage = useCallback(
+    async (pageRows: HistoryRow[]): Promise<HistoryRow[]> => {
+      const gone = new Set<string>();
+      for (const row of pageRows) {
+        if (row.kind !== 'photo') continue;
+        const presence = await checkMediaPresence(row.asset_id);
+        if (presence === 'trashed' || presence === 'absent') gone.add(row.asset_id);
+      }
+      if (gone.size === 0) return pageRows;
+      await reconcileExternallyRemoved(db, [...gone], Date.now());
+      // A removed photo may belong to the unfinished active session —
+      // the live snapshot must converge too (no-op for non-members).
+      await reconcileTrashed([...gone]);
+      return pageRows.filter((row) => row.kind !== 'photo' || !gone.has(row.asset_id));
+    },
+    [db, reconcileTrashed],
+  );
+
+  const inActiveSession = useCallback(
+    (id: string) => {
+      if (!session) return false;
+      try {
+        session.getState(id);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [session],
+  );
 
   const reload = useCallback(
     async (which: HistoryFilter) => {
+      const token = ++requestRef.current;
       const page = await getHistoryPage(db, which, null);
-      setRows(page.rows);
+      const rowsNow = await reconcilePage(page.rows);
+      if (requestRef.current !== token) return; // superseded by a newer reload
+      setRows(rowsNow);
       setNext(page.next);
     },
-    [db],
+    [db, reconcilePage],
   );
 
   useFocusEffect(
@@ -67,14 +124,19 @@ export function HistoryScreen(_props: Props) {
   const loadMore = useCallback(async () => {
     if (!next || loadingMore) return;
     setLoadingMore(true);
+    // Extends the stream the current token owns; a reload started
+    // meanwhile bumps the token and this append is discarded.
+    const token = requestRef.current;
     try {
       const page = await getHistoryPage(db, filter, next);
-      setRows((old) => [...(old ?? []), ...page.rows]);
+      const rowsNow = await reconcilePage(page.rows);
+      if (requestRef.current !== token) return;
+      setRows((old) => [...(old ?? []), ...rowsNow]);
       setNext(page.next);
     } finally {
       setLoadingMore(false);
     }
-  }, [db, filter, next, loadingMore]);
+  }, [db, filter, next, loadingMore, reconcilePage]);
 
   const renderItem = useCallback(({ item }: { item: HistoryRow }) => {
     if (item.kind === 'share') {
@@ -103,7 +165,18 @@ export function HistoryScreen(_props: Props) {
     }
     const badge = badgeOf(item);
     return (
-      <View style={styles.row}>
+      <Pressable
+        style={styles.row}
+        onPress={() =>
+          setSelected({
+            id: item.asset_id,
+            uri: item.uri,
+            takenAt: item.taken_at,
+            effective: classifyPhotoState({ state: item.state, grouped: false }),
+            dbState: item.state,
+          })
+        }
+      >
         <Image source={{ uri: item.uri }} style={styles.thumb} contentFit="cover" />
         <View style={styles.rowBody}>
           <Text style={styles.rowTime}>{formatDayClock(item.activity_at)}</Text>
@@ -112,12 +185,23 @@ export function HistoryScreen(_props: Props) {
             {(item.favourite_state === 'applied' || item.favourite_state === 'queued_apply') && (
               <DecisionBadge kind="fav" size={20} />
             )}
-            {item.organize_state === 'applied' && (
-              <MaterialCommunityIcons name="folder-move" size={18} color={colors.textDim} />
+            {item.organize_applied_at != null && (
+              // folder-clock: organized once, but a NEWER move intent is
+              // pending/erroring — the shown fact is superseded until it
+              // applies (history keeps the event either way).
+              <MaterialCommunityIcons
+                name={
+                  item.organize_state === 'queued' || item.organize_state === 'error'
+                    ? 'folder-clock'
+                    : 'folder-move'
+                }
+                size={18}
+                color={colors.textDim}
+              />
             )}
           </View>
         </View>
-      </View>
+      </Pressable>
     );
   }, []);
 
@@ -129,9 +213,17 @@ export function HistoryScreen(_props: Props) {
             key={f.key}
             style={[styles.chip, filter === f.key && styles.chipActive]}
             onPress={() => {
-              setFilter(f.key);
               setRows(null);
-              void reload(f.key);
+              if (f.key === filter) {
+                // Same filter tapped again: the focus effect keys on
+                // `filter` and will NOT re-run — reload explicitly.
+                void reload(f.key);
+              } else {
+                // The focus effect re-runs on the filter change —
+                // reloading here too would double the presence checks
+                // and reconciliation work.
+                setFilter(f.key);
+              }
             }}
           >
             <Text style={[styles.chipText, filter === f.key && styles.chipTextActive]}>
@@ -154,6 +246,12 @@ export function HistoryScreen(_props: Props) {
             </Text>
           ) : null
         }
+      />
+      <StateEditorSheet
+        photo={selected}
+        inActiveSession={selected ? inActiveSession(selected.id) : false}
+        onClose={() => setSelected(null)}
+        onChanged={() => void reload(filter)}
       />
     </View>
   );

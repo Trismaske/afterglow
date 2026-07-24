@@ -125,8 +125,34 @@ describe('share queue + cycles', () => {
     insertPhoto(d, 'p2');
     await addToShareQueue(asExpo(d), 'p1', AT);
     await addToShareQueue(asExpo(d), 'p2', AT);
-    await removeFromShareQueue(asExpo(d), 'p1');
+    await removeFromShareQueue(asExpo(d), 'p1', AT + 1);
     const queue = await getShareQueue(asExpo(d));
     expect(queue.map((r) => r.photo_id)).toEqual(['p2']);
+    // The queue is not empty, so the cycle stays open.
+    const open = d.raw
+      .prepare('SELECT COUNT(*) AS n FROM share_cycles WHERE ended_at IS NULL')
+      .get() as { n: number };
+    expect(open.n).toBe(1);
+  });
+
+  it('removing the last queued photo ends the cycle — a requeue starts at zero passes', async () => {
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    await addToShareQueue(asExpo(d), 'p1', AT);
+    // One completed pass in this cycle.
+    const batchId = await createShareBatch(asExpo(d), ['p1'], AT + 1);
+    await promoteShareBatch(asExpo(d), batchId, AT + 2);
+    expect((await getShareQueue(asExpo(d)))[0].pass_count).toBe(1);
+    // Emptying the queue by removal (not explicit clear) ends the cycle.
+    await removeFromShareQueue(asExpo(d), 'p1', AT + 3);
+    const open = d.raw
+      .prepare('SELECT COUNT(*) AS n FROM share_cycles WHERE ended_at IS NULL')
+      .get() as { n: number };
+    expect(open.n).toBe(0);
+    // Requeue: fresh cycle, badge starts at zero; History keeps the event.
+    await addToShareQueue(asExpo(d), 'p1', AT + 4);
+    const queue = await getShareQueue(asExpo(d));
+    expect(queue[0].pass_count).toBe(0);
+    expect(await countNeverShared(asExpo(d))).toBe(1);
   });
 });

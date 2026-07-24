@@ -28,9 +28,10 @@ import {
   type PhotoState,
 } from '@afterglow/core';
 import type { LoadedPhoto } from '../lib/media';
-import { getEditableContentUri, trashAssets } from '../lib/media';
-import { isMediaTrashed } from '../../modules/media-store-actions';
-import { markBatchLaunching, prepareTrashBatch, resolveTrashBatch } from '../db/trashStore';
+import { verifyTrashedTriState } from '../lib/media';
+import { runTrashAttempt } from '../lib/trashFlow';
+import { recoverTrashBatches } from '../db/trashStore';
+import { recoverShareBatches } from '../db/shareStore';
 import { fileSize, sha256OfFile } from '../lib/hash';
 import { dayKey } from '../lib/dates';
 import { ensureDhashes } from '../lib/similarityHashes';
@@ -50,15 +51,15 @@ import {
 } from '../lib/favouriteState';
 import {
   abandonActiveSessions,
-  addReclaimedBytes,
-  bankActiveSessionKeepers,
-  clearPhotoGroup,
   completeSession,
   replaceActiveSession,
   getActiveSession,
   getFavouriteStates,
   getNeedsEditAssets,
   getSetting,
+  getPhotoUris,
+  getStagedCulls,
+  getStatesForAssets,
   markKeptDone,
   persistDecision,
   setContentHash,
@@ -83,12 +84,18 @@ export interface GroupInfo {
 }
 
 export interface ConfirmResult {
-  /** True if the batch was moved to system trash (or was empty). */
-  deleted: boolean;
+  /** Outcome of the LAST system dialog run (batches loop until done). */
   status: 'applied' | 'cancelled' | 'unsupported' | 'failed';
   error?: string;
-  count: number;
-  bytes: number;
+  /** Verified photos moved to trash across all batches this run. */
+  trashedCount: number;
+  /** Verified bytes credited across all batches this run. */
+  creditedBytes: number;
+  /** Staged culls still in the global queue afterwards. */
+  remaining: number;
+  /** Members attempted this run whose verification stayed inconclusive —
+   * still staged, and possibly already in system trash. */
+  unresolvedCount: number;
 }
 
 interface PersistenceError {
@@ -125,6 +132,11 @@ interface SessionContextValue {
     /** Perceptual-hash progress while groups are being built (m0.4). */
     onHashProgress?: (done: number, total: number) => void,
   ) => Promise<void>;
+  /** Await the FIFO persistence barrier: every queued decision write has
+   * landed. Callers that READ persisted rows to plan a replacement (the
+   * session loaders) must flush first, or a decision made moments ago —
+   * e.g. a staged cull — could be re-drawn from its stale row. */
+  flushPersistence: () => Promise<void>;
   /** Restore the persisted active session, if any. Returns true if resumed. */
   resumeSession: () => Promise<boolean>;
   discardActiveSession: () => Promise<void>;
@@ -167,11 +179,25 @@ interface SessionContextValue {
    * its group/singles queue; no hidden decision history is maintained.
    */
   redecide: (id: string, target: RedecideTarget) => Promise<void>;
-  /** THE one delete path: confirm staged culls → system dialog → trash. */
-  confirmCulls: () => Promise<ConfirmResult>;
-  /** Mirror externally-confirmed trash outcomes into the live snapshot
-   * (global cull-queue confirmation, P4#1) — no-op for non-members. */
+  /**
+   * THE one delete path (P4#1): loop the durable GLOBAL cull queue through
+   * the trash-attempt lifecycle in TRASH_BATCH_LIMIT batches — one system
+   * dialog each — until every row was attempted or the user declines.
+   * Members whose verification stays inconclusive get one dialog per run
+   * (they stay staged but are excluded from later batches). Credits
+   * reclaimed bytes and mirrors verified outcomes into the live snapshot
+   * per batch.
+   */
+  confirmStagedCulls: () => Promise<ConfirmResult>;
+  /** Mirror durably-trashed outcomes into the live snapshot — members in
+   * ANY state converge (kept members leave their decks); no-op for
+   * non-members. Used internally by the cull confirm, and externally by
+   * the edited-copy cull and History's external-removal reconciliation. */
   reconcileTrashed: (ids: readonly string[]) => Promise<void>;
+  /** Mirror organize-move URI repairs into the live snapshot — a moved
+   * member's old file:// path would render nothing. No-op for
+   * non-members; resume covers the crash window via durable photos.uri. */
+  reconcileMovedUris: (moves: ReadonlyArray<{ photoId: string; uri: string }>) => Promise<void>;
   /** Finish: remaining keepers converge to done; to_edit stays queued. */
   finishSession: () => Promise<void>;
 }
@@ -193,6 +219,40 @@ function changedStates(
   return changes;
 }
 
+/**
+ * Apply durably-verified trash outcomes to a deck snapshot: a member in
+ * ANY state becomes trashed and leaves every deck (aliveIds + best
+ * star). Kept members converge too — an app-side to_edit photo is core
+ * 'kept', and the edited-copy cull or an external removal can trash it
+ * outside the staged-cull flow. Shared by live reconciliation and
+ * resume-time recovery. Returns true when anything changed.
+ */
+function applyTrashedToSnapshot(
+  snap: {
+    states: Record<string, PhotoState>;
+    groups: { aliveIds: string[]; bestId: string | null; complete: boolean }[];
+  },
+  ids: readonly string[],
+): boolean {
+  let changed = false;
+  for (const id of ids) {
+    const state = snap.states[id];
+    if (state !== undefined && state !== 'trashed') {
+      snap.states[id] = 'trashed';
+      for (const group of snap.groups) {
+        group.aliveIds = group.aliveIds.filter((m) => m !== id);
+        if (group.bestId === id) group.bestId = null;
+        // An emptied deck completes its group (mirrors core
+        // removeFromDeck) — otherwise the flow would keep selecting an
+        // empty group and render a blank deck.
+        if (group.aliveIds.length === 0) group.complete = true;
+      }
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 /** Keep one unreviewed photo regardless of grouped/single membership. */
 function keepUnreviewed(session: DeckSession, id: string): void {
   const group = session.groupsInfo().find((candidate) => candidate.aliveIds.includes(id));
@@ -204,9 +264,24 @@ function keepUnreviewed(session: DeckSession, id: string): void {
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const db = useSQLiteContext();
   const sessionRef = useRef<DeckSession | null>(null);
+  /** The once-per-process startup recovery (trash attempts + share
+   * batches); every resume awaits it. */
+  const trashRecoveryRef = useRef<Promise<boolean> | null>(null);
+  /** Consecutive recovery failures — escalates the start-session error
+   * copy toward the platform escape hatch (Clear data) after 3. */
+  const recoveryFailuresRef = useRef(0);
   const needsEditRef = useRef<Set<string>>(new Set());
   const favouriteRef = useRef<Map<string, FavouriteStatus>>(new Map());
-  const [sessionId, setSessionId] = useState<number | null>(null);
+  const [sessionId, setSessionIdState] = useState<number | null>(null);
+  /** Mirrors sessionId SYNCHRONOUSLY for async continuations that must
+   * check the CURRENT session (a cull confirm finishing after a silent
+   * replacement must not credit the new session's display stat) — a
+   * passive effect would leave a stale id until React commits. */
+  const sessionIdRef = useRef<number | null>(null);
+  const setSessionId = useCallback((id: number | null) => {
+    sessionIdRef.current = id;
+    setSessionIdState(id);
+  }, []);
   const [label, setLabel] = useState('');
   const [reclaimedBytes, setReclaimedBytes] = useState(0);
   const [version, setVersion] = useState(0);
@@ -266,6 +341,32 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     [persistenceQueue],
   );
 
+  /**
+   * Once per process, shared by resume AND start: recover interrupted
+   * trash attempts (P8#3) and share batches (C#10). Returns false on a
+   * transient failure — the once-guard clears so the next caller
+   * retries. Installing ANY session before recovery succeeds would let
+   * Home's session short-circuit skip every later retry, leaving stale
+   * reservations blocked for the process lifetime.
+   */
+  const ensureStartupRecovery = useCallback(async (): Promise<boolean> => {
+    if (!trashRecoveryRef.current) {
+      trashRecoveryRef.current = Promise.allSettled([
+        recoverTrashBatches(db, verifyTrashedTriState, Date.now()),
+        recoverShareBatches(db),
+      ]).then((results) => results.every((r) => r.status === 'fulfilled'));
+    }
+    const attempt = trashRecoveryRef.current;
+    const ok = await attempt;
+    if (ok) {
+      recoveryFailuresRef.current = 0;
+    } else {
+      recoveryFailuresRef.current += 1;
+      if (trashRecoveryRef.current === attempt) trashRecoveryRef.current = null;
+    }
+    return ok;
+  }, [db]);
+
   const startSession = useCallback(
     async (
       newLabel: string,
@@ -275,6 +376,14 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       onHashProgress?: (done: number, total: number) => void,
     ) => {
       await waitForPersistence();
+      if (!(await ensureStartupRecovery())) {
+        throw new Error(
+          'Startup recovery has not completed yet — please try again.' +
+            (recoveryFailuresRef.current >= 3
+              ? " If this keeps happening, clearing Afterglow's app data in Android settings resets its bookkeeping — your photos are never touched."
+              : ''),
+        );
+      }
       // m0.7 item B: SIMILARITY-FIRST grouping. Components form over the
       // whole draw — time proximity only relaxes the bar (never excludes),
       // so the same subject shot on different days still groups (#24). The
@@ -346,38 +455,104 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       setReclaimedBytes(0);
       bump();
     },
-    [db, bump, waitForPersistence, persistenceQueue],
+    [db, bump, waitForPersistence, persistenceQueue, ensureStartupRecovery, setSessionId],
   );
 
   const resumeSession = useCallback(async () => {
     await waitForPersistence();
+    // Recovery gates BOTH resume and start (ensureStartupRecovery): a
+    // transient failure aborts this resume retryably — restoring a
+    // session anyway would make Home short-circuit every later focus
+    // check, leaving stale rows blocked for the process lifetime.
+    if (!(await ensureStartupRecovery())) return false;
     const row = await getActiveSession(db);
     if (!row) return false;
+
+    // Abandonment is reserved for a CORRUPT/pre-deck snapshot — parse and
+    // structural failures only. Transient SQLite I/O during reads or the
+    // reconciliation write must never end the user's session: those paths
+    // abort this resume (return false) and the next focus retries.
+    let parsed: {
+      states: Record<string, PhotoState>;
+      groups: { aliveIds: string[]; bestId: string | null; complete: boolean }[];
+      items: { id: string; uri: string }[];
+    };
     try {
       // Bracket-era (m0.3.x) snapshots throw here and are abandoned —
-      // deliberate upgrade behavior, see the module docs.
-      const session = DeckSession.fromJSON(JSON.parse(row.snapshot));
-      sessionRef.current = session;
-      persistenceQueue.resetCommitted(statesOf(session));
-      needsEditRef.current = await getNeedsEditAssets(
-        db,
-        session.toJSON().items.map((i) => i.id),
-      );
-      favouriteRef.current = await getFavouriteStates(
-        db,
-        session.toJSON().items.map((item) => item.id),
-      );
-      setSessionId(row.id);
-      setLabel(row.label);
-      setReclaimedBytes(row.reclaimed_bytes);
-      bump();
-      return true;
+      // deliberate upgrade behavior, see the module docs. A parseable
+      // non-object (e.g. the literal null) is corruption too — it must
+      // not reach the transient-I/O path below and retry forever.
+      parsed = JSON.parse(row.snapshot) as typeof parsed;
+      if (typeof parsed !== 'object' || parsed === null) throw new Error('not an object');
+    } catch {
+      await abandonActiveSessions(db, Date.now());
+      return false;
+    }
+
+    // ANY crash window after resolveTrashBatch commits (recovery, or a
+    // death between resolution and the snapshot write) can leave the
+    // stored snapshot behind the durable photo rows — so reconcile EVERY
+    // member against SQLite, the single source of truth, not just this
+    // launch's recovery outcomes. Kept members count too: an app-side
+    // to_edit photo is core 'kept' and the edited-copy cull or an
+    // external removal can trash it outside the staged flow.
+    let trashedNow: string[];
+    let durableUris: Map<string, string>;
+    let needsEditIds: Set<string>;
+    let favourites: typeof favouriteRef.current;
+    try {
+      const memberIds = Object.entries(parsed.states ?? {})
+        .filter(([, state]) => state !== 'trashed')
+        .map(([id]) => id);
+      const durable = memberIds.length > 0 ? await getStatesForAssets(db, memberIds) : new Map();
+      trashedNow = memberIds.filter((id) => durable.get(id) === 'trashed');
+      const allIds = Object.keys(parsed.states ?? {});
+      durableUris = await getPhotoUris(db, allIds);
+      needsEditIds = await getNeedsEditAssets(db, allIds);
+      favourites = await getFavouriteStates(db, allIds);
+    } catch {
+      return false; // transient read failure — session untouched, retryable
+    }
+
+    let session: DeckSession;
+    let reconciled = false;
+    try {
+      reconciled = trashedNow.length > 0 && applyTrashedToSnapshot(parsed, trashedNow);
+      // Organize moves repair photos.uri (the durable truth) — a snapshot
+      // still holding the pre-move path would render dead file:// URIs.
+      for (const item of parsed.items ?? []) {
+        const uri = durableUris.get(item.id);
+        if (uri !== undefined && uri !== item.uri) {
+          item.uri = uri;
+          reconciled = true;
+        }
+      }
+      session = DeckSession.fromJSON(parsed);
     } catch {
       // Corrupt or pre-deck snapshot: abandon rather than dead-ending.
       await abandonActiveSessions(db, Date.now());
       return false;
     }
-  }, [db, bump, waitForPersistence, persistenceQueue]);
+
+    if (reconciled) {
+      // The photo rows are already correct; only the stored snapshot
+      // needs to catch up.
+      try {
+        await persistDecision(db, row.id, JSON.stringify(session.toJSON()), [], Date.now());
+      } catch {
+        return false; // transient write failure — retry next focus
+      }
+    }
+    sessionRef.current = session;
+    persistenceQueue.resetCommitted(statesOf(session));
+    needsEditRef.current = needsEditIds;
+    favouriteRef.current = favourites;
+    setSessionId(row.id);
+    setLabel(row.label);
+    setReclaimedBytes(row.reclaimed_bytes);
+    bump();
+    return true;
+  }, [db, bump, waitForPersistence, persistenceQueue, ensureStartupRecovery, setSessionId]);
 
   const discardActiveSession = useCallback(async () => {
     await waitForPersistence();
@@ -389,7 +564,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setLabel('');
     setReclaimedBytes(0);
     bump();
-  }, [db, bump, waitForPersistence]);
+  }, [db, bump, waitForPersistence, setSessionId]);
 
   /** Content-hash fallback identity, computed only for staged culls. */
   const hashInBackground = useCallback(
@@ -486,13 +661,16 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     async (id: string) => {
       const session = sessionRef.current;
       if (!session) throw new Error('makeSingle: no active session');
-      session.makeSingle(id);
+      // Core reports every id that left grouping — the ejected photo plus
+      // the survivor when the group dissolved. The durable membership
+      // update (photos.group_id + photo_group_assignments) rides the
+      // persistence queue with the snapshot, so a failed write hits the
+      // retry barrier instead of being silently lost.
+      const removed = session.makeSingle(id);
       bump();
-      await persist();
-      // The photo is no longer "in a group" for day-progress accounting.
-      await clearPhotoGroup(db, id).catch(() => {});
+      await persist({ madeSingles: removed });
     },
-    [db, persist, bump],
+    [persist, bump],
   );
 
   const recordCompare = useCallback(
@@ -670,101 +848,35 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     [persist, bump, hashInBackground],
   );
 
-  const confirmCulls = useCallback(async (): Promise<ConfirmResult> => {
-    const session = sessionRef.current;
-    if (!session || sessionId === null) throw new Error('confirmCulls: no active session');
-    const staged = session.stagedCulls();
-    if (staged.length === 0) {
-      return { deleted: true, status: 'applied', count: 0, bytes: 0 };
-    }
-
-    // m0.7 item H (P7#4/P8#3/P8#4): the attempt is DURABLE before native
-    // dispatch — batch + measured bytes + one reservation per photo — so a
-    // process death anywhere leaves a recoverable record and ambiguous
-    // absence can never claim credit. Bounded per OS request (P5#4).
-    const batch = await prepareTrashBatch(
-      db,
-      staged.map((item) => ({ photoId: item.id, measuredBytes: fileSize(item.uri) })),
-      sessionId,
-      Date.now(),
-    );
-    if (!batch) return { deleted: true, status: 'applied', count: 0, bytes: 0 };
-
-    await markBatchLaunching(db, batch.batchId, Date.now());
-    const ids = batch.members.map((m) => m.photoId);
-    const result = await trashAssets(ids);
-
-    const resolved = await resolveTrashBatch(db, {
-      batchId: batch.batchId,
-      verify: async (photoId) => {
-        const trashed = await isMediaTrashed(await getEditableContentUri(photoId));
-        // Tri-state (C#1): a query failure is 'unknown', never 'absent'.
-        if (trashed === true) return 'absent';
-        if (trashed === false) return 'present';
-        return 'unknown';
-      },
-      dialog:
-        result.status === 'applied'
-          ? 'applied'
-          : result.status === 'cancelled'
-            ? 'cancelled'
-            : result.status === 'unsupported'
-              ? 'unsupported'
-              : 'failed',
-      at: Date.now(),
-    });
-
-    // Mirror verified outcomes into the live core snapshot.
-    const trashedIds = ids.filter(
-      (id) =>
-        resolved.outcomes[id] === 'trashed' ||
-        resolved.outcomes[id] === 'absent_after_interrupted_launch',
-    );
-    if (trashedIds.length > 0) {
-      const confirmed = session.confirmAll();
-      session.markTrashed(confirmed.filter((id) => trashedIds.includes(id)));
-      // Anything confirmed but not verified rolls back to culled.
-      const snap = session.toJSON();
-      for (const id of confirmed) {
-        if (!trashedIds.includes(id)) snap.states[id] = 'culled';
-      }
-      sessionRef.current = DeckSession.fromJSON(snap);
-      await persist();
-      await addReclaimedBytes(db, sessionId, resolved.creditedBytes);
-      setReclaimedBytes((b) => b + resolved.creditedBytes);
-      bump();
-      return {
-        deleted: true,
-        status: 'applied',
-        count: trashedIds.length,
-        bytes: resolved.creditedBytes,
-      };
-    }
-
-    bump();
-    return {
-      deleted: false,
-      status: result.status,
-      error: result.status === 'failed' ? result.error : undefined,
-      count: ids.length,
-      bytes: 0,
-    };
-  }, [db, sessionId, persist, bump]);
-
   const reconcileTrashed = useCallback(
     async (ids: readonly string[]) => {
       const session = sessionRef.current;
       if (!session || ids.length === 0) return;
+      // The DB cleanup already dropped needs_edit — the in-memory flag
+      // must follow or editFlagCount/Summary keep counting the trashed
+      // photo as queued for editing.
+      let flagsChanged = false;
+      for (const id of ids) if (needsEditRef.current.delete(id)) flagsChanged = true;
+      const snap = session.toJSON();
+      const snapshotChanged = applyTrashedToSnapshot(snap, ids);
+      if (!snapshotChanged && !flagsChanged) return;
+      if (snapshotChanged) sessionRef.current = DeckSession.fromJSON(snap);
+      bump();
+      if (snapshotChanged) await persist();
+    },
+    [bump, persist],
+  );
+
+  const reconcileMovedUris = useCallback(
+    async (moves: ReadonlyArray<{ photoId: string; uri: string }>) => {
+      const session = sessionRef.current;
+      if (!session || moves.length === 0) return;
       const snap = session.toJSON();
       let changed = false;
-      for (const id of ids) {
-        if (snap.states[id] === 'culled' || snap.states[id] === 'confirmed') {
-          snap.states[id] = 'trashed';
-          // A trashed member cannot stay alive in any deck.
-          for (const group of snap.groups) {
-            group.aliveIds = group.aliveIds.filter((m) => m !== id);
-            if (group.bestId === id) group.bestId = null;
-          }
+      for (const move of moves) {
+        const item = snap.items.find((i) => i.id === move.photoId);
+        if (item && item.uri !== move.uri) {
+          item.uri = move.uri;
           changed = true;
         }
       }
@@ -775,6 +887,76 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     },
     [bump, persist],
   );
+
+  const confirmStagedCulls = useCallback(async (): Promise<ConfirmResult> => {
+    // The session this confirmation was LAUNCHED from — a continuation
+    // outliving a silent replacement must not touch the new session.
+    const launchedFrom = sessionId;
+    let trashedCount = 0;
+    let creditedBytes = 0;
+    let status: ConfirmResult['status'] = 'applied';
+    let error: string | undefined;
+    // m0.7 item H (P7#4/P8#3/P8#4): each attempt is DURABLE before native
+    // dispatch (lib/trashFlow.ts). Batches are bounded per OS consent
+    // request (P5#4), so the GLOBAL queue loops — one dialog per batch —
+    // until every non-excluded row was attempted or the user declines.
+    // Members whose verification stayed inconclusive this run: they keep
+    // their staged row, but re-requesting the same URI in every later
+    // batch would show the user repeated consent dialogs for photos that
+    // may already be trashed — each unresolved member gets ONE dialog
+    // per run.
+    const unresolved = new Set<string>();
+    // Genuinely UNKNOWN verifications only (possibly already in system
+    // trash) — cancelled/still-present members are excluded from later
+    // batches too, but they are known untouched and must not scare the
+    // user in the cancellation message.
+    const ambiguous = new Set<string>();
+    for (;;) {
+      const rows = (await getStagedCulls(db)).filter((row) => !unresolved.has(row.asset_id));
+      if (rows.length === 0) break;
+      const attempt = await runTrashAttempt(
+        db,
+        rows.map((row) => ({ photoId: row.asset_id, measuredBytes: fileSize(row.uri) })),
+        launchedFrom,
+      );
+      if (attempt.status === 'skipped') break; // every row held by a live attempt
+      const gone = new Set(attempt.trashedIds);
+      for (const id of attempt.attemptedIds) if (!gone.has(id)) unresolved.add(id);
+      for (const id of attempt.unknownIds) ambiguous.add(id);
+      status = attempt.status;
+      error = attempt.error;
+      trashedCount += attempt.trashedIds.length;
+      creditedBytes += attempt.creditedBytes;
+      // The durable session aggregate credited ATOMICALLY with the batch
+      // outcomes (resolveTrashBatch); the in-memory display mirrors here
+      // ONLY while the launching session is still the active one.
+      if (
+        attempt.creditedBytes > 0 &&
+        launchedFrom !== null &&
+        sessionIdRef.current === launchedFrom
+      ) {
+        setReclaimedBytes((b) => b + attempt.creditedBytes);
+      }
+      // Mirror verified outcomes into the live core snapshot (P4#1).
+      await reconcileTrashed(attempt.trashedIds);
+      // Only a declined/failed dialog stops the run — an all-unresolved
+      // batch must NOT: its members are now excluded, so the next
+      // iteration reaches the rows behind them (the unresolved filter
+      // shrinks the candidate set every iteration, so the loop always
+      // terminates).
+      if (attempt.status !== 'applied') break;
+    }
+    const remaining = (await getStagedCulls(db)).length;
+    bump();
+    return {
+      status,
+      error,
+      trashedCount,
+      creditedBytes,
+      remaining,
+      unresolvedCount: ambiguous.size,
+    };
+  }, [db, sessionId, reconcileTrashed, bump]);
 
   const finishSession = useCallback(async () => {
     await waitForPersistence();
@@ -796,14 +978,20 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setSessionId(null);
     setLabel('');
     bump();
-  }, [db, sessionId, bump, waitForPersistence]);
+  }, [db, sessionId, bump, waitForPersistence, setSessionId]);
 
+  // Durably trashed members (verified edited-copy cull, external
+  // removal) stay in the snapshot for statistics but leave every DISPLAY
+  // surface — dead URIs with un-actionable controls must not render on
+  // Groups cards, counts, or decks.
   const groups: GroupInfo[] = useMemo(() => {
     const session = sessionRef.current;
     if (!session) return [];
     return session.groupsInfo().map((g) => ({
       id: g.id,
-      items: g.memberIds.map((id) => session.item(id)),
+      items: g.memberIds
+        .filter((id) => session.getState(id) !== 'trashed')
+        .map((id) => session.item(id)),
       complete: g.complete,
       bestId: g.bestId,
     }));
@@ -812,7 +1000,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const singleIds: string[] = useMemo(() => {
     const session = sessionRef.current;
-    return session ? [...session.singles] : [];
+    if (!session) return [];
+    return session.singles.filter((id) => session.getState(id) !== 'trashed');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version]);
 
@@ -834,6 +1023,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       groups,
       singleIds,
       startSession,
+      flushPersistence: waitForPersistence,
       resumeSession,
       discardActiveSession,
       deckSetCursor,
@@ -855,8 +1045,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       refreshFavouriteStates,
       unstageCull,
       redecide,
-      confirmCulls,
+      confirmStagedCulls,
       reconcileTrashed,
+      reconcileMovedUris,
       finishSession,
     }),
     [
@@ -869,6 +1060,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       groups,
       singleIds,
       startSession,
+      waitForPersistence,
       resumeSession,
       discardActiveSession,
       deckSetCursor,
@@ -890,8 +1082,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       refreshFavouriteStates,
       unstageCull,
       redecide,
-      confirmCulls,
+      confirmStagedCulls,
       reconcileTrashed,
+      reconcileMovedUris,
       finishSession,
     ],
   );

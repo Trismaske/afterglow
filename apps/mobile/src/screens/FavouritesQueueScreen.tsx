@@ -16,7 +16,7 @@ import {
   markFavouriteBatchError,
   type FavouriteQueueRow,
 } from '../db/store';
-import { applyFavouriteBatch } from '../lib/favourites';
+import { applyFavouriteBatch, FAVOURITE_BATCH_LIMIT } from '../lib/favourites';
 import { BigButton } from '../components/BigButton';
 import { colors, touch, useTheme } from '../theme';
 import { useSession } from '../session/SessionContext';
@@ -50,24 +50,34 @@ export function FavouritesQueueScreen() {
   const runBatch = useCallback(
     async (target: boolean) => {
       if (busyTarget !== null) return;
-      const batch = (target ? applyRows : removeRows).map((row) => row.asset_id);
-      if (batch.length === 0) return;
+      const all = (target ? applyRows : removeRows).map((row) => row.asset_id);
+      if (all.length === 0) return;
       setBusyTarget(target);
       try {
-        const result = await applyFavouriteBatch(batch, target);
-        if (result.status === 'applied') {
-          await markFavouriteBatchApplied(db, batch, target, Date.now());
-        } else if (result.status === 'failed') {
-          await markFavouriteBatchError(db, batch, target, Date.now());
-          Alert.alert(
-            'Favourite changes need retry',
-            result.error ?? 'Android did not verify them.',
-          );
-        } else if (result.status === 'unsupported') {
-          Alert.alert(
-            'Gallery favourites unavailable',
-            'This feature requires Android 11 or later.',
-          );
+        // Bounded per OS consent request (P5#4; the platform throws above
+        // 2000 URIs, which would error the whole queue unrecoverably):
+        // loop batches — one dialog each — until drained or declined.
+        for (let i = 0; i < all.length; i += FAVOURITE_BATCH_LIMIT) {
+          const batch = all.slice(i, i + FAVOURITE_BATCH_LIMIT);
+          const result = await applyFavouriteBatch(batch, target);
+          if (result.status === 'applied') {
+            await markFavouriteBatchApplied(db, batch, target, Date.now());
+          } else if (result.status === 'failed') {
+            await markFavouriteBatchError(db, batch, target, Date.now());
+            Alert.alert(
+              'Favourite changes need retry',
+              result.error ?? 'Android did not verify them.',
+            );
+            break;
+          } else if (result.status === 'unsupported') {
+            Alert.alert(
+              'Gallery favourites unavailable',
+              'This feature requires Android 11 or later.',
+            );
+            break;
+          } else {
+            break; // cancelled — remaining rows stay queued and retryable
+          }
         }
         await refresh();
         await refreshFavouriteStates();

@@ -233,23 +233,36 @@ export class DeckSession {
 
   /**
    * "Not related — review as single": the photo leaves its group entirely
-   * (group id, deck, best star) and is appended to the singles queue,
-   * still unreviewed. An emptied deck completes its group.
+   * (group id, deck, best star, compare records) and is appended to the
+   * singles queue, still unreviewed. An emptied deck completes its group.
+   * Returns every id that left grouping — the ejected photo, plus the
+   * survivor when the group dissolved — so callers can persist the full
+   * membership change.
    */
-  makeSingle(id: string): void {
+  makeSingle(id: string): string[] {
     const group = this.aliveGroupOf(id, 'makeSingle');
     this.requireState(id, 'unreviewed', 'makeSingle');
     group.memberIds = group.memberIds.filter((m) => m !== id);
     this.removeFromDeck(group, id);
     this.singleIds.push(id);
+    const removed = [id];
+    // Compare records must reference current group membership (fromJSON
+    // enforces it) — records involving the ejected photo leave with it.
+    this.history = this.history.filter((r) => r.winnerId !== id && r.loserId !== id);
     // C#6 (m0.7): a group is >= 2 related photos. Ejecting down to one
     // member dissolves the group — the survivor becomes a single too,
-    // keeping its current state (a culled survivor stays staged).
+    // keeping its current state (a culled survivor stays staged) — and
+    // the dissolved group's remaining compare records go with it.
     if (group.memberIds.length <= 1) {
       const survivor = group.memberIds[0];
       this.groups = this.groups.filter((g) => g !== group);
-      if (survivor !== undefined) this.singleIds.push(survivor);
+      this.history = this.history.filter((r) => r.groupId !== group.groupId);
+      if (survivor !== undefined) {
+        this.singleIds.push(survivor);
+        removed.push(survivor);
+      }
     }
+    return removed;
   }
 
   /**

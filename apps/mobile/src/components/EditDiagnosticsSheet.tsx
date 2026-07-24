@@ -81,22 +81,28 @@ export function EditDiagnosticsSheet({ assetId, onClose }: Props) {
       setRunning(true);
       try {
         if (step === 'write_request') {
-          const { status } = await requestMediaWriteAccess([uriInfo.uri]);
-          setRecords((prev) => [
-            ...prev,
-            {
-              step,
-              dispatch: {
-                result:
-                  status === 'applied'
-                    ? 'approved'
-                    : status === 'cancelled'
-                      ? 'cancelled'
-                      : 'unsupported',
-                message: `consent dialog: ${status}`,
-              },
-            },
-          ]);
+          // A REJECTION (no activity / bridge failure) is itself a matrix
+          // datum — record it as 'error' so the matrix can complete for
+          // exactly this failure mode instead of sticking on this step.
+          let dispatch: MatrixRecord['dispatch'];
+          try {
+            const { status } = await requestMediaWriteAccess([uriInfo.uri]);
+            dispatch = {
+              result:
+                status === 'applied'
+                  ? 'approved'
+                  : status === 'cancelled'
+                    ? 'cancelled'
+                    : 'unsupported',
+              message: `consent dialog: ${status}`,
+            };
+          } catch (error) {
+            dispatch = {
+              result: 'error',
+              message: error instanceof Error ? error.message : String(error),
+            };
+          }
+          setRecords((prev) => [...prev, { step, dispatch }]);
           return;
         }
         const probe = MATRIX_PROBES[step];

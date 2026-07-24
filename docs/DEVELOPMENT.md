@@ -121,9 +121,12 @@ npm run mobile:start                   # = expo start in apps/mobile
 **Expo Go does not work** for this app — media-library permissions and
 SQLite need a dev build, which is exactly what `expo run:android` produces.
 
-**Physical device instead of emulator:** enable USB debugging, plug in,
-check `adb devices` shows it, then `npx expo run:android` as usual (it
-prefers a connected device over the emulator).
+**Physical device instead of emulator:** for a one-off USB run, enable USB
+debugging, plug in, check `adb devices` shows it, then run
+`npx expo run:android` as usual (it prefers a connected device over the
+emulator). For persistent wireless pairing, multiple named devices, screenshots,
+input automation, and recovery after reinstalling a workstation, follow
+[ANDROID_DEVICE_TESTING.md](ANDROID_DEVICE_TESTING.md).
 
 ### Useful emulator/adb commands
 

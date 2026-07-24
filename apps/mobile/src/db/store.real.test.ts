@@ -11,6 +11,9 @@ import { migrateDatabase } from './database';
 import {
   createSession,
   getStagedCulls,
+  makePhotoSingles,
+  markFavouriteBatchApplied,
+  markFavouriteBatchError,
   persistDecision,
   replaceActiveSession,
   type NewSessionInput,
@@ -134,11 +137,64 @@ describe('createSession', () => {
     expect(assignments['external_primary/2']).toBeNull(); // survivor → single
     expect(assignments['external_primary/1']).not.toBeNull();
     expect(assignments['external_primary/1']).toBe(assignments['external_primary/9']);
+    // The legacy photos.group_id column (progress/grid classification)
+    // re-syncs with the dissolved assignment.
+    const legacy = d.raw
+      .prepare('SELECT group_id FROM photos WHERE asset_id = ?')
+      .get('external_primary/2') as { group_id: string | null };
+    expect(legacy.group_id).toBeNull();
     const oldGroupRows = d.raw
       .prepare('SELECT COUNT(*) AS n FROM photo_groups WHERE id = ?')
       .get(oldGroup.id) as { n: number };
     expect(oldGroupRows.n).toBe(0); // dissolved (and its best marker with it)
     expect(foreignKeyCheck(d)).toEqual([]);
+  });
+});
+
+describe('makePhotoSingles', () => {
+  it('clears both membership representations and dissolves the emptied group', async () => {
+    const d = await fresh();
+    await createSession(
+      asExpo(d),
+      sessionInput([photo('1', 'gA'), photo('2', 'gA'), photo('3', null)]),
+    );
+    const before = d.raw.prepare('SELECT COUNT(*) AS n FROM photo_groups').get() as { n: number };
+    expect(before.n).toBe(1);
+    // Ejecting photo 1 dissolves the two-member group; core reports both
+    // ids, and the store must update group_id AND assignments for both.
+    await makePhotoSingles(asExpo(d), ['external_primary/1', 'external_primary/2']);
+    const groupIds = d.raw
+      .prepare('SELECT asset_id, group_id FROM photos ORDER BY asset_id')
+      .all() as { asset_id: string; group_id: string | null }[];
+    expect(groupIds.every((r) => r.group_id === null)).toBe(true);
+    const assignments = d.raw
+      .prepare('SELECT photo_id, group_id FROM photo_group_assignments')
+      .all() as { photo_id: string; group_id: number | null }[];
+    expect(assignments).toHaveLength(3);
+    expect(assignments.every((a) => a.group_id === null)).toBe(true);
+    const after = d.raw.prepare('SELECT COUNT(*) AS n FROM photo_groups').get() as { n: number };
+    expect(after.n).toBe(0);
+    expect(foreignKeyCheck(d)).toEqual([]);
+  });
+
+  it('ejecting from a 3-member group keeps the surviving pair grouped', async () => {
+    const d = await fresh();
+    await createSession(
+      asExpo(d),
+      sessionInput([photo('1', 'gA'), photo('2', 'gA'), photo('3', 'gA')]),
+    );
+    await makePhotoSingles(asExpo(d), ['external_primary/1']);
+    const assignments = Object.fromEntries(
+      (
+        d.raw.prepare('SELECT photo_id, group_id FROM photo_group_assignments').all() as {
+          photo_id: string;
+          group_id: number | null;
+        }[]
+      ).map((a) => [a.photo_id, a.group_id]),
+    );
+    expect(assignments['external_primary/1']).toBeNull();
+    expect(assignments['external_primary/2']).not.toBeNull();
+    expect(assignments['external_primary/2']).toBe(assignments['external_primary/3']);
   });
 });
 
@@ -242,6 +298,75 @@ describe('replaceActiveSession (carry policy)', () => {
       .prepare("SELECT state FROM photos WHERE asset_id = 'external_primary/1'")
       .get() as { state: string };
     expect(row.state).toBe('kept');
+  });
+});
+
+describe('favourite batch commits', () => {
+  function insertFav(d: TestDb, id: string, state: string, target: number | null): void {
+    d.raw
+      .prepare(
+        `INSERT INTO photos (asset_id, uri, taken_at, day, state, favourite_state, favourite_target)
+         VALUES (?, 'content://x', ?, '2026-07-20', 'done', ?, ?)`,
+      )
+      .run(id, AT, state, target);
+  }
+
+  it('apply commits queued_apply rows: applied, target cleared, applied_at stamped', async () => {
+    const d = await fresh();
+    insertFav(d, 'p1', 'queued_apply', 1);
+    await markFavouriteBatchApplied(asExpo(d), ['p1'], true, AT + 5);
+    const row = d.raw
+      .prepare(
+        'SELECT favourite_state, favourite_target, favourite_applied_at FROM photos WHERE asset_id = ?',
+      )
+      .get('p1') as Record<string, unknown>;
+    expect(row.favourite_state).toBe('applied');
+    expect(row.favourite_target).toBeNull();
+    expect(row.favourite_applied_at).toBe(AT + 5);
+  });
+
+  it('remove commits queued_remove rows to none', async () => {
+    const d = await fresh();
+    insertFav(d, 'p1', 'queued_remove', 0);
+    await markFavouriteBatchApplied(asExpo(d), ['p1'], false, AT + 5);
+    const row = d.raw
+      .prepare('SELECT favourite_state, favourite_target FROM photos WHERE asset_id = ?')
+      .get('p1') as Record<string, unknown>;
+    expect(row.favourite_state).toBe('none');
+    expect(row.favourite_target).toBeNull();
+  });
+
+  it('a stale continuation cannot commit over a RETARGETED intent', async () => {
+    const d = await fresh();
+    // The user flipped the intent to remove while an APPLY verification
+    // was pending — the stale apply commit must change nothing.
+    insertFav(d, 'p1', 'queued_remove', 0);
+    await markFavouriteBatchApplied(asExpo(d), ['p1'], true, AT + 5);
+    const row = d.raw
+      .prepare('SELECT favourite_state, favourite_target FROM photos WHERE asset_id = ?')
+      .get('p1') as Record<string, unknown>;
+    expect(row.favourite_state).toBe('queued_remove');
+    expect(row.favourite_target).toBe(0);
+  });
+
+  it('error keeps the matching intent retryable; a retargeted one is untouched', async () => {
+    const d = await fresh();
+    insertFav(d, 'match', 'queued_apply', 1);
+    insertFav(d, 'retargeted', 'queued_remove', 0);
+    await markFavouriteBatchError(asExpo(d), ['match', 'retargeted'], true, AT + 5);
+    const rows = Object.fromEntries(
+      (
+        d.raw.prepare('SELECT asset_id, favourite_state, favourite_target FROM photos').all() as {
+          asset_id: string;
+          favourite_state: string;
+          favourite_target: number | null;
+        }[]
+      ).map((r) => [r.asset_id, r]),
+    );
+    expect(rows.match.favourite_state).toBe('error');
+    expect(rows.match.favourite_target).toBe(1); // target survives for retry
+    expect(rows.retargeted.favourite_state).toBe('queued_remove');
+    expect(rows.retargeted.favourite_target).toBe(0);
   });
 });
 

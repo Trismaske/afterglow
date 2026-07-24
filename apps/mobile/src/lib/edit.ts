@@ -60,9 +60,17 @@ export async function launchEditor(
   }
   // Gate-0 mechanism: obtain write access BEFORE attaching the write flag.
   // 'cancelled' (user denied) and 'unsupported' (pre-R) degrade to
-  // read-only; the editor will save-as-copy and detection tracks it.
-  const { status } = await requestMediaWriteAccess([contentUri]);
-  const writeGranted = status === 'applied';
+  // read-only; the editor will save-as-copy and detection tracks it. A
+  // REJECTION (no activity, MediaStore refuses the URI) is a failure —
+  // the result union must hold so callers show the alert, not an
+  // unhandled rejection.
+  let writeGranted = false;
+  try {
+    const { status } = await requestMediaWriteAccess([contentUri]);
+    writeGranted = status === 'applied';
+  } catch (error) {
+    return { outcome: 'failed', error: message(error), uri: contentUri };
+  }
   try {
     const pending = IntentLauncher.startActivityAsync(ACTION_EDIT, {
       data: contentUri,

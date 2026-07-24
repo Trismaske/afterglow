@@ -5,6 +5,11 @@ import {
 } from '../../modules/media-store-actions';
 import { getEditableContentUri } from './media';
 
+/** Conservative app cap per MediaStore consent request (P5#4) — the
+ * platform throws above 2000 URIs, which would error the whole queue with
+ * no way to drain it. Matches the trash/organize batch bound. */
+export const FAVOURITE_BATCH_LIMIT = 500;
+
 export interface FavouriteBatchResult {
   status: MediaStoreActionStatus | 'failed';
   unverifiedIds: string[];

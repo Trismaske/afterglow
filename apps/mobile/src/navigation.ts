@@ -15,7 +15,9 @@ export type RootStackParamList = {
    */
   Compare: { groupId?: string; aId: string; bId: string; singles?: boolean };
   Singles: undefined;
-  CullList: undefined;
+  /** fromHome: opened via the Home queue card for global-queue
+   * maintenance — confirming must return Home, never end the session. */
+  CullList: { fromHome?: boolean } | undefined;
   Summary: undefined;
   /** To-edit queue: every photo flagged "needs edit", across all days. */
   EditQueue: undefined;

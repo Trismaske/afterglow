@@ -31,21 +31,24 @@ import {
   storedScopeRange,
   type ScopeConfig,
 } from '../lib/scopeStore';
-import { countPhotosByDayInRange, countPhotosInRange, trashAssets } from '../lib/media';
+import { countPhotosByDayInRange, countPhotosInRange } from '../lib/media';
 import { resolveSources } from '../lib/sourceCatalog';
-import { getSessionPrefs, loadReviewablePhotos } from '../lib/reviewLoader';
+import { getSessionPrefs, loadReviewablePhotos, pendingBankIdsFor } from '../lib/reviewLoader';
 import { DEFAULT_SESSION_PREFS, type SessionPrefs } from '../lib/sessionPrefs';
 import {
-  bankActiveSessionKeepers,
   countFavouriteQueue,
+  countKeptInScopeAmong,
+  countStagedCulls,
   countToEdit,
   getDaySummaries,
   getSetting,
   getStateCountsInScope,
   markEditDone,
-  markTrashedDirect,
   setSetting,
+  unstageCullDirect,
 } from '../db/store';
+import { runTrashAttempt } from '../lib/trashFlow';
+import { fileSize } from '../lib/hash';
 import { runEditDetection, type DetectedCopy } from '../lib/detect';
 import { useSession } from '../session/SessionContext';
 import { BigButton } from '../components/BigButton';
@@ -105,6 +108,7 @@ export function HomeScreen({ navigation }: Props) {
   /** Perceptual-hash progress while a session is being built (m0.4). */
   const [analyzing, setAnalyzing] = useState<{ done: number; total: number } | null>(null);
   const [editCount, setEditCount] = useState(0);
+  const [stagedCullCount, setStagedCullCount] = useState(0);
   const [shareCount, setShareCount] = useState(0);
   const [organizeCount, setOrganizeCount] = useState(0);
   const [favouriteCount, setFavouriteCount] = useState(0);
@@ -180,6 +184,8 @@ export function HomeScreen({ navigation }: Props) {
           setHasResumable(true);
           return;
         }
+        // Also runs the once-per-process interrupted-trash recovery
+        // before restoring any snapshot (P8#3).
         const resumed = await sessionCtx.resumeSession();
         if (!cancelled) setHasResumable(resumed);
       })();
@@ -210,20 +216,65 @@ export function HomeScreen({ navigation }: Props) {
             style: 'destructive',
             onPress: () =>
               void (async () => {
-                // System dialog is the real gate; cancel leaves it queued.
-                const result = await trashAssets([head.originalAssetId]);
-                if (result.status === 'applied') {
-                  await markTrashedDirect(db, head.originalAssetId);
-                } else if (result.status === 'unsupported') {
+                // The same durable trash lifecycle as staged culls (item
+                // H): stage+reserve in ONE transaction → system dialog →
+                // verify → C#7 cleanup — a crash anywhere leaves either
+                // the untouched to_edit row or a recoverable attempt
+                // (whose photo lands visibly in the cull list, the
+                // vetted fallback), never a stranded state.
+                const photo = await db.getFirstAsync<{ uri: string }>(
+                  'SELECT uri FROM photos WHERE asset_id = ?',
+                  head.originalAssetId,
+                );
+                const attempt = await runTrashAttempt(
+                  db,
+                  [{ photoId: head.originalAssetId, measuredBytes: fileSize(photo?.uri ?? '') }],
+                  null,
+                  { stageToEditMembers: true },
+                );
+                if (attempt.trashedIds.includes(head.originalAssetId)) {
+                  // The verified removal already resolved the durable
+                  // match (applyRemovalCleanup, C#12); if the original
+                  // belongs to the unfinished session, the live snapshot
+                  // converges too (a kept member leaves its deck; a
+                  // later re-decision cannot resurrect it).
+                  await sessionCtx.reconcileTrashed(attempt.trashedIds);
+                } else if (attempt.status === 'applied' || attempt.unknownIds.length > 0) {
+                  // Verification inconclusive (applied dialog, or a
+                  // failed attempt whose fallback release couldn't
+                  // verify) — the photo MAY be in system trash, so it
+                  // conservatively stays staged in the durable cull list
+                  // (the vetted fallback); the next confirm re-verifies.
+                  // When the original belongs to the live session, the
+                  // snapshot mirrors the staging (kept → culled) so the
+                  // deck and cull list agree.
+                  try {
+                    if (sessionCtx.session?.getState(head.originalAssetId) === 'kept') {
+                      await sessionCtx.redecide(head.originalAssetId, 'cull');
+                    }
+                  } catch {
+                    // not a session member
+                  }
                   Alert.alert(
-                    'System trash unavailable',
-                    'Afterglow does not permanently delete photos. This action requires Android 11 or later.',
+                    'Could not verify the move',
+                    'The photo stays staged in the cull list until the move can be verified.',
                   );
-                } else if (result.status === 'failed') {
-                  Alert.alert(
-                    'Could not move photo to trash',
-                    result.error ?? 'Unknown MediaStore error.',
-                  );
+                } else {
+                  // Definitively NOT applied (cancel/failure/unsupported):
+                  // back to the edit queue — a true no-op from the
+                  // user's view.
+                  await unstageCullDirect(db, head.originalAssetId, Date.now());
+                  if (attempt.status === 'unsupported') {
+                    Alert.alert(
+                      'System trash unavailable',
+                      'Afterglow does not permanently delete photos. This action requires Android 11 or later.',
+                    );
+                  } else if (attempt.status === 'failed') {
+                    Alert.alert(
+                      'Could not move photo to trash',
+                      attempt.error ?? 'Unknown MediaStore error.',
+                    );
+                  }
                 }
                 next();
               })(),
@@ -232,14 +283,30 @@ export function HomeScreen({ navigation }: Props) {
             text: 'Keep original',
             onPress: () =>
               void (async () => {
+                // markEditDone converges the original AND resolves its
+                // live match in one transaction (C#12).
                 await markEditDone(db, head.originalAssetId);
+                // The original may belong to the unfinished session —
+                // clear the LIVE edit flag too, or Groups/Summary keep
+                // counting it and its stale to_edit verdict could later
+                // overwrite the durable done.
+                try {
+                  if (
+                    sessionCtx.session?.getState(head.originalAssetId) === 'kept' &&
+                    sessionCtx.needsEdit(head.originalAssetId)
+                  ) {
+                    await sessionCtx.toggleNeedsEdit(head.originalAssetId);
+                  }
+                } catch {
+                  // not a session member
+                }
                 next();
               })(),
           },
         ],
       );
     },
-    [db],
+    [db, sessionCtx],
   );
 
   // m0.3 edit detection — runs on app open / return to Home, throttled.
@@ -275,17 +342,19 @@ export function HomeScreen({ navigation }: Props) {
     useCallback(() => {
       let cancelled = false;
       (async () => {
-        const [toEdit, favouriteQueue, shareQueue, organizeQueue] = await Promise.all([
+        const [toEdit, favouriteQueue, shareQueue, organizeQueue, stagedCulls] = await Promise.all([
           countToEdit(db),
           countFavouriteQueue(db),
           countShareQueue(db),
           countOrganizeQueue(db),
+          countStagedCulls(db),
         ]);
         if (cancelled) return;
         setEditCount(toEdit);
         setFavouriteCount(favouriteQueue);
         setShareCount(shareQueue);
         setOrganizeCount(organizeQueue);
+        setStagedCullCount(stagedCulls);
 
         const src = permission?.granted ? await resolveSources(db).catch(() => null) : null;
         if (cancelled) return;
@@ -349,19 +418,44 @@ export function HomeScreen({ navigation }: Props) {
             countPhotosInRange(range.startMs, range.endMs, src.albumIds),
             getStateCountsInScope(db, { startMs: range.startMs, endMs: range.endMs }, src.roots),
           ]);
-          // "Handled" = to_edit + done rows (still in MediaStore; trashed
-          // rows left it, so they are excluded — m0.3.1 accounting).
-          const handled = sc.toEdit + sc.done;
+          // "Handled" = rows a new draw will NOT present: to_edit + done
+          // (converged, still in MediaStore; trashed rows left it —
+          // m0.3.1 accounting), staged culls (CARRIED in the durable
+          // global cull queue, never re-drawn) and the ACTIVE session's
+          // pending-bank keepers only — kept rows from an
+          // abandoned/discarded session are deliberately re-reviewable
+          // (m0.3.1) and stay in the count. Without the carried terms, a
+          // scope holding only carried decisions shows a positive count
+          // whose Start review is a permanent no-op.
+          const pendingBank = [...(await pendingBankIdsFor(sessionCtx.session, db))];
+          const keptPending = await countKeptInScopeAmong(
+            db,
+            { startMs: range.startMs, endMs: range.endMs },
+            src.roots,
+            pendingBank,
+          );
+          const handled = sc.toEdit + sc.done + sc.staged + keptPending;
 
           // All-time gate: ranges nest, so a clear last-year means only
           // the older backlog is left — that's when All time unlocks.
           const year = rollingRange('year1', Date.now());
-          const [msYear, scYear] = await Promise.all([
+          const [msYear, scYear, keptPendingYear] = await Promise.all([
             countPhotosInRange(year.startMs, year.endMs, src.albumIds),
             getStateCountsInScope(db, { startMs: year.startMs, endMs: year.endMs }, src.roots),
+            countKeptInScopeAmong(
+              db,
+              { startMs: year.startMs, endMs: year.endMs },
+              src.roots,
+              pendingBank,
+            ),
           ]);
           if (cancelled) return;
-          const unlocked = allTimeUnlocked(remainingToReview(msYear, scYear.toEdit + scYear.done));
+          const unlocked = allTimeUnlocked(
+            remainingToReview(
+              msYear,
+              scYear.toEdit + scYear.done + scYear.staged + keptPendingYear,
+            ),
+          );
           setAllTimeReady(unlocked);
           if (scope === 'all' && !unlocked) {
             // New photos re-locked the gate while it was selected.
@@ -404,11 +498,17 @@ export function HomeScreen({ navigation }: Props) {
     const begin = async () => {
       setStarting(true);
       try {
-        // m0.5: bank the replaced session's keep decisions FIRST so the
-        // loader below sees them as handled — decisions are never
-        // silently discarded (staged culls stay staged-interim and are
-        // re-earned per the m0.2 rule).
-        await bankActiveSessionKeepers(db);
+        // Every queued decision write must land BEFORE the loader reads
+        // photo rows — a staged cull from moments ago would otherwise be
+        // re-drawn from its stale 'unreviewed' row.
+        await sessionCtx.flushPersistence();
+        // m0.5/m0.7: the loader treats the active session's keepers as
+        // handled WITHOUT mutating them — banking to done happens only
+        // inside the atomic replacement (replaceActiveSession), so an
+        // aborted start (empty load, hash failure) leaves the old
+        // session and its snapshot fully consistent. The in-memory
+        // session is the source when present (ahead of queued writes).
+        const pendingBank = await pendingBankIdsFor(sessionCtx.session, db);
         // Recompute the range and load the actual photos now — paged,
         // state-filtered, capped per the Sessions settings
         // (reviewLoader.ts) so huge scopes can't blow up memory.
@@ -421,6 +521,7 @@ export function HomeScreen({ navigation }: Props) {
           range.endMs,
           src.albumIds,
           prefs,
+          pendingBank,
         );
         if (reviewable.length === 0) {
           setRefreshTick((t) => t + 1); // counts were stale — refresh them
@@ -434,6 +535,13 @@ export function HomeScreen({ navigation }: Props) {
           (done, total) => setAnalyzing({ done, total }),
         );
         navigation.navigate('Groups');
+      } catch (error) {
+        // e.g. startup recovery hasn't succeeded yet — nothing was
+        // replaced; retry is safe.
+        Alert.alert(
+          'Could not start the session',
+          error instanceof Error ? error.message : String(error),
+        );
       } finally {
         setStarting(false);
         setAnalyzing(null);
@@ -604,6 +712,27 @@ export function HomeScreen({ navigation }: Props) {
               <Text style={styles.badgeText}>{organizeCount}</Text>
             </View>
           )}
+        </Pressable>
+      )}
+
+      {stagedCullCount > 0 && (
+        // The durable global cull queue must stay reachable even with no
+        // active session (carried culls, edited-copy culls) — the
+        // session flow is not the only route to confirmation.
+        <Pressable
+          style={styles.editQueueRow}
+          onPress={() => navigation.navigate('CullList', { fromHome: true })}
+        >
+          <MaterialCommunityIcons name="delete-outline" size={22} color={colors.cull} />
+          <View style={styles.editQueueBody}>
+            <Text style={styles.editQueueTitle}>Cull list</Text>
+            <Text style={styles.editQueueHint}>
+              {`${stagedCullCount} photo${stagedCullCount === 1 ? '' : 's'} staged for deletion`}
+            </Text>
+          </View>
+          <View style={[styles.badge, { backgroundColor: colors.cullDim }]}>
+            <Text style={[styles.badgeText, { color: colors.cull }]}>{stagedCullCount}</Text>
+          </View>
         </Pressable>
       )}
 

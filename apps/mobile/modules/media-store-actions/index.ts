@@ -26,12 +26,13 @@ interface NativeApi {
   trash(uris: string[]): Promise<{ status: MediaStoreActionStatus }>;
   setFavourite(uris: string[], value: boolean): Promise<{ status: MediaStoreActionStatus }>;
   isFavourite(uri: string): Promise<boolean | null>;
-  isTrashed(uri: string): Promise<boolean | null>;
+  mediaPresence(uri: string): Promise<'present' | 'trashed' | 'absent' | 'unknown'>;
   editDiagnostics(uri: string): Promise<EditDiagnosticsReport>;
   probeLaunch(uri: string, action: string, withWrite: boolean): Promise<ProbeLaunchResult>;
   requestWriteAccess(uris: string[]): Promise<{ status: MediaStoreActionStatus }>;
   shareUris(uris: string[]): Promise<{ result: 'dispatched' | 'error'; message: string }>;
   listImageAlbums(): Promise<VolumeAlbum[]>;
+  queryRelativePaths(uris: string[]): Promise<RelativePathInfo[]>;
   moveToRelativePath(uris: string[], relativePath: string): Promise<MoveResult[]>;
 }
 
@@ -44,11 +45,19 @@ export interface VolumeAlbum {
   photoCount: number;
 }
 
+/** Read-only path lookup result — nulls when the row/columns are
+ * unavailable (never an authoritative statement of anything). */
+export interface RelativePathInfo {
+  uri: string;
+  relativePath: string | null;
+  data: string | null;
+}
+
 export interface MoveResult {
   uri: string;
   status: 'moved' | 'already' | 'error' | 'unsupported';
   message: string;
-  /** The post-move file path when status is 'moved' (photos.uri repair). */
+  /** The current file path when status is 'moved' or 'already' (photos.uri repair). */
   newData?: string;
 }
 
@@ -56,6 +65,13 @@ const native = requireOptionalNativeModule<NativeApi>('MediaStoreActions');
 
 function available(): boolean {
   return Platform.OS === 'android' && Number(Platform.Version) >= 30 && native != null;
+}
+
+/** Whether the Android 11+ native module is present — callers that infer
+ * "row absent" from a null query result MUST check this first (null from
+ * an unavailable module is not evidence of anything). */
+export function mediaStoreActionsAvailable(): boolean {
+  return available();
 }
 
 function contentUris(uris: string[]): string[] {
@@ -82,9 +98,14 @@ export async function isMediaFavourite(uri: string): Promise<boolean | null> {
   return native!.isFavourite(contentUris([uri])[0]);
 }
 
-export async function isMediaTrashed(uri: string): Promise<boolean | null> {
-  if (!available()) return null;
-  return native!.isTrashed(contentUris([uri])[0]);
+/** Quad-state presence: 'absent' ONLY from a successful empty query with
+ * MATCH_INCLUDE (authoritative — the id is gone from MediaStore); every
+ * failure path is 'unknown'. */
+export async function getMediaPresence(
+  uri: string,
+): Promise<'present' | 'trashed' | 'absent' | 'unknown'> {
+  if (!available()) return 'unknown';
+  return native!.mediaPresence(contentUris([uri])[0]);
 }
 
 // ---- Gate-0 editor-launch diagnostic matrix (m0.7 item A) ----------------
@@ -120,6 +141,15 @@ export async function requestMediaWriteAccess(
 export async function listImageAlbums(): Promise<VolumeAlbum[]> {
   if (!diagnosticsAvailable()) return [];
   return native!.listImageAlbums();
+}
+
+/** Read-only RELATIVE_PATH/DATA lookup (the organize crash-repair
+ * precheck) — never mutates, unlike moveMediaToRelativePath. */
+export async function queryMediaRelativePaths(uris: string[]): Promise<RelativePathInfo[]> {
+  if (!available()) {
+    return uris.map((uri) => ({ uri, relativePath: null, data: null }));
+  }
+  return native!.queryRelativePaths(contentUris(uris));
 }
 
 /** Verified RELATIVE_PATH moves (R#6). Callers hold write access first. */

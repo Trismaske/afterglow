@@ -34,8 +34,13 @@ class MediaStoreActionsModule : Module() {
       queryFlag(uri, MediaStore.MediaColumns.IS_FAVORITE)
     }
 
-    AsyncFunction("isTrashed") Coroutine { uri: Uri ->
-      queryFlag(uri, MediaStore.MediaColumns.IS_TRASHED)
+    // Quad-state presence: a SUCCESSFUL query with an empty cursor is
+    // authoritative "absent" (MATCH_INCLUDE covers trashed rows), while
+    // every failure path — no context, null cursor, missing column,
+    // exception — is "unknown". Feed reconciliation must never mistake a
+    // transient failure for a deleted photo.
+    AsyncFunction("mediaPresence") Coroutine { uri: Uri ->
+      mediaPresenceOf(uri)
     }
 
     // ---- Gate-0 editor-launch diagnostic matrix (m0.7 item A) ----------
@@ -166,6 +171,34 @@ class MediaStoreActionsModule : Module() {
       out
     }
 
+    // READ-ONLY path lookup for the organize crash-repair precheck: the
+    // mutating move must never run before consent — a lingering write
+    // grant from an earlier batch would let resolver.update succeed
+    // early. Nulls on any failure.
+    AsyncFunction("queryRelativePaths") { uriStrings: List<Uri> ->
+      val context = appContext.reactContext
+        ?: throw IllegalStateException("Android context unavailable")
+      val resolver = context.contentResolver
+      uriStrings.map { uri ->
+        try {
+          val pair = resolver.query(
+            uri,
+            arrayOf(MediaStore.MediaColumns.RELATIVE_PATH, MediaStore.MediaColumns.DATA),
+            null,
+            null,
+            null,
+          )?.use { c -> if (c.moveToFirst()) Pair(c.getString(0), c.getString(1)) else null }
+          mapOf(
+            "uri" to uri.toString(),
+            "relativePath" to pair?.first,
+            "data" to pair?.second,
+          )
+        } catch (error: Exception) {
+          mapOf("uri" to uri.toString(), "relativePath" to null, "data" to null)
+        }
+      }
+    }
+
     // Organize move (m0.7 item E, R#6): RELATIVE_PATH update per URI,
     // verified by re-query. Callers obtain write access first
     // (createWriteRequest); a move to the current path is reported
@@ -188,9 +221,26 @@ class MediaStoreActionsModule : Module() {
             null,
             null,
             null,
-          )?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
-          if (current != null && current.trimEnd('/') == relativePath.trimEnd('/')) {
-            mapOf("uri" to uri.toString(), "status" to "already", "message" to "already at target")
+          )?.use { c -> if (c.moveToFirst()) Pair(c.getString(0), c.getString(1)) else null }
+          // RELATIVE_PATH can be null (legacy media at the volume root)
+          // — a null source path is never "already at target". The same
+          // non-empty DATA rule as the post-update verify applies: an
+          // 'already' without a usable repair path would clear the queue
+          // while the stored uri stays stale, with no retry route.
+          val currentPath = current?.first
+          val currentData = current?.second
+          if (currentPath != null && currentPath.trimEnd('/') == relativePath.trimEnd('/') &&
+            !currentData.isNullOrEmpty()
+          ) {
+            // Crash-retry repair: MediaStore already holds the target path
+            // but SQLite may not — return the current data path so the
+            // caller's uri refresh happens on this branch too.
+            mapOf(
+              "uri" to uri.toString(),
+              "status" to "already",
+              "message" to "already at target",
+              "newData" to currentData,
+            )
           } else {
             val values = android.content.ContentValues().apply {
               put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
@@ -206,14 +256,22 @@ class MediaStoreActionsModule : Module() {
             )?.use { c ->
               if (c.moveToFirst()) Pair(c.getString(0), c.getString(1)) else null
             }
-            if (after != null && after.first.trimEnd('/') == relativePath.trimEnd('/')) {
+            val afterPath = after?.first
+            val afterData = after?.second
+            if (
+              afterPath != null && afterPath.trimEnd('/') == relativePath.trimEnd('/') &&
+              !afterData.isNullOrEmpty()
+            ) {
               mapOf(
                 "uri" to uri.toString(),
                 "status" to "moved",
                 "message" to "verified",
-                "newData" to (after.second ?: ""),
+                "newData" to afterData,
               )
             } else {
+              // Missing/null path data is UNVERIFIED — reporting success
+              // without a usable newData would clear the queue while the
+              // stored uri stays stale, with no retry path.
               mapOf("uri" to uri.toString(), "status" to "error", "message" to "verification failed")
             }
           }
@@ -286,6 +344,50 @@ class MediaStoreActionsModule : Module() {
     }
     val approved = launcher.launch(MediaStoreActionInput(uris, action, value))
     return mapOf("status" to if (approved) "applied" else "cancelled")
+  }
+
+  /** Full-library read access. Android 14 "selected photos" access is
+   * granted-but-partial: MediaStore queries silently filter to the
+   * selection, so an empty cursor proves NOTHING about unselected
+   * assets — emptiness is only authoritative with full access. */
+  private fun hasFullImagesAccess(): Boolean {
+    val context = appContext.reactContext ?: return false
+    val permission = if (Build.VERSION.SDK_INT >= 33) {
+      "android.permission.READ_MEDIA_IMAGES"
+    } else {
+      "android.permission.READ_EXTERNAL_STORAGE"
+    }
+    return context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+  }
+
+  private fun mediaPresenceOf(uri: Uri): String {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return "unknown"
+    val resolver = appContext.reactContext?.contentResolver ?: return "unknown"
+    val queryArgs = android.os.Bundle().apply {
+      putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_INCLUDE)
+    }
+    return try {
+      val cursor = resolver.query(
+        uri,
+        arrayOf(MediaStore.MediaColumns.IS_TRASHED),
+        queryArgs,
+        null,
+      ) ?: return "unknown"
+      cursor.use { c ->
+        if (!c.moveToFirst()) {
+          if (hasFullImagesAccess()) "absent" else "unknown"
+        } else {
+          val index = c.getColumnIndex(MediaStore.MediaColumns.IS_TRASHED)
+          when {
+            index < 0 -> "unknown"
+            c.getInt(index) != 0 -> "trashed"
+            else -> "present"
+          }
+        }
+      }
+    } catch (error: Exception) {
+      "unknown"
+    }
   }
 
   private fun queryFlag(uri: Uri, column: String): Boolean? {

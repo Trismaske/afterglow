@@ -147,10 +147,15 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     [session, groupId, version],
   );
   const browse = info?.complete ?? false;
-  const completionRef = useRef<{ groupId: string | null; complete: boolean | null }>({
-    groupId: explicitGroupId ?? null,
-    complete: explicitGroupId ? (info?.complete ?? null) : null,
-  });
+  // `index` remembers the visited group's position so a DISSOLVED pair
+  // (no longer in `groups`) can still advance from its former spot.
+  const completionRef = useRef<{ groupId: string | null; complete: boolean | null; index: number }>(
+    {
+      groupId: explicitGroupId ?? null,
+      complete: explicitGroupId ? (info?.complete ?? null) : null,
+      index: explicitGroupId ? groups.findIndex((g) => g.id === explicitGroupId) : -1,
+    },
+  );
 
   const aliveItems: MediaItem[] = useMemo(
     () => (session && info ? info.aliveIds.map((id) => session.item(id)) : []),
@@ -167,6 +172,8 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
       .map((id) => session.item(id));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, info, browse, version]);
+  // Context singleIds already exclude durably trashed members (their
+  // state stays for stats, but dead URIs must not render).
   const singlesItems: MediaItem[] = useMemo(
     () => (session && singlesMode ? singleIds.map((id) => session.item(id)) : []),
     [session, singleIds, singlesMode],
@@ -317,13 +324,40 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     if (!session) return;
     if (singlesMode) return;
     if (explicitGroupId) {
-      if (!info) navigation.goBack(); // stale group id — nothing to show
+      if (!info) {
+        // A pair DISSOLVES during this visit when "Not related" ejects
+        // one member (C#6) — that is a completion: advance to the next
+        // group/Singles like any other finish. Only a genuinely stale id
+        // (resumed navigation — never observed live) goes back.
+        // Same guard as the normal completion effect: don't navigate
+        // while the ejection's persist is in flight or another screen is
+        // on top — the next focused, idle render performs the advance.
+        if (busy || !isFocused) return;
+        if (
+          completionRef.current.groupId === explicitGroupId &&
+          completionRef.current.complete !== null
+        ) {
+          const destination = destinationAfterGroup(
+            groups,
+            explicitGroupId,
+            session.nextSingle() !== null,
+            completionRef.current.index,
+          );
+          if (destination.screen === 'Deck') {
+            navigation.replace('Deck', { groupId: destination.groupId });
+          } else {
+            navigation.replace(destination.screen);
+          }
+        } else {
+          navigation.goBack(); // stale group id — nothing to show
+        }
+      }
       return;
     }
     if (groupId) return;
     if (session.nextSingle()) navigation.replace('Singles');
     else navigation.replace('CullList');
-  }, [session, groupId, explicitGroupId, info, navigation, singlesMode]);
+  }, [session, groupId, explicitGroupId, info, groups, navigation, singlesMode, busy, isFocused]);
 
   const singlesPending = useMemo(
     () =>
@@ -364,7 +398,11 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     if (!session || !explicitGroupId || !info) return;
     const previous = completionRef.current;
     if (previous.groupId !== explicitGroupId) {
-      completionRef.current = { groupId: explicitGroupId, complete: info.complete };
+      completionRef.current = {
+        groupId: explicitGroupId,
+        complete: info.complete,
+        index: groupIndex,
+      };
       return;
     }
     // Do not consume the transition while its write is still in flight, or
@@ -372,7 +410,11 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     // performs the advance.
     if (!isFocused || busy) return;
     const justCompleted = completedDuringVisit(previous, explicitGroupId, info.complete, isFocused);
-    completionRef.current = { groupId: explicitGroupId, complete: info.complete };
+    completionRef.current = {
+      groupId: explicitGroupId,
+      complete: info.complete,
+      index: groupIndex,
+    };
     if (!justCompleted) return;
 
     const destination = destinationAfterGroup(
@@ -385,7 +427,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     } else {
       navigation.replace(destination.screen);
     }
-  }, [busy, explicitGroupId, groups, info, isFocused, navigation, session]);
+  }, [busy, explicitGroupId, groupIndex, groups, info, isFocused, navigation, session]);
 
   // Keep the pager aligned with the cursor whenever the deck's membership
   // changes (cull/undo/make-single/re-decide) or a new group starts.
@@ -453,12 +495,22 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
 
   // m0.7 item E queue row: Share toggle + Organize picker.
   const db = useSQLiteContext();
-  const [shareQueued, setShareQueued] = useState(false);
-  const [organizePicker, setOrganizePicker] = useState(false);
+  // null = the queued-state query for the CURRENT photo hasn't resolved —
+  // the toggle stays disabled so a quick tap can't act on the previous
+  // photo's stale value. shareStateForRef names the photo the state
+  // describes, so async completions for a photo the user has moved past
+  // never overwrite the new photo's state.
+  const [shareQueued, setShareQueued] = useState<boolean | null>(null);
+  const shareStateForRef = useRef<string | null>(null);
+  /** Photo id the organize picker was opened for (null = closed) — bound
+   * at press so an album chosen after a swipe still targets that photo. */
+  const [organizePickerFor, setOrganizePickerFor] = useState<string | null>(null);
   const [albums, setAlbums] = useState<VolumeAlbum[]>([]);
   const [newAlbumName, setNewAlbumName] = useState('');
   useEffect(() => {
     let cancelled = false;
+    shareStateForRef.current = currentId ?? null;
+    setShareQueued(null);
     if (currentId) {
       void isInShareQueue(db, currentId).then((queued) => {
         if (!cancelled) setShareQueued(queued);
@@ -470,17 +522,28 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
   }, [db, currentId, version]);
 
   const toggleShare = useCallback(async () => {
-    if (!current) return;
-    if (shareQueued) {
-      await removeFromShareQueue(db, current.id);
-      setShareQueued(false);
-    } else {
-      const added = await addToShareQueue(db, current.id, Date.now());
-      setShareQueued(added);
+    if (!current || shareQueued === null) return;
+    const id = current.id;
+    const wasQueued = shareQueued;
+    // Pending (null) for the mutation too — a second tap before the write
+    // lands must not act on the stale value.
+    setShareQueued(null);
+    try {
+      if (wasQueued) {
+        await removeFromShareQueue(db, id, Date.now());
+        if (shareStateForRef.current === id) setShareQueued(false);
+      } else {
+        const added = await addToShareQueue(db, id, Date.now());
+        if (shareStateForRef.current === id) setShareQueued(added);
+      }
+    } catch {
+      if (shareStateForRef.current === id) setShareQueued(wasQueued);
     }
   }, [db, current, shareQueued]);
 
   const openOrganizePicker = useCallback(async () => {
+    const id = current?.id;
+    if (!id) return;
     const catalog = await listImageAlbums();
     setAlbums(
       catalog
@@ -488,22 +551,22 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
         .sort((a, b) => b.photoCount - a.photoCount),
     );
     setNewAlbumName('');
-    setOrganizePicker(true);
-  }, []);
+    setOrganizePickerFor(id);
+  }, [current]);
 
   const chooseOrganizeTarget = useCallback(
     async (relativePath: string) => {
-      if (!current) return;
+      if (!organizePickerFor) return;
       const error = await queueOrganize(
         db,
-        current.id,
+        organizePickerFor,
         { volumeName: PRIMARY_VOLUME, relativePath },
         Date.now(),
       );
       if (error) Alert.alert('Cannot use that album', error);
-      setOrganizePicker(false);
+      setOrganizePickerFor(null);
     },
-    [db, current],
+    [db, organizePickerFor],
   );
 
   const finishGroup = useCallback(() => {
@@ -775,16 +838,29 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
                 </Pressable>
               );
             })}
-            <Pressable
-              style={[styles.actionButton, styles.compareButton]}
-              disabled={busy || deckItems.length < 2}
-              onPress={() => openCompare()}
-            >
-              <MaterialCommunityIcons name="compare-horizontal" size={20} color={colors.textDim} />
-              <Text style={[styles.actionText, deckItems.length < 2 && styles.actionTextDisabled]}>
-                Compare
-              </Text>
-            </Pressable>
+            {singlesMode && (
+              // Completed-group BROWSE deliberately has no Compare (the
+              // strip long-press already excludes it): its members are
+              // decided, and the Compare verdicts (cull the loser, star
+              // the best) reject decided/non-alive photos — re-deciding
+              // happens through the chips above instead.
+              <Pressable
+                style={[styles.actionButton, styles.compareButton]}
+                disabled={busy || deckItems.length < 2}
+                onPress={() => openCompare()}
+              >
+                <MaterialCommunityIcons
+                  name="compare-horizontal"
+                  size={20}
+                  color={colors.textDim}
+                />
+                <Text
+                  style={[styles.actionText, deckItems.length < 2 && styles.actionTextDisabled]}
+                >
+                  Compare
+                </Text>
+              </Pressable>
+            )}
           </View>
           <View style={styles.secondaryRow}>
             <Pressable
@@ -828,8 +904,8 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
               <Text style={styles.secondaryText}>Organize</Text>
             </Pressable>
             <Pressable
-              style={[styles.secondaryButton, shareQueued && styles.secondaryButtonEdit]}
-              disabled={busy}
+              style={[styles.secondaryButton, !!shareQueued && styles.secondaryButtonEdit]}
+              disabled={busy || shareQueued === null}
               onPress={() => void toggleShare()}
             >
               <MaterialCommunityIcons
@@ -847,7 +923,9 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
                   styles.secondaryButton,
                   isBest && { backgroundColor: theme.accentMuted, borderColor: theme.accent },
                 ]}
-                disabled={busy}
+                // A staged cull in browse mode is not ALIVE — core
+                // rejects it as best; re-decide it as kept first.
+                disabled={busy || (browse && !!current && !info?.aliveIds.includes(current.id))}
                 onPress={toggleBest}
               >
                 <MaterialCommunityIcons
@@ -937,8 +1015,8 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
               <Text style={styles.secondaryText}>Organize</Text>
             </Pressable>
             <Pressable
-              style={[styles.secondaryButton, shareQueued && styles.secondaryButtonEdit]}
-              disabled={busy}
+              style={[styles.secondaryButton, !!shareQueued && styles.secondaryButtonEdit]}
+              disabled={busy || shareQueued === null}
               onPress={() => void toggleShare()}
             >
               <MaterialCommunityIcons
@@ -989,12 +1067,12 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
 
       {/* m0.7 item E: album picker for the deck Organize button. */}
       <Modal
-        visible={organizePicker}
+        visible={organizePickerFor !== null}
         transparent
         animationType="slide"
-        onRequestClose={() => setOrganizePicker(false)}
+        onRequestClose={() => setOrganizePickerFor(null)}
       >
-        <Pressable style={styles.pickerBackdrop} onPress={() => setOrganizePicker(false)}>
+        <Pressable style={styles.pickerBackdrop} onPress={() => setOrganizePickerFor(null)}>
           <Pressable style={styles.pickerCard} onPress={() => {}}>
             <Text style={styles.pickerTitle}>Move to album</Text>
             <ScrollView style={{ maxHeight: 280 }}>
@@ -1032,7 +1110,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
                 <Text style={styles.pickerCloseText}>Create</Text>
               </Pressable>
             </View>
-            <Pressable style={styles.pickerClose} onPress={() => setOrganizePicker(false)}>
+            <Pressable style={styles.pickerClose} onPress={() => setOrganizePickerFor(null)}>
               <Text style={styles.pickerCloseText}>Cancel</Text>
             </Pressable>
           </Pressable>

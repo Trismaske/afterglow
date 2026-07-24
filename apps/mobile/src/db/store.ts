@@ -16,6 +16,7 @@
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
 import type { DuelRecord, PhotoState } from '@afterglow/core';
+import { lifetimeReclaimedBytes } from './trashStore';
 import type { LoadedPhoto } from '../lib/media';
 import { sourceLikePattern } from '../lib/sources';
 import type { StateCounts } from '../lib/progress';
@@ -40,6 +41,9 @@ export interface PersistDecisionExtras {
   duel?: DuelRecord;
   favouriteChanges?: readonly FavouriteIntentChange[];
   needsEditChanges?: readonly NeedsEditIntentChange[];
+  /** Photos that left their group ("not related" ejection + dissolve
+   * survivor) — durable membership updates ride the same transaction. */
+  madeSingles?: readonly string[];
 }
 
 /**
@@ -120,33 +124,28 @@ export async function abandonActiveSessions(db: SQLiteDatabase, at: number): Pro
 }
 
 /**
- * Bank an about-to-be-replaced session's keep decisions (m0.5: "starting
- * a new session never discards decisions"). Kept photos converge to done
- * exactly like normal session completion ('to_edit' rows are untouched
- * — the CASE remap already put them there; per-photo states and compare
- * history were persisted after every decision, so nothing else is
- * pending). Staged culls deliberately stay 'culled': they were never
- * confirmed, and per the m0.2 #3 rule a stale delete list must be
- * re-earned, never silently carried or dropped. Reads the persisted
- * snapshot rather than in-memory state so it also covers a session that
- * was never resumed after an app restart. Unparseable snapshots (e.g.
- * bracket-era) are skipped — their SQLite rows are already the durable
- * truth.
+ * Read-only: the active session's kept ids from its persisted snapshot
+ * (empty when no session or the snapshot is unparseable — bracket-era
+ * rows are already the durable truth). The session loader counts these
+ * as handled so a new draw excludes them WITHOUT mutating anything
+ * (m0.5: "starting a new session never discards decisions") — they bank
+ * to done only inside the atomic replacement transaction
+ * (replaceActiveSession), so an aborted start leaves the old session
+ * fully intact. Staged culls deliberately stay 'culled' in the durable
+ * global cull queue either way.
  */
-export async function bankActiveSessionKeepers(db: SQLiteDatabase): Promise<void> {
+export async function getActiveSessionKeptIds(db: SQLiteDatabase): Promise<string[]> {
   const row = await getActiveSession(db);
-  if (!row) return;
-  let keptIds: string[];
+  if (!row) return [];
   try {
     const snap = JSON.parse(row.snapshot) as { states?: Record<string, string> };
-    if (typeof snap !== 'object' || snap === null || typeof snap.states !== 'object') return;
-    keptIds = Object.entries(snap.states ?? {})
+    if (typeof snap !== 'object' || snap === null || typeof snap.states !== 'object') return [];
+    return Object.entries(snap.states ?? {})
       .filter(([, state]) => state === 'kept')
       .map(([id]) => id);
   } catch {
-    return;
+    return [];
   }
-  if (keptIds.length > 0) await markKeptDone(db, keptIds);
 }
 
 export interface NewSessionInput {
@@ -239,28 +238,9 @@ async function insertSessionWithPhotos(
     );
   }
 
-  // Repair intersected leftovers from earlier runs (N#1):
-  // 1. a best marker whose assignment no longer matches its group clears;
-  await txn.runAsync(
-    `UPDATE photo_groups SET best_photo_id = NULL
-     WHERE best_photo_id IS NOT NULL
-       AND NOT EXISTS (
-         SELECT 1 FROM photo_group_assignments a
-         WHERE a.group_id = photo_groups.id AND a.photo_id = photo_groups.best_photo_id
-       )`,
-  );
-  // 2. a group left with < 2 members dissolves — survivors become singles;
-  await txn.runAsync(
-    `UPDATE photo_group_assignments SET group_id = NULL
-     WHERE group_id IN (
-       SELECT g.id FROM photo_groups g
-       WHERE (SELECT COUNT(*) FROM photo_group_assignments a WHERE a.group_id = g.id) < 2
-     )`,
-  );
-  await txn.runAsync(
-    `DELETE FROM photo_groups
-     WHERE (SELECT COUNT(*) FROM photo_group_assignments a WHERE a.group_id = photo_groups.id) = 0`,
-  );
+  // Repair intersected leftovers from earlier runs (N#1) — shared with
+  // single ejections; also re-syncs survivors' legacy photos.group_id.
+  await repairGroupMembership(txn);
   return sessionId;
 }
 
@@ -317,6 +297,15 @@ export async function replaceActiveSession(
     sessionId = await insertSessionWithPhotos(txn, input);
   });
   return sessionId;
+}
+
+/** Staged, present culls in the durable global queue (Home card badge —
+ * the queue must stay reachable with no active session, P4#1). */
+export async function countStagedCulls(db: SQLiteDatabase): Promise<number> {
+  const row = await db.getFirstAsync<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM photos WHERE state = 'culled' AND is_present = 1",
+  );
+  return row?.n ?? 0;
 }
 
 /** The durable global cull queue (P4#1): every staged, present cull. */
@@ -434,6 +423,9 @@ export async function persistDecision(
         change.assetId,
       );
     }
+    if (extras.madeSingles && extras.madeSingles.length > 0) {
+      await applyPhotoSingles(txn, extras.madeSingles);
+    }
   });
 }
 
@@ -475,28 +467,101 @@ export async function setNeedsEdit(
 }
 
 /**
- * "Not related — review as single" (m0.4): the photo left its cull group,
- * so day-progress accounting must stop counting it as "in a group".
+ * "Not related — review as single" (m0.4, completed m0.7): the given
+ * photos left their cull group — the ejected photo plus the survivor when
+ * the group dissolved (core makeSingle reports both). Updates BOTH
+ * membership representations: photos.group_id (day-progress accounting)
+ * and photo_group_assignments (the durable truth), then runs the shared
+ * repairs. In the app this rides the persistence queue as a
+ * PersistDecisionExtras field (madeSingles) so a failed write retries
+ * with the snapshot instead of being lost; the standalone export serves
+ * tests and non-session callers.
  */
-export async function clearPhotoGroup(db: SQLiteDatabase, assetId: string): Promise<void> {
-  await db.runAsync('UPDATE photos SET group_id = NULL WHERE asset_id = ?', assetId);
+async function applyPhotoSingles(txn: SQLiteDatabase, assetIds: readonly string[]): Promise<void> {
+  const placeholders = assetIds.map(() => '?').join(',');
+  await txn.runAsync(
+    `UPDATE photos SET group_id = NULL WHERE asset_id IN (${placeholders})`,
+    ...assetIds,
+  );
+  await txn.runAsync(
+    `UPDATE photo_group_assignments SET group_id = NULL WHERE photo_id IN (${placeholders})`,
+    ...assetIds,
+  );
+  await repairGroupMembership(txn);
 }
 
-/** Manual "mark done" from the edit queue: to_edit → done. */
+/**
+ * Shared membership repairs (N#1, applied by session draws and single
+ * ejections alike): a group under 2 members dissolves; an orphaned best
+ * clears; empty groups are deleted; and the legacy photos.group_id column
+ * is re-synced to NULL wherever the durable assignment says single — the
+ * progress/grid queries classify grouping from photos.group_id, so a
+ * dissolved survivor must clear there too.
+ */
+async function repairGroupMembership(txn: SQLiteDatabase): Promise<void> {
+  await txn.runAsync(
+    `UPDATE photo_group_assignments SET group_id = NULL
+     WHERE group_id IN (
+       SELECT g.id FROM photo_groups g
+       WHERE (SELECT COUNT(*) FROM photo_group_assignments a WHERE a.group_id = g.id) < 2
+     )`,
+  );
+  await txn.runAsync(
+    `UPDATE photo_groups SET best_photo_id = NULL
+     WHERE best_photo_id IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM photo_group_assignments a
+         WHERE a.group_id = photo_groups.id AND a.photo_id = photo_groups.best_photo_id
+       )`,
+  );
+  await txn.runAsync(
+    `DELETE FROM photo_groups
+     WHERE (SELECT COUNT(*) FROM photo_group_assignments a WHERE a.group_id = photo_groups.id) = 0`,
+  );
+  await txn.runAsync(
+    `UPDATE photos SET group_id = NULL
+     WHERE group_id IS NOT NULL
+       AND EXISTS (
+         SELECT 1 FROM photo_group_assignments a
+         WHERE a.photo_id = photos.asset_id AND a.group_id IS NULL
+       )`,
+  );
+}
+
+export async function makePhotoSingles(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+): Promise<void> {
+  if (assetIds.length === 0) return;
+  await db.withExclusiveTransactionAsync((txn) => applyPhotoSingles(txn, assetIds));
+}
+
+/**
+ * "Mark done" (manual or auto-detected): to_edit → done. The photo's
+ * LIVE copy match resolves in the same transaction (C#12) — the original
+ * has converged, and a match left pending would block future copy cycles
+ * and re-emit its stale prompt when the photo is re-queued.
+ */
 export async function markEditDone(
   db: SQLiteDatabase,
   assetId: string,
   at: number = Date.now(),
 ): Promise<void> {
-  await db.runAsync(
-    `UPDATE photos
-     SET state = 'done', needs_edit = 0, edit_completed_at = COALESCE(edit_completed_at, ?),
-         activity_at = ?
-     WHERE asset_id = ? AND state = 'to_edit'`,
-    at,
-    at,
-    assetId,
-  );
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    await txn.runAsync(
+      `UPDATE photos
+       SET state = 'done', needs_edit = 0, edit_completed_at = COALESCE(edit_completed_at, ?),
+           activity_at = ?
+       WHERE asset_id = ? AND state = 'to_edit'`,
+      at,
+      at,
+      assetId,
+    );
+    await txn.runAsync(
+      "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
+      assetId,
+    );
+  });
 }
 
 /**
@@ -519,6 +584,24 @@ export async function markKeptDone(
 }
 
 /** Current stored state per asset id (missing rows are simply absent). */
+/** Durable photos.uri per asset (organize moves repair it) — resume
+ * reconciles session snapshots against these, the single source of truth. */
+export async function getPhotoUris(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+): Promise<Map<string, string>> {
+  const uris = new Map<string, string>();
+  for (const ids of chunk(assetIds, IN_CHUNK)) {
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await db.getAllAsync<{ asset_id: string; uri: string }>(
+      `SELECT asset_id, uri FROM photos WHERE asset_id IN (${placeholders})`,
+      ...ids,
+    );
+    for (const row of rows) uris.set(row.asset_id, row.uri);
+  }
+  return uris;
+}
+
 export async function getStatesForAssets(
   db: SQLiteDatabase,
   assetIds: readonly string[],
@@ -597,63 +680,58 @@ export async function updateModTimeBaseline(
 }
 
 /**
- * Track a detected edited copy as already-done. INSERT OR IGNORE: if the
- * asset is somehow already tracked, its existing state wins.
+ * Track a detected edited copy as already-done AND record its durable
+ * original ↔ copy match (C#12) in ONE transaction — a crash between the
+ * two would leave a tracked copy whose prompt could never be recovered
+ * (tracked photos are excluded from future scans). One best copy per
+ * original: an original that already has ANY recorded match is skipped
+ * entirely (the table's (original, copy) key alone would let every
+ * candidate pair insert) — returns false and nothing is written, so an
+ * unchosen candidate stays untracked and reviewable. activity_at is
+ * stamped so the detected copy appears in the History feed.
  */
-export async function insertDetectedCopy(
-  db: SQLiteDatabase,
-  copy: { assetId: string; uri: string; takenAt: number; modTime: number; day: string },
-  detectedAt: number = Date.now(),
-): Promise<void> {
-  await db.runAsync(
-    `INSERT OR IGNORE INTO photos
-       (asset_id, uri, taken_at, state, mod_time, day, needs_edit, edit_completed_at, reviewed_at)
-     VALUES (?, ?, ?, 'done', ?, ?, 0, ?, ?)`,
-    copy.assetId,
-    copy.uri,
-    copy.takenAt,
-    copy.modTime,
-    copy.day,
-    detectedAt,
-    detectedAt,
-  );
-}
-
-/**
- * Record an out-of-session deletion (the "cull the original" path after an
- * edited copy was detected). Only ever called after the system delete
- * trash confirmation succeeded.
- */
-export async function markTrashedDirect(db: SQLiteDatabase, assetId: string): Promise<void> {
-  await db.runAsync(
-    `UPDATE photos
-     SET state = 'trashed', needs_edit = 0, is_present = 0,
-         reviewed_at = COALESCE(reviewed_at, ?), culled_at = COALESCE(culled_at, ?),
-         activity_at = ?
-     WHERE asset_id = ?`,
-    Date.now(),
-    Date.now(),
-    Date.now(),
-    assetId,
-  );
-}
-
-/** C#12: durable original ↔ detected-copy matches so "Decide later" can
- * resume. One best copy per original: the first recorded match wins
- * (INSERT OR IGNORE); resolving/dismissing updates the state. */
-export async function recordCopyMatch(
+export async function insertDetectedCopyWithMatch(
   db: SQLiteDatabase,
   originalId: string,
-  copyId: string,
-  at: number,
-): Promise<void> {
-  await db.runAsync(
-    `INSERT OR IGNORE INTO edit_copy_matches (original_id, copy_id, state, detected_at)
-     VALUES (?, ?, 'pending', ?)`,
-    originalId,
-    copyId,
-    at,
-  );
+  copy: { assetId: string; uri: string; takenAt: number; modTime: number; day: string },
+  detectedAt: number = Date.now(),
+): Promise<boolean> {
+  let recorded = false;
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    // Only a LIVE (pending) match blocks: a resolved match belongs to a
+    // finished edit cycle — a photo re-queued done → to_edit can produce
+    // a genuinely new copy that must track and prompt again — and a
+    // dismissed match (its copy deleted) must not block either. The same
+    // physical copy can never re-insert regardless: tracked photos are
+    // excluded from candidate scans.
+    const existing = await txn.getFirstAsync<{ x: number }>(
+      "SELECT 1 AS x FROM edit_copy_matches WHERE original_id = ? AND state = 'pending'",
+      originalId,
+    );
+    if (existing) return;
+    await txn.runAsync(
+      `INSERT OR IGNORE INTO photos
+         (asset_id, uri, taken_at, state, mod_time, day, needs_edit, edit_completed_at, reviewed_at, activity_at)
+       VALUES (?, ?, ?, 'done', ?, ?, 0, ?, ?, ?)`,
+      copy.assetId,
+      copy.uri,
+      copy.takenAt,
+      copy.modTime,
+      copy.day,
+      detectedAt,
+      detectedAt,
+      detectedAt,
+    );
+    await txn.runAsync(
+      `INSERT OR IGNORE INTO edit_copy_matches (original_id, copy_id, state, detected_at)
+       VALUES (?, ?, 'pending', ?)`,
+      originalId,
+      copy.assetId,
+      detectedAt,
+    );
+    recorded = true;
+  });
+  return recorded;
 }
 
 export interface PendingCopyMatch {
@@ -670,14 +748,16 @@ export async function getPendingCopyMatches(db: SQLiteDatabase): Promise<Pending
   );
 }
 
-/** The user decided (keep or cull the original): the match resolves. */
-export async function resolveCopyMatch(
+/** A pending match whose detected copy no longer exists in MediaStore is
+ * dismissed — it must not keep blocking future detection for its
+ * original (see insertDetectedCopyWithMatch). */
+export async function dismissCopyMatch(
   db: SQLiteDatabase,
   originalId: string,
   copyId: string,
 ): Promise<void> {
   await db.runAsync(
-    "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND copy_id = ?",
+    "UPDATE edit_copy_matches SET state = 'dismissed' WHERE original_id = ? AND copy_id = ? AND state = 'pending'",
     originalId,
     copyId,
   );
@@ -693,10 +773,12 @@ export interface HistoryPhotoRow {
   kind: 'photo';
   asset_id: string;
   uri: string;
+  taken_at: number;
   state: PhotoState | 'done' | 'to_edit';
   needs_edit: number;
   favourite_state: FavouriteState;
   organize_state: string;
+  organize_applied_at: number | null;
   day: string | null;
   activity_at: number;
 }
@@ -715,10 +797,20 @@ export type HistoryRow = HistoryPhotoRow | HistoryShareRow;
 export type HistoryFilter =
   'all' | 'kept' | 'culled' | 'to_edit' | 'favourite' | 'organized' | 'shared';
 
+/** Per-stream keyset position: 'top' = not yet consumed, 'end' = exhausted. */
+type StreamPos<K> = K | 'top' | 'end';
+
+/** Combined cursor — photo decisions and share events paginate as
+ * independent keyset streams merged by timestamp. */
+export interface HistoryCursor {
+  photo: StreamPos<{ activityAt: number; assetId: string }>;
+  share: StreamPos<{ openedAt: number; batchId: number }>;
+}
+
 export interface HistoryPage {
   rows: HistoryRow[];
-  /** Keyset cursor for the next page; null when exhausted. */
-  next: { activityAt: number; assetId: string } | null;
+  /** Cursor for the next page; null when every stream is exhausted. */
+  next: HistoryCursor | null;
 }
 
 const HISTORY_PAGE = 40;
@@ -727,12 +819,14 @@ const HISTORY_PAGE = 40;
  * One keyset page of the History feed. Photo rows require presence
  * (is_present = 1 — trashed/deleted photos drop out; restore brings them
  * back) and at least one recorded decision (activity_at beyond the draw).
- * Share events are merged in by opened_at on the first page window.
+ * Share events form a second stream (keyset on opened_at) merged by
+ * timestamp, so every page — not just the first — interleaves both, and
+ * the Shared filter pages through all events.
  */
 export async function getHistoryPage(
   db: SQLiteDatabase,
   filter: HistoryFilter,
-  after: { activityAt: number; assetId: string } | null,
+  after: HistoryCursor | null,
 ): Promise<HistoryPage> {
   const filterSql =
     filter === 'kept'
@@ -744,26 +838,53 @@ export async function getHistoryPage(
           : filter === 'favourite'
             ? "AND favourite_state IN ('queued_apply', 'applied')"
             : filter === 'organized'
-              ? "AND organize_state = 'applied'"
-              : "AND state <> 'unreviewed'";
-  const keyset = after ? 'AND (activity_at < ? OR (activity_at = ? AND asset_id < ?))' : '';
-  const params: (string | number)[] = after
-    ? [after.activityAt, after.activityAt, after.assetId]
-    : [];
+              ? // The retained applied marker, NOT the live queue state:
+                // re-queueing another move must not erase the photo's
+                // organized history (possibly forever, on error).
+                'AND organize_applied_at IS NOT NULL'
+              : // All is the union of the specific filters: a review
+                // decision, an applied move, or a favourite intent — a
+                // merely-drawn photo (activity_at stamped at insert) has
+                // none of these.
+                `AND (state <> 'unreviewed'
+                   OR organize_applied_at IS NOT NULL
+                   OR favourite_state IN ('queued_apply', 'applied'))`;
+  const photoPos: HistoryCursor['photo'] = filter === 'shared' ? 'end' : (after?.photo ?? 'top');
+  const sharePos: HistoryCursor['share'] =
+    filter === 'all' || filter === 'shared' ? (after?.share ?? 'top') : 'end';
+
+  const photoKeyset =
+    photoPos === 'top' || photoPos === 'end'
+      ? ''
+      : 'AND (activity_at < ? OR (activity_at = ? AND asset_id < ?))';
+  const photoParams: (string | number)[] =
+    photoPos === 'top' || photoPos === 'end'
+      ? []
+      : [photoPos.activityAt, photoPos.activityAt, photoPos.assetId];
   const photos =
-    filter === 'shared'
+    photoPos === 'end'
       ? []
       : await db.getAllAsync<Omit<HistoryPhotoRow, 'kind'>>(
-          `SELECT asset_id, uri, state, needs_edit, favourite_state, organize_state, day, activity_at
+          `SELECT asset_id, uri, taken_at, state, needs_edit, favourite_state, organize_state, organize_applied_at, day, activity_at
            FROM photos
-           WHERE is_present = 1 AND activity_at IS NOT NULL ${filterSql} ${keyset}
+           WHERE is_present = 1 AND activity_at IS NOT NULL ${filterSql} ${photoKeyset}
            ORDER BY activity_at DESC, asset_id DESC
            LIMIT ${HISTORY_PAGE}`,
-          ...params,
+          ...photoParams,
         );
+
+  const shareKeyset =
+    sharePos === 'top' || sharePos === 'end'
+      ? ''
+      : 'AND (b.opened_at < ? OR (b.opened_at = ? AND b.id < ?))';
+  const shareParams: number[] =
+    sharePos === 'top' || sharePos === 'end'
+      ? []
+      : [sharePos.openedAt, sharePos.openedAt, sharePos.batchId];
   const shareRows =
-    (filter === 'all' || filter === 'shared') && after === null
-      ? await db.getAllAsync<{
+    sharePos === 'end'
+      ? []
+      : await db.getAllAsync<{
           batch_id: number;
           opened_at: number;
           label: string | null;
@@ -772,33 +893,54 @@ export async function getHistoryPage(
           `SELECT b.id AS batch_id, b.opened_at, b.label,
              (SELECT COUNT(*) FROM share_batch_members m WHERE m.batch_id = b.id) AS member_count
            FROM share_batches b
-           WHERE b.state = 'sheet_opened'
-           ORDER BY b.opened_at DESC
+           WHERE b.state = 'sheet_opened' ${shareKeyset}
+           ORDER BY b.opened_at DESC, b.id DESC
            LIMIT ${HISTORY_PAGE}`,
-        )
-      : [];
-  const shares: HistoryShareRow[] = [];
-  for (const row of shareRows) {
+          ...shareParams,
+        );
+
+  const photoRows: HistoryPhotoRow[] = photos.map((p) => ({ kind: 'photo', ...p }));
+  const bareShares: HistoryShareRow[] = shareRows.map((r) => ({
+    kind: 'share',
+    ...r,
+    thumb_uris: [],
+  }));
+  const tsOf = (r: HistoryRow) => (r.kind === 'photo' ? r.activity_at : r.opened_at);
+  const merged: HistoryRow[] = [...photoRows, ...bareShares].sort((a, b) => tsOf(b) - tsOf(a));
+  const rows = merged.slice(0, HISTORY_PAGE);
+  for (const row of rows) {
+    if (row.kind !== 'share') continue;
     const thumbs = await db.getAllAsync<{ uri: string }>(
       `SELECT p.uri FROM share_batch_members m JOIN photos p ON p.asset_id = m.photo_id
        WHERE m.batch_id = ? LIMIT 4`,
       row.batch_id,
     );
-    shares.push({ kind: 'share', ...row, thumb_uris: thumbs.map((t) => t.uri) });
+    row.thumb_uris = thumbs.map((t) => t.uri);
   }
-  const photoRows: HistoryPhotoRow[] = photos.map((p) => ({ kind: 'photo', ...p }));
-  const merged: HistoryRow[] = [...photoRows, ...shares].sort((a, b) => {
-    const ta = a.kind === 'photo' ? a.activity_at : a.opened_at;
-    const tb = b.kind === 'photo' ? b.activity_at : b.opened_at;
-    return tb - ta;
-  });
-  const last = photoRows[photoRows.length - 1];
+
+  // Advance each stream to its last EMITTED row; a stream ends when its
+  // fetch came back short AND everything fetched was emitted (unemitted
+  // rows are refetched from the unchanged position next page).
+  const emittedPhotos = rows.filter((r) => r.kind === 'photo').length;
+  const emittedShares = rows.filter((r) => r.kind === 'share').length;
+  const lastPhoto = [...rows].reverse().find((r) => r.kind === 'photo');
+  const lastShare = [...rows].reverse().find((r) => r.kind === 'share');
+  const nextPhoto: HistoryCursor['photo'] =
+    photoPos === 'end' || (photos.length < HISTORY_PAGE && emittedPhotos === photos.length)
+      ? 'end'
+      : lastPhoto && lastPhoto.kind === 'photo'
+        ? { activityAt: lastPhoto.activity_at, assetId: lastPhoto.asset_id }
+        : photoPos;
+  const nextShare: HistoryCursor['share'] =
+    sharePos === 'end' || (shareRows.length < HISTORY_PAGE && emittedShares === shareRows.length)
+      ? 'end'
+      : lastShare && lastShare.kind === 'share'
+        ? { openedAt: lastShare.opened_at, batchId: lastShare.batch_id }
+        : sharePos;
   return {
-    rows: merged,
+    rows,
     next:
-      photoRows.length === HISTORY_PAGE && last
-        ? { activityAt: last.activity_at, assetId: last.asset_id }
-        : null,
+      nextPhoto === 'end' && nextShare === 'end' ? null : { photo: nextPhoto, share: nextShare },
   };
 }
 
@@ -808,6 +950,36 @@ export async function countToEdit(db: SQLiteDatabase): Promise<number> {
     "SELECT COUNT(*) AS n FROM photos WHERE state = 'to_edit'",
   );
   return row?.n ?? 0;
+}
+
+/**
+ * Kept rows in scope belonging to the given id set (the active session's
+ * pending-bank keepers) — the ONLY kept rows a new draw excludes. Kept
+ * rows from an abandoned/discarded session are deliberately
+ * re-reviewable (m0.3.1) and must stay in remaining counts.
+ */
+export async function countKeptInScopeAmong(
+  db: SQLiteDatabase,
+  scope: PhotoScope,
+  roots: readonly string[] | null | undefined,
+  ids: readonly string[],
+): Promise<number> {
+  if (ids.length === 0) return 0;
+  const where = scopeClause(scope);
+  const src = sourceClause(roots);
+  let total = 0;
+  for (const chunkIds of chunk(ids, IN_CHUNK)) {
+    const placeholders = chunkIds.map(() => '?').join(',');
+    const row = await db.getFirstAsync<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM photos
+       WHERE state = 'kept' AND ${where.sql}${src.sql} AND asset_id IN (${placeholders})`,
+      ...where.params,
+      ...src.params,
+      ...chunkIds,
+    );
+    total += row?.n ?? 0;
+  }
+  return total;
 }
 
 /**
@@ -938,8 +1110,12 @@ export async function getGridPhotosByFilter(
 
 /**
  * State editor: send a converged 'done' photo back to the edit queue.
- * Mirrors the CASE-write semantics everywhere else: entering to_edit
- * sets the needs_edit flag and records to_edit_at (first entry wins).
+ * A re-queue starts a FRESH edit cycle: the detection baseline
+ * (mod_time + content hash) resets — the previous cycle's edit was
+ * already consumed, and a stale baseline would auto-complete the photo
+ * before any new edit — and to_edit_at resets too, so copy detection
+ * scans only from THIS cycle (an old untracked copy in the previous
+ * window must not be claimed as the new cycle's result).
  */
 export async function markDoneToEdit(
   db: SQLiteDatabase,
@@ -948,8 +1124,11 @@ export async function markDoneToEdit(
 ): Promise<void> {
   await db.runAsync(
     `UPDATE photos
-     SET state = 'to_edit', needs_edit = 1, to_edit_at = COALESCE(to_edit_at, ?)
+     SET state = 'to_edit', needs_edit = 1, to_edit_at = ?,
+         mod_time = NULL, content_hash = NULL,
+         activity_at = ?
      WHERE asset_id = ? AND state = 'done'`,
+    at,
     at,
     assetId,
   );
@@ -975,8 +1154,10 @@ export async function unstageCullDirect(
          to_edit_at = CASE
            WHEN needs_edit = 1 AND to_edit_at IS NULL THEN ?
            ELSE to_edit_at
-         END
+         END,
+         activity_at = ?
      WHERE asset_id = ? AND state = 'culled'`,
+    at,
     at,
     assetId,
   );
@@ -1013,19 +1194,6 @@ export async function getDaySummaries(
   return new Map(rows.map((r) => [r.day, r]));
 }
 
-/** Record bytes reclaimed by the confirmed delete batch. */
-export async function addReclaimedBytes(
-  db: SQLiteDatabase,
-  sessionId: number,
-  bytes: number,
-): Promise<void> {
-  await db.runAsync(
-    'UPDATE sessions SET reclaimed_bytes = reclaimed_bytes + ? WHERE id = ?',
-    bytes,
-    sessionId,
-  );
-}
-
 /** Mark the session finished (the user pressed Finish — feeds the streak). */
 export async function completeSession(
   db: SQLiteDatabase,
@@ -1050,14 +1218,6 @@ export async function getFinishedSessionDays(db: SQLiteDatabase): Promise<string
      ORDER BY day DESC`,
   );
   return rows.map((r) => r.day);
-}
-
-/** Total bytes reclaimed across every session, ever. */
-export async function getAllTimeReclaimedBytes(db: SQLiteDatabase): Promise<number> {
-  const row = await db.getFirstAsync<{ n: number | null }>(
-    'SELECT SUM(reclaimed_bytes) AS n FROM sessions',
-  );
-  return row?.n ?? 0;
 }
 
 // ------------------------------------------------ favourite queue + lifetime metrics
@@ -1159,13 +1319,16 @@ export async function markFavouriteBatchApplied(
                ELSE favourite_applied_at
              END,
              activity_at = ?
-         WHERE asset_id IN (${placeholders})`,
+         WHERE asset_id IN (${placeholders})
+           AND favourite_state IN ('queued_apply', 'queued_remove', 'error')
+           AND favourite_target = ?`,
         favourite ? 'applied' : 'none',
         at,
         favourite ? 1 : 0,
         at,
         at,
         ...ids,
+        favourite ? 1 : 0,
       );
     }
   });
@@ -1183,13 +1346,15 @@ export async function markFavouriteBatchError(
       const placeholders = ids.map(() => '?').join(',');
       await txn.runAsync(
         `UPDATE photos
-         SET favourite_state = 'error', favourite_target = ?, favourite_changed_at = ?,
+         SET favourite_state = 'error', favourite_changed_at = ?,
              activity_at = ?
-         WHERE asset_id IN (${placeholders})`,
-        target ? 1 : 0,
+         WHERE asset_id IN (${placeholders})
+           AND favourite_state IN ('queued_apply', 'queued_remove')
+           AND favourite_target = ?`,
         at,
         at,
         ...ids,
+        target ? 1 : 0,
       );
     }
   });
@@ -1199,7 +1364,10 @@ export async function markFavouriteBatchError(
  * Exact lifetime dashboard semantics:
  * - reviewed/culled/edit/favourite count unique tracked photos that have
  *   ever reached the event (timestamps are first-event markers);
- * - reclaimed bytes are the sum of successful trash batches.
+ * - reclaimed bytes come from the authoritative verified trash-member
+ *   rows (trashStore.lifetimeReclaimedBytes) — batches launched without
+ *   an active session count too; sessions.reclaimed_bytes is only the
+ *   per-session display stat.
  */
 export interface LifetimeStats {
   reviewed: number;
@@ -1228,7 +1396,7 @@ export async function getLifetimeStats(db: SQLiteDatabase): Promise<LifetimeStat
     culled: photo?.culled ?? 0,
     editsCompleted: photo?.editsCompleted ?? 0,
     favouritesApplied: photo?.favouritesApplied ?? 0,
-    reclaimedBytes: await getAllTimeReclaimedBytes(db),
+    reclaimedBytes: await lifetimeReclaimedBytes(db),
   };
 }
 

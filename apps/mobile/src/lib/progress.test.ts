@@ -79,6 +79,11 @@ describe('remainingReviewable / donePct', () => {
     expect(remainingReviewable(b)).toBe(4); // 1 kept + 3 never-loaded
   });
 
+  it('remaining excludes staged culls — carried, never re-drawn (P4#1)', () => {
+    const b = computeBreakdown(5, counts({ staged: 5 }));
+    expect(remainingReviewable(b)).toBe(0);
+  });
+
   it('an empty scope is 100% done', () => {
     const b = computeBreakdown(0, counts({}));
     expect(donePct(b)).toBe(100);

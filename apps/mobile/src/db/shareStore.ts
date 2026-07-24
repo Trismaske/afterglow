@@ -6,10 +6,12 @@
  * says "share sheet opened", never "shared".
  *
  * Cycle identity is explicit (N#5): a monotonic cycle row is minted when
- * the queue goes empty → non-empty; clearing ends it. A ✓ pass-count badge
- * counts only same-cycle `sheet_opened` batches containing the photo, so
- * failed launches never badge (C#10) and History keeps batches attached to
- * their original cycle after a clear.
+ * the queue goes empty → non-empty, and ANY transition back to empty ends
+ * it — explicit clear, removing the last row, or missing-media/trash
+ * cleanup — so a requeued photo always starts a fresh cycle with zero
+ * passes. A ✓ pass-count badge counts only same-cycle `sheet_opened`
+ * batches containing the photo, so failed launches never badge (C#10) and
+ * History keeps batches attached to their original cycle after a clear.
  *
  * At-most-once accounting (C#10): the batch row is inserted as `launching`
  * BEFORE dispatch; the native module reports successful dispatch
@@ -83,8 +85,25 @@ export async function addToShareQueue(
   return added;
 }
 
-export async function removeFromShareQueue(db: SQLiteDatabase, photoId: string): Promise<void> {
-  await db.runAsync('DELETE FROM share_queue WHERE photo_id = ?', photoId);
+/** End the open cycle when the queue just became empty (N#5) — shared by
+ * every queue-emptying path; also exported for the trash-cleanup path. */
+export async function closeShareCycleIfQueueEmpty(db: SQLiteDatabase, at: number): Promise<void> {
+  await db.runAsync(
+    `UPDATE share_cycles SET ended_at = ? WHERE ended_at IS NULL
+       AND NOT EXISTS (SELECT 1 FROM share_queue)`,
+    at,
+  );
+}
+
+export async function removeFromShareQueue(
+  db: SQLiteDatabase,
+  photoId: string,
+  at: number,
+): Promise<void> {
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    await txn.runAsync('DELETE FROM share_queue WHERE photo_id = ?', photoId);
+    await closeShareCycleIfQueueEmpty(txn, at);
+  });
 }
 
 /** Whether a photo is currently queued (deck button state). */
@@ -98,10 +117,19 @@ export async function isInShareQueue(db: SQLiteDatabase, photoId: string): Promi
 
 /** The queue with per-photo pass counts, chronological. Missing-media rows
  * (is_present = 0) are dropped from the live queue (C#7). */
-export async function getShareQueue(db: SQLiteDatabase): Promise<ShareQueueRow[]> {
-  await db.runAsync(
-    'DELETE FROM share_queue WHERE photo_id IN (SELECT asset_id FROM photos WHERE is_present = 0)',
-  );
+export async function getShareQueue(
+  db: SQLiteDatabase,
+  at: number = Date.now(),
+): Promise<ShareQueueRow[]> {
+  // One transaction: deleting the final missing-media row and closing
+  // the emptied cycle must land together, or a crash in between would
+  // leave the old cycle open for a later requeue to inherit its badges.
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    await txn.runAsync(
+      'DELETE FROM share_queue WHERE photo_id IN (SELECT asset_id FROM photos WHERE is_present = 0)',
+    );
+    await closeShareCycleIfQueueEmpty(txn, at);
+  });
   return db.getAllAsync<ShareQueueRow>(
     `SELECT q.photo_id, p.uri, p.taken_at, p.day, q.queued_at,
        (SELECT COUNT(*) FROM share_batch_members m

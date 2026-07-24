@@ -42,6 +42,7 @@ Tags trigger CI to GitHub Releases: `desktop-v*` → Windows installer (+ `.scr`
 |---|---|
 | PLAN.md | Product vision, feature semantics, roadmap/version numbering |
 | docs/DEVELOPMENT.md | Dev env setup, emulator, run/debug commands |
+| docs/ANDROID_DEVICE_TESTING.md | Pair/control physical Android phones over wireless ADB; multi-device automation |
 | docs/TODO.md | Open questions parked for their own investigation |
 | docs/Feedback_<version>.md / docs/Plan_<version>.md (e.g. `Plan_m0.8.md`) | Current tester feedback + the release plan answering it, named for the release they target (removed once shipped) |
 | README.md | User/tester-facing: formats, key bindings, install notes |

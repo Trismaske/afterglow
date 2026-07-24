@@ -8,10 +8,13 @@
  * and caps a session per the m0.5 "Sessions" settings (sessionPrefs.ts):
  * max photos (default 50), draw order (oldest first walks the backlog
  * forward chunk by chunk; newest first reviews fresh shots immediately),
- * and "don't split groups" (the cap is soft by up to one time-gap group
- * — sessionSelect.ts, gap = core MOMENTS_GAP_MS so the boundary matches
- * the session's own clustering; similarity refinement only ever splits
- * further, never merges across a time gap).
+ * and "don't split groups" (the cap is soft by up to one TIME-gap group
+ * — sessionSelect.ts, gap = core MOMENTS_GAP_MS). Known limit: gate-2
+ * similarity grouping can link photos ACROSS time gaps, and the cap only
+ * respects time-gap boundaries, so a similarity component may still
+ * split at the cap (its tail lands in the next draw). Closing components
+ * requires hashing a lookahead window — that is the m0.8 roadmap's
+ * quota-driven candidate window (PLAN.md), not a loader patch.
  *
  * Multi-album correctness: each source bucket is paged in draw order and
  * early-stopped per sessionSelect.bucketNeedsMore, then the per-bucket
@@ -29,7 +32,8 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { MOMENTS_GAP_MS } from '@afterglow/core';
 import { pagePhotosInRange, type LoadedPhoto } from './media';
-import { getSetting, getStatesForAssets } from '../db/store';
+import { getActiveSessionKeptIds, getSetting, getStatesForAssets } from '../db/store';
+import { markPhotoRestored } from '../db/trashStore';
 import {
   parseReviewOrder,
   parseSessionCap,
@@ -71,12 +75,37 @@ export async function getSessionPrefs(db: SQLiteDatabase): Promise<SessionPrefs>
 const tsOf = (p: LoadedPhoto) => p.item.timestamp;
 
 /**
+ * The active session's kept ids for the loader's pendingBankIds param.
+ * The IN-MEMORY session wins when present — it is ahead of any queued
+ * decision write, so a keep made moments before "start new" is never
+ * missed (the persisted snapshot could still be stale behind the FIFO
+ * persistence barrier). Falls back to the persisted snapshot for a
+ * session that was never resumed this process.
+ */
+export async function pendingBankIdsFor(
+  session: { toJSON(): { states: Record<string, string> } } | null,
+  db: SQLiteDatabase,
+): Promise<ReadonlySet<string>> {
+  if (session) {
+    return new Set(
+      Object.entries(session.toJSON().states)
+        .filter(([, state]) => state === 'kept')
+        .map(([id]) => id),
+    );
+  }
+  return new Set(await getActiveSessionKeptIds(db));
+}
+
+/**
  * Load the photos in [startMs, endMs] still needing review, selected per
  * `prefs` (draw order + cap + group-boundary softening). `albumIds`
  * null = all folders; otherwise one paged pass per bucket. Converged
  * states stay converged; interim unreviewed/kept rows are re-included.
  * Staged culls are CARRIED (m0.7 policy change): they stay in the durable
- * global cull queue and are counted, not drawn — never reset.
+ * global cull queue and are counted, not drawn — never reset. A
+ * 'trashed'-state photo appearing in a MediaStore page was restored from
+ * the system trash — it reconciles (markPhotoRestored) and re-enters
+ * review.
  */
 export async function loadReviewablePhotos(
   db: SQLiteDatabase,
@@ -84,6 +113,10 @@ export async function loadReviewablePhotos(
   endMs: number,
   albumIds: readonly string[] | null,
   prefs: SessionPrefs,
+  /** Active session's kept ids (getActiveSessionKeptIds): counted as
+   * handled WITHOUT mutation — they bank to done only inside the atomic
+   * replacement, so an aborted start leaves the old session intact. */
+  pendingBankIds: ReadonlySet<string> = new Set(),
 ): Promise<ReviewableLoad> {
   const { cap, wholeGroups, order } = prefs;
   const descending = order === 'newest';
@@ -107,7 +140,16 @@ export async function loadReviewablePhotos(
         );
         for (const photo of page) {
           const state = states.get(photo.item.id);
-          if (state === 'to_edit' || state === 'done' || state === 'trashed') handled++;
+          if (state === 'trashed') {
+            // MediaStore excludes trashed rows from queries, so a
+            // 'trashed'-state photo appearing in a page has provably been
+            // restored from the system trash (P8#4): reconcile — presence
+            // returns, the generation increments so a later verified
+            // re-trash counts again — and review it like any other photo.
+            await markPhotoRestored(db, photo.item.id, Date.now());
+            bucketReviewable.push(photo);
+          } else if (state === 'to_edit' || state === 'done' || pendingBankIds.has(photo.item.id))
+            handled++;
           else if (state === 'culled') carried++;
           else bucketReviewable.push(photo);
         }

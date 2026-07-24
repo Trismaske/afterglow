@@ -6,7 +6,7 @@
  * (organizeStore.ts). The album picker is the native volume-aware catalog
  * (C#2) filtered to primary storage, plus "New album" → Pictures/<name>.
  */
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -27,10 +27,12 @@ import {
 import {
   listImageAlbums,
   moveMediaToRelativePath,
+  queryMediaRelativePaths,
   requestMediaWriteAccess,
   type VolumeAlbum,
 } from '../../modules/media-store-actions';
 import { getEditableContentUri, PRIMARY_VOLUME } from '../lib/media';
+import { useSession } from '../session/SessionContext';
 import { showToast } from '../lib/toast';
 import { labelForDayKey } from '../lib/dates';
 import { formatClock } from '../lib/format';
@@ -41,8 +43,12 @@ type Props = NativeStackScreenProps<RootStackParamList, 'OrganizeQueue'>;
 export function OrganizeQueueScreen(_props: Props) {
   const insets = useSafeAreaInsets();
   const db = useSQLiteContext();
+  const { reconcileMovedUris } = useSession();
   const [rows, setRows] = useState<OrganizeQueueRow[] | null>(null);
   const [busy, setBusy] = useState(false);
+  // Synchronous apply lock: async continuations (picker load, intent
+  // taps) must observe the CURRENT applying state, not a stale render.
+  const busyRef = useRef(false);
   const [pickerFor, setPickerFor] = useState<string | null>(null);
   const [albums, setAlbums] = useState<VolumeAlbum[]>([]);
   const [newName, setNewName] = useState('');
@@ -58,9 +64,13 @@ export function OrganizeQueueScreen(_props: Props) {
   );
 
   const openPicker = useCallback(async (photoId: string) => {
+    if (busyRef.current) return;
     // Fail-closed (C#8): a catalog error never widens choices — the picker
     // simply shows what the native query proved, primary volume only.
     const catalog = await listImageAlbums();
+    // Apply may have started while the catalog loaded — opening the
+    // picker now could change a durable target mid-batch.
+    if (busyRef.current) return;
     setAlbums(
       catalog
         .filter((a) => a.volumeName === PRIMARY_VOLUME)
@@ -72,7 +82,7 @@ export function OrganizeQueueScreen(_props: Props) {
 
   const chooseTarget = useCallback(
     async (relativePath: string) => {
-      if (!pickerFor) return;
+      if (!pickerFor || busyRef.current) return;
       const error = await queueOrganize(
         db,
         pickerFor,
@@ -87,13 +97,19 @@ export function OrganizeQueueScreen(_props: Props) {
   );
 
   const applyAll = useCallback(async () => {
-    if (busy || !rows || rows.length === 0) return;
+    if (busy || busyRef.current || !rows || rows.length === 0) return;
     setBusy(true);
+    busyRef.current = true;
     try {
+      // Revalidate the DURABLE intents at apply time — the rendered rows
+      // may predate a just-tapped Remove/Change whose write is still
+      // landing (same-connection FIFO makes this read see it).
+      const freshRows = await getOrganizeQueue(db);
+      if (freshRows.length === 0) return;
       // Group queued photos by target path; apply per target in bounded
       // batches (each batch = one consent + one verified move set).
       const byTarget = new Map<string, OrganizeQueueRow[]>();
-      for (const row of rows) {
+      for (const row of freshRows) {
         const list = byTarget.get(row.organize_path) ?? [];
         list.push(row);
         byTarget.set(row.organize_path, list);
@@ -104,19 +120,77 @@ export function OrganizeQueueScreen(_props: Props) {
         for (let i = 0; i < members.length; i += ORGANIZE_BATCH_LIMIT) {
           const batch = members.slice(i, i + ORGANIZE_BATCH_LIMIT);
           const uris = await Promise.all(batch.map((m) => getEditableContentUri(m.photo_id)));
-          const consent = await requestMediaWriteAccess(uris);
-          if (consent.status !== 'applied') {
-            failed += batch.length;
+          // Crash-retry repair first (N#8): a move MediaStore completed
+          // whose SQLite commit was lost is detected with a READ-ONLY
+          // path lookup — never the mutating move call, which a lingering
+          // write grant could let succeed BEFORE consent — and committed
+          // as 'already' before any consent request, so a cancelled
+          // consent can never strand an already-moved photo in the queue.
+          const trimmed = (path: string) => path.replace(/\/+$/, '');
+          const precheck = await queryMediaRelativePaths(uris);
+          const repaired = batch
+            .map((m, index) => ({ member: m, info: precheck[index] }))
+            .filter(
+              (p) =>
+                p.info &&
+                p.info.relativePath != null &&
+                trimmed(p.info.relativePath) === trimmed(targetPath) &&
+                !!p.info.data,
+            );
+          if (repaired.length > 0) {
+            await commitOrganizeOutcomes(
+              db,
+              repaired.map((p) => ({
+                photoId: p.member.photo_id,
+                status: 'already' as const,
+                message: 'already at target',
+                newData: p.info!.data!,
+                volumeName: p.member.organize_volume,
+                relativePath: p.member.organize_path,
+              })),
+              Date.now(),
+            );
+            // Mirror each committed batch into the live snapshot RIGHT
+            // AWAY — a later batch failing must not leave dead pre-move
+            // paths in the session until a restart.
+            await reconcileMovedUris(
+              repaired.map((p) => ({ photoId: p.member.photo_id, uri: `file://${p.info!.data}` })),
+            );
+            moved += repaired.length;
+          }
+          const repairedIds = new Set(repaired.map((p) => p.member.photo_id));
+          const pendingIdx = batch
+            .map((_, index) => index)
+            .filter((index) => !repairedIds.has(batch[index].photo_id));
+          if (pendingIdx.length === 0) continue;
+          const pending = pendingIdx.map((index) => batch[index]);
+          const pendingUris = pendingIdx.map((index) => uris[index]);
+          let consentApplied = false;
+          try {
+            consentApplied = (await requestMediaWriteAccess(pendingUris)).status === 'applied';
+          } catch {
+            // Rejected request (no activity / bridge failure) — same as a
+            // declined consent: the rows stay queued and retryable.
+          }
+          if (!consentApplied) {
+            failed += pending.length;
             continue; // cancelled batches stay queued (P5#4)
           }
-          const results = await moveMediaToRelativePath(uris, targetPath);
-          const outcomes = batch.map((m, index) => ({
+          const results = await moveMediaToRelativePath(pendingUris, targetPath);
+          const outcomes = pending.map((m, index) => ({
             photoId: m.photo_id,
             status: results[index]?.status ?? ('error' as const),
             message: results[index]?.message ?? 'no result',
             newData: results[index]?.newData,
+            volumeName: m.organize_volume,
+            relativePath: m.organize_path,
           }));
           await commitOrganizeOutcomes(db, outcomes, Date.now());
+          await reconcileMovedUris(
+            outcomes
+              .filter((o) => (o.status === 'moved' || o.status === 'already') && o.newData)
+              .map((o) => ({ photoId: o.photoId, uri: `file://${o.newData}` })),
+          );
           moved += outcomes.filter((o) => o.status === 'moved' || o.status === 'already').length;
           failed += outcomes.filter(
             (o) => o.status === 'error' || o.status === 'unsupported',
@@ -131,8 +205,9 @@ export function OrganizeQueueScreen(_props: Props) {
       await reload();
     } finally {
       setBusy(false);
+      busyRef.current = false;
     }
-  }, [busy, db, rows, reload]);
+  }, [busy, db, rows, reload, reconcileMovedUris]);
 
   const renderItem = useCallback(
     ({ item }: { item: OrganizeQueueRow }) => (
@@ -151,11 +226,19 @@ export function OrganizeQueueScreen(_props: Props) {
             → {item.organize_path}
           </Text>
           <View style={styles.rowActions}>
-            <Pressable style={styles.smallButton} onPress={() => void openPicker(item.photo_id)}>
+            {/* Intents FREEZE while a batch applies: a mid-apply change
+                would move to the old target while commit records the new
+                columns as applied (or clears a removed row). */}
+            <Pressable
+              style={styles.smallButton}
+              disabled={busy}
+              onPress={() => void openPicker(item.photo_id)}
+            >
               <Text style={styles.smallButtonText}>Change album</Text>
             </Pressable>
             <Pressable
               style={styles.smallButton}
+              disabled={busy}
               onPress={() => void unqueueOrganize(db, item.photo_id, Date.now()).then(reload)}
             >
               <Text style={styles.smallButtonText}>Remove</Text>
@@ -164,7 +247,7 @@ export function OrganizeQueueScreen(_props: Props) {
         </View>
       </View>
     ),
-    [db, openPicker, reload],
+    [db, openPicker, reload, busy],
   );
 
   const count = rows?.length ?? 0;

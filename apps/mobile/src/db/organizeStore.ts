@@ -131,12 +131,20 @@ export interface OrganizeMoveOutcome {
   status: 'moved' | 'already' | 'error' | 'unsupported';
   message: string;
   newData?: string;
+  /** The intent this move EXECUTED. Commit bookkeeping applies only
+   * while the durable intent still matches — a mid-move removal or
+   * retarget (another screen, or after navigating away) keeps its newer
+   * intent; the uri truth still refreshes for a physically moved file. */
+  volumeName: string;
+  relativePath: string;
 }
 
 /**
  * Commit one batch's verified outcomes + post-move repair in ONE SQLite
  * transaction (R#6): moved/already → applied with uri refresh and the
  * N#8 last-applied bookkeeping; error/unsupported → error (retryable).
+ * Every intent write is guarded by the executed target — stale
+ * continuations can never clear or mislabel a newer durable intent.
  */
 export async function commitOrganizeOutcomes(
   db: SQLiteDatabase,
@@ -154,23 +162,35 @@ export async function commitOrganizeOutcomes(
              organize_applied_path = organize_path,
              organize_volume = NULL,
              organize_path = NULL,
-             uri = CASE WHEN ? <> '' THEN ? ELSE uri END,
-             mod_time = NULL,
              activity_at = ?
-           WHERE asset_id = ?`,
+           WHERE asset_id = ? AND organize_state IN ('queued', 'error')
+             AND organize_volume = ? AND organize_path = ?`,
           at,
+          at,
+          outcome.photoId,
+          outcome.volumeName,
+          outcome.relativePath,
+        );
+        // The uri truth refreshes REGARDLESS of intent bookkeeping — the
+        // file physically moved, and a stale uri would break thumbnails
+        // and source filtering.
+        await txn.runAsync(
+          `UPDATE photos SET uri = CASE WHEN ? <> '' THEN ? ELSE uri END, mod_time = NULL
+           WHERE asset_id = ?`,
           outcome.newData ?? '',
           outcome.newData ? `file://${outcome.newData}` : '',
-          at,
           outcome.photoId,
         );
       } else {
         await txn.runAsync(
           `UPDATE photos SET organize_state = 'error', organize_changed_at = ?, activity_at = ?
-           WHERE asset_id = ?`,
+           WHERE asset_id = ? AND organize_state = 'queued'
+             AND organize_volume = ? AND organize_path = ?`,
           at,
           at,
           outcome.photoId,
+          outcome.volumeName,
+          outcome.relativePath,
         );
       }
     }

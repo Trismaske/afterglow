@@ -51,6 +51,28 @@ describe('destinationAfterGroup', () => {
       screen: 'CullList',
     });
   });
+
+  it('a dissolved middle group advances from its FORMER position, not the top', () => {
+    // g2 dissolved (pair broken by "Not related") — it held index 1, so
+    // the successor is the group now at that index (g3), not g1.
+    expect(
+      destinationAfterGroup(
+        groups([
+          ['g1', false],
+          ['g3', false],
+        ]),
+        'g2',
+        false,
+        1,
+      ),
+    ).toEqual({ screen: 'Deck', groupId: 'g3' });
+    // Without the former index the scan starts at the top (the old bug).
+    // A dissolved FIRST group (index 0) starts at the new index 0.
+    expect(destinationAfterGroup(groups([['g4', false]]), 'gX', true, 0)).toEqual({
+      screen: 'Deck',
+      groupId: 'g4',
+    });
+  });
 });
 
 describe('completedDuringVisit', () => {

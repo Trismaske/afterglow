@@ -3,7 +3,9 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-const SCRATCH = '/tmp/claude-1000/-home-tristan-Repos-afterglow-nosesh/8f7ec172-59b5-4bcf-a5e4-5297e03ad5f2/scratchpad';
+// luma grids are generated from the curated photos via ImageMagick (see git
+// history of the study for the exact convert flags); regenerate into data/luma
+const DATA = new URL('data/', import.meta.url).pathname;
 const PHONESYNC = '/home/tristan/PhoneSync';
 
 function readPgm(path) {
@@ -30,11 +32,11 @@ function dhashBits(pgm) {
 const dist = (a, b) => a.reduce((s, v, i) => s + (v ^ b[i]), 0);
 
 const hashes = new Map(); // name -> {h64, h256}
-for (const f of readdirSync(join(SCRATCH, 'luma'))) {
+for (const f of readdirSync(join(DATA, 'luma'))) {
   if (f.endsWith('.small.pgm')) continue;
   const name = f.replace(/\.pgm$/, '.jpg');
-  const h256 = dhashBits(readPgm(join(SCRATCH, 'luma', f)));
-  const h64 = dhashBits(readPgm(join(SCRATCH, 'luma', f.replace(/\.pgm$/, '.small.pgm'))));
+  const h256 = dhashBits(readPgm(join(DATA, 'luma', f)));
+  const h64 = dhashBits(readPgm(join(DATA, 'luma', f.replace(/\.pgm$/, '.small.pgm'))));
   hashes.set(name, { h64, h256 });
 }
 

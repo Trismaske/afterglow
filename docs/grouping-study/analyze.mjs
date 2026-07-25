@@ -3,12 +3,12 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
 
-const SCRATCH = '/tmp/claude-1000/-home-tristan-Repos-afterglow-nosesh/8f7ec172-59b5-4bcf-a5e4-5297e03ad5f2/scratchpad';
+const DATA = new URL('data/', import.meta.url).pathname;
 const PHONESYNC = '/home/tristan/PhoneSync';
 const MIN3 = 3 * 60 * 1000;
 
 // ---- load corpus ----------------------------------------------------------
-const recs = readFileSync(join(SCRATCH, 's23-hashes.jsonl'), 'utf8')
+const recs = readFileSync(join(DATA, 's23-hashes.jsonl'), 'utf8')
   .trim().split('\n').map((l) => JSON.parse(l))
   .filter((r) => r.h !== null);
 recs.sort((a, b) => a.ts - b.ts);

@@ -1,4 +1,4 @@
-import type { MediaItem, PhotoState } from './types.js';
+import { PHOTO_STATES, type MediaItem, type PhotoState } from './types.js';
 
 /**
  * The mobile culling session model (Companion m0.1) — the signature duel
@@ -340,44 +340,217 @@ export class CullSession {
     };
   }
 
-  /** Restore a session snapshot (already-parsed JSON object). */
+  /**
+   * Restore a session snapshot (already-parsed JSON object). Rejects any
+   * snapshot that violates the session's structural invariants — corruption
+   * surfaces here, at the persistence boundary, not later in nextPair() or
+   * summary().
+   */
   static fromJSON(json: unknown): CullSession {
     if (typeof json !== 'object' || json === null) {
       throw new Error('CullSession.fromJSON: not an object');
     }
-    const snap = json as CullSessionJSON;
-    if (snap.version !== 1) {
-      throw new Error(`CullSession.fromJSON: unsupported version ${String(snap.version)}`);
+    const raw = json as Record<string, unknown>;
+    if (raw.version !== 1) {
+      throw new Error(`CullSession.fromJSON: unsupported version ${String(raw.version)}`);
     }
     if (
-      !Array.isArray(snap.items) ||
-      !Array.isArray(snap.brackets) ||
-      !Array.isArray(snap.singleIds) ||
-      !Array.isArray(snap.duelHistory) ||
-      typeof snap.states !== 'object' ||
-      snap.states === null
+      !Array.isArray(raw.items) ||
+      !Array.isArray(raw.brackets) ||
+      !Array.isArray(raw.singleIds) ||
+      !Array.isArray(raw.duelHistory) ||
+      !isRecord(raw.states)
     ) {
       throw new Error('CullSession.fromJSON: malformed snapshot');
     }
-    const session = new CullSession();
-    for (const item of snap.items) session.itemsById.set(item.id, { ...item });
-    session.brackets = snap.brackets.map((b) => ({
-      groupId: b.groupId,
-      photoIds: [...b.photoIds],
-      currentRound: [...b.currentRound],
-      nextRound: [...b.nextRound],
-      bestId: b.bestId ?? null,
-      complete: !!b.complete,
-    }));
-    session.singleIds = [...snap.singleIds];
-    session.states = new Map(Object.entries(snap.states) as [string, PhotoState][]);
-    session.history = snap.duelHistory.map((r) => ({ ...r }));
-    // Sanity: every referenced id must exist.
-    for (const [id] of session.states) {
-      if (!session.itemsById.has(id)) {
-        throw new Error(`CullSession.fromJSON: state for unknown id ${id}`);
+
+    const items: MediaItem[] = [];
+    const itemIds = new Set<string>();
+    for (const value of raw.items) {
+      if (
+        !isRecord(value) ||
+        typeof value.id !== 'string' ||
+        value.id.length === 0 ||
+        typeof value.timestamp !== 'number' ||
+        !Number.isFinite(value.timestamp) ||
+        typeof value.uri !== 'string' ||
+        (value.kind !== 'photo' && value.kind !== 'video')
+      ) {
+        throw new Error('CullSession.fromJSON: malformed media item');
       }
+      if (itemIds.has(value.id)) {
+        throw new Error(`CullSession.fromJSON: duplicate photo id ${value.id}`);
+      }
+      itemIds.add(value.id);
+      items.push({ id: value.id, timestamp: value.timestamp, uri: value.uri, kind: value.kind });
     }
+
+    const validStates = new Set<string>(PHOTO_STATES);
+    const states = new Map<string, PhotoState>();
+    for (const [id, value] of Object.entries(raw.states)) {
+      if (!itemIds.has(id)) throw new Error(`CullSession.fromJSON: state for unknown id ${id}`);
+      if (typeof value !== 'string' || !validStates.has(value)) {
+        throw new Error(`CullSession.fromJSON: invalid state for ${id}`);
+      }
+      states.set(id, value as PhotoState);
+    }
+    for (const id of itemIds) {
+      if (!states.has(id)) throw new Error(`CullSession.fromJSON: missing state for ${id}`);
+    }
+    // Photos leave their bracket the moment they are culled (and never
+    // return via unstageCull), so no round may hold a removed photo.
+    const removed = (id: string): boolean => {
+      const state = states.get(id)!;
+      return state === 'culled' || state === 'confirmed' || state === 'trashed';
+    };
+
+    const brackets: BracketState[] = [];
+    const groupIds = new Set<string>();
+    const assigned = new Set<string>();
+    const membersByGroup = new Map<string, Set<string>>();
+    for (const value of raw.brackets) {
+      if (
+        !isRecord(value) ||
+        typeof value.groupId !== 'string' ||
+        value.groupId.length === 0 ||
+        !Array.isArray(value.photoIds) ||
+        !Array.isArray(value.currentRound) ||
+        !Array.isArray(value.nextRound) ||
+        typeof value.complete !== 'boolean' ||
+        !(value.bestId === null || typeof value.bestId === 'string')
+      ) {
+        throw new Error('CullSession.fromJSON: malformed bracket');
+      }
+      if (groupIds.has(value.groupId)) {
+        throw new Error(`CullSession.fromJSON: duplicate group id ${value.groupId}`);
+      }
+      groupIds.add(value.groupId);
+      const photoIds = stringIdArray(value.photoIds, 'bracket member');
+      const currentRound = stringIdArray(value.currentRound, 'current-round');
+      const nextRound = stringIdArray(value.nextRound, 'next-round');
+      // create() skips empty groups, so a bracket always has members.
+      if (photoIds.length === 0) {
+        throw new Error(`CullSession.fromJSON: empty bracket ${value.groupId}`);
+      }
+      const members = new Set(photoIds);
+      if (members.size !== photoIds.length) {
+        throw new Error(`CullSession.fromJSON: duplicate member in ${value.groupId}`);
+      }
+      for (const id of photoIds) {
+        if (!itemIds.has(id)) {
+          throw new Error(`CullSession.fromJSON: unknown bracket member ${id}`);
+        }
+        if (assigned.has(id)) throw new Error(`CullSession.fromJSON: photo ${id} assigned twice`);
+        assigned.add(id);
+      }
+      const inRounds = new Set<string>();
+      for (const id of [...currentRound, ...nextRound]) {
+        if (!members.has(id)) {
+          throw new Error(`CullSession.fromJSON: round non-member ${id} in ${value.groupId}`);
+        }
+        if (inRounds.has(id)) throw new Error(`CullSession.fromJSON: duplicate round entry ${id}`);
+        inRounds.add(id);
+        if (removed(id)) {
+          throw new Error(`CullSession.fromJSON: removed photo ${id} is still in a round`);
+        }
+      }
+      // A member outside both rounds has left the bracket, which only a
+      // review decision does — it cannot still be unreviewed.
+      for (const id of photoIds) {
+        if (states.get(id) === 'unreviewed' && !inRounds.has(id)) {
+          throw new Error(`CullSession.fromJSON: unreviewed photo ${id} is outside its bracket`);
+        }
+      }
+      if (value.complete) {
+        // normalize() completed this bracket: duels remove one photo at a
+        // time and a pair always leaves a winner, so exactly one photo
+        // stands, it is the best, and every never-culled member is kept.
+        if (inRounds.size !== 1) {
+          throw new Error(
+            `CullSession.fromJSON: complete bracket ${value.groupId} must have exactly one standing photo`,
+          );
+        }
+        if (value.bestId !== (currentRound[0] ?? nextRound[0])) {
+          throw new Error(`CullSession.fromJSON: best photo mismatch in ${value.groupId}`);
+        }
+        for (const id of photoIds) {
+          if (states.get(id) === 'unreviewed') {
+            throw new Error(
+              `CullSession.fromJSON: complete bracket ${value.groupId} holds unreviewed ${id}`,
+            );
+          }
+        }
+      } else {
+        // normalize() leaves an incomplete bracket with a playable pair.
+        if (currentRound.length < 2) {
+          throw new Error(
+            `CullSession.fromJSON: incomplete bracket ${value.groupId} lacks a playable pair`,
+          );
+        }
+        if (value.bestId !== null) {
+          throw new Error(
+            `CullSession.fromJSON: incomplete bracket ${value.groupId} has a best photo`,
+          );
+        }
+      }
+      membersByGroup.set(value.groupId, members);
+      // Copies: a caller mutating its parsed snapshot afterwards must not
+      // reach into the restored session's private state.
+      brackets.push({
+        groupId: value.groupId,
+        photoIds: [...photoIds],
+        currentRound: [...currentRound],
+        nextRound: [...nextRound],
+        bestId: value.bestId,
+        complete: value.complete,
+      });
+    }
+
+    const singleIds = stringIdArray(raw.singleIds, 'single');
+    if (new Set(singleIds).size !== singleIds.length) {
+      throw new Error('CullSession.fromJSON: duplicate single');
+    }
+    for (const id of singleIds) {
+      if (!itemIds.has(id)) throw new Error(`CullSession.fromJSON: unknown single ${id}`);
+      if (assigned.has(id)) throw new Error(`CullSession.fromJSON: photo ${id} assigned twice`);
+      assigned.add(id);
+    }
+    if (assigned.size !== itemIds.size) {
+      throw new Error('CullSession.fromJSON: one or more photos are not assigned');
+    }
+
+    const history: DuelRecord[] = raw.duelHistory.map((value) => {
+      if (
+        !isRecord(value) ||
+        typeof value.groupId !== 'string' ||
+        typeof value.winnerId !== 'string' ||
+        typeof value.loserId !== 'string' ||
+        value.winnerId === value.loserId ||
+        typeof value.keptBoth !== 'boolean' ||
+        typeof value.at !== 'number' ||
+        !Number.isFinite(value.at)
+      ) {
+        throw new Error('CullSession.fromJSON: malformed duel record');
+      }
+      const members = membersByGroup.get(value.groupId);
+      if (!members?.has(value.winnerId) || !members.has(value.loserId)) {
+        throw new Error('CullSession.fromJSON: duel photos are not in their group');
+      }
+      return {
+        groupId: value.groupId,
+        winnerId: value.winnerId,
+        loserId: value.loserId,
+        keptBoth: value.keptBoth,
+        at: value.at,
+      };
+    });
+
+    const session = new CullSession();
+    for (const item of items) session.itemsById.set(item.id, item);
+    session.brackets = brackets;
+    session.singleIds = [...singleIds];
+    session.states = states;
+    session.history = history;
     return session;
   }
 
@@ -434,4 +607,15 @@ export class CullSession {
       bracket.nextRound = [];
     }
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function stringIdArray(value: unknown[], label: string): string[] {
+  if (!value.every((id) => typeof id === 'string' && id.length > 0)) {
+    throw new Error(`CullSession.fromJSON: malformed ${label} id`);
+  }
+  return value as string[];
 }

@@ -54,7 +54,7 @@ function badgeOf(row: Extract<HistoryRow, { kind: 'photo' }>): DecisionKind | nu
 export function HistoryScreen(_props: Props) {
   const insets = useSafeAreaInsets();
   const db = useSQLiteContext();
-  const { session, reconcileTrashed } = useSession();
+  const { session, restoring, reconcileTrashed } = useSession();
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [rows, setRows] = useState<HistoryRow[] | null>(null);
   const [next, setNext] = useState<HistoryCursor | null>(null);
@@ -72,6 +72,11 @@ export function HistoryScreen(_props: Props) {
   // nothing.
   const reconcilePage = useCallback(
     async (pageRows: HistoryRow[]): Promise<HistoryRow[]> => {
+      // Mid-restore, the durable write could land between resumeSession's
+      // reads and its snapshot install, where reconcileTrashed no-ops (no
+      // session yet) and the stale pre-removal snapshot installs anyway.
+      // Skip — the next page load or focus reconciles.
+      if (restoring) return pageRows;
       const gone = new Set<string>();
       for (const row of pageRows) {
         if (row.kind !== 'photo') continue;
@@ -85,12 +90,14 @@ export function HistoryScreen(_props: Props) {
       await reconcileTrashed([...gone]);
       return pageRows.filter((row) => row.kind !== 'photo' || !gone.has(row.asset_id));
     },
-    [db, reconcileTrashed],
+    [db, reconcileTrashed, restoring],
   );
 
   const inActiveSession = useCallback(
     (id: string) => {
-      if (!session) return false;
+      // Mid-restore, membership is unknown — treat as active (read-only)
+      // rather than let a direct edit desync the restoring snapshot.
+      if (!session) return restoring;
       try {
         session.getState(id);
         return true;
@@ -98,7 +105,7 @@ export function HistoryScreen(_props: Props) {
         return false;
       }
     },
-    [session],
+    [session, restoring],
   );
 
   const reload = useCallback(

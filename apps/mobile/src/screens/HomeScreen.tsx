@@ -104,6 +104,8 @@ export function HomeScreen({ navigation }: Props) {
   /** null = not yet checked; the All-time chip stays disabled until true. */
   const [allTimeReady, setAllTimeReady] = useState<boolean | null>(null);
   const [hasResumable, setHasResumable] = useState(false);
+  /** The focus-time resume attempt settled — edit detection may run. */
+  const [resumeAttempted, setResumeAttempted] = useState(false);
   const [starting, setStarting] = useState(false);
   /** Perceptual-hash progress while a session is being built (m0.4). */
   const [analyzing, setAnalyzing] = useState<{ done: number; total: number } | null>(null);
@@ -175,27 +177,6 @@ export function HomeScreen({ navigation }: Props) {
     void setSetting(db, REVIEW_SCOPES_KEY, serializeScopeConfig(next));
   }, [scopeConfig, customName, customFrom, customTo, db]);
 
-  // Is there a persisted session to resume? (session may not be loaded yet)
-  useFocusEffect(
-    useCallback(() => {
-      let cancelled = false;
-      (async () => {
-        if (sessionCtx.session) {
-          setHasResumable(true);
-          return;
-        }
-        // Also runs the once-per-process interrupted-trash recovery
-        // before restoring any snapshot (P8#3).
-        const resumed = await sessionCtx.resumeSession();
-        if (!cancelled) setHasResumable(resumed);
-      })();
-      return () => {
-        cancelled = true;
-      };
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [sessionCtx.version]),
-  );
-
   /** Keep-or-cull prompts for detected edited copies, one at a time. */
   const promptForCopies = useCallback(
     (copies: readonly DetectedCopy[]) => {
@@ -262,8 +243,9 @@ export function HomeScreen({ navigation }: Props) {
                 } else {
                   // Definitively NOT applied (cancel/failure/unsupported):
                   // back to the edit queue — a true no-op from the
-                  // user's view.
-                  await unstageCullDirect(db, head.originalAssetId, Date.now());
+                  // user's view, so the copy prompt's question stays
+                  // open (pending match kept).
+                  await unstageCullDirect(db, head.originalAssetId, Date.now(), false);
                   if (attempt.status === 'unsupported') {
                     Alert.alert(
                       'System trash unavailable',
@@ -284,22 +266,16 @@ export function HomeScreen({ navigation }: Props) {
             onPress: () =>
               void (async () => {
                 // markEditDone converges the original AND resolves its
-                // live match in one transaction (C#12).
+                // live match in one transaction (C#12). Flush first so no
+                // older queued needs-edit intent lands after and re-queues
+                // the completed row.
+                await sessionCtx.flushPersistence();
                 await markEditDone(db, head.originalAssetId);
                 // The original may belong to the unfinished session —
                 // clear the LIVE edit flag too, or Groups/Summary keep
                 // counting it and its stale to_edit verdict could later
                 // overwrite the durable done.
-                try {
-                  if (
-                    sessionCtx.session?.getState(head.originalAssetId) === 'kept' &&
-                    sessionCtx.needsEdit(head.originalAssetId)
-                  ) {
-                    await sessionCtx.toggleNeedsEdit(head.originalAssetId);
-                  }
-                } catch {
-                  // not a session member
-                }
+                sessionCtx.reconcileEditsDone([head.originalAssetId]);
                 next();
               })(),
           },
@@ -309,31 +285,82 @@ export function HomeScreen({ navigation }: Props) {
     [db, sessionCtx],
   );
 
-  // m0.3 edit detection — runs on app open / return to Home, throttled.
+  // Is there a persisted session to resume? (session may not be loaded
+  // yet). Deps are the VERSION VALUE only — depending on context/callback
+  // identities would re-run this on the restoring/hasResumable renders a
+  // resume itself produces, spinning repeated resume attempts.
   useFocusEffect(
     useCallback(() => {
-      if (!permission?.granted) return;
+      let cancelled = false;
+      (async () => {
+        if (sessionCtx.session) {
+          setHasResumable(true);
+          setResumeAttempted(true);
+          return;
+        }
+        setResumeAttempted(false); // a (re)attempt is starting — hold detection
+        // Also runs the once-per-process interrupted-trash recovery
+        // before restoring any snapshot (P8#3).
+        const resumed = await sessionCtx.resumeSession();
+        if (cancelled) return;
+        setHasResumable(resumed);
+        setResumeAttempted(true);
+      })();
+      return () => {
+        cancelled = true;
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sessionCtx.version]),
+  );
+
+  // m0.3 edit detection — app open / return to Home, throttled. Gated on
+  // resumeAttempted: it must not run while resumeSession is between its
+  // durable reads and installing the session (a mark-done landing there
+  // could be overwritten by the stale needs-edit set), and a successful
+  // resume flips it via a fresh render, so this closure's sessionCtx has
+  // the loaded session before any copy prompt can act through it.
+  useFocusEffect(
+    useCallback(() => {
+      // restoring stays true across RETRYABLE resume failures — detection
+      // must also wait for an authoritative outcome, or an edited-copy
+      // prompt could stage/trash a photo whose membership is unknown.
+      if (!resumeAttempted || sessionCtx.restoring || !permission?.granted) return;
       const now = Date.now();
       if (now - lastDetectionRef.current < 60_000) return;
       lastDetectionRef.current = now;
       let cancelled = false;
       (async () => {
-        const result = await runEditDetection(db).catch(() => null);
-        if (!result || cancelled) return;
-        if (result.autoDone > 0) {
+        // Land every queued session write before detection marks
+        // anything done — an older needs-edit intent executing after a
+        // completion would re-queue the done row.
+        await sessionCtx.flushPersistence();
+        // Reconcile incrementally (right after each durable mark-done
+        // commit): a later detection failure or an effect re-run must
+        // not strand a stale live To-Edit flag. Notices are cosmetic,
+        // so they need no cancellation guard.
+        const result = await runEditDetection(db, (id) =>
+          sessionCtx.reconcileEditsDone([id]),
+        ).catch(() => null);
+        if (!result) return;
+        if (result.autoDoneIds.length > 0) {
           setDetectionNotice(
-            result.autoDone === 1
+            result.autoDoneIds.length === 1
               ? '1 edited photo detected — marked done'
-              : `${result.autoDone} edited photos detected — marked done`,
+              : `${result.autoDoneIds.length} edited photos detected — marked done`,
           );
           setRefreshTick((t) => t + 1);
         }
+        // Unlike the cosmetic notice, the copy prompt drives destructive
+        // decisions through this closure's sessionCtx — never raise it
+        // from a superseded effect run (blur, version bump). Pending
+        // matches re-emit on later detection runs, so this only defers.
+        if (cancelled) return;
         if (result.copies.length > 0) promptForCopies(result.copies);
       })();
       return () => {
         cancelled = true;
       };
-    }, [db, permission?.granted, promptForCopies]),
+    }, [resumeAttempted, db, permission?.granted, promptForCopies, sessionCtx]),
   );
 
   // Edit-queue badge + recent-days progress, refreshed on focus. Both

@@ -55,8 +55,9 @@ export interface DetectedCopy {
 }
 
 export interface EditDetectionResult {
-  /** In-place edits detected and auto-marked done. */
-  autoDone: number;
+  /** In-place edits detected and auto-marked done — the caller reconciles
+   * any of these that belong to the active session (reconcileEditsDone). */
+  autoDoneIds: string[];
   /** Edited copies detected (copy already tracked as done) — the caller
    * prompts keep-or-cull for each original. */
   copies: DetectedCopy[];
@@ -67,8 +68,17 @@ interface LiveRow {
   filename: string;
 }
 
-export async function runEditDetection(db: SQLiteDatabase): Promise<EditDetectionResult> {
-  const result: EditDetectionResult = { autoDone: 0, copies: [] };
+/**
+ * `onAutoDone` fires immediately after each durable markEditDone commit —
+ * callers reconcile the active session incrementally there, so a failure in
+ * a LATER detection step (whose ids the caller would never see) cannot
+ * strand a stale live To-Edit flag on an already-done row.
+ */
+export async function runEditDetection(
+  db: SQLiteDatabase,
+  onAutoDone?: (assetId: string) => void,
+): Promise<EditDetectionResult> {
+  const result: EditDetectionResult = { autoDoneIds: [], copies: [] };
   const rows = await getEditDetectionRows(db);
   if (rows.length === 0) return result;
 
@@ -80,8 +90,12 @@ export async function runEditDetection(db: SQLiteDatabase): Promise<EditDetectio
     if (!details) continue; // asset gone/unreadable — manual mark-done still works
     const verdict = classifyInPlace(row.mod_time, details.modificationTime, !!row.content_hash);
     if (verdict === 'edited') {
-      await markEditDone(db, row.asset_id);
-      result.autoDone++;
+      // Keyed to the captured cycle: a photo re-queued mid-run (fresh
+      // to_edit_at) must not be completed on this run's stale evidence.
+      if (await markEditDone(db, row.asset_id, Date.now(), row.to_edit_at)) {
+        onAutoDone?.(row.asset_id);
+        result.autoDoneIds.push(row.asset_id);
+      }
       continue;
     }
     if (verdict === 'check-hash') {
@@ -94,24 +108,26 @@ export async function runEditDetection(db: SQLiteDatabase): Promise<EditDetectio
         continue;
       }
       if (current !== row.content_hash) {
-        await markEditDone(db, row.asset_id);
-        result.autoDone++;
+        if (await markEditDone(db, row.asset_id, Date.now(), row.to_edit_at)) {
+          onAutoDone?.(row.asset_id);
+          result.autoDoneIds.push(row.asset_id);
+        }
         continue;
       }
       // Metadata-only change: move the baseline forward, stay queued.
-      await updateModTimeBaseline(db, row.asset_id, details.modificationTime);
+      await updateModTimeBaseline(db, row.asset_id, details.modificationTime, row.to_edit_at);
     } else {
       if (row.mod_time == null) {
         // Fresh baseline for a re-queued photo (done → to_edit reset it):
         // record the current file state so only FUTURE edits count — the
         // previous cycle's edit was already consumed.
-        await updateModTimeBaseline(db, row.asset_id, details.modificationTime);
+        await updateModTimeBaseline(db, row.asset_id, details.modificationTime, row.to_edit_at);
       }
       if (!row.content_hash && hashBudget > 0) {
         // Unchanged and unhashed: bank a baseline for future tiebreaks.
         hashBudget--;
         const hash = await sha256OfFile(details.localUri ?? row.uri);
-        if (hash) await setContentHash(db, row.asset_id, hash).catch(() => {});
+        if (hash) await setContentHash(db, row.asset_id, hash, row.to_edit_at).catch(() => {});
       }
     }
     live.push({ row, filename: details.filename });
@@ -182,6 +198,7 @@ export async function runEditDetection(db: SQLiteDatabase): Promise<EditDetectio
           day: dayKey(takenAt),
         },
         Date.now(),
+        l.row.to_edit_at, // evidence belongs to the captured cycle
       );
       if (recorded) {
         result.copies.push({

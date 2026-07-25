@@ -33,20 +33,51 @@ export function scrPath(execPath: string = process.execPath): string {
   return path.join(path.dirname(execPath), SCR_BASENAME);
 }
 
+/** A string registry value with its exact type, so a rollback can restore
+ * it verbatim (rewriting a REG_EXPAND_SZ path as REG_SZ would stop its
+ * environment variables from resolving). */
+export interface RegSzValue {
+  type: 'REG_SZ' | 'REG_EXPAND_SZ';
+  value: string;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
- * Pull a REG_SZ value out of `reg query` output. Lines look like
+ * Pull a string value out of `reg query` output. Lines look like
  * `    SCRNSAVE.EXE    REG_SZ    C:\path with spaces\Afterglow.scr`;
- * REG_EXPAND_SZ is accepted too. Returns null when the value isn't there
- * (reg.exe also exits 1 then, but parsing defensively costs nothing).
+ * REG_EXPAND_SZ is accepted too. The value name must match EXACTLY
+ * (whole-key listings also contain e.g. `SCRNSAVE.EXE.backup` rows).
+ * Returns null when the value isn't there.
  */
-export function parseRegSz(stdout: string, valueName: string): string | null {
+export function parseRegSzTyped(stdout: string, valueName: string): RegSzValue | null {
+  // The data part is optional: an EMPTY string value (a valid "no
+  // screensaver" state) prints as just `NAME    REG_SZ` after trimming.
+  const pattern = new RegExp(
+    `^${escapeRegExp(valueName)}\\s+(REG_(?:EXPAND_)?SZ)(?:\\s+(.*))?$`,
+    'i',
+  );
   for (const line of stdout.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed.toUpperCase().startsWith(valueName.toUpperCase())) continue;
-    const match = /REG_(?:EXPAND_)?SZ\s+(.+)$/.exec(trimmed);
-    if (match) return match[1].trim();
+    const match = pattern.exec(line.trim());
+    if (match) {
+      return { type: match[1].toUpperCase() as RegSzValue['type'], value: (match[2] ?? '').trim() };
+    }
   }
   return null;
+}
+
+/** The value text alone (status displays don't care about the type). */
+export function parseRegSz(stdout: string, valueName: string): string | null {
+  return parseRegSzTyped(stdout, valueName)?.value ?? null;
+}
+
+/** Whether a `reg query` LISTING mentions the exact value at all —
+ * distinguishes "absent" from "present but not a restorable string type". */
+function valueNameListed(stdout: string, valueName: string): boolean {
+  const pattern = new RegExp(`^${escapeRegExp(valueName)}\\s`, 'i');
+  return stdout.split(/\r?\n/).some((line) => pattern.test(line.trim()));
 }
 
 /** Case-insensitive path equality (Windows filesystems are case-insensitive). */
@@ -110,6 +141,29 @@ export async function registerScreensaver(): Promise<ScreensaverResult> {
       error: `${SCR_BASENAME} was not found next to the app — install Afterglow with the installer to use it as a screensaver.`,
     };
   }
+  // Capture the previous value WITH its registry type before overwriting,
+  // so a half-failed registration can restore it verbatim. The whole key
+  // is listed (no /v): reg.exe uses exit 1 for BOTH a missing value and
+  // general failures, so only a successful listing can distinguish
+  // "value absent" from "could not read". Anything unconfirmed aborts
+  // before touching the registry — a rollback we could not guarantee
+  // must never be needed.
+  const priorQuery = await reg(['query', DESKTOP_KEY]);
+  if (priorQuery.code !== 0) {
+    return {
+      status,
+      error: `Could not read the current screensaver registration (reg.exe exited ${priorQuery.code}) — nothing was changed. Try again.`,
+    };
+  }
+  const prior = parseRegSzTyped(priorQuery.stdout, SCRNSAVE_VALUE);
+  if (prior === null && valueNameListed(priorQuery.stdout, SCRNSAVE_VALUE)) {
+    // Present but not a string type we can restore verbatim — abort.
+    return {
+      status,
+      error:
+        'Could not read the current screensaver registration — nothing was changed. Try again.',
+    };
+  }
   const add = await reg([
     'add',
     DESKTOP_KEY,
@@ -128,7 +182,42 @@ export async function registerScreensaver(): Promise<ScreensaverResult> {
     };
   }
   // Make sure the screensaver machinery is on at all (harmless if already 1).
-  await reg(['add', DESKTOP_KEY, '/v', 'ScreenSaveActive', '/t', 'REG_SZ', '/d', '1', '/f']);
+  // Without this value Windows never launches the configured saver, so a
+  // failure here is a failed registration, not a cosmetic one.
+  const activate = await reg([
+    'add',
+    DESKTOP_KEY,
+    '/v',
+    'ScreenSaveActive',
+    '/t',
+    'REG_SZ',
+    '/d',
+    '1',
+    '/f',
+  ]);
+  if (activate.code !== 0) {
+    // Best-effort rollback of the first write: a half-failed registration
+    // must not leave Afterglow displacing the user's previous screensaver.
+    if (prior !== null) {
+      await reg([
+        'add',
+        DESKTOP_KEY,
+        '/v',
+        SCRNSAVE_VALUE,
+        '/t',
+        prior.type,
+        '/d',
+        prior.value,
+        '/f',
+      ]);
+    } else {
+      await reg(['delete', DESKTOP_KEY, '/v', SCRNSAVE_VALUE, '/f']);
+    }
+    return {
+      status: await getScreensaverStatus(),
+      error: `Could not enable the screensaver (ScreenSaveActive): ${activate.stderr.trim() || `reg.exe exited ${activate.code}`}`,
+    };
+  }
   return { status: await getScreensaverStatus(), error: null };
 }
 

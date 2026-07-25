@@ -83,7 +83,8 @@ export function StateEditorSheet({
           if (photo.dbState === 'kept') await setNeedsEdit(db, photo.id, true, Date.now());
           else await markDoneToEdit(db, photo.id, Date.now());
         } else {
-          await unstageCullDirect(db, photo.id, Date.now());
+          // An explicit restore decision — it settles the copy prompt.
+          await unstageCullDirect(db, photo.id, Date.now(), true);
         }
         onChanged();
         onClose();

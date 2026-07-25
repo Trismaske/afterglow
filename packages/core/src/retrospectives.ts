@@ -19,6 +19,9 @@ export interface ThisDayOptions {
 
 const DAY_MS = 86_400_000;
 
+/** Highest valid day per month (1-indexed); February allows 29 (see thisDayInHistory). */
+const MAX_DAY_OF_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
 function assertMonth(month: number): void {
   if (!Number.isInteger(month) || month < 1 || month > 12) {
     throw new Error(`month must be 1-12, got ${month}`);
@@ -50,8 +53,9 @@ export function thisDayInHistory(
 ): MediaItem[] {
   const { month, day, toleranceDays = 0 } = options;
   assertMonth(month);
-  if (!Number.isInteger(day) || day < 1 || day > 31) {
-    throw new Error(`day must be 1-31, got ${day}`);
+  const maxDay = MAX_DAY_OF_MONTH[month - 1];
+  if (!Number.isInteger(day) || day < 1 || day > maxDay) {
+    throw new Error(`day must be 1-${maxDay} for month ${month}, got ${day}`);
   }
   if (toleranceDays < 0) throw new Error(`toleranceDays must be >= 0, got ${toleranceDays}`);
   return items

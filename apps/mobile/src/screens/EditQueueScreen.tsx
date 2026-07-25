@@ -8,6 +8,7 @@ import { useSQLiteContext } from 'expo-sqlite';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { getToEditPhotos, markEditDone, type ToEditRow } from '../db/store';
+import { useSession } from '../session/SessionContext';
 import { getEditableContentUri } from '../lib/media';
 import { launchEditor, launchViewer } from '../lib/edit';
 import { NO_EDITOR_MESSAGE, NO_EDITOR_TITLE } from '../lib/editActions';
@@ -31,6 +32,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'EditQueue'>;
 export function EditQueueScreen(_props: Props) {
   const insets = useSafeAreaInsets();
   const db = useSQLiteContext();
+  const { flushPersistence, reconcileEditsDone } = useSession();
   const [rows, setRows] = useState<ToEditRow[] | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   // Gate-0 (m0.7 item A): the editor-launch diagnostic matrix, opened from
@@ -50,10 +52,17 @@ export function EditQueueScreen(_props: Props) {
 
   const markDone = useCallback(
     async (assetId: string) => {
+      // Land every queued session write first: an older needs-edit intent
+      // executing AFTER the completion would re-queue the done row.
+      await flushPersistence();
       await markEditDone(db, assetId);
+      // The photo may belong to the unfinished session — clear its live
+      // To-Edit flag, or the stale active verdict could later clear it
+      // back to unreviewed and overwrite the durable done.
+      reconcileEditsDone([assetId]);
       await reload();
     },
-    [db, reload],
+    [db, reload, flushPersistence, reconcileEditsDone],
   );
 
   const askMarkDone = useCallback(

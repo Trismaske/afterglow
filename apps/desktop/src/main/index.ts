@@ -203,34 +203,67 @@ function pushQueueChanged(entries: QueueEntry[]): void {
  */
 let indexGeneration = 0;
 
+/**
+ * Bumped when a playlist request starts or the media folders change. A scan
+ * launched under an older epoch discards its result instead of publishing an
+ * index for folders the user has since moved away from (the containment
+ * roots would forbid every entry it produced).
+ */
+let scanEpoch = 0;
+
+/**
+ * Serializes index.json commits: without it, an older build's save could
+ * interleave with (and land after) a newer build's, leaving a stale
+ * warm-start index on disk. Each queued commit re-checks supersession
+ * inside the chain; the stored chain always resolves so one failed save
+ * cannot wedge every later one.
+ */
+let indexCommitChain: Promise<void> = Promise.resolve();
+
 const warn = (msg: string, err?: unknown): void => console.warn(`[afterglow] ${msg}`, err);
 
 /**
  * Kick off (or restart) the background index build for a fresh scan result.
  * Never blocks the caller: the slideshow starts in shuffle order and the
- * renderer hot-swaps to smart order when `indexReady` arrives.
+ * renderer hot-swaps to smart order when `indexReady` arrives. `epoch` is
+ * the scanEpoch the file list was scanned under — a folder change mid-build
+ * cancels the build the same way a newer build does, so an index for
+ * abandoned folders is never saved or pushed.
  */
-function startIndexing(files: readonly string[]): void {
+function startIndexing(files: readonly string[], epoch: number): void {
   const generation = ++indexGeneration;
+  const superseded = (): boolean => generation !== indexGeneration || epoch !== scanEpoch;
   void (async () => {
     try {
       const dir = app.getPath('userData');
       const prev = await loadIndex(dir, warn);
       const entries = await buildIndex(files, prev, {
         onWarn: warn,
-        isCancelled: () => generation !== indexGeneration,
+        isCancelled: superseded,
       });
-      if (entries === null || generation !== indexGeneration) return; // superseded
-      await saveIndex(dir, entries);
-      const items: LibraryItem[] = entries.map((e) => ({
-        url: toMediaUrl(e.path),
-        timestampMs: e.timestampMs,
-        kind: mediaKindFromPath(e.path) ?? 'photo',
-      }));
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send(CHANNELS.indexReady, items);
-      }
-      console.log(`[afterglow] EXIF index ready (${entries.length} files)`);
+      if (entries === null || superseded()) return;
+      const commit = indexCommitChain.then(async () => {
+        // Any newer build or folder change has already bumped its counter
+        // by the time this runs, so this check inside the chain is
+        // race-free against other commits.
+        if (superseded()) return;
+        await saveIndex(dir, entries);
+        const items: LibraryItem[] = entries.map((e) => ({
+          url: toMediaUrl(e.path),
+          timestampMs: e.timestampMs,
+          kind: mediaKindFromPath(e.path) ?? 'photo',
+        }));
+        // Re-check after the save await: a folder change landing here must
+        // not push entries the new containment roots would refuse (the
+        // stale file itself is overwritten by the newer queued commit).
+        if (superseded()) return;
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(CHANNELS.indexReady, items);
+        }
+        console.log(`[afterglow] EXIF index ready (${entries.length} files)`);
+      });
+      indexCommitChain = commit.catch(() => {});
+      await commit;
     } catch (err) {
       warn('background indexing failed; staying in shuffle order', err);
     }
@@ -250,33 +283,54 @@ function registerIpc(): void {
     settings = { ...settings, mediaFolders: result.filePaths };
     await saveSettings(app.getPath('userData'), settings);
     await refreshMediaRoots();
+    scanEpoch++; // any in-flight scan now serves folders that no longer apply
     return settings;
   });
 
   ipcMain.handle(CHANNELS.getPlaylist, async (): Promise<string[]> => {
     await refreshMediaRoots();
+    let epoch = ++scanEpoch;
     const scan = (): Promise<string[]> =>
       scanMedia(settings.mediaFolders, {
         onError: (dir, err) => console.warn(`[afterglow] cannot read directory ${dir}`, err),
       });
+    const indexScanned = (files: string[]): void => {
+      if (epoch === scanEpoch) startIndexing(files, epoch);
+      else console.log('[afterglow] discarding scan started under superseded folder settings');
+    };
     // v0.5 warm start: when a persisted index exists, the show starts on it
     // immediately (files that vanished since just fail to load and the show
     // advances) and the full rescan runs in the background — its indexReady
     // push replaces the renderer's playlist for subsequent items.
     const prev = await loadIndex(app.getPath('userData'), warn);
-    if (prev.size > 0) {
+    // Serve only entries under the current media folders: after a folder
+    // change the persisted index still holds the previous library, whose
+    // entries the containment roots would all refuse. Index paths come from
+    // scanning the configured folders, so check against both those and their
+    // realpaths (a configured folder may be a symlink).
+    const usable = [...prev.keys()].filter(
+      (p) => isInsideAny(p, mediaRootsReal) || isInsideAny(p, settings.mediaFolders),
+    );
+    if (usable.length > 0) {
       void scan()
-        .then((files) => startIndexing(files))
+        .then(indexScanned)
         .catch((err) => warn('background rescan failed; playing the persisted index', err));
       console.log(
-        `[afterglow] warm start from persisted index (${prev.size} files); rescanning in background`,
+        `[afterglow] warm start from persisted index (${usable.length} of ${prev.size} files); rescanning in background`,
       );
-      return shuffled([...prev.keys()], Math.random).map(toMediaUrl);
+      return shuffled(usable, Math.random).map(toMediaUrl);
     }
-    // Cold start (no index yet): scan synchronously as before.
-    const files = await scan();
+    // Cold start (no usable index): scan synchronously as before.
+    let files = await scan();
+    // A folder change during the scan supersedes its result — the show
+    // would start on URLs the new containment roots refuse. Rescan the
+    // current folders (folder changes are rare, user-driven events).
+    while (epoch !== scanEpoch) {
+      epoch = ++scanEpoch;
+      files = await scan();
+    }
     // v0.3: index in the background; the shuffled playlist returns immediately.
-    startIndexing(files);
+    indexScanned(files);
     return shuffled(files, Math.random).map(toMediaUrl);
   });
 

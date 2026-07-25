@@ -22,7 +22,10 @@ import { DatabaseSync } from 'node:sqlite';
 
 export interface TestDb {
   execAsync(sql: string): Promise<void>;
-  runAsync(sql: string, ...params: unknown[]): Promise<{ lastInsertRowId: number | bigint }>;
+  runAsync(
+    sql: string,
+    ...params: unknown[]
+  ): Promise<{ lastInsertRowId: number | bigint; changes: number | bigint }>;
   getFirstAsync<T>(sql: string, ...params: unknown[]): Promise<T | null>;
   getAllAsync<T>(sql: string, ...params: unknown[]): Promise<T[]>;
   withExclusiveTransactionAsync(fn: (txn: TestDb) => Promise<void>): Promise<void>;
@@ -68,7 +71,7 @@ export function openTestDb(path = ':memory:'): TestDb {
     async runAsync(sql, ...params) {
       tick();
       const result = raw.prepare(sql).run(...normalizeParams(params));
-      return { lastInsertRowId: result.lastInsertRowid };
+      return { lastInsertRowId: result.lastInsertRowid, changes: result.changes };
     },
     async getFirstAsync<T>(sql: string, ...params: unknown[]) {
       tick();

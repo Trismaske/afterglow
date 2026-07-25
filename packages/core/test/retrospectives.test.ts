@@ -36,6 +36,12 @@ describe('thisDayInHistory', () => {
     expect(() => thisDayInHistory(items, { month: 1, day: 0 })).toThrow();
     expect(() => thisDayInHistory(items, { month: 1, day: 1, toleranceDays: -1 })).toThrow();
   });
+
+  it('rejects days that do not exist in the month, keeping Feb 29', () => {
+    expect(() => thisDayInHistory(items, { month: 4, day: 31 })).toThrow(/1-30 for month 4/);
+    expect(() => thisDayInHistory(items, { month: 2, day: 30 })).toThrow(/1-29 for month 2/);
+    expect(thisDayInHistory(items, { month: 2, day: 29 })).toEqual([]);
+  });
 });
 
 describe('onePerDayOfMonth', () => {

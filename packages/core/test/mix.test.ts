@@ -108,6 +108,41 @@ describe('createMix', () => {
     expect(new Set(run).size).toBe(5);
   });
 
+  it('rejects configurations with no usable source', () => {
+    const { items, clusters } = library();
+    expect(() =>
+      createMix({ items, clusters, weights: { cluster: 0, single: 0 }, rng: mulberry32(1) }),
+    ).toThrow(/cannot both be 0/);
+    expect(() =>
+      createMix({ items, weights: { cluster: 1, single: 0 }, rng: mulberry32(1) }),
+    ).toThrow(/no non-empty clusters/);
+  });
+
+  it('explicitly-undefined weights keep their defaults; non-finite weights throw', () => {
+    const { items } = library();
+    const mix = createMix({ items, weights: { single: undefined }, rng: mulberry32(4) });
+    const valid = new Set(items.map((it) => it.id));
+    for (const id of take(mix, 30)) expect(valid.has(id)).toBe(true);
+    expect(() => createMix({ items, weights: { single: NaN }, rng: mulberry32(4) })).toThrow(
+      /finite/,
+    );
+  });
+
+  it('with single weight 0 it never leaves the cluster source, replaying when all recent', () => {
+    const { items, clusters } = library();
+    // Only the 5-photo 'b' cluster: after one run every member is inside the
+    // default repeat window, so the mix must replay it, not borrow singles.
+    const bOnly = clusters.filter((c) => c.items.every((it) => it.id.startsWith('b')));
+    expect(bOnly).toHaveLength(1);
+    const mix = createMix({
+      items,
+      clusters: bOnly,
+      weights: { cluster: 1, single: 0 },
+      rng: mulberry32(9),
+    });
+    for (const id of take(mix, 50)) expect(id.startsWith('b')).toBe(true);
+  });
+
   it('with cluster weight 0 it only emits singles from the pool', () => {
     const { items, clusters } = library();
     const mix = createMix({

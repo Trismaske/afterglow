@@ -102,11 +102,12 @@ export function ProgressView({
     }, [db, scopeKey, startMs, endMs, refreshTick]),
   );
 
-  /** Direct DB edits would desync the live session snapshot — read-only. */
+  /** Direct DB edits would desync the live session snapshot — read-only.
+   * Mid-restore, membership is unknown, so everything reads as active. */
   const isInActiveSession = useCallback(
     (id: string): boolean => {
       const session = sessionCtx.session;
-      if (!session) return false;
+      if (!session) return sessionCtx.restoring;
       try {
         session.getState(id);
         return true;
@@ -116,7 +117,7 @@ export function ProgressView({
     },
     // version ties this to session mutations.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sessionCtx.session, sessionCtx.version],
+    [sessionCtx.session, sessionCtx.version, sessionCtx.restoring],
   );
 
   const toggleFilter = useCallback((state: EffectiveState) => {

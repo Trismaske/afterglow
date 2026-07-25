@@ -7,9 +7,10 @@ import type { MediaItem } from '@afterglow/core';
 import type { RootStackParamList } from '../navigation';
 import { useSession } from '../session/SessionContext';
 import { useSQLiteContext } from 'expo-sqlite';
-import { getStagedCulls, type StagedCullRow } from '../db/store';
+import { getStagedCulls, restoreCarriedCull, type StagedCullRow } from '../db/store';
 import { BigButton } from '../components/BigButton';
 import { ReDecideSheet, type DecidedState } from '../components/ReDecideSheet';
+import { showToast } from '../lib/toast';
 import { colors, touch } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'CullList'>;
@@ -23,7 +24,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'CullList'>;
  */
 export function CullListScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
-  const { session, version, confirmStagedCulls, needsEdit, redecide } = useSession();
+  const { session, restoring, version, confirmStagedCulls, needsEdit, redecide } = useSession();
   // Home-card entry is queue MAINTENANCE: it returns Home afterwards and
   // must never funnel an unfinished session into the Summary/finish flow.
   const fromHome = route.params?.fromHome === true;
@@ -149,6 +150,13 @@ export function CullListScreen({ navigation, route }: Props) {
   }, [busy, confirmStagedCulls, navigation, session, fromHome]);
 
   const onConfirmPress = useCallback(() => {
+    // Mid-restore, confirming could trash a member the restoring snapshot
+    // still holds as culled — the reconcile would find no session and the
+    // stale snapshot would install afterwards.
+    if (restoring) {
+      showToast('Still loading your session — try again in a moment');
+      return;
+    }
     if (staged.length === 0) {
       if (session && !fromHome) navigation.replace('Summary');
       else navigation.goBack();
@@ -164,7 +172,7 @@ export function CullListScreen({ navigation, route }: Props) {
         { text: 'Move to trash', style: 'destructive', onPress: () => void runConfirm() },
       ],
     );
-  }, [staged.length, navigation, runConfirm, session, fromHome]);
+  }, [staged.length, navigation, runConfirm, session, fromHome, restoring]);
 
   const inSession = useCallback(
     (id: string) => {
@@ -206,12 +214,7 @@ export function CullListScreen({ navigation, route }: Props) {
           {
             text: 'Restore to unreviewed',
             onPress: () =>
-              void db
-                .runAsync(
-                  "UPDATE photos SET state = 'unreviewed', activity_at = ? WHERE asset_id = ? AND state = 'culled'",
-                  Date.now(),
-                  item.id,
-                )
+              void restoreCarriedCull(db, item.id, Date.now())
                 .then(() => getStagedCulls(db))
                 .then(setGlobalRows),
           },
@@ -223,6 +226,12 @@ export function CullListScreen({ navigation, route }: Props) {
 
   const onTilePress = useCallback(
     (item: MediaItem) => {
+      // Mid-restore, membership is unknown: acting now could restore an
+      // ACTIVE member as carried and desync the restoring snapshot.
+      if (restoring) {
+        showToast('Still loading your session — try again in a moment');
+        return;
+      }
       if (inSession(item.id)) {
         void (async () => {
           // Heal the divergence an interrupted edited-copy cull can
@@ -239,7 +248,7 @@ export function CullListScreen({ navigation, route }: Props) {
         })();
       } else restoreCarried(item);
     },
-    [inSession, restoreCarried, session, redecide],
+    [inSession, restoreCarried, session, redecide, restoring],
   );
 
   const renderItem = useCallback(

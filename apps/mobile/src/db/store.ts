@@ -44,6 +44,10 @@ export interface PersistDecisionExtras {
   /** Photos that left their group ("not related" ejection + dissolve
    * survivor) — durable membership updates ride the same transaction. */
   madeSingles?: readonly string[];
+  /** Restored staged culls: resolve their PENDING edited-copy matches —
+   * un-culling answers the copy prompt's question, so its stale re-emit
+   * must not return, nor block a future cycle's fresh match (C#12). */
+  resolveCopyMatchesFor?: readonly string[];
 }
 
 /**
@@ -367,14 +371,43 @@ export async function persistDecision(
         at,
         change.assetId,
       );
+      if (change.needsEdit) {
+        // Re-flagging an already-completed edit re-queues it for a fresh
+        // detection cycle — same transition as markDoneToEdit, so the
+        // edit queue and detection see the photo again (a 'done' row
+        // with needs_edit = 1 is visible to neither).
+        await txn.runAsync(
+          `UPDATE photos
+           SET state = 'to_edit', needs_edit = 1, to_edit_at = ?,
+               mod_time = NULL, content_hash = NULL,
+               activity_at = ?
+           WHERE asset_id = ? AND state = 'done'`,
+          at,
+          at,
+          change.assetId,
+        );
+      }
     }
     for (const [assetId, state] of changedStates) {
+      // Reopening a COMPLETED photo (explicit verdict clear: done →
+      // unreviewed) also resets its edit-cycle columns — a later re-flag
+      // must start a fresh detection cycle, not consume the old edit's
+      // baseline/hash. (All CASEs read the pre-update row state.)
       await txn.runAsync(
         `UPDATE photos
          SET state = CASE WHEN ? = 'kept' AND needs_edit = 1 THEN 'to_edit' ELSE ? END,
              to_edit_at = CASE
                WHEN ? = 'kept' AND needs_edit = 1 AND to_edit_at IS NULL THEN ?
+               WHEN ? = 'unreviewed' AND state = 'done' THEN NULL
                ELSE to_edit_at
+             END,
+             mod_time = CASE
+               WHEN ? = 'unreviewed' AND state = 'done' THEN NULL
+               ELSE mod_time
+             END,
+             content_hash = CASE
+               WHEN ? = 'unreviewed' AND state = 'done' THEN NULL
+               ELSE content_hash
              END,
              reviewed_at = CASE
                WHEN ? IN ('kept', 'culled') THEN COALESCE(reviewed_at, ?)
@@ -390,6 +423,9 @@ export async function persistDecision(
         state,
         state,
         at,
+        state,
+        state,
+        state,
         state,
         at,
         state,
@@ -425,6 +461,12 @@ export async function persistDecision(
     }
     if (extras.madeSingles && extras.madeSingles.length > 0) {
       await applyPhotoSingles(txn, extras.madeSingles);
+    }
+    for (const assetId of extras.resolveCopyMatchesFor ?? []) {
+      await txn.runAsync(
+        "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
+        assetId,
+      );
     }
   });
 }
@@ -541,27 +583,39 @@ export async function makePhotoSingles(
  * LIVE copy match resolves in the same transaction (C#12) — the original
  * has converged, and a match left pending would block future copy cycles
  * and re-emit its stale prompt when the photo is re-queued.
+ *
+ * `onlyIfToEditAt` scopes the completion to one edit CYCLE: detection
+ * passes the `to_edit_at` it captured with its evidence, so a row
+ * re-queued mid-run (fresh cycle, new timestamp) is not completed on
+ * stale evidence. Omit it for explicit user actions. Returns whether
+ * the completion applied.
  */
 export async function markEditDone(
   db: SQLiteDatabase,
   assetId: string,
   at: number = Date.now(),
-): Promise<void> {
+  onlyIfToEditAt?: number | null,
+): Promise<boolean> {
+  let applied = false;
   await db.withExclusiveTransactionAsync(async (txn) => {
-    await txn.runAsync(
+    const guard = onlyIfToEditAt === undefined ? '' : ' AND to_edit_at IS ?';
+    const params: (string | number | null)[] = [at, at, assetId];
+    if (onlyIfToEditAt !== undefined) params.push(onlyIfToEditAt);
+    const result = await txn.runAsync(
       `UPDATE photos
        SET state = 'done', needs_edit = 0, edit_completed_at = COALESCE(edit_completed_at, ?),
            activity_at = ?
-       WHERE asset_id = ? AND state = 'to_edit'`,
-      at,
-      at,
-      assetId,
+       WHERE asset_id = ? AND state = 'to_edit'${guard}`,
+      ...params,
     );
+    applied = result.changes > 0;
+    if (!applied) return;
     await txn.runAsync(
       "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
       assetId,
     );
   });
+  return applied;
 }
 
 /**
@@ -669,14 +723,22 @@ export async function getEditDetectionRows(db: SQLiteDatabase): Promise<EditDete
 /**
  * Refresh the stored modification-time baseline after a metadata-only
  * change (mod time moved but the content hash matched) so the same photo
- * isn't re-checked on every detection run.
+ * isn't re-checked on every detection run. Cycle-guarded by the caller's
+ * captured `to_edit_at`: evidence gathered for cycle A must not move a
+ * re-queued cycle B's baseline.
  */
 export async function updateModTimeBaseline(
   db: SQLiteDatabase,
   assetId: string,
   modTime: number,
+  onlyIfToEditAt: number | null,
 ): Promise<void> {
-  await db.runAsync('UPDATE photos SET mod_time = ? WHERE asset_id = ?', modTime, assetId);
+  await db.runAsync(
+    "UPDATE photos SET mod_time = ? WHERE asset_id = ? AND state = 'to_edit' AND to_edit_at IS ?",
+    modTime,
+    assetId,
+    onlyIfToEditAt,
+  );
 }
 
 /**
@@ -694,10 +756,18 @@ export async function insertDetectedCopyWithMatch(
   db: SQLiteDatabase,
   originalId: string,
   copy: { assetId: string; uri: string; takenAt: number; modTime: number; day: string },
-  detectedAt: number = Date.now(),
+  detectedAt: number,
+  /** The edit cycle the detection evidence belongs to — the original must
+   * still be in it (state to_edit, same to_edit_at), or nothing records. */
+  onlyIfToEditAt: number | null,
 ): Promise<boolean> {
   let recorded = false;
   await db.withExclusiveTransactionAsync(async (txn) => {
+    const original = await txn.getFirstAsync<{ to_edit_at: number | null }>(
+      "SELECT to_edit_at FROM photos WHERE asset_id = ? AND state = 'to_edit'",
+      originalId,
+    );
+    if (!original || original.to_edit_at !== onlyIfToEditAt) return; // superseded cycle
     // Only a LIVE (pending) match blocks: a resolved match belongs to a
     // finished edit cycle — a photo re-queued done → to_edit can produce
     // a genuinely new copy that must track and prompt again — and a
@@ -1143,24 +1213,64 @@ export async function markDoneToEdit(
  * delete it at confirm otherwise); the editor UI enforces this by
  * making active-session photos read-only.
  */
-export async function unstageCullDirect(
+/**
+ * Cull-list "Restore to unreviewed" for a CARRIED cull (staged in an
+ * earlier session, absent from the active one): back to the review pool.
+ * Like every other un-staging path, the restore resolves any pending
+ * edited-copy match (C#12) in the same transaction.
+ */
+export async function restoreCarriedCull(
   db: SQLiteDatabase,
   assetId: string,
   at: number,
 ): Promise<void> {
-  await db.runAsync(
-    `UPDATE photos
-     SET state = CASE WHEN needs_edit = 1 THEN 'to_edit' ELSE 'kept' END,
-         to_edit_at = CASE
-           WHEN needs_edit = 1 AND to_edit_at IS NULL THEN ?
-           ELSE to_edit_at
-         END,
-         activity_at = ?
-     WHERE asset_id = ? AND state = 'culled'`,
-    at,
-    at,
-    assetId,
-  );
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    await txn.runAsync(
+      "UPDATE photos SET state = 'unreviewed', activity_at = ? WHERE asset_id = ? AND state = 'culled'",
+      at,
+      assetId,
+    );
+    await txn.runAsync(
+      "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
+      assetId,
+    );
+  });
+}
+
+export async function unstageCullDirect(
+  db: SQLiteDatabase,
+  assetId: string,
+  at: number,
+  /**
+   * True when the un-cull is the user's explicit restore decision — it
+   * answers the copy prompt's question, so the pending match resolves
+   * (C#12). False when the un-cull merely rolls back a trash attempt
+   * that never happened (cancel/failure): the question is still open
+   * and the prompt must stay re-emittable.
+   */
+  resolveCopyMatches: boolean,
+): Promise<void> {
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    await txn.runAsync(
+      `UPDATE photos
+       SET state = CASE WHEN needs_edit = 1 THEN 'to_edit' ELSE 'kept' END,
+           to_edit_at = CASE
+             WHEN needs_edit = 1 AND to_edit_at IS NULL THEN ?
+             ELSE to_edit_at
+           END,
+           activity_at = ?
+       WHERE asset_id = ? AND state = 'culled'`,
+      at,
+      at,
+      assetId,
+    );
+    if (resolveCopyMatches) {
+      await txn.runAsync(
+        "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
+        assetId,
+      );
+    }
+  });
 }
 
 export interface DaySummaryRow {
@@ -1442,15 +1552,20 @@ export async function setPhotoHash(
   );
 }
 
-/** Store a lazily computed content hash (fallback identity). */
+/** Store a lazily computed content hash (fallback identity). Pass
+ * `onlyIfToEditAt` when the hash is a detection baseline for a captured
+ * edit cycle — a re-queued row (fresh cycle) then stays untouched. */
 export async function setContentHash(
   db: SQLiteDatabase,
   assetId: string,
   hash: string,
+  onlyIfToEditAt?: number | null,
 ): Promise<void> {
+  const guard = onlyIfToEditAt === undefined ? '' : " AND state = 'to_edit' AND to_edit_at IS ?";
+  const params: (string | number | null)[] = [hash, assetId];
+  if (onlyIfToEditAt !== undefined) params.push(onlyIfToEditAt);
   await db.runAsync(
-    'UPDATE photos SET content_hash = ? WHERE asset_id = ? AND content_hash IS NULL',
-    hash,
-    assetId,
+    `UPDATE photos SET content_hash = ? WHERE asset_id = ? AND content_hash IS NULL${guard}`,
+    ...params,
   );
 }

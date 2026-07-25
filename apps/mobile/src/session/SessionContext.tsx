@@ -139,6 +139,14 @@ interface SessionContextValue {
   flushPersistence: () => Promise<void>;
   /** Restore the persisted active session, if any. Returns true if resumed. */
   resumeSession: () => Promise<boolean>;
+  /** True while resumeSession is in flight with no session loaded yet —
+   * and it STAYS true after a transient (retryable) resume failure, until
+   * an attempt settles authoritatively (resumed, or provably no active
+   * session). Membership is UNKNOWN while true — screens with direct DB
+   * state edits (state editor, carried-cull restore, queue applies, page
+   * reconciliation) must gate on this, or a write could desync the
+   * snapshot a retry then installs. */
+  restoring: boolean;
   discardActiveSession: () => Promise<void>;
   // ------------------------------------------------------- deck actions
   /** Swipe: persistively move a group's deck cursor. */
@@ -198,6 +206,12 @@ interface SessionContextValue {
    * member's old file:// path would render nothing. No-op for
    * non-members; resume covers the crash window via durable photos.uri. */
   reconcileMovedUris: (moves: ReadonlyArray<{ photoId: string; uri: string }>) => Promise<void>;
+  /** Mirror edits that converged to durable 'done' outside the session
+   * screens (edit-queue mark-done, auto-detection) — drop the live
+   * To-Edit flag so its stale active verdict can't later clear the photo
+   * back to unreviewed and overwrite the durable done. No-op for
+   * non-members; the durable row already moved (markEditDone). */
+  reconcileEditsDone: (ids: readonly string[]) => void;
   /** Finish: remaining keepers converge to done; to_edit stays queued. */
   finishSession: () => Promise<void>;
 }
@@ -271,8 +285,18 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
    * copy toward the platform escape hatch (Clear data) after 3. */
   const recoveryFailuresRef = useRef(0);
   const needsEditRef = useRef<Set<string>>(new Set());
+  /** Ids whose edits converged to durable 'done' this process
+   * (reconcileEditsDone) — subtracted when a resume assigns the
+   * needs-edit set, so a restoration racing a mark-done cannot
+   * resurrect the stale flag. Re-flagging (toggleNeedsEdit) removes
+   * the id again. */
+  const editsDoneRef = useRef<Set<string>>(new Set());
   const favouriteRef = useRef<Map<string, FavouriteStatus>>(new Map());
   const [sessionId, setSessionIdState] = useState<number | null>(null);
+  /** True while resumeSession runs with no session loaded (see interface). */
+  const [restoring, setRestoring] = useState(false);
+  /** In-flight tracked resume attempts backing `restoring` (overlaps). */
+  const restoringCountRef = useRef(0);
   /** Mirrors sessionId SYNCHRONOUSLY for async continuations that must
    * check the CURRENT session (a cull confirm finishing after a silent
    * replacement must not credit the new session's display stat) — a
@@ -342,6 +366,20 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   );
 
   /**
+   * Serializes the session-installing operations (resume, start,
+   * discard): a resume that read the old durable rows must never
+   * install its stale result over a replacement that committed while
+   * it was reading, and vice versa. The chain always resolves, so one
+   * failed operation cannot wedge later ones.
+   */
+  const sessionOpChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  const serializeSessionOp = useCallback(<T,>(op: () => Promise<T>): Promise<T> => {
+    const run = sessionOpChainRef.current.then(op, op);
+    sessionOpChainRef.current = run.catch(() => undefined);
+    return run;
+  }, []);
+
+  /**
    * Once per process, shared by resume AND start: recover interrupted
    * trash attempts (P8#3) and share batches (C#10). Returns false on a
    * transient failure — the once-guard clears so the next caller
@@ -374,99 +412,127 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       rangeEnd: number,
       photos: readonly LoadedPhoto[],
       onHashProgress?: (done: number, total: number) => void,
-    ) => {
-      await waitForPersistence();
-      if (!(await ensureStartupRecovery())) {
-        throw new Error(
-          'Startup recovery has not completed yet — please try again.' +
-            (recoveryFailuresRef.current >= 3
-              ? " If this keeps happening, clearing Afterglow's app data in Android settings resets its bookkeeping — your photos are never touched."
-              : ''),
-        );
-      }
-      // m0.7 item B: SIMILARITY-FIRST grouping. Components form over the
-      // whole draw — time proximity only relaxes the bar (never excludes),
-      // so the same subject shot on different days still groups (#24). The
-      // legacy time-only toggle keeps clusterByGap verbatim as an escape
-      // hatch (R#8: a separate mode, not slider value 64).
-      const timeOnly = parseTimeOnly(await getSetting(db, SIMILARITY_TIME_ONLY_KEY));
-      let components: Cluster[];
-      if (timeOnly) {
-        components = clusterByGap(
-          photos.map((p) => p.item),
-          { gapMs: CULL_GROUP_GAP_MS },
-        );
-      } else {
-        // Every drawn photo is hashed (cached in SQLite); a hashless photo
-        // becomes a singleton by the core null-hash rule.
-        const { hashes } = await ensureDhashes(db, [...photos], onHashProgress);
-        const threshold = parseSimilarityThreshold(await getSetting(db, SIMILARITY_THRESHOLD_KEY));
-        components = groupBySimilarity(
-          photos.map((p) => p.item),
-          (id) => hashes.get(id) ?? null,
+      // Serialized against resume/discard: a restore that read the old
+      // rows must not install its result over this replacement.
+    ) =>
+      serializeSessionOp(async () => {
+        await waitForPersistence();
+        if (!(await ensureStartupRecovery())) {
+          throw new Error(
+            'Startup recovery has not completed yet — please try again.' +
+              (recoveryFailuresRef.current >= 3
+                ? " If this keeps happening, clearing Afterglow's app data in Android settings resets its bookkeeping — your photos are never touched."
+                : ''),
+          );
+        }
+        // m0.7 item B: SIMILARITY-FIRST grouping. Components form over the
+        // whole draw — time proximity only relaxes the bar (never excludes),
+        // so the same subject shot on different days still groups (#24). The
+        // legacy time-only toggle keeps clusterByGap verbatim as an escape
+        // hatch (R#8: a separate mode, not slider value 64).
+        const timeOnly = parseTimeOnly(await getSetting(db, SIMILARITY_TIME_ONLY_KEY));
+        let components: Cluster[];
+        if (timeOnly) {
+          components = clusterByGap(
+            photos.map((p) => p.item),
+            { gapMs: CULL_GROUP_GAP_MS },
+          );
+        } else {
+          // Every drawn photo is hashed (cached in SQLite); a hashless photo
+          // becomes a singleton by the core null-hash rule.
+          const { hashes } = await ensureDhashes(db, [...photos], onHashProgress);
+          const threshold = parseSimilarityThreshold(
+            await getSetting(db, SIMILARITY_THRESHOLD_KEY),
+          );
+          components = groupBySimilarity(
+            photos.map((p) => p.item),
+            (id) => hashes.get(id) ?? null,
+            {
+              threshold,
+              timeBonusMs: CULL_GROUP_GAP_MS,
+              timeBonusBits: TIME_BONUS_BITS,
+            },
+          );
+        }
+        const groups = components.filter((c) => c.items.length >= 2);
+        // Singleton components join the singles bucket, chronological order.
+        const singles = components
+          .filter((c) => c.items.length === 1)
+          .map((c) => c.items[0])
+          .sort((a, b) => a.timestamp - b.timestamp || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+        const session = DeckSession.create({ groups, singles });
+
+        const groupIdByAsset = new Map<string, string>();
+        for (const g of groups) for (const item of g.items) groupIdByAsset.set(item.id, g.id);
+
+        // m0.7 (N#2, P4#1): replacement is ONE atomic transaction — bank the
+        // old session's keepers, abandon it, create the new session. Staged
+        // culls are carried in the durable global cull queue, so replacement
+        // is silent; a failure anywhere leaves the old session resumable.
+        const id = await replaceActiveSession(
+          db,
           {
-            threshold,
-            timeBonusMs: CULL_GROUP_GAP_MS,
-            timeBonusBits: TIME_BONUS_BITS,
+            label: newLabel,
+            rangeStart,
+            rangeEnd,
+            snapshot: JSON.stringify(session.toJSON()),
+            photos: photos.map((p) => ({
+              ...p,
+              groupId: groupIdByAsset.get(p.item.id) ?? null,
+              day: dayKey(p.item.timestamp),
+            })),
+            createdAt: Date.now(),
           },
+          Date.now(),
         );
-      }
-      const groups = components.filter((c) => c.items.length >= 2);
-      // Singleton components join the singles bucket, chronological order.
-      const singles = components
-        .filter((c) => c.items.length === 1)
-        .map((c) => c.items[0])
-        .sort((a, b) => a.timestamp - b.timestamp || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-      const session = DeckSession.create({ groups, singles });
 
-      const groupIdByAsset = new Map<string, string>();
-      for (const g of groups) for (const item of g.items) groupIdByAsset.set(item.id, g.id);
-
-      // m0.7 (N#2, P4#1): replacement is ONE atomic transaction — bank the
-      // old session's keepers, abandon it, create the new session. Staged
-      // culls are carried in the durable global cull queue, so replacement
-      // is silent; a failure anywhere leaves the old session resumable.
-      const id = await replaceActiveSession(
-        db,
-        {
-          label: newLabel,
-          rangeStart,
-          rangeEnd,
-          snapshot: JSON.stringify(session.toJSON()),
-          photos: photos.map((p) => ({
-            ...p,
-            groupId: groupIdByAsset.get(p.item.id) ?? null,
-            day: dayKey(p.item.timestamp),
-          })),
-          createdAt: Date.now(),
-        },
-        Date.now(),
-      );
-
-      sessionRef.current = session;
-      persistenceQueue.resetCommitted(statesOf(session));
-      needsEditRef.current = new Set();
-      favouriteRef.current = await getFavouriteStates(
-        db,
-        session.toJSON().items.map((item) => item.id),
-      );
-      setSessionId(id);
-      setLabel(newLabel);
-      setReclaimedBytes(0);
-      bump();
-    },
-    [db, bump, waitForPersistence, persistenceQueue, ensureStartupRecovery, setSessionId],
+        sessionRef.current = session;
+        persistenceQueue.resetCommitted(statesOf(session));
+        needsEditRef.current = new Set();
+        favouriteRef.current = await getFavouriteStates(
+          db,
+          session.toJSON().items.map((item) => item.id),
+        );
+        setSessionId(id);
+        setLabel(newLabel);
+        setReclaimedBytes(0);
+        // Installing a replacement is authoritative — lower a membership
+        // gate a retryably-failed resume may have left up (any queued
+        // resume attempt finds this session and settles authoritatively).
+        if (restoringCountRef.current === 0) setRestoring(false);
+        bump();
+      }),
+    [
+      db,
+      bump,
+      waitForPersistence,
+      persistenceQueue,
+      ensureStartupRecovery,
+      setSessionId,
+      serializeSessionOp,
+    ],
   );
 
-  const resumeSession = useCallback(async () => {
+  /**
+   * 'resumed' installed a session; 'none' is AUTHORITATIVE (no active row,
+   * or a corrupt one was abandoned); 'retry' is a transient failure — an
+   * active session may still exist unloaded, so the caller must keep the
+   * membership gate (`restoring`) up for the next focus retry.
+   */
+  const resumeSessionInner = useCallback(async (): Promise<'resumed' | 'none' | 'retry'> => {
     await waitForPersistence();
     // Recovery gates BOTH resume and start (ensureStartupRecovery): a
     // transient failure aborts this resume retryably — restoring a
     // session anyway would make Home short-circuit every later focus
     // check, leaving stale rows blocked for the process lifetime.
-    if (!(await ensureStartupRecovery())) return false;
-    const row = await getActiveSession(db);
-    if (!row) return false;
+    if (!(await ensureStartupRecovery())) return 'retry';
+    let row;
+    try {
+      row = await getActiveSession(db);
+    } catch {
+      return 'retry';
+    }
+    if (!row) return 'none';
 
     // Abandonment is reserved for a CORRUPT/pre-deck snapshot — parse and
     // structural failures only. Transient SQLite I/O during reads or the
@@ -486,7 +552,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       if (typeof parsed !== 'object' || parsed === null) throw new Error('not an object');
     } catch {
       await abandonActiveSessions(db, Date.now());
-      return false;
+      return 'none';
     }
 
     // ANY crash window after resolveTrashBatch commits (recovery, or a
@@ -511,7 +577,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       needsEditIds = await getNeedsEditAssets(db, allIds);
       favourites = await getFavouriteStates(db, allIds);
     } catch {
-      return false; // transient read failure — session untouched, retryable
+      return 'retry'; // transient read failure — session untouched
     }
 
     let session: DeckSession;
@@ -531,7 +597,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Corrupt or pre-deck snapshot: abandon rather than dead-ending.
       await abandonActiveSessions(db, Date.now());
-      return false;
+      return 'none';
     }
 
     if (reconciled) {
@@ -540,31 +606,71 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       try {
         await persistDecision(db, row.id, JSON.stringify(session.toJSON()), [], Date.now());
       } catch {
-        return false; // transient write failure — retry next focus
+        return 'retry'; // transient write failure — retry next focus
       }
     }
     sessionRef.current = session;
     persistenceQueue.resetCommitted(statesOf(session));
-    needsEditRef.current = needsEditIds;
+    needsEditRef.current = new Set([...needsEditIds].filter((id) => !editsDoneRef.current.has(id)));
     favouriteRef.current = favourites;
     setSessionId(row.id);
     setLabel(row.label);
     setReclaimedBytes(row.reclaimed_bytes);
     bump();
-    return true;
+    return 'resumed';
   }, [db, bump, waitForPersistence, persistenceQueue, ensureStartupRecovery, setSessionId]);
 
+  const resumeSession = useCallback(async () => {
+    // Membership is unknown until the restore settles; screens gate
+    // their direct DB state edits on this flag. Counted, not boolean:
+    // with overlapping (serialized) attempts, the first one's finally
+    // must not un-gate the queued retry still waiting to run.
+    const track = sessionRef.current === null;
+    if (track) {
+      restoringCountRef.current += 1;
+      setRestoring(true);
+    }
+    // Fail-closed: only an AUTHORITATIVE outcome (resumed / no session /
+    // abandoned) lowers the gate — after a transient failure an active
+    // session may still exist unloaded, and direct DB edits acting on
+    // "not a member" would desync the snapshot the retry then installs.
+    let authoritative = false;
+    try {
+      return await serializeSessionOp(async () => {
+        // A start/replacement that won the serialization already
+        // installed a session — this queued restore has nothing to do.
+        if (sessionRef.current) {
+          authoritative = true;
+          return true;
+        }
+        const outcome = await resumeSessionInner();
+        authoritative = outcome !== 'retry';
+        return outcome === 'resumed';
+      });
+    } finally {
+      if (track) {
+        restoringCountRef.current -= 1;
+        if (restoringCountRef.current === 0 && authoritative) setRestoring(false);
+      }
+    }
+  }, [resumeSessionInner, serializeSessionOp]);
+
   const discardActiveSession = useCallback(async () => {
-    await waitForPersistence();
-    await abandonActiveSessions(db, Date.now());
-    sessionRef.current = null;
-    needsEditRef.current = new Set();
-    favouriteRef.current = new Map();
-    setSessionId(null);
-    setLabel('');
-    setReclaimedBytes(0);
-    bump();
-  }, [db, bump, waitForPersistence, setSessionId]);
+    await serializeSessionOp(async () => {
+      await waitForPersistence();
+      await abandonActiveSessions(db, Date.now());
+      sessionRef.current = null;
+      needsEditRef.current = new Set();
+      favouriteRef.current = new Map();
+      setSessionId(null);
+      setLabel('');
+      setReclaimedBytes(0);
+      // Abandoning every active session is authoritative — membership is
+      // now known (nothing is loaded, nothing durable remains active).
+      if (restoringCountRef.current === 0) setRestoring(false);
+      bump();
+    });
+  }, [db, bump, waitForPersistence, setSessionId, serializeSessionOp]);
 
   /** Content-hash fallback identity, computed only for staged culls. */
   const hashInBackground = useCallback(
@@ -703,6 +809,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       if (!session) throw new Error('decideSingle: no active session');
       if (action === 'to_edit') {
         needsEditRef.current.add(id);
+        editsDoneRef.current.delete(id); // an explicit re-flag outranks a past done
         session.decideSingle(id, 'keep');
       } else {
         session.decideSingle(id, action);
@@ -743,12 +850,29 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       if (flagged) needsEditRef.current.delete(id);
       else {
         needsEditRef.current.add(id);
+        editsDoneRef.current.delete(id); // an explicit re-flag outranks a past done
         if (session.getState(id) === 'unreviewed') keepUnreviewed(session, id);
       }
       bump();
       await persist({ needsEditChanges: [{ assetId: id, needsEdit: !flagged }] });
     },
     [persist, bump],
+  );
+
+  const reconcileEditsDone = useCallback(
+    (ids: readonly string[]) => {
+      // In-memory only: markEditDone already moved the durable row to
+      // 'done' with needs_edit = 0, and resume re-derives the flag set
+      // from SQLite — only the live set is behind. editsDoneRef guards
+      // the resume path that read its set before the durable write.
+      let changed = false;
+      for (const id of ids) {
+        editsDoneRef.current.add(id);
+        if (needsEditRef.current.delete(id)) changed = true;
+      }
+      if (changed) bump();
+    },
+    [bump],
   );
 
   const favouriteStatus = useCallback(
@@ -790,7 +914,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       if (!session) throw new Error('unstageCull: no active session');
       session.unstageCull(id);
       bump();
-      await persist();
+      // Restoring answers the copy prompt's question (see store C#12).
+      await persist({ resolveCopyMatchesFor: [id] });
     },
     [persist, bump],
   );
@@ -811,11 +936,18 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       // a single becomes pending again.
       if (target === current) {
         const clearedEdit = needsEditRef.current.delete(id);
+        // An explicit active-verdict tap REOPENS the photo — including one
+        // whose edit already converged to durable 'done' (the universal
+        // clear contract; re-culling an edited photo must stay possible).
+        // Drop the tombstone so the reopened photo starts a fresh cycle.
+        editsDoneRef.current.delete(id);
         session.clearDecision(id);
         bump();
-        await persist(
-          clearedEdit ? { needsEditChanges: [{ assetId: id, needsEdit: false }] } : undefined,
-        );
+        await persist({
+          ...(clearedEdit && { needsEditChanges: [{ assetId: id, needsEdit: false }] }),
+          // Clearing a cull restores the photo (see store C#12).
+          ...(state === 'culled' && { resolveCopyMatchesFor: [id] }),
+        });
         return;
       }
       if (target === 'cull') {
@@ -836,14 +968,21 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       let editChanged = false;
       if (needsEditRef.current.has(id) !== wantFlag) {
         editChanged = true;
-        if (wantFlag) needsEditRef.current.add(id);
-        else needsEditRef.current.delete(id);
+        if (wantFlag) {
+          needsEditRef.current.add(id);
+          editsDoneRef.current.delete(id); // an explicit re-flag outranks a past done
+        } else {
+          needsEditRef.current.delete(id);
+        }
       }
-      if (state === 'culled') session.unstageCull(id); // culled → kept (+flag remap)
+      const restored = state === 'culled';
+      if (restored) session.unstageCull(id); // culled → kept (+flag remap)
       bump();
-      await persist(
-        editChanged ? { needsEditChanges: [{ assetId: id, needsEdit: wantFlag }] } : undefined,
-      );
+      await persist({
+        ...(editChanged && { needsEditChanges: [{ assetId: id, needsEdit: wantFlag }] }),
+        // Restoring answers the copy prompt's question (see store C#12).
+        ...(restored && { resolveCopyMatchesFor: [id] }),
+      });
     },
     [persist, bump, hashInBackground],
   );
@@ -1025,6 +1164,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       startSession,
       flushPersistence: waitForPersistence,
       resumeSession,
+      restoring,
       discardActiveSession,
       deckSetCursor,
       deckCull,
@@ -1048,6 +1188,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       confirmStagedCulls,
       reconcileTrashed,
       reconcileMovedUris,
+      reconcileEditsDone,
       finishSession,
     }),
     [
@@ -1062,6 +1203,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       startSession,
       waitForPersistence,
       resumeSession,
+      restoring,
       discardActiveSession,
       deckSetCursor,
       deckCull,
@@ -1085,6 +1227,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       confirmStagedCulls,
       reconcileTrashed,
       reconcileMovedUris,
+      reconcileEditsDone,
       finishSession,
     ],
   );

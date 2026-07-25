@@ -12,6 +12,7 @@ import {
   createSession,
   getStagedCulls,
   makePhotoSingles,
+  markEditDone,
   markFavouriteBatchApplied,
   markFavouriteBatchError,
   persistDecision,
@@ -195,6 +196,79 @@ describe('makePhotoSingles', () => {
     expect(assignments['external_primary/1']).toBeNull();
     expect(assignments['external_primary/2']).not.toBeNull();
     expect(assignments['external_primary/2']).toBe(assignments['external_primary/3']);
+  });
+});
+
+describe('persistDecision (needs-edit changes)', () => {
+  it('re-flagging a completed edit re-queues it: done → to_edit, fresh detection baseline', async () => {
+    const d = await fresh();
+    const id = await createSession(asExpo(d), sessionInput([photo('1', null)]));
+    const A = 'external_primary/1';
+    const snap = JSON.stringify({ kind: 'deck', states: { [A]: 'kept' } });
+    // Normal lifecycle: kept + flag → to_edit, detection banks a hash, done.
+    await persistDecision(asExpo(d), id, snap, [[A, 'kept']], AT + 100, {
+      needsEditChanges: [{ assetId: A, needsEdit: true }],
+    });
+    d.raw.prepare('UPDATE photos SET content_hash = ? WHERE asset_id = ?').run('hash1', A);
+    await markEditDone(asExpo(d), A, AT + 200);
+    // Re-flag from the live session (toggleNeedsEdit / redecide to_edit):
+    // the durable row must return to the edit queue for a fresh cycle.
+    await persistDecision(asExpo(d), id, snap, [], AT + 300, {
+      needsEditChanges: [{ assetId: A, needsEdit: true }],
+    });
+    const row = d.raw
+      .prepare(
+        'SELECT state, needs_edit, to_edit_at, mod_time, content_hash FROM photos WHERE asset_id = ?',
+      )
+      .get(A) as Record<string, unknown>;
+    expect(row.state).toBe('to_edit');
+    expect(row.needs_edit).toBe(1);
+    expect(row.to_edit_at).toBe(AT + 300);
+    expect(row.mod_time).toBeNull(); // detection baseline reset (fresh cycle)
+    expect(row.content_hash).toBeNull();
+  });
+
+  it('reopening a completed photo (done → unreviewed) resets its edit-cycle columns', async () => {
+    const d = await fresh();
+    const id = await createSession(asExpo(d), sessionInput([photo('1', null)]));
+    const A = 'external_primary/1';
+    const snap = JSON.stringify({ kind: 'deck', states: { [A]: 'kept' } });
+    await persistDecision(asExpo(d), id, snap, [[A, 'kept']], AT + 100, {
+      needsEditChanges: [{ assetId: A, needsEdit: true }],
+    });
+    d.raw.prepare('UPDATE photos SET content_hash = ? WHERE asset_id = ?').run('hash1', A);
+    await markEditDone(asExpo(d), A, AT + 200);
+    // Explicit active-verdict clear reopens the photo for a fresh cycle.
+    await persistDecision(asExpo(d), id, snap, [[A, 'unreviewed']], AT + 300);
+    const row = d.raw
+      .prepare('SELECT state, to_edit_at, mod_time, content_hash FROM photos WHERE asset_id = ?')
+      .get(A) as Record<string, unknown>;
+    expect(row.state).toBe('unreviewed');
+    expect(row.to_edit_at).toBeNull();
+    expect(row.mod_time).toBeNull();
+    expect(row.content_hash).toBeNull();
+  });
+
+  it('cycle-guarded markEditDone refuses stale evidence from a superseded cycle', async () => {
+    const d = await fresh();
+    const id = await createSession(asExpo(d), sessionInput([photo('1', null)]));
+    const A = 'external_primary/1';
+    const snap = JSON.stringify({ kind: 'deck', states: { [A]: 'kept' } });
+    await persistDecision(asExpo(d), id, snap, [[A, 'kept']], AT + 100, {
+      needsEditChanges: [{ assetId: A, needsEdit: true }], // to_edit_at = AT + 100
+    });
+    // Detection captured to_edit_at = AT + 100; the row was re-queued
+    // since (done → to_edit at AT + 300, a fresh cycle).
+    await markEditDone(asExpo(d), A, AT + 200);
+    await persistDecision(asExpo(d), id, snap, [], AT + 300, {
+      needsEditChanges: [{ assetId: A, needsEdit: true }],
+    });
+    expect(await markEditDone(asExpo(d), A, AT + 400, AT + 100)).toBe(false);
+    const stale = d.raw.prepare('SELECT state FROM photos WHERE asset_id = ?').get(A) as {
+      state: string;
+    };
+    expect(stale.state).toBe('to_edit'); // the fresh cycle survives
+    expect(await markEditDone(asExpo(d), A, AT + 500, AT + 300)).toBe(true);
   });
 });
 

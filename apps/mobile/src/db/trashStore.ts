@@ -410,7 +410,9 @@ export async function lifetimeReclaimedBytes(db: SQLiteDatabase): Promise<number
 
 /** Restore support (P8#4): when the session loader sees a 'trashed'-state
  * photo in a MediaStore page (proof of a Gallery restore), this increments
- * the generation exactly once so a later verified re-trash counts again. */
+ * the generation exactly once so a later verified re-trash counts again.
+ * The edit-cycle columns reset too: a restored photo starts over, and a
+ * re-queued edit must not compare against a pre-trash baseline/hash. */
 export async function markPhotoRestored(
   db: SQLiteDatabase,
   photoId: string,
@@ -418,7 +420,9 @@ export async function markPhotoRestored(
 ): Promise<void> {
   await db.runAsync(
     `UPDATE photos SET state = 'unreviewed', is_present = 1,
-       trash_generation = trash_generation + 1, activity_at = ?
+       trash_generation = trash_generation + 1,
+       to_edit_at = NULL, mod_time = NULL, content_hash = NULL,
+       activity_at = ?
      WHERE asset_id = ? AND state = 'trashed'`,
     at,
     photoId,

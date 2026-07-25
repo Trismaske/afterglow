@@ -376,6 +376,76 @@ describe('CullSession — serialization', () => {
       }),
     ).toThrow(/unknown id/);
   });
+
+  it('rejects structurally inconsistent snapshots', () => {
+    const snap = () => JSON.parse(JSON.stringify(midBracketSession().toJSON()));
+
+    const dupItem = snap();
+    dupItem.items.push({ ...dupItem.items[0] });
+    expect(() => CullSession.fromJSON(dupItem)).toThrow(/duplicate photo id/);
+
+    const missingState = snap();
+    delete missingState.states.p0;
+    expect(() => CullSession.fromJSON(missingState)).toThrow(/missing state/);
+
+    const badState = snap();
+    badState.states.p0 = 'zombie';
+    expect(() => CullSession.fromJSON(badState)).toThrow(/invalid state/);
+
+    const ghostRound = snap();
+    ghostRound.brackets[0].currentRound.push('s2'); // a single, not a member
+    expect(() => CullSession.fromJSON(ghostRound)).toThrow(/non-member/);
+
+    const culledAlive = snap();
+    culledAlive.brackets[0].currentRound.push('p2'); // p2 was culled mid-bracket
+    expect(() => CullSession.fromJSON(culledAlive)).toThrow(/still in a round/);
+
+    const staleBest = snap();
+    staleBest.brackets[0].bestId = 'p0'; // bracket is still incomplete
+    expect(() => CullSession.fromJSON(staleBest)).toThrow(/has a best photo/);
+
+    const unassigned = snap();
+    unassigned.singleIds.pop(); // s2 no longer belongs anywhere
+    expect(() => CullSession.fromJSON(unassigned)).toThrow(/not assigned/);
+
+    const ghostDuel = snap();
+    ghostDuel.duelHistory.push({
+      groupId: 'g1',
+      winnerId: 'p0',
+      loserId: 'q1',
+      keptBoth: true,
+      at: 3,
+    });
+    expect(() => CullSession.fromJSON(ghostDuel)).toThrow(/not in their group/);
+
+    const done = groupSession(2);
+    cullAll(done);
+    const bestMismatch = JSON.parse(JSON.stringify(done.toJSON()));
+    bestMismatch.brackets[0].bestId = 'p1'; // the culled photo, not the survivor
+    expect(() => CullSession.fromJSON(bestMismatch)).toThrow(/best photo mismatch/);
+
+    const noSurvivor = snap();
+    // All members kept, rounds emptied, no best: impossible for a real
+    // bracket (duels always leave exactly one standing photo).
+    const b = noSurvivor.brackets[0];
+    b.currentRound = [];
+    b.nextRound = [];
+    b.bestId = null;
+    b.complete = true;
+    for (const id of b.photoIds) noSurvivor.states[id] = 'kept';
+    expect(() => CullSession.fromJSON(noSurvivor)).toThrow(/exactly one standing photo/);
+
+    const emptyBracket = snap();
+    emptyBracket.brackets.push({
+      groupId: 'g3',
+      photoIds: [],
+      currentRound: [],
+      nextRound: [],
+      bestId: null,
+      complete: true,
+    });
+    expect(() => CullSession.fromJSON(emptyBracket)).toThrow(/empty bracket/);
+  });
 });
 
 describe('CullSession — summary and completeness', () => {

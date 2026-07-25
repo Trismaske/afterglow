@@ -43,7 +43,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'OrganizeQueue'>;
 export function OrganizeQueueScreen(_props: Props) {
   const insets = useSafeAreaInsets();
   const db = useSQLiteContext();
-  const { reconcileMovedUris } = useSession();
+  const { reconcileMovedUris, restoring } = useSession();
   const [rows, setRows] = useState<OrganizeQueueRow[] | null>(null);
   const [busy, setBusy] = useState(false);
   // Synchronous apply lock: async continuations (picker load, intent
@@ -97,6 +97,13 @@ export function OrganizeQueueScreen(_props: Props) {
   );
 
   const applyAll = useCallback(async () => {
+    // Mid-restore, a move committing between resume's photos.uri read and
+    // the snapshot install would make reconcileMovedUris a no-op and the
+    // session would render the dead pre-move path.
+    if (restoring) {
+      showToast('Still loading your session — try again in a moment');
+      return;
+    }
     if (busy || busyRef.current || !rows || rows.length === 0) return;
     setBusy(true);
     busyRef.current = true;
@@ -116,7 +123,9 @@ export function OrganizeQueueScreen(_props: Props) {
       }
       let moved = 0;
       let failed = 0;
+      let declined = false;
       for (const [targetPath, members] of byTarget) {
+        if (declined) break;
         for (let i = 0; i < members.length; i += ORGANIZE_BATCH_LIMIT) {
           const batch = members.slice(i, i + ORGANIZE_BATCH_LIMIT);
           const uris = await Promise.all(batch.map((m) => getEditableContentUri(m.photo_id)));
@@ -173,8 +182,12 @@ export function OrganizeQueueScreen(_props: Props) {
             // declined consent: the rows stay queued and retryable.
           }
           if (!consentApplied) {
-            failed += pending.length;
-            continue; // cancelled batches stay queued (P5#4)
+            // A declined/failed consent stops the whole run — presenting
+            // the next batch's dialog right after a cancel would nag
+            // (P5#4). Everything unattempted stays queued and retryable,
+            // like the other bounded queue flows.
+            declined = true;
+            break;
           }
           const results = await moveMediaToRelativePath(pendingUris, targetPath);
           const outcomes = pending.map((m, index) => ({
@@ -198,16 +211,18 @@ export function OrganizeQueueScreen(_props: Props) {
         }
       }
       showToast(
-        failed === 0
-          ? `Moved ${moved} photo${moved === 1 ? '' : 's'}`
-          : `Moved ${moved}, ${failed} failed (kept queued)`,
+        declined
+          ? `Moved ${moved} — the rest stay queued`
+          : failed === 0
+            ? `Moved ${moved} photo${moved === 1 ? '' : 's'}`
+            : `Moved ${moved}, ${failed} failed (kept queued)`,
       );
       await reload();
     } finally {
       setBusy(false);
       busyRef.current = false;
     }
-  }, [busy, db, rows, reload, reconcileMovedUris]);
+  }, [busy, db, rows, reload, reconcileMovedUris, restoring]);
 
   const renderItem = useCallback(
     ({ item }: { item: OrganizeQueueRow }) => (

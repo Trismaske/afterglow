@@ -25,7 +25,7 @@ App.tsx per its header), photos via `adb pull`, embeddings via `embed.py`.
 
 | Script | Purpose |
 |---|---|
-| `embed.py <model.tflite> <out.npz>` | MediaPipe embeddings for `data/photos/**` + curated set (venv with `mediapipe pillow`) |
+| `embed.py <model.tflite> <out.npz>` | MediaPipe embeddings for `data/photos/**` + curated set (venv from `requirements.txt` — pinned; freeze validates the versions) |
 | `embed_torch.py <model> <out.npz>` | torch candidates (mobileclip_s1, dinov2_s14) for comparisons |
 | `eval_embed.py <npz>` | label-pair separation + unrelated-pair FP curve for one model |
 | `eval_compare.py name=npz ...` | multi-model AUC/threshold-sweep comparison on all labels |

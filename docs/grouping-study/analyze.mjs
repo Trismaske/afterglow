@@ -2,8 +2,9 @@
 // Inputs: s23-hashes.jsonl (id, ts, mt, u, h) + PhoneSync expected.json labels.
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const DATA = new URL('data/', import.meta.url).pathname;
+const DATA = fileURLToPath(new URL('data/', import.meta.url));
 const PHONESYNC = '/home/tristan/PhoneSync';
 const MIN3 = 3 * 60 * 1000;
 

@@ -39,7 +39,11 @@ for i, path in enumerate(paths):
         print(f'{i + 1}/{len(paths)}', flush=True)
 
 import hashlib
+import PIL
 model_sha = hashlib.sha256(open(MODEL, 'rb').read()).hexdigest()
 np.savez_compressed(OUT, keys=np.array(keys), vecs=np.stack(vecs),
-                    model_sha256=np.array(model_sha), dim=np.array(vecs[0].shape[0]))
-print(f'wrote {OUT}: {len(keys)} embeddings, dim {vecs[0].shape[0]}, model {model_sha[:12]}')
+                    model_sha256=np.array(model_sha), dim=np.array(vecs[0].shape[0]),
+                    mediapipe_version=np.array(mp.__version__),
+                    pillow_version=np.array(PIL.__version__))
+print(f'wrote {OUT}: {len(keys)} embeddings, dim {vecs[0].shape[0]}, '
+      f'model {model_sha[:12]}, mediapipe {mp.__version__}, pillow {PIL.__version__}')

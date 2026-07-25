@@ -2,10 +2,11 @@
 // Per case, do within-group and cross-group distances separate?
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // luma grids are generated from the curated photos via ImageMagick (see git
 // history of the study for the exact convert flags); regenerate into data/luma
-const DATA = new URL('data/', import.meta.url).pathname;
+const DATA = fileURLToPath(new URL('data/', import.meta.url));
 const PHONESYNC = '/home/tristan/PhoneSync';
 
 function readPgm(path) {

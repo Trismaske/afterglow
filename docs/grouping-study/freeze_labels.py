@@ -23,8 +23,11 @@ MODEL = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
 if not os.path.exists(MODEL):
     sys.exit(f'model not found at {MODEL} — fetch it per apps/mobile/modules/image-embedder/README.md '
              f'or pass the path as the first argument')
-# v1 is pinned to exactly this model; a v2 freeze changes this constant deliberately.
+# v1 is pinned to exactly this model AND runtime (requirements.txt);
+# a v2 freeze changes these constants deliberately.
 EXPECTED_MODEL_SHA = '11af3c560dfeed7737cb4c03c23bf52a8403020784192d4dea0b74862a12828d'
+EXPECTED_MEDIAPIPE = '0.10.35'
+EXPECTED_PILLOW = '12.3.0'
 FROZEN_DATE = '2026-07-25'
 
 def base(p):
@@ -173,6 +176,14 @@ if 'model_sha256' in data:
                  f'but the pinned model is {model_sha[:12]}… — re-run embed.py')
 else:
     sys.exit('embedding archive lacks model provenance — regenerate with the current embed.py')
+for field, expected in (('mediapipe_version', EXPECTED_MEDIAPIPE), ('pillow_version', EXPECTED_PILLOW)):
+    if field not in data:
+        sys.exit(f'embedding archive lacks {field} — regenerate with the current embed.py '
+                 f'in the pinned venv (requirements.txt)')
+    got = str(data[field])
+    if got != expected:
+        sys.exit(f'archive built with {field}={got}, but labels-v1 pins {expected} '
+                 f'(requirements.txt) — same-version runtime required for identical vectors')
 DIM = int(data['dim']) if 'dim' in data else vecs.shape[1]
 if vecs.ndim != 2 or vecs.shape[1] != DIM or DIM != 1280:
     sys.exit(f'unexpected embedding shape {vecs.shape} (expected N×1280) — wrong archive?')

@@ -20,7 +20,7 @@ import java.nio.ByteOrder
 
 /**
  * MediaPipe Image Embedder (MobileNetV3-large, bundled asset) — the m0.8
- * grouping feature (docs/Grouping_study_m0.8.md Phase A winner).
+ * grouping feature (docs/Plan_m0.8.md; study data in docs/grouping-study/).
  *
  * embed(uri) decodes a MediaStore content uri (EXIF orientation applied,
  * long edge capped at DECODE_CAP px), runs the embedder (L2-normalized,
@@ -52,7 +52,8 @@ class ImageEmbedderModule : Module() {
       val source = ImageDecoder.createSource(context.contentResolver, uri)
       return ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
         val long = maxOf(info.size.width, info.size.height)
-        if (long > DECODE_CAP) decoder.setTargetSampleSize(long / DECODE_CAP)
+        // ceil so the decoded long edge never exceeds DECODE_CAP
+        if (long > DECODE_CAP) decoder.setTargetSampleSize((long + DECODE_CAP - 1) / DECODE_CAP)
         decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
       }
     }

@@ -1,7 +1,7 @@
 /**
  * JS entry for the local image-embedder Expo module (Android-only) — the
  * MediaPipe MobileNetV3-large image embedder behind m0.8 similarity
- * grouping (docs/Grouping_study_m0.8.md).
+ * grouping (docs/Plan_m0.8.md; study data in docs/grouping-study/).
  *
  * `embed(uri)` resolves to per-stage timings plus the L2-normalized
  * embedding as base64 float32 bytes (`decodeVec` turns it into a

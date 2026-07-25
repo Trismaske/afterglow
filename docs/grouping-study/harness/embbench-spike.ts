@@ -5,7 +5,7 @@
  * TEMPORARY — m0.8 grouping study Phase B benchmark. DELETE AFTER USE.
  *
  * Measures the on-device embedder (modules/image-embedder, MediaPipe
- * MobileNetV3-large) against the Phase C bar (docs/Grouping_study_m0.8.md):
+ * MobileNetV3-large) against the Phase C bar (docs/Plan_m0.8.md; study data in docs/grouping-study/):
  * end-to-end ms/photo over the newest N photos, decode/infer breakdown,
  * plus pairwise cosines of the first VERIFY_N embeddings for equivalence
  * checks against the desktop pipeline. Logcat tags: [EMBBENCH] / [VERIFY].

@@ -85,16 +85,21 @@ for a in range(len(cents)):
                            'split_at': len(cents[a]['g'])})
 
 # judged sets from round 1 (skip identical membership)
+import glob as _glob
 judged = set()
-for vf, mf in [('data/verditcs.json', 'data/round1-manifest.json'),
-               ('data/verdicts_round2.json', 'data/round2-manifest.json')]:
-    try:
-        verd = json.load(open(os.path.join(HERE, vf)))
-        man = json.load(open(os.path.join(HERE, mf)))
+for mf in sorted(_glob.glob(os.path.join(HERE, 'data/*-manifest.json'))):
+    stem = os.path.basename(mf).replace('-manifest.json', '')
+    for cand in (f'data/verdicts_{stem}.json', f'data/verdict_{stem}.json'):
+        vp = os.path.join(HERE, cand)
+        if not os.path.exists(vp):
+            continue
+        verd = json.load(open(vp))
+        man = json.load(open(mf))
         for cid in verd:
-            judged.add(frozenset(os.path.basename(p) for p in man[int(cid)]['members']))
-    except FileNotFoundError:
-        pass
+            card = man[int(cid)]
+            members = card.get('members') or [p for g in card.get('partition', []) for p in g]
+            judged.add(frozenset(os.path.basename(p) for p in members))
+        break
 
 old_sets = {frozenset(os.path.basename(k) for _, _, k in g) for g in stage1_old if len(g) >= 2}
 cards = []

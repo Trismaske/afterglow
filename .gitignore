@@ -158,3 +158,4 @@ apps/mobile/modules/*/android/build/
 # Local tester evidence (referenced by docs/Feedback_*.md, never committed)
 screenshots/
 apps/mobile/modules/image-embedder/android/src/main/assets/*.tflite
+codex-review.md

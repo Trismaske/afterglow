@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Platform,
@@ -50,6 +50,7 @@ import {
 import { runTrashAttempt } from '../lib/trashFlow';
 import { fileSize } from '../lib/hash';
 import { runEditDetection, type DetectedCopy } from '../lib/detect';
+import { startContinuousScan } from '../scan/scanRunner';
 import { useSession } from '../session/SessionContext';
 import { BigButton } from '../components/BigButton';
 import { StateProgressBar } from '../components/StateProgressBar';
@@ -132,6 +133,14 @@ export function HomeScreen({ navigation }: Props) {
     },
     [customFrom, customTo, scopeConfig],
   );
+
+  // m0.8 gate 2: kick the continuous scan once media permission is in.
+  // Fire-and-forget — the runner is single-flight, per-photo persistent,
+  // and reports through its own status store (gate 4 puts it on Home).
+  useEffect(() => {
+    if (!permission?.granted) return;
+    void startContinuousScan(db);
+  }, [db, permission?.granted]);
 
   // Store-backed scope chips + session prefs (m0.5), refreshed on focus
   // (Settings may have changed either). An invalid selection (scope

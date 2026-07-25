@@ -31,6 +31,7 @@ import { dayKey } from './dates';
 import {
   dismissCopyMatch,
   getEditDetectionRows,
+  getDetectionTrackedAssets,
   getStatesForAssets,
   insertDetectedCopyWithMatch,
   getPendingCopyMatches,
@@ -162,10 +163,13 @@ export async function runEditDetection(
     for (const c of siblings) pool.set(c.id, c);
   }
 
-  // Anything we already track (any state) is not an unnoticed copy —
-  // this also keeps burst siblings from false-positive timestamp matches
-  // and prevents re-prompting for copies detected on a previous run.
-  const tracked = await getStatesForAssets(db, [...pool.keys()]);
+  // Anything already REVIEW-tracked is not an unnoticed copy — that keeps
+  // burst siblings from false-positive timestamp matches and prevents
+  // re-prompting for copies detected on a previous run. Rows the
+  // continuous scan created but nobody touched do NOT count as tracked
+  // (m0.8: every photo gets a row within seconds, so a freshly saved
+  // editor copy usually has one before detection sees it).
+  const tracked = await getDetectionTrackedAssets(db, [...pool.keys()]);
   let candidates = [...pool.values()].filter((c) => !tracked.has(c.id));
 
   for (const l of live) {

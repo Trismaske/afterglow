@@ -25,6 +25,7 @@ import {
   type PhotoSourceSetting,
 } from '../lib/sources';
 import { setSetting } from '../db/store';
+import { rescanAfterSourceChange } from '../scan/scanRunner';
 import { BigButton } from '../components/BigButton';
 import { colors, touch, useTheme } from '../theme';
 
@@ -105,6 +106,9 @@ export function SourcePickerScreen({ navigation }: Props) {
         : { mode: 'dirs', dirs: [...selected].sort((a, b) => a.localeCompare(b)) };
       await setSetting(db, PHOTO_SOURCES_KEY, serializePhotoSourceSetting(setting));
       invalidateSourceCatalog();
+      // The scan reads the source at run start: rescan over the new
+      // selection (an in-flight run finishes its old buckets first).
+      void rescanAfterSourceChange(db);
       navigation.goBack();
     } finally {
       setSaving(false);

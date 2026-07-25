@@ -18,6 +18,7 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 import type { DuelRecord, PhotoState } from '@afterglow/core';
 import { lifetimeReclaimedBytes } from './trashStore';
 import type { LoadedPhoto } from '../lib/media';
+import { frozenPhotos, reconcileWindowGroups } from '../lib/regroupBoundary';
 import { sourceLikePattern } from '../lib/sources';
 import type { StateCounts } from '../lib/progress';
 
@@ -197,7 +198,11 @@ async function insertSessionWithPhotos(
          day = excluded.day,
          needs_edit = CASE WHEN photos.state = 'culled' THEN photos.needs_edit ELSE 0 END,
          volume_name = excluded.volume_name,
-         raw_id = excluded.raw_id`,
+         raw_id = excluded.raw_id,
+         -- A scan-created row (activity_at NULL) becomes review-tracked the
+         -- moment a session draws it — else edited-copy detection could
+         -- claim an active-session photo as an unnoticed copy.
+         activity_at = COALESCE(photos.activity_at, excluded.activity_at)`,
       photo.item.id,
       photo.item.uri,
       photo.item.timestamp,
@@ -233,9 +238,17 @@ async function insertSessionWithPhotos(
     groupIds.set(photo.groupId, Number(groupResult.lastInsertRowId));
   }
   for (const photo of input.photos) {
+    // Preserve the durable user-ejection marker across redraws: a session
+    // may redraw an ejected photo, but it must stay single and marked so
+    // the scan keeps honoring the ejection (m0.8; sessions die at gate 3).
     await txn.runAsync(
-      `INSERT OR REPLACE INTO photo_group_assignments (photo_id, run_id, group_id)
-       VALUES (?, ?, ?)`,
+      `INSERT INTO photo_group_assignments (photo_id, run_id, group_id, time_attached)
+       VALUES (?, ?, ?, 0)
+       ON CONFLICT(photo_id) DO UPDATE SET
+         run_id = excluded.run_id,
+         group_id = CASE WHEN photo_group_assignments.user_single = 1
+                         THEN NULL ELSE excluded.group_id END,
+         time_attached = 0`,
       photo.item.id,
       runId,
       photo.groupId === null ? null : (groupIds.get(photo.groupId) ?? null),
@@ -526,7 +539,8 @@ async function applyPhotoSingles(txn: SQLiteDatabase, assetIds: readonly string[
     ...assetIds,
   );
   await txn.runAsync(
-    `UPDATE photo_group_assignments SET group_id = NULL WHERE photo_id IN (${placeholders})`,
+    `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0, user_single = 1
+     WHERE photo_id IN (${placeholders})`,
     ...assetIds,
   );
   await repairGroupMembership(txn);
@@ -542,7 +556,7 @@ async function applyPhotoSingles(txn: SQLiteDatabase, assetIds: readonly string[
  */
 async function repairGroupMembership(txn: SQLiteDatabase): Promise<void> {
   await txn.runAsync(
-    `UPDATE photo_group_assignments SET group_id = NULL
+    `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0
      WHERE group_id IN (
        SELECT g.id FROM photo_groups g
        WHERE (SELECT COUNT(*) FROM photo_group_assignments a WHERE a.group_id = g.id) < 2
@@ -576,6 +590,209 @@ export async function makePhotoSingles(
 ): Promise<void> {
   if (assetIds.length === 0) return;
   await db.withExclusiveTransactionAsync((txn) => applyPhotoSingles(txn, assetIds));
+}
+
+/** One photo row the continuous scan upserts (m0.8 gate 2). */
+export interface ContinuousPhotoUpsert {
+  assetId: string;
+  uri: string;
+  takenAt: number;
+  modTime: number;
+  day: string;
+  volumeName: string;
+  rawId: string;
+}
+
+/** One group's continuous-scan write (post-reconciliation). */
+export interface ContinuousGroupWrite {
+  members: readonly string[];
+  /** Members grouped by time because their embedding was unavailable. */
+  timeAttached: readonly string[];
+}
+
+/** One grouped window's membership writes (post-reconciliation). */
+export interface ContinuousWindowWrite {
+  /** Every window photo — row upsert only; review state is never touched. */
+  photos: readonly ContinuousPhotoUpsert[];
+  /** Multi-photo groups to (re)assign. */
+  groups: readonly ContinuousGroupWrite[];
+  /** Photos to (re)assign as singles (NULL group). */
+  singles: readonly string[];
+}
+
+/** The scan-owned grouping run's id, creating it on first use. */
+async function ensureContinuousRun(txn: SQLiteDatabase, at: number): Promise<number> {
+  const existing = await txn.getFirstAsync<{ id: number }>(
+    "SELECT id FROM grouping_runs WHERE provenance = 'continuous'",
+  );
+  if (existing) return Number(existing.id);
+  const result = await txn.runAsync(
+    `INSERT INTO grouping_runs (session_id, provenance, created_at, scope)
+     VALUES (NULL, 'continuous', ?, NULL)`,
+    at,
+  );
+  return Number(result.lastInsertRowId);
+}
+
+/**
+ * Persist one grouped scan window (m0.8 gate 2) atomically: upsert the
+ * photo rows (identity/metadata only — an existing row's review state,
+ * queues, and flags are never modified), then write the given group and
+ * single assignments into the one 'continuous' grouping run, then run
+ * the shared membership repairs. Photos in `photos` but in neither
+ * `groups` nor `singles` were frozen by the regroup boundary
+ * (reconcileWindowGroups) and keep their existing assignments.
+ *
+ * The legacy photos.group_id column is deliberately not written —
+ * continuous groups have no session cluster ids; the day-progress
+ * accounting that reads it retires with sessions at gate 3.
+ */
+export async function writeContinuousGroups(
+  db: SQLiteDatabase,
+  write: ContinuousWindowWrite,
+  at: number,
+): Promise<void> {
+  if (write.photos.length === 0) return;
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    for (const photo of write.photos) {
+      await txn.runAsync(
+        `INSERT INTO photos (asset_id, uri, taken_at, state, mod_time, day,
+                             volume_name, raw_id)
+         VALUES (?, ?, ?, 'unreviewed', ?, ?, ?, ?)
+         ON CONFLICT(asset_id) DO UPDATE SET
+           uri = excluded.uri,
+           taken_at = excluded.taken_at,
+           -- photos.mod_time is the in-place edit detector's baseline
+           -- while a row is in an edit cycle: refreshing it here would
+           -- make the pending edit look unchanged (silent detection loss).
+           mod_time = CASE WHEN photos.state = 'to_edit'
+                           THEN photos.mod_time ELSE excluded.mod_time END,
+           day = excluded.day,
+           volume_name = excluded.volume_name,
+           raw_id = excluded.raw_id`,
+        photo.assetId,
+        photo.uri,
+        photo.takenAt,
+        photo.modTime,
+        photo.day,
+        photo.volumeName,
+        photo.rawId,
+      );
+    }
+    // Revalidate the plan INSIDE the transaction: the runner computed it
+    // from reads that predate this write, and a review decision can land
+    // in between (the scan runs in the background). Fresh state/assignment
+    // reads + the same pure freeze rules decide what may still be written.
+    const plannedIds = [
+      ...new Set([...write.groups.flatMap((g) => [...g.members]), ...write.singles]),
+    ];
+    const liveAssignments = await getGroupAssignments(txn, plannedIds);
+    const liveTouched = [
+      ...new Set(
+        [...liveAssignments.values()].map((a) => a.groupId).filter((g): g is number => g !== null),
+      ),
+    ];
+    const liveMembers = await getGroupMembers(txn, liveTouched);
+    const liveStateIds = new Set(plannedIds);
+    for (const memberIds of liveMembers.values()) for (const m of memberIds) liveStateIds.add(m);
+    const liveStates = await getStatesForAssets(txn, [...liveStateIds]);
+    const frozen = frozenPhotos(plannedIds, {
+      states: liveStates,
+      assignments: liveAssignments,
+      groupMembers: liveMembers,
+    });
+    const plan = reconcileWindowGroups(
+      [...write.groups, ...write.singles.map((s) => ({ members: [s], timeAttached: [] }))],
+      frozen,
+    );
+
+    const runId = await ensureContinuousRun(txn, at);
+    for (const group of plan.groups) {
+      const groupResult = await txn.runAsync(
+        'INSERT INTO photo_groups (run_id, best_photo_id) VALUES (?, NULL)',
+        runId,
+      );
+      const groupId = Number(groupResult.lastInsertRowId);
+      const timeAttached = new Set(group.timeAttached);
+      for (const assetId of group.members) {
+        await txn.runAsync(
+          `INSERT OR REPLACE INTO photo_group_assignments (photo_id, run_id, group_id, time_attached)
+           VALUES (?, ?, ?, ?)`,
+          assetId,
+          runId,
+          groupId,
+          timeAttached.has(assetId) ? 1 : 0,
+        );
+      }
+    }
+    for (const assetId of plan.singles) {
+      await txn.runAsync(
+        `INSERT OR REPLACE INTO photo_group_assignments (photo_id, run_id, group_id, time_attached)
+         VALUES (?, ?, NULL, 0)`,
+        assetId,
+        runId,
+      );
+    }
+    await repairGroupMembership(txn);
+  });
+}
+
+/** One photo's current durable group assignment. */
+export interface GroupAssignmentRow {
+  /** null = assigned single. */
+  groupId: number | null;
+  /** The USER ejected this photo to singles — never regroup it. */
+  userSingle: boolean;
+}
+
+/** Current durable group membership for the given photos (missing = no
+ * assignment yet). */
+export async function getGroupAssignments(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+): Promise<Map<string, GroupAssignmentRow>> {
+  const out = new Map<string, GroupAssignmentRow>();
+  for (const ids of chunk(assetIds, IN_CHUNK)) {
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await db.getAllAsync<{
+      photo_id: string;
+      group_id: number | null;
+      user_single: number;
+    }>(
+      `SELECT photo_id, group_id, user_single FROM photo_group_assignments
+       WHERE photo_id IN (${placeholders})`,
+      ...ids,
+    );
+    for (const row of rows)
+      out.set(row.photo_id, {
+        groupId: row.group_id === null ? null : Number(row.group_id),
+        userSingle: row.user_single === 1,
+      });
+  }
+  return out;
+}
+
+/** All members of the given groups (regroup-boundary freeze checks). */
+export async function getGroupMembers(
+  db: SQLiteDatabase,
+  groupIds: readonly number[],
+): Promise<Map<number, string[]>> {
+  const out = new Map<number, string[]>();
+  for (const ids of chunk(groupIds, IN_CHUNK)) {
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await db.getAllAsync<{ photo_id: string; group_id: number }>(
+      `SELECT photo_id, group_id FROM photo_group_assignments
+       WHERE group_id IN (${placeholders})`,
+      ...ids,
+    );
+    for (const row of rows) {
+      const gid = Number(row.group_id);
+      const bucket = out.get(gid);
+      if (bucket) bucket.push(row.photo_id);
+      else out.set(gid, [row.photo_id]);
+    }
+  }
+  return out;
 }
 
 /**
@@ -635,6 +852,33 @@ export async function markKeptDone(
       ...ids,
     );
   }
+}
+
+/**
+ * Asset ids that are TRACKED for edited-copy detection: a row exists and
+ * has been touched by review (any state change or decision stamps
+ * activity_at). Rows the continuous scan created but nobody reviewed
+ * (state 'unreviewed', activity_at NULL) do NOT count — in the m0.8
+ * continuous world every photo gets a row within seconds of appearing,
+ * so "row exists" would blind the detector to freshly saved editor
+ * copies (m0.8 gate-2 review finding).
+ */
+export async function getDetectionTrackedAssets(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (const ids of chunk(assetIds, IN_CHUNK)) {
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await db.getAllAsync<{ asset_id: string }>(
+      `SELECT asset_id FROM photos
+       WHERE asset_id IN (${placeholders})
+         AND NOT (state = 'unreviewed' AND activity_at IS NULL)`,
+      ...ids,
+    );
+    for (const row of rows) out.add(row.asset_id);
+  }
+  return out;
 }
 
 /** Current stored state per asset id (missing rows are simply absent). */
@@ -779,10 +1023,20 @@ export async function insertDetectedCopyWithMatch(
       originalId,
     );
     if (existing) return;
-    await txn.runAsync(
-      `INSERT OR IGNORE INTO photos
+    // The continuous scan may have inserted the copy's row first (scan-only:
+    // unreviewed, no activity); flip exactly those to done — a row a user
+    // already touched never gets clobbered (it was not a candidate anyway).
+    const upsert = await txn.runAsync(
+      `INSERT INTO photos
          (asset_id, uri, taken_at, state, mod_time, day, needs_edit, edit_completed_at, reviewed_at, activity_at)
-       VALUES (?, ?, ?, 'done', ?, ?, 0, ?, ?, ?)`,
+       VALUES (?, ?, ?, 'done', ?, ?, 0, ?, ?, ?)
+       ON CONFLICT(asset_id) DO UPDATE SET
+         state = 'done',
+         needs_edit = 0,
+         edit_completed_at = excluded.edit_completed_at,
+         reviewed_at = excluded.reviewed_at,
+         activity_at = excluded.activity_at
+       WHERE photos.state = 'unreviewed' AND photos.activity_at IS NULL`,
       copy.assetId,
       copy.uri,
       copy.takenAt,
@@ -792,6 +1046,12 @@ export async function insertDetectedCopyWithMatch(
       detectedAt,
       detectedAt,
     );
+    if (Number(upsert.changes) === 0) {
+      // The guarded upsert lost its race — the user touched the copy row
+      // between candidate filtering and this transaction. Recording the
+      // match anyway would emit a pending prompt for a reviewed photo.
+      return;
+    }
     await txn.runAsync(
       `INSERT OR IGNORE INTO edit_copy_matches (original_id, copy_id, state, detected_at)
        VALUES (?, ?, 'pending', ?)`,
@@ -1512,24 +1772,34 @@ export async function getLifetimeStats(db: SQLiteDatabase): Promise<LifetimeStat
 
 // ----------------------------------------------------- perceptual hashes
 
+/** Hash producers — resample differently, never Hamming-compare across
+ * sources (schema comment in database.ts). */
+export type PhotoHashSource = 'manipulator' | 'native';
+
 /** Cached dHash for one asset (m0.4, photo_hashes table). */
 export interface PhotoHashRow {
   asset_id: string;
   hash: string;
   mod_time: number;
+  source: PhotoHashSource;
 }
 
-/** Cached dHashes for the given assets (missing rows simply absent). */
+/** Cached dHashes for the given assets (missing rows simply absent).
+ * `source` is REQUIRED — hashes from different producers are never
+ * Hamming-comparable, so every caller states whose hashes it wants. */
 export async function getPhotoHashes(
   db: SQLiteDatabase,
   assetIds: readonly string[],
+  source: PhotoHashSource,
 ): Promise<Map<string, PhotoHashRow>> {
   const out = new Map<string, PhotoHashRow>();
   for (const ids of chunk(assetIds, IN_CHUNK)) {
     const placeholders = ids.map(() => '?').join(',');
     const rows = await db.getAllAsync<PhotoHashRow>(
-      `SELECT asset_id, hash, mod_time FROM photo_hashes WHERE asset_id IN (${placeholders})`,
+      `SELECT asset_id, hash, mod_time, source FROM photo_hashes
+       WHERE asset_id IN (${placeholders}) AND source = ?`,
       ...ids,
+      source,
     );
     for (const row of rows) out.set(row.asset_id, row);
   }
@@ -1542,13 +1812,16 @@ export async function setPhotoHash(
   assetId: string,
   hash: string,
   modTime: number,
+  source: PhotoHashSource,
 ): Promise<void> {
   await db.runAsync(
-    `INSERT INTO photo_hashes (asset_id, hash, mod_time) VALUES (?, ?, ?)
-     ON CONFLICT(asset_id) DO UPDATE SET hash = excluded.hash, mod_time = excluded.mod_time`,
+    `INSERT INTO photo_hashes (asset_id, hash, mod_time, source) VALUES (?, ?, ?, ?)
+     ON CONFLICT(asset_id) DO UPDATE SET
+       hash = excluded.hash, mod_time = excluded.mod_time, source = excluded.source`,
     assetId,
     hash,
     modTime,
+    source,
   );
 }
 

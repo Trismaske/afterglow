@@ -181,15 +181,27 @@ describe('schema invariants', () => {
     d.raw.prepare('INSERT INTO grouping_runs (session_id, created_at) VALUES (NULL, ?)').run(AT);
     d.raw.prepare('INSERT INTO grouping_runs (session_id, created_at) VALUES (NULL, ?)').run(AT);
     d.raw.prepare('INSERT INTO photo_groups (run_id) VALUES (1)').run();
-    d.raw.prepare("INSERT INTO photo_group_assignments VALUES ('p1', 1, 1)").run();
+    d.raw
+      .prepare(
+        "INSERT INTO photo_group_assignments (photo_id, run_id, group_id) VALUES ('p1', 1, 1)",
+      )
+      .run();
     // Second current assignment for the same photo: impossible.
     expect(() =>
-      d.raw.prepare("INSERT INTO photo_group_assignments VALUES ('p1', 1, NULL)").run(),
+      d.raw
+        .prepare(
+          "INSERT INTO photo_group_assignments (photo_id, run_id, group_id) VALUES ('p1', 1, NULL)",
+        )
+        .run(),
     ).toThrow(/UNIQUE|PRIMARY/);
     // An assignment pointing at a group from a DIFFERENT run: impossible.
     insertPhoto(d, 'p2');
     expect(() =>
-      d.raw.prepare("INSERT INTO photo_group_assignments VALUES ('p2', 2, 1)").run(),
+      d.raw
+        .prepare(
+          "INSERT INTO photo_group_assignments (photo_id, run_id, group_id) VALUES ('p2', 2, 1)",
+        )
+        .run(),
     ).toThrow(/FOREIGN KEY/);
   });
 
@@ -199,7 +211,11 @@ describe('schema invariants', () => {
     d.raw.prepare('INSERT INTO grouping_runs (session_id, created_at) VALUES (NULL, ?)').run(AT);
     d.raw.exec('BEGIN');
     d.raw.prepare('INSERT INTO photo_groups (run_id, best_photo_id) VALUES (1, ?)').run('p1');
-    d.raw.prepare("INSERT INTO photo_group_assignments VALUES ('p1', 1, 1)").run();
+    d.raw
+      .prepare(
+        "INSERT INTO photo_group_assignments (photo_id, run_id, group_id) VALUES ('p1', 1, 1)",
+      )
+      .run();
     d.raw.exec('COMMIT'); // deferred FK satisfied by commit time
     // A best that is NOT a member fails at commit.
     insertPhoto(d, 'p2');

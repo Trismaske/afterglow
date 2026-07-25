@@ -16,3 +16,4 @@ export * from './flags.js';
 export * from './cull.js';
 export * from './deck.js';
 export * from './similarity.js';
+export * from './grouping.js';

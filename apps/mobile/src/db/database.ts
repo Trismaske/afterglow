@@ -29,7 +29,7 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 export const DATABASE_NAME = 'afterglow.db';
 
 /** Bump on ANY schema change before v1 — the open path resets mismatches. */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 12;
 
 export const BASELINE_DDL = `
   CREATE TABLE photos (
@@ -115,22 +115,44 @@ export const BASELINE_DDL = `
     value TEXT NOT NULL
   );
 
+  -- m0.8: hashes carry their producer — the manipulator (session flow,
+  -- JPEG-round-trip 9x8) and the native module (scan, box-averaged full
+  -- decode) resample differently, so cross-source Hamming comparisons
+  -- would blur the ≤8/64 near-dup floor. The scan trusts only 'native'
+  -- rows; the manipulator path retires with sessions at gate 3.
   CREATE TABLE photo_hashes (
     asset_id TEXT PRIMARY KEY,
     hash     TEXT NOT NULL,
-    mod_time INTEGER NOT NULL
+    mod_time INTEGER NOT NULL,
+    source   TEXT NOT NULL DEFAULT 'manipulator' CHECK (source IN ('manipulator', 'native'))
   );
 
-  -- Durable grouping: runs / groups / assignments (N#1, C#3)
+  -- m0.8 continuous-scan embeddings (gate 2): one current vector per
+  -- asset, keyed like photo_hashes (stale when mod_time moves). vec is
+  -- little-endian float32 bytes (1280 dims, L2-normalized). The embedding
+  -- model's SHA-256 lives in settings ('embedding_model_sha256'); a model
+  -- swap clears this table in one explicit re-embed event. No FK — the
+  -- scan embeds photos before any review row exists for them.
+  CREATE TABLE photo_embeddings (
+    asset_id TEXT PRIMARY KEY,
+    mod_time INTEGER NOT NULL,
+    vec      BLOB NOT NULL
+  );
+
+  -- Durable grouping: runs / groups / assignments (N#1, C#3).
+  -- m0.8 gate 2: 'continuous' provenance — the single scan-owned run the
+  -- continuous pipeline writes into (sessions retire at gate 3).
   CREATE TABLE grouping_runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id  INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
-    provenance  TEXT NOT NULL DEFAULT 'session' CHECK (provenance IN ('session')),
+    provenance  TEXT NOT NULL DEFAULT 'session' CHECK (provenance IN ('session', 'continuous')),
     created_at  INTEGER NOT NULL,
     scope       TEXT
   );
   CREATE UNIQUE INDEX idx_grouping_runs_one_per_session
     ON grouping_runs(session_id) WHERE session_id IS NOT NULL;
+  CREATE UNIQUE INDEX idx_grouping_runs_one_continuous
+    ON grouping_runs((1)) WHERE provenance = 'continuous';
 
   CREATE TABLE photo_groups (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,6 +168,13 @@ export const BASELINE_DDL = `
     photo_id TEXT PRIMARY KEY REFERENCES photos(asset_id) ON DELETE CASCADE,
     run_id   INTEGER NOT NULL REFERENCES grouping_runs(id) ON DELETE CASCADE,
     group_id INTEGER,
+    -- m0.8: grouped by TIME because the embedding was unavailable (the UI
+    -- badges these; the scan rewrites them once the embedding lands).
+    time_attached INTEGER NOT NULL DEFAULT 0 CHECK (time_attached IN (0, 1)),
+    -- m0.8: the USER ejected this photo to singles ('not related') — the
+    -- scan must never regroup it (singles are never promoted, settled
+    -- contract); only a user decision or regroup-everything opt-in clears it.
+    user_single INTEGER NOT NULL DEFAULT 0 CHECK (user_single IN (0, 1)),
     UNIQUE (group_id, photo_id),
     FOREIGN KEY (run_id, group_id) REFERENCES photo_groups(run_id, id)
   );

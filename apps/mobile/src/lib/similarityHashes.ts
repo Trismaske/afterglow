@@ -75,9 +75,12 @@ export async function ensureDhashes(
   onProgress?: (done: number, total: number) => void,
 ): Promise<EnsureHashesResult> {
   const hashes = new Map<string, string | null>();
+  // Manipulator-produced hashes only — never Hamming-comparable with the
+  // scan's native-produced rows (photo_hashes.source, m0.8).
   const cached = await getPhotoHashes(
     db,
     photos.map((p) => p.item.id),
+    'manipulator',
   );
 
   const todo: LoadedPhoto[] = [];
@@ -98,7 +101,7 @@ export async function ensureDhashes(
       const hash = await computeDhash(photo.item.uri);
       hashes.set(photo.item.id, hash);
       if (hash !== null) {
-        await setPhotoHash(db, photo.item.id, hash, photo.modTime).catch(() => {});
+        await setPhotoHash(db, photo.item.id, hash, photo.modTime, 'manipulator').catch(() => {});
       }
       done++;
       onProgress?.(done, total);

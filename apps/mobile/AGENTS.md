@@ -20,7 +20,9 @@ Core `DeckSession` (see packages/core/CLAUDE.md) holds the in-flight review; `se
 | sessionPrefs.ts / sessionSelect.ts   | Sessions settings parsing / pure cap+order+group-boundary selection                                          |
 | scopes.ts / scopeStore.ts            | Default review-scope defs / store-backed named custom scopes (enable/disable/delete/reset)                   |
 | similarityPrefs.ts                   | Similarity chips 12/16/20/26/32 (default 20), 0–64 threshold, labels                                         |
-| similarityHashes.ts / dhashDecode.ts | dHash pipeline: expo-image-manipulator shrink (impure) / decode→luma→hash (pure)                             |
+| similarityHashes.ts / dhashDecode.ts | dHash pipeline: expo-image-manipulator shrink (impure, SESSION-scale only — leaks natively at corpus scale, never call from the scan) / decode→luma→hash (pure) |
+| embeddings.ts                        | m0.8 embedding+hash backfill (impure): image-embedder module → per-photo photo_embeddings (+ photo_hashes via same-decode `withDhash`); adaptive 2–4 workers from measured decode/infer EMAs |
+| scanWindows.ts / regroupBoundary.ts  | m0.8 continuous scan (pure): newest→oldest merge-window accumulator / decision-5 freeze + window reconcile    |
 | edit.ts / editActions.ts             | Write-request-first ACTION_EDIT + read-only ACTION_VIEW launches (impure) / intent constants + copy (pure)   |
 | mediaIdentity.ts                     | Canonical volume-qualified photo ids `<volume>/<raw id>` (pure; media.ts re-exports)                         |
 | editMatrix.ts                        | Gate-0 editor-launch diagnostic matrix: probe sequencing, write-request branch, shareable report (pure)      |
@@ -35,10 +37,19 @@ Core `DeckSession` (see packages/core/CLAUDE.md) holds the in-flight review; `se
 | format.ts / toast.ts                 | Bytes/labels formatting; ToastAndroid wrapper                                                                |
 
 `session/persistenceQueue.ts` is the pure, failure-injected FIFO barrier used
-by SessionContext. `modules/media-store-actions` is the Android 11+ native
-trash/favourite boundary plus the gate-0 editor-launch diagnostics
-(environment/permission probes, intent dispatch probes, `createWriteRequest`);
-`modules/material-you-accent` reads the system tone.
+by SessionContext. `scan/scanRunner.ts` is the m0.8 continuous-scan
+orchestrator (single-flight per process, Home starts it once permission
+lands): merged newest→oldest paging → merge windows → embed (cache-aware) →
+core `groupByEmbedding` → regroup boundary → `writeContinuousGroups` into the
+one 'continuous' grouping run; exports the observable `ScanStatus` (gate-4
+Home surface). `db/embeddingStore.ts` owns photo_embeddings (BLOB float32
+vectors keyed by asset id + mod_time) and the model-SHA pin whose mismatch
+triggers the destructive re-embed event. `modules/media-store-actions` is the
+Android 11+ native trash/favourite boundary plus the gate-0 editor-launch
+diagnostics (environment/permission probes, intent dispatch probes,
+`createWriteRequest`); `modules/material-you-accent` reads the system tone;
+`modules/image-embedder` is the MediaPipe MobileNetV3-large embedder
+(`embed(uri, decodeCap)`, pinned `MODEL_SHA256`).
 
 ## src/screens/ + components/
 

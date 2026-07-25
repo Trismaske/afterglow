@@ -1,6 +1,6 @@
 # Plan m0.8 — Sessions removed: continuous scan, embedding groups, navigation redesign
 
-*The release plan for mobile 0.8.0 (versionCode 5). Every product decision below was settled with Tristan on 2026-07-24 (session-removal decision rounds + the grouping quality study with two human-judged rounds); none are open. Evidence lives in the git history of `docs/Sessions_m0.8.md` and `docs/Grouping_study_m0.8.md` (deleted when this plan landed); the durable product statements are in PLAN.md.*
+*The release plan for mobile 0.8.0 (versionCode 7 — 0.7.1/0.7.2 shipped as 5/6). Every product decision below was settled with Tristan on 2026-07-24 (session-removal decision rounds + the grouping quality study with two human-judged rounds); none are open. Evidence lives in the git history of `docs/Sessions_m0.8.md` and `docs/Grouping_study_m0.8.md` (deleted when this plan landed); the durable product statements are in PLAN.md.*
 
 ## What this release is
 
@@ -34,6 +34,7 @@ On app open: page MediaStore newest→oldest; for photos without a current embed
 
 **Gate 3 — DB-backed deck + `kept` removal.**
 The deck reads groups from SQLite and writes decisions directly (decisions 1–2 above). Deletes: `SessionContext` machinery, snapshot persistence queue, `sessions` table, banking paths, core `deck.ts`/`cull.ts` + their tests (~2,070 lines), scope machinery (decision 3). Group stability invariant (decision 5) enforced at the regroup boundary. All state-machine edge paths (un-cull, Restore, `reviewed_at`, needs_edit interplay) covered by tests against the real SQLite schema.
+**Rehome, don't lose, the 0.7.1/0.7.2 hardening** that currently lives in or around `SessionContext`: the trash-attempt lifecycle (verification, recovery, reconciliation) and edit-lifecycle coherence (cycle-keyed detection/completion, copy-match resolution on restore) are durable-truth behaviors that move to the new DB-backed context intact, with their tests. Session-specific hardening (done-state reconciliation with the live session, membership gating during session restore, serialized session install/replacement) becomes structurally moot once decisions write the DB directly — retire it deliberately, mapping each behavior to its no-session equivalent or to "impossible by construction".
 
 **Gate 4 — Home navigation redesign.**
 Bottom tabs **Home · Edit · Favourite · Share · Organize** (count-badged); Cull list from Home; History as settings-adjacent icon. Home above the fold: scan/embed status, daily goal ring, continue-reviewing, live corpus stats (total, groups found, % reviewed, reclaimable estimate). Summary becomes daily/milestone-based; streaks = goal-reached days; Sessions settings section replaced by Daily goal. The dHash similarity chips/slider are replaced by a single simplified grouping-strictness control mapped to the cosine threshold around the 0.55 default, and the legacy time-only toggle is removed **(autonomous: exact control UI decided at this gate; the regression suite bounds how far the control may stray)**.
@@ -41,7 +42,7 @@ Bottom tabs **Home · Edit · Favourite · Share · Organize** (count-badged); C
 **Gate 5 — deck/viewer rework** (unchanged scope from the roadmap): culled photos stay badged in the live deck; one standard full-screen viewer for deck browse, progress, history, queues; completed days re-show groups in browse/re-decide mode; staged culls re-enter the feed badged with prior verdict; recent days = 3 recent + 2 unreviewed + older-days indicator; day-count audit with kept/done merged into "reviewed".
 
 **Gate 6 — release.**
-Per-ABI APK splits (the universal APK grew 106→162 MB with MediaPipe; splits reclaim most of it — verify the release workflow and manifest handle multiple APKs, else ship universal and note the size). Version 0.8.0 / versionCode 5; destructive DB reset (fresh-baseline policy); README/release notes tell testers what changed (sessions gone, first-open backfill expectations per device class); preflight + tag `mobile-m0.8`.
+Per-ABI APK splits (the universal APK grew 106→162 MB with MediaPipe; splits reclaim most of it — verify the release workflow and manifest handle multiple APKs, else ship universal and note the size). Version 0.8.0 / versionCode 7; destructive DB reset (fresh-baseline policy); README/release notes tell testers what changed (sessions gone, first-open backfill expectations per device class); preflight + tag `mobile-m0.8`.
 
 ## Grouping regression suite (quality can never silently drop)
 

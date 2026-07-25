@@ -163,7 +163,6 @@ All decisions human-vetted 2026-07-24; feasibility + grouping quality study comp
 - **Embedding groups**: MediaPipe MobileNetV3-large (`modules/image-embedder`) + burst gate/centroid linkage/adjacent merge per the cull-groups purpose above; committed human-judged regression suite pins grouping quality in CI.
 - **Home navigation redesign** (tester, on 0.7.0): bottom tabs **Home · Edit · Favourite · Share · Organize** (count-badged); Home centers scan status + daily goal + continue-reviewing; the bar stays off full-screen review surfaces.
 - **Deck/viewer rework** (deferred from m0.7): culled photos stay badged in the live deck; one standard full-screen viewer for deck browse, progress, history and queues (also the home for per-photo decision detail — e.g. explaining a superseded organized fact that m0.7.1 only marks with a pending icon); completed days re-show groups in browse/re-decide mode; staged culls re-enter badged with their prior verdict; recent days = 3 recent + 2 unreviewed + older-days indicator; day-count audit with kept/done merged into "reviewed".
-- Dormant shared-core debt: mix-engine weight contract, retrospective selector validation (check against the 0.7.2 review-hardening pass; legacy `CullSession` hardening is superseded by its removal).
 
 **m0.9 — Videos + legacy Android (moved from m0.8)**
 - **Videos enter review** (singles-first: playback, keep/cull/queues; grouping later if warranted).

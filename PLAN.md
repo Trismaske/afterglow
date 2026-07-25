@@ -7,7 +7,7 @@
 Two apps, one shared brain:
 
 1. **Afterglow Desktop** — a fullscreen ambient photo display ("screensaver") for a media PC or desktop, that shows your *edited* photos and videos with intelligent ordering, and quietly doubles as a photo-organization capture tool: see a photo that needs attention, flag it with one keypress, deal with it later.
-2. **Afterglow Companion** — an Android app that drives every phone photo to a reviewed end-state: it groups shots taken in quick succession, walks you through each group two photos at a time (cull one, or keep both and pick the better), stages deletions for one confirmed batch, and tracks which keepers still need editing.
+2. **Afterglow on Android** ("Afterglow Companion" until the m0.8 rename) — an app that drives every phone photo to a reviewed end-state: it groups shots taken in quick succession, walks you through each group two photos at a time (cull one, or keep both and pick the better), stages deletions for one confirmed batch, and tracks which keepers still need editing.
 
 They are separate apps with separate release trains, but the intelligence — time-based clustering, ordering strategies, the flag/culling session model — lives in one shared TypeScript package both consume.
 
@@ -20,7 +20,7 @@ They are separate apps with separate release trains, but the intelligence — ti
 | Mobile stack | **React Native (Expo), Android first.** iOS later. |
 | App split | Two apps sharing a core package. Desktop = screensaver + organizer modes in one app. |
 | RAW strategy | Keep it — it's the differentiator. **darktable XMPs rendered faithfully** via `darktable-cli`; **Lightroom via tiered fallbacks** — preview-cache extraction, DNG/embedded previews (see below). Per-image routing by sniffing XMP namespaces (`darktable:` vs `crs:`). JPEG-only libraries work fine regardless. |
-| Mobile app name | **Afterglow Companion.** |
+| App naming & convergence | **Both apps are "Afterglow"** (mobile renames from "Afterglow Companion" in m0.8 — display name only; the Android application id stays `com.afterglow.companion` so testers don't end up with two installs). One product, two surfaces: organize/queue UI-UX patterns converge as desktop organizer (v0.7+) and mobile mature, with shared vocabulary throughout. |
 | Mobile workflow | State machine converging on `done` (see below); swipe-deck group review (replaced the m0.1–m0.3 duel bracket in m0.4; the bracket stays in core for desktop reuse); stored compare/duel history instead of full ranking; completed groups advance directly to the next unfinished group; to-edit queue lives in-app with `ACTION_EDIT` launch. |
 | Distribution | GitHub Releases, CI-built installers per tag. Auto-update later. |
 
@@ -71,7 +71,7 @@ They are separate apps with separate release trains, but the intelligence — ti
 - Idle/screensaver integration, per platform, in priority order: Windows `.scr` wrapper or Task Scheduler idle trigger → Linux (systemd/X11 idle hooks) → macOS (no `.saver` possible from Electron; use hot-corner + launcher guidance).
 - CI: lint, tests, tagged releases building Windows NSIS/portable, Linux AppImage/deb, macOS dmg.
 
-### Afterglow Companion (Android)
+### Afterglow (Android)
 
 **The state machine.** Photos have no state by default. Every photo eventually converges to `done` — the app's goal is inbox zero for the camera roll, achievable day by day:
 
@@ -161,14 +161,14 @@ Linux idle hooks (systemd/X11); macOS hot-corner + launcher guidance (no `.saver
 All decisions human-vetted 2026-07-24; feasibility + grouping quality study complete (four judged rounds + validation, 698-pair frozen label set, on-device benchmarks on both test phones).
 - **Sessions disappear**: continuous newest→oldest scan feeds the durable tables; DB-backed deck cursor (core `DeckSession`/`CullSession` deleted); `kept` state removed (keep writes `done`; re-decide works on `done`); scopes dropped; presentational daily goal (default 50) with goal-reached streaks; live corpus stats on Home. Continuous grouping also closes the similarity components the m0.7 time-gap session cap used to split.
 - **Embedding groups**: MediaPipe MobileNetV3-large (`modules/image-embedder`) + burst gate/centroid linkage/adjacent merge per the cull-groups purpose above; committed human-judged regression suite pins grouping quality in CI.
-- **Home navigation redesign** (tester, on 0.7.0): bottom tabs **Home · Edit · Favourite · Share · Organize** (count-badged); Home centers scan status + daily goal + continue-reviewing; the bar stays off full-screen review surfaces.
+- **Home navigation redesign + tester copy round** (`docs/Feedback_m0.8.md`): bottom tabs **Home · Edit · Favourite · Share · Organize** (count-badged); Home centers scan status + daily goal + continue-reviewing; the bar stays off full-screen review surfaces. App renames to **"Afterglow"** (display name only) with a mobile/desktop terminology audit; tagline removed; review-not-cull copy; self-explanatory edit-queue buttons.
 - **Deck/viewer rework** (deferred from m0.7): culled photos stay badged in the live deck; one standard full-screen viewer for deck browse, progress, history and queues (also the home for per-photo decision detail — e.g. explaining a superseded organized fact that m0.7.1 only marks with a pending icon); completed days re-show groups in browse/re-decide mode; staged culls re-enter badged with their prior verdict; recent days = 3 recent + 2 unreviewed + older-days indicator; day-count audit with kept/done merged into "reviewed".
 
 **m0.9 — Videos + legacy Android (moved from m0.8)**
 - **Videos enter review** (singles-first: playback, keep/cull/queues; grouping later if warranted).
 - **Android ≤ 10 culling via permanent delete** behind unmissable warnings (no system trash below API 30; ships with matching trash-invariant doc updates).
 
-**After m0.9**: hardening and tester-driven fixes to 1.0 — including the planned **one-time signing break to a real release keystore** (testers reinstall; a data export/import path is considered first so review history survives) and merging `initial` → `main` as the pre-1.0 era closes. **iOS evaluation is deferred post-1.0 until further notice** (no iOS users or testers today).
+**After m0.9**: hardening and tester-driven fixes to 1.0 — including the planned **one-time identity break** bundling everything that forces a reinstall into a single tester disruption: real release keystore, **application id aligned to the "Afterglow" name** (drops `com.afterglow.companion`), and **versionCode reset to 1** (fresh installs have no downgrade check; note: if Play Store distribution ever happens, Play tracks the highest versionCode per id — moot since the id is new). A data export/import path is considered first so review history survives. Then merging `initial` → `main` as the pre-1.0 era closes. **iOS evaluation is deferred post-1.0 until further notice** (no iOS users or testers today).
 
 ---
 

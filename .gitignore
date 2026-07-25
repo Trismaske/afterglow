@@ -159,3 +159,4 @@ apps/mobile/modules/*/android/build/
 screenshots/
 apps/mobile/modules/image-embedder/android/src/main/assets/*.tflite
 codex-review.md
+__pycache__/

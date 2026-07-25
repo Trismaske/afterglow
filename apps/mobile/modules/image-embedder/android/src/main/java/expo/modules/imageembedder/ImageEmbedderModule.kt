@@ -3,10 +3,12 @@ package expo.modules.imageembedder
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
+import android.graphics.Matrix
 import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
 import android.util.Base64
+import androidx.exifinterface.media.ExifInterface
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.imageembedder.ImageEmbedder
@@ -57,11 +59,39 @@ class ImageEmbedderModule : Module() {
         decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
       }
     }
-    // API < 28 fallback: no EXIF handling (benchmark devices are 31+)
+    // API 24–27 fallback: sampled decode (power-of-two ceiling keeps the long
+    // edge ≤ DECODE_CAP) + EXIF rotation, matching the ImageDecoder path.
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     context.contentResolver.openInputStream(uri).use { stream ->
-      return BitmapFactory.decodeStream(stream)
-        ?: throw CodedException("DECODE_FAILED", uriString, null)
+      BitmapFactory.decodeStream(stream, null, bounds)
     }
+    val long = maxOf(bounds.outWidth, bounds.outHeight)
+    if (long <= 0) throw CodedException("DECODE_FAILED", uriString, null)
+    var sample = 1
+    while (long / sample > DECODE_CAP) sample *= 2
+    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+    val bitmap = context.contentResolver.openInputStream(uri).use { stream ->
+      BitmapFactory.decodeStream(stream, null, opts)
+    } ?: throw CodedException("DECODE_FAILED", uriString, null)
+    val orientation = context.contentResolver.openInputStream(uri).use { stream ->
+      if (stream == null) ExifInterface.ORIENTATION_NORMAL
+      else ExifInterface(stream).getAttributeInt(
+        ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+    }
+    val matrix = Matrix()
+    when (orientation) {
+      ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+      ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+      ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+      ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
+      ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+      ExifInterface.ORIENTATION_TRANSPOSE -> { matrix.postRotate(90f); matrix.postScale(-1f, 1f) }
+      ExifInterface.ORIENTATION_TRANSVERSE -> { matrix.postRotate(270f); matrix.postScale(-1f, 1f) }
+      else -> return bitmap
+    }
+    val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    if (rotated !== bitmap) bitmap.recycle()
+    return rotated
   }
 
   override fun definition() = ModuleDefinition {
@@ -71,7 +101,10 @@ class ImageEmbedderModule : Module() {
       val t0 = SystemClock.elapsedRealtime()
       val bitmap = decode(uriString)
       val t1 = SystemClock.elapsedRealtime()
-      val result = requireEmbedder().embed(BitmapImageBuilder(bitmap).build())
+      // close() recycles the decoded bitmap — required during sustained backfill
+      val result = BitmapImageBuilder(bitmap).build().use { image ->
+        requireEmbedder().embed(image)
+      }
       val t2 = SystemClock.elapsedRealtime()
       val vec = result.embeddingResult().embeddings()[0].floatEmbedding()
       val bytes = ByteBuffer.allocate(vec.size * 4).order(ByteOrder.LITTLE_ENDIAN)

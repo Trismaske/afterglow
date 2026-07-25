@@ -18,7 +18,11 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.chdir(HERE)
 PHONESYNC = '/home/tristan/PhoneSync'
-MODEL = '/tmp/claude-1000/-home-tristan-Repos-afterglow-nosesh/8f7ec172-59b5-4bcf-a5e4-5297e03ad5f2/scratchpad/models/mobilenet_v3_large.tflite'
+MODEL = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
+    HERE, '../../apps/mobile/modules/image-embedder/android/src/main/assets/mobilenet_v3_large.tflite')
+if not os.path.exists(MODEL):
+    sys.exit(f'model not found at {MODEL} — fetch it per apps/mobile/modules/image-embedder/README.md '
+             f'or pass the path as the first argument')
 FROZEN_DATE = '2026-07-25'
 
 def base(p):
@@ -43,6 +47,8 @@ for dir_ in ["In Group But Shouldn't Be", 'Not In Group']:
 # validation round replaced two interpreted round-4 sources; rebuild that set
 val_verd = json.load(open('data/verdicts_validation.json'))
 val_man = json.load(open('data/validation-manifest.json'))
+if len(val_verd) != len(val_man):
+    sys.exit(f'validation incomplete: {len(val_verd)}/{len(val_man)} verdicts — re-export from validation.html')
 replaced_srcs, val_extra = set(), []
 val_overrides, val_retired = {}, set()
 for cid, v in val_verd.items():

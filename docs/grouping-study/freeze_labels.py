@@ -209,14 +209,25 @@ labels_payload = {
 }
 embed_payload = {'version': 'labels-v1', 'dim': DIM, 'encoding': 'base64 float32 LE, L2-normalized',
                  'model_sha256': model_sha, 'photos': fix}
-# write both temporaries first, then replace both — a failure mid-write
-# leaves the committed pair untouched
+# write both temporaries first, then replace both; if the second replace
+# fails, roll the first back so the committed pair never mixes generations
 outputs = (('labels-v1.json', labels_payload), ('embeddings-labeled-v1.json', embed_payload))
 for path, payload in outputs:
     with open(path + '.tmp', 'w') as f:
         json.dump(payload, f, indent=1 if path.startswith('labels') else None)
-for path, _ in outputs:
-    os.replace(path + '.tmp', path)
+backup = outputs[0][0] + '.bak'
+if os.path.exists(outputs[0][0]):
+    import shutil
+    shutil.copy2(outputs[0][0], backup)
+os.replace(outputs[0][0] + '.tmp', outputs[0][0])
+try:
+    os.replace(outputs[1][0] + '.tmp', outputs[1][0])
+except BaseException:
+    if os.path.exists(backup):
+        os.replace(backup, outputs[0][0])
+    raise
+if os.path.exists(backup):
+    os.remove(backup)
 print(f'labels-v1: {len(pairs)} hard ({links} link / {len(pairs) - links} apart), '
       f'{len(soft_final)} soft, {len(retired)} retired')
 print(f'fixture: {len(fix)} photos, {os.path.getsize("embeddings-labeled-v1.json") // 1024} KB')

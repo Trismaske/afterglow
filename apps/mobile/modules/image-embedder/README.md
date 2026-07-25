@@ -11,7 +11,7 @@ different model would produce vectors incompatible with the frozen fixture):
 
 ```bash
 curl -L --create-dirs -o android/src/main/assets/mobilenet_v3_large.tflite \
-  https://storage.googleapis.com/mediapipe-models/image_embedder/mobilenet_v3_large/float32/latest/mobilenet_v3_large.tflite
+  https://storage.googleapis.com/mediapipe-models/image_embedder/mobilenet_v3_large/float32/1/mobilenet_v3_large.tflite
 echo "11af3c560dfeed7737cb4c03c23bf52a8403020784192d4dea0b74862a12828d  android/src/main/assets/mobilenet_v3_large.tflite" | sha256sum -c
 ```
 

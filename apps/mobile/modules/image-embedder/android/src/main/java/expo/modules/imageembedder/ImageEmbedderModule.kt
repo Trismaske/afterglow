@@ -34,10 +34,14 @@ private const val MODEL_ASSET = "mobilenet_v3_large.tflite"
 private const val DECODE_CAP = 1024
 
 class ImageEmbedderModule : Module() {
+  /** Guards embedder lifecycle: teardown must not close it mid-inference. */
+  private val embedderLock = Any()
   private var embedder: ImageEmbedder? = null
+  private var destroyed = false
 
   private fun requireEmbedder(): ImageEmbedder {
     embedder?.let { return it }
+    if (destroyed) throw CodedException("DESTROYED", "module torn down", null)
     val context = appContext.reactContext ?: throw CodedException("NO_CONTEXT", "no react context", null)
     val options = ImageEmbedderOptions.builder()
       .setBaseOptions(BaseOptions.builder().setModelAssetPath(MODEL_ASSET).build())
@@ -98,17 +102,21 @@ class ImageEmbedderModule : Module() {
     Name("ImageEmbedder")
 
     OnDestroy {
-      embedder?.close()
-      embedder = null
+      synchronized(embedderLock) {
+        destroyed = true
+        embedder?.close()
+        embedder = null
+      }
     }
 
     AsyncFunction("embed") { uriString: String ->
       val t0 = SystemClock.elapsedRealtime()
       val bitmap = decode(uriString)
       val t1 = SystemClock.elapsedRealtime()
-      // close() recycles the decoded bitmap — required during sustained backfill
+      // close() recycles the decoded bitmap — required during sustained backfill;
+      // the lock keeps OnDestroy from closing the embedder mid-inference
       val result = BitmapImageBuilder(bitmap).build().use { image ->
-        requireEmbedder().embed(image)
+        synchronized(embedderLock) { requireEmbedder().embed(image) }
       }
       val t2 = SystemClock.elapsedRealtime()
       val vec = result.embeddingResult().embeddings()[0].floatEmbedding()

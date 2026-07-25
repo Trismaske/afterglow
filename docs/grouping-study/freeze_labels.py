@@ -23,6 +23,8 @@ MODEL = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
 if not os.path.exists(MODEL):
     sys.exit(f'model not found at {MODEL} — fetch it per apps/mobile/modules/image-embedder/README.md '
              f'or pass the path as the first argument')
+# v1 is pinned to exactly this model; a v2 freeze changes this constant deliberately.
+EXPECTED_MODEL_SHA = '11af3c560dfeed7737cb4c03c23bf52a8403020784192d4dea0b74862a12828d'
 FROZEN_DATE = '2026-07-25'
 
 def base(p):
@@ -159,6 +161,9 @@ if unexplained:
 
 # ---- 5. build BOTH payloads, validate everything, then write atomically ----
 model_sha = hashlib.sha256(open(MODEL, 'rb').read()).hexdigest()
+if model_sha != EXPECTED_MODEL_SHA:
+    sys.exit(f'model at {MODEL} hashes to {model_sha[:12]}…, but labels-v1 is pinned to '
+             f'{EXPECTED_MODEL_SHA[:12]}… — wrong model file; v2 freezes update the pin deliberately')
 data = np.load('data/embeddings-mnv3l.npz', allow_pickle=False)
 keys, vecs = [str(k) for k in data['keys']], data['vecs']
 if 'model_sha256' in data:
@@ -204,11 +209,14 @@ labels_payload = {
 }
 embed_payload = {'version': 'labels-v1', 'dim': DIM, 'encoding': 'base64 float32 LE, L2-normalized',
                  'model_sha256': model_sha, 'photos': fix}
-for path, payload in (('labels-v1.json', labels_payload), ('embeddings-labeled-v1.json', embed_payload)):
-    tmp = path + '.tmp'
-    with open(tmp, 'w') as f:
+# write both temporaries first, then replace both — a failure mid-write
+# leaves the committed pair untouched
+outputs = (('labels-v1.json', labels_payload), ('embeddings-labeled-v1.json', embed_payload))
+for path, payload in outputs:
+    with open(path + '.tmp', 'w') as f:
         json.dump(payload, f, indent=1 if path.startswith('labels') else None)
-    os.replace(tmp, path)
+for path, _ in outputs:
+    os.replace(path + '.tmp', path)
 print(f'labels-v1: {len(pairs)} hard ({links} link / {len(pairs) - links} apart), '
       f'{len(soft_final)} soft, {len(retired)} retired')
 print(f'fixture: {len(fix)} photos, {os.path.getsize("embeddings-labeled-v1.json") // 1024} KB')

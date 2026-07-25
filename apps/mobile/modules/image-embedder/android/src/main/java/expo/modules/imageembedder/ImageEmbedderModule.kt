@@ -97,6 +97,11 @@ class ImageEmbedderModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("ImageEmbedder")
 
+    OnDestroy {
+      embedder?.close()
+      embedder = null
+    }
+
     AsyncFunction("embed") { uriString: String ->
       val t0 = SystemClock.elapsedRealtime()
       val bitmap = decode(uriString)

@@ -1,0 +1,713 @@
+[
+ {
+  "type": "conflict",
+  "members": [
+   "20260509_164245.jpg",
+   "20260509_164257.jpg"
+  ],
+  "sim": 0.5086038708686829,
+  "note": "apart (curated:In Group But Shouldn't Be/7) vs link (r4#3) vs link (r4#68)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20260509_164245.jpg",
+   "20260509_164315.jpg"
+  ],
+  "sim": 0.5136012434959412,
+  "note": "apart (curated:In Group But Shouldn't Be/7) vs link (r4#3) vs link (r4#68)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20260509_164257.jpg",
+   "20260509_164335.jpg"
+  ],
+  "sim": 0.5999387502670288,
+  "note": "apart (curated:In Group But Shouldn't Be/7) vs apart (r2#12) vs link (r4#3) vs link (r4#68)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20260509_164315.jpg",
+   "20260509_164335.jpg"
+  ],
+  "sim": 0.695280134677887,
+  "note": "apart (curated:In Group But Shouldn't Be/7) vs apart (r2#12) vs link (r4#3) vs link (r4#68)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20260509_164245.jpg",
+   "20260509_164335.jpg"
+  ],
+  "sim": 0.5784560441970825,
+  "note": "apart (curated:In Group But Shouldn't Be/7) vs link (r4#3) vs link (r4#68)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20260511_102026.jpg",
+   "20260511_102328.jpg"
+  ],
+  "sim": 0.5673568844795227,
+  "note": "apart (curated:In Group But Shouldn't Be/2) vs link (r2#50)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20260509_125321.jpg",
+   "20260509_125522.jpg"
+  ],
+  "sim": 0.46680939197540283,
+  "note": "apart (r1#14) vs link (r4#2) vs apart (r4#44)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20260509_125327.jpg",
+   "20260509_125522.jpg"
+  ],
+  "sim": 0.4884749948978424,
+  "note": "apart (r1#14) vs link (r4#2) vs apart (r4#44)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20220701_181311.jpg",
+   "20220701_181911.jpg"
+  ],
+  "sim": 0.7402698993682861,
+  "note": "link (r2#10) vs link (r3#1) vs apart (r4#4)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20260509_162801.jpg",
+   "20260509_164335.jpg"
+  ],
+  "sim": 0.7309820652008057,
+  "note": "link (r2#12) vs apart (r4#3)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20260509_162810.jpg",
+   "20260509_164335.jpg"
+  ],
+  "sim": 0.7534434795379639,
+  "note": "link (r2#12) vs apart (r4#3)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20260509_162815.jpg",
+   "20260509_164335.jpg"
+  ],
+  "sim": 0.7655055522918701,
+  "note": "link (r2#12) vs apart (r4#3)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20220717_131617.jpg",
+   "20220717_132258.jpg"
+  ],
+  "sim": 0.6738109588623047,
+  "note": "link (r3#0) vs apart (r4#1)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20220717_131617.jpg",
+   "20220717_132259.jpg"
+  ],
+  "sim": 0.6507541537284851,
+  "note": "link (r3#0) vs apart (r4#1)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20220701_181303.jpg",
+   "20220701_181911.jpg"
+  ],
+  "sim": 0.7067710757255554,
+  "note": "link (r3#1) vs apart (r4#4)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20220701_181308.jpg",
+   "20220701_181911.jpg"
+  ],
+  "sim": 0.7041005492210388,
+  "note": "link (r3#1) vs apart (r4#4)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20220701_181317.jpg",
+   "20220701_181911.jpg"
+  ],
+  "sim": 0.8249557018280029,
+  "note": "link (r3#1) vs apart (r4#4)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20220701_181456.jpg",
+   "20220701_181911.jpg"
+  ],
+  "sim": 0.8144199848175049,
+  "note": "link (r3#1) vs apart (r4#4)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20220701_181505.jpg",
+   "20220701_181911.jpg"
+  ],
+  "sim": 0.7702967524528503,
+  "note": "link (r3#1) vs apart (r4#4)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20220701_181521.jpg",
+   "20220701_181911.jpg"
+  ],
+  "sim": 0.7448850870132446,
+  "note": "link (r3#1) vs apart (r4#4)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20250428_203513.jpg",
+   "20250428_204114.jpg"
+  ],
+  "sim": 0.6379393339157104,
+  "note": "link (r3#3) vs apart (r4#6)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20250428_204108.jpg",
+   "20250428_204114.jpg"
+  ],
+  "sim": 0.6301584243774414,
+  "note": "link (r3#3) vs apart (r4#6)"
+ },
+ {
+  "type": "conflict",
+  "members": [
+   "20260509_125337.jpg",
+   "20260509_125522.jpg"
+  ],
+  "sim": 0.3875393271446228,
+  "note": "link (r4#2) vs apart (r4#44)"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_133834.jpg",
+   "20260509_133857.jpg"
+  ],
+  "sim": 0.20327967405319214,
+  "note": "labeled SAME GROUP but similarity is very low (0.203) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20241011_102228.jpg",
+   "20241011_102231.jpg"
+  ],
+  "sim": 0.24814994633197784,
+  "note": "labeled SAME GROUP but similarity is very low (0.248) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20201126_124838.jpg",
+   "20201126_124848.jpg"
+  ],
+  "sim": 0.2819095253944397,
+  "note": "labeled SAME GROUP but similarity is very low (0.282) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260603_164322.jpg",
+   "20260603_165530.jpg"
+  ],
+  "sim": 0.32738998532295227,
+  "note": "labeled SAME GROUP but similarity is very low (0.327) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260603_101441.jpg",
+   "20260603_101445.jpg"
+  ],
+  "sim": 0.34104621410369873,
+  "note": "labeled SAME GROUP but similarity is very low (0.341) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260603_164906.jpg",
+   "20260603_171007.jpg"
+  ],
+  "sim": 0.34818458557128906,
+  "note": "labeled SAME GROUP but similarity is very low (0.348) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260603_164902.jpg",
+   "20260603_171007.jpg"
+  ],
+  "sim": 0.35781610012054443,
+  "note": "labeled SAME GROUP but similarity is very low (0.358) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_110055.jpg",
+   "20260509_110105.jpg"
+  ],
+  "sim": 0.36143016815185547,
+  "note": "labeled SAME GROUP but similarity is very low (0.361) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20230518_200610.jpg",
+   "20230518_200658.jpg"
+  ],
+  "sim": 0.36587101221084595,
+  "note": "labeled SAME GROUP but similarity is very low (0.366) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260603_142006.jpg",
+   "20260603_142054.jpg"
+  ],
+  "sim": 0.3679620027542114,
+  "note": "labeled SAME GROUP but similarity is very low (0.368) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260603_164306.jpg",
+   "20260603_164902.jpg"
+  ],
+  "sim": 0.3707549571990967,
+  "note": "labeled SAME GROUP but similarity is very low (0.371) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20230518_200610.jpg",
+   "20230518_200631.jpg"
+  ],
+  "sim": 0.37535154819488525,
+  "note": "labeled SAME GROUP but similarity is very low (0.375) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260606_124142.jpg",
+   "20260606_124205.jpg"
+  ],
+  "sim": 0.3804963231086731,
+  "note": "labeled SAME GROUP but similarity is very low (0.380) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260603_142006.jpg",
+   "20260603_142032.jpg"
+  ],
+  "sim": 0.3986546993255615,
+  "note": "labeled SAME GROUP but similarity is very low (0.399) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20230518_200610.jpg",
+   "20230518_200626.jpg"
+  ],
+  "sim": 0.40150055289268494,
+  "note": "labeled SAME GROUP but similarity is very low (0.402) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260603_142006.jpg",
+   "20260603_142010.jpg"
+  ],
+  "sim": 0.40317901968955994,
+  "note": "labeled SAME GROUP but similarity is very low (0.403) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_110054.jpg",
+   "20260509_110105.jpg"
+  ],
+  "sim": 0.4033030867576599,
+  "note": "labeled SAME GROUP but similarity is very low (0.403) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20201230_161754.jpg",
+   "20201230_161800.jpg"
+  ],
+  "sim": 0.4076014757156372,
+  "note": "labeled SAME GROUP but similarity is very low (0.408) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_110055.jpg",
+   "20260509_110107.jpg"
+  ],
+  "sim": 0.4102059602737427,
+  "note": "labeled SAME GROUP but similarity is very low (0.410) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20201230_161754.jpg",
+   "20201230_161825.jpg"
+  ],
+  "sim": 0.41057175397872925,
+  "note": "labeled SAME GROUP but similarity is very low (0.411) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_162815.jpg",
+   "20260509_164315.jpg"
+  ],
+  "sim": 0.7339432835578918,
+  "note": "labeled SEPARATE but similarity is very high (0.734) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_162810.jpg",
+   "20260509_164315.jpg"
+  ],
+  "sim": 0.7255892753601074,
+  "note": "labeled SEPARATE but similarity is very high (0.726) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_082323.jpg",
+   "20260509_083112.jpg"
+  ],
+  "sim": 0.699427604675293,
+  "note": "labeled SEPARATE but similarity is very high (0.699) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_144248.jpg",
+   "20260509_144530.jpg"
+  ],
+  "sim": 0.6706689596176147,
+  "note": "labeled SEPARATE but similarity is very high (0.671) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_082610.jpg",
+   "20260509_083112.jpg"
+  ],
+  "sim": 0.6690183281898499,
+  "note": "labeled SEPARATE but similarity is very high (0.669) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260603_165258.jpg",
+   "20260603_165351.jpg"
+  ],
+  "sim": 0.6515310406684875,
+  "note": "labeled SEPARATE but similarity is very high (0.652) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_144248.jpg",
+   "20260509_144523.jpg"
+  ],
+  "sim": 0.6378821134567261,
+  "note": "labeled SEPARATE but similarity is very high (0.638) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_123905.jpg",
+   "20260509_125321.jpg"
+  ],
+  "sim": 0.6047705411911011,
+  "note": "labeled SEPARATE but similarity is very high (0.605) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_123905.jpg",
+   "20260509_125327.jpg"
+  ],
+  "sim": 0.6035628318786621,
+  "note": "labeled SEPARATE but similarity is very high (0.604) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_093931.jpg",
+   "20260509_094226.jpg"
+  ],
+  "sim": 0.5961365699768066,
+  "note": "labeled SEPARATE but similarity is very high (0.596) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_162815.jpg",
+   "20260509_164257.jpg"
+  ],
+  "sim": 0.5815608501434326,
+  "note": "labeled SEPARATE but similarity is very high (0.582) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_162801.jpg",
+   "20260509_164315.jpg"
+  ],
+  "sim": 0.5807891488075256,
+  "note": "labeled SEPARATE but similarity is very high (0.581) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_093931.jpg",
+   "20260509_094451.jpg"
+  ],
+  "sim": 0.5732975006103516,
+  "note": "labeled SEPARATE but similarity is very high (0.573) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260511_131627.jpg",
+   "20260511_131707.jpg"
+  ],
+  "sim": 0.572344183921814,
+  "note": "labeled SEPARATE but similarity is very high (0.572) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_162810.jpg",
+   "20260509_164245.jpg"
+  ],
+  "sim": 0.5660166144371033,
+  "note": "labeled SEPARATE but similarity is very high (0.566) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_162810.jpg",
+   "20260509_164257.jpg"
+  ],
+  "sim": 0.5567159056663513,
+  "note": "labeled SEPARATE but similarity is very high (0.557) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_093931.jpg",
+   "20260509_094208.jpg"
+  ],
+  "sim": 0.553127646446228,
+  "note": "labeled SEPARATE but similarity is very high (0.553) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260603_165318.jpg",
+   "20260603_165530.jpg"
+  ],
+  "sim": 0.5415722727775574,
+  "note": "labeled SEPARATE but similarity is very high (0.542) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260509_162815.jpg",
+   "20260509_164245.jpg"
+  ],
+  "sim": 0.5402284860610962,
+  "note": "labeled SEPARATE but similarity is very high (0.540) \u2014 confirm?"
+ },
+ {
+  "type": "outlier",
+  "members": [
+   "20260510_140303.jpg",
+   "20260510_140317.jpg"
+  ],
+  "sim": 0.5391687750816345,
+  "note": "labeled SEPARATE but similarity is very high (0.539) \u2014 confirm?"
+ },
+ {
+  "type": "interpreted",
+  "partition": [
+   [
+    "20260509_082323.jpg",
+    "20260509_082610.jpg"
+   ],
+   [
+    "20260509_082921.jpg",
+    "20260509_083001.jpg",
+    "20260509_083112.jpg"
+   ]
+  ],
+  "sim": 0,
+  "note": "encoded from your r4#0 note \u2014 bars separate the groups I recorded"
+ },
+ {
+  "type": "interpreted",
+  "partition": [
+   [
+    "20260603_165830.jpg"
+   ],
+   [
+    "20260603_170259.jpg",
+    "20260603_170307.jpg"
+   ]
+  ],
+  "sim": 0,
+  "note": "encoded from your r4#12 note \u2014 bars separate the groups I recorded"
+ },
+ {
+  "type": "interpreted",
+  "partition": [
+   [
+    "20260509_123905.jpg"
+   ],
+   [
+    "20260509_125321.jpg",
+    "20260509_125327.jpg",
+    "20260509_125337.jpg",
+    "20260509_125522.jpg"
+   ]
+  ],
+  "sim": 0,
+  "note": "encoded from your r4#2 note \u2014 bars separate the groups I recorded"
+ },
+ {
+  "type": "interpreted",
+  "partition": [
+   [
+    "20260509_162801.jpg",
+    "20260509_162810.jpg",
+    "20260509_162815.jpg"
+   ],
+   [
+    "20260509_164245.jpg",
+    "20260509_164257.jpg",
+    "20260509_164315.jpg",
+    "20260509_164335.jpg"
+   ]
+  ],
+  "sim": 0,
+  "note": "encoded from your r4#3 note \u2014 bars separate the groups I recorded"
+ },
+ {
+  "type": "interpreted",
+  "partition": [
+   [
+    "20260511_131627.jpg",
+    "20260511_131642.jpg"
+   ],
+   [
+    "20260511_131657.jpg",
+    "20260511_131707.jpg"
+   ]
+  ],
+  "sim": 0,
+  "note": "encoded from your r4#30 note \u2014 bars separate the groups I recorded"
+ },
+ {
+  "type": "interpreted",
+  "partition": [
+   [
+    "20220701_181303.jpg",
+    "20220701_181308.jpg",
+    "20220701_181311.jpg",
+    "20220701_181317.jpg",
+    "20220701_181456.jpg",
+    "20220701_181505.jpg",
+    "20220701_181521.jpg"
+   ],
+   [
+    "20220701_181911.jpg"
+   ]
+  ],
+  "sim": 0,
+  "note": "encoded from your r4#4 note \u2014 bars separate the groups I recorded"
+ },
+ {
+  "type": "interpreted",
+  "partition": [
+   [
+    "20260509_125321.jpg",
+    "20260509_125327.jpg",
+    "20260509_125337.jpg"
+   ],
+   [
+    "20260509_125522.jpg"
+   ]
+  ],
+  "sim": 0,
+  "note": "encoded from your r4#44 note \u2014 bars separate the groups I recorded"
+ },
+ {
+  "type": "interpreted",
+  "partition": [
+   [
+    "20250428_203513.jpg",
+    "20250428_204108.jpg"
+   ],
+   [
+    "20250428_204114.jpg"
+   ]
+  ],
+  "sim": 0,
+  "note": "encoded from your r4#6 note \u2014 bars separate the groups I recorded"
+ },
+ {
+  "type": "interpreted",
+  "partition": [
+   [
+    "20260509_094052.jpg",
+    "20260509_094057.jpg"
+   ],
+   [
+    "20260509_094155.jpg",
+    "20260509_094241.jpg",
+    "20260509_094254.jpg",
+    "20260509_094307.jpg"
+   ]
+  ],
+  "sim": 0,
+  "note": "encoded from your r4#7 note \u2014 bars separate the groups I recorded"
+ }
+]

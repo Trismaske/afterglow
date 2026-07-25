@@ -33,7 +33,17 @@ PLAN.md (roadmap / trigger-based backlog) once decided.
    untouched) so the remedy lives inside the app; a destructive flow
    like this deserves its own design pass.
 
-4. **Documentation standards for shipped releases** (Tristan, 2026-07-23).
+4. **Restore CI audit gate to `--audit-level=high`** (2026-07-25).
+   Temporarily at `critical` in `.github/workflows/ci.yml`: brace-expansion
+   CVE-2026-14257 (GHSA-mh99-v99m-4gvg) flags the 1.x/2.x copies under
+   eslint/electron-builder/expo (dev tooling only, our own patterns —
+   no real exposure) and upstream has not yet backported the 5.0.8
+   length-bound fix (verified: the advisory PoC crashes the installed
+   1.1.16; upstream issue #131's "already patched" claim is wrong).
+   When backports publish: `npm audit fix`, commit the lockfile, and
+   revert the workflow to `high`.
+
+5. **Documentation standards for shipped releases** (Tristan, 2026-07-23).
    Should there be a per-release document recording what actually shipped
    (a `docs/Release_*.md` or a curated CHANGELOG)? Unclear whether it adds
    value or just duplicates the GitHub Releases page, which already

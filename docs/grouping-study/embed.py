@@ -38,5 +38,8 @@ for i, path in enumerate(paths):
     if (i + 1) % 200 == 0:
         print(f'{i + 1}/{len(paths)}', flush=True)
 
-np.savez_compressed(OUT, keys=np.array(keys), vecs=np.stack(vecs))
-print(f'wrote {OUT}: {len(keys)} embeddings, dim {vecs[0].shape[0]}')
+import hashlib
+model_sha = hashlib.sha256(open(MODEL, 'rb').read()).hexdigest()
+np.savez_compressed(OUT, keys=np.array(keys), vecs=np.stack(vecs),
+                    model_sha256=np.array(model_sha), dim=np.array(vecs[0].shape[0]))
+print(f'wrote {OUT}: {len(keys)} embeddings, dim {vecs[0].shape[0]}, model {model_sha[:12]}')

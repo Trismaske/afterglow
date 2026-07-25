@@ -41,8 +41,10 @@ else:
     if MODEL == 'tinyclip39':
         net, _, tf = open_clip.create_model_and_transforms(
             'hf-hub:wkcn/TinyCLIP-ViT-39M-16-Text-19M-YFCC15M')
-    else:
+    elif MODEL == 'mobileclip_s1':
         net, _, tf = open_clip.create_model_and_transforms('MobileCLIP-S1', pretrained='datacompdr')
+    else:
+        sys.exit(f'unknown model {MODEL!r} — expected tinyclip39 | mobileclip_s1 | dinov2_s14')
     net.eval()
     encode = lambda batch: net.encode_image(batch)
 

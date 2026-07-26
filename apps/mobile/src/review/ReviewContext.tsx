@@ -351,7 +351,13 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
         const changes = group.members
           .filter((m) => m.state === 'unreviewed')
           .map((m) => [m.asset_id, 'done'] as [string, ReviewVerdict]);
-        if (changes.length > 0) await applyReviewDecisions(db, changes, Date.now());
+        if (changes.length > 0)
+          await applyReviewDecisions(db, changes, Date.now(), {
+            // Validated in the transaction: a warm scan can rebuild the
+            // group between render and tap — the stale member list must
+            // not freeze photos inside superseding groups.
+            requireGroupMembership: { groupId, assetIds: changes.map(([id]) => id) },
+          });
       }),
     [db, groups, write],
   );

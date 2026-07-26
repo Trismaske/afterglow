@@ -53,6 +53,11 @@ export interface PersistDecisionExtras {
   /** Star a group best in the SAME transaction (compare verdicts: duel,
    * loser state, and the star must land or fail together). */
   setBest?: { groupId: number; assetId: string | null };
+  /** Validate — inside the transaction — that every listed photo still
+   * belongs to the given group (Keep remaining: a warm scan can rebuild
+   * an all-unreviewed group between render and tap; writing the stale
+   * member list would partially freeze the superseding groups). */
+  requireGroupMembership?: { groupId: number; assetIds: readonly string[] };
 }
 
 /**
@@ -181,13 +186,36 @@ export async function applyReviewDecisions(
   extras: PersistDecisionExtras = {},
 ): Promise<void> {
   await db.withExclusiveTransactionAsync(async (txn) => {
+    if (extras.requireGroupMembership) {
+      const { groupId, assetIds } = extras.requireGroupMembership;
+      if (assetIds.length > 0) {
+        const rows = await txn.getAllAsync<{ photo_id: string }>(
+          `SELECT a.photo_id FROM photo_group_assignments a
+           JOIN photos p ON p.asset_id = a.photo_id
+           WHERE a.group_id = ? AND a.photo_id IN (${assetIds.map(() => '?').join(',')})
+             AND p.is_present = 1`,
+          groupId,
+          ...assetIds,
+        );
+        if (rows.length !== assetIds.length) {
+          throw new Error('This group changed while reviewing — reopen it and try again.');
+        }
+      }
+    }
     // Compare verdicts validate IN the transaction: a warm scan can
     // replace an all-unreviewed group between Compare's load and this
     // write — starring/culling against the wrong group must abort whole
     // (the provider surfaces the error; nothing commits).
     if (extras.duel && extras.setBest) {
       const members = await txn.getAllAsync<{ photo_id: string }>(
-        'SELECT photo_id FROM photo_group_assignments WHERE group_id = ? AND photo_id IN (?, ?)',
+        `SELECT a.photo_id FROM photo_group_assignments a
+         JOIN photos p ON p.asset_id = a.photo_id
+         WHERE a.group_id = ? AND a.photo_id IN (?, ?)
+           -- Both endpoints must still be REVIEWABLE: an externally
+           -- removed (or already-decided) endpoint would record a duel
+           -- and could star an unavailable photo, metadata-freezing the
+           -- group around it.
+           AND p.is_present = 1 AND p.state = 'unreviewed'`,
         extras.setBest.groupId,
         extras.duel.winnerId,
         extras.duel.loserId,
@@ -480,8 +508,12 @@ export async function makePhotoSingles(
   await db.withExclusiveTransactionAsync(async (txn) => {
     if (expectedGroupId !== undefined) {
       const rows = await txn.getAllAsync<{ photo_id: string }>(
-        `SELECT photo_id FROM photo_group_assignments
-         WHERE group_id = ? AND photo_id IN (${assetIds.map(() => '?').join(',')})`,
+        `SELECT a.photo_id FROM photo_group_assignments a
+         JOIN photos p ON p.asset_id = a.photo_id
+         WHERE a.group_id = ? AND a.photo_id IN (${assetIds.map(() => '?').join(',')})
+           -- An absent member must not become user_single: a Gallery
+           -- restore would honor the flag and never regroup it.
+           AND p.is_present = 1`,
         expectedGroupId,
         ...assetIds,
       );
@@ -753,11 +785,26 @@ export async function setGroupBest(
   groupId: number,
   bestPhotoId: string | null,
 ): Promise<void> {
-  const result = await db.runAsync(
-    'UPDATE photo_groups SET best_photo_id = ? WHERE id = ?',
-    bestPhotoId,
-    groupId,
-  );
+  // A non-null best must be a PRESENT, reviewable member — reconciliation
+  // keeps an absent member's assignment (only clearing its star), and the
+  // deferred FK would accept it, re-freezing the group around an
+  // unavailable photo.
+  const result =
+    bestPhotoId === null
+      ? await db.runAsync('UPDATE photo_groups SET best_photo_id = NULL WHERE id = ?', groupId)
+      : await db.runAsync(
+          `UPDATE photo_groups SET best_photo_id = ?
+           WHERE id = ? AND EXISTS (
+             SELECT 1 FROM photo_group_assignments a
+             JOIN photos p ON p.asset_id = a.photo_id
+             WHERE a.group_id = photo_groups.id AND a.photo_id = ?
+               AND p.is_present = 1
+               AND p.state NOT IN ('culled', 'confirmed', 'trashed')
+           )`,
+          bestPhotoId,
+          groupId,
+          bestPhotoId,
+        );
   if (Number(result.changes) === 0) {
     throw new Error('This group changed while reviewing — reopen it and try again.');
   }

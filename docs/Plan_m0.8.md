@@ -238,3 +238,8 @@ Final-review round 26 fixes, same pending vetting:
 
 92. **Decisions reject externally removed photos**: the verdict write requires `is_present = 1 AND state NOT IN ('trashed','confirmed')` — a stale deck tile deciding a reconciled photo would overwrite `trashed` and strand it from the scan's restore path. A single-photo decision surfaces the staleness; batch keeps skip reconciled members loudly (they converge on refresh).
 93. **The strictness rollback COMPLETES its queue refresh before returning** (the deleted groups must leave the rendered queue before back-navigation can reach one), with the toast reflecting an un-rerendered rollback; and a failed SQLite source rollback installs and renders the DURABLE (new) scope — the reverted fallback matched nothing persisted.
+
+Final-review round 27 fixes, same pending vetting:
+
+94. **The presence/membership lens covers every group write**: compare endpoints must be present AND unreviewed at write time; a non-null best must be a present, reviewable member (reconciliation keeps absent assignments); ejection requires present rows (an absent `user_single` would never regroup after a Gallery restore); "Keep remaining" validates its whole member list against the displayed group inside the decision transaction (`extras.requireGroupMembership`).
+95. **A source narrow resets unfrozen assignments before rendering** (same as the strictness flow) — an unreviewed cross-source group still queues via its in-source member and would render whole; deciding its excluded member pre-rescan would freeze the stale membership.

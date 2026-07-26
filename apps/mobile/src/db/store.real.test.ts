@@ -1114,3 +1114,71 @@ describe('decisions reject externally removed photos', () => {
     expect(gone.state).toBe('trashed');
   });
 });
+
+// -------------------------------------------- final-review round 27
+
+describe('stale actions against absent/regrouped photos reject', () => {
+  it('a compare against an absent endpoint aborts whole', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
+    const gid = groupIdOf(d, '1');
+    const { reconcileExternallyRemoved } = await import('./trashStore');
+    await reconcileExternallyRemoved(asExpo(d), [id('1')], AT + 50);
+    await expect(
+      applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 100, {
+        duel: {
+          groupId: String(gid),
+          winnerId: id('1'),
+          loserId: id('2'),
+          keptBoth: false,
+          at: AT + 100,
+        },
+        setBest: { groupId: gid, assetId: id('1') },
+      }),
+    ).rejects.toThrow(/changed while comparing/);
+    expect(d.raw.prepare('SELECT COUNT(*) AS n FROM duels').get()).toEqual({ n: 0 });
+  });
+
+  it('starring an absent member rejects; a present member stars fine', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
+    const gid = groupIdOf(d, '1');
+    const { reconcileExternallyRemoved } = await import('./trashStore');
+    await reconcileExternallyRemoved(asExpo(d), [id('1')], AT + 50);
+    await expect(setGroupBest(asExpo(d), gid, id('1'))).rejects.toThrow(/changed while reviewing/);
+    await setGroupBest(asExpo(d), gid, id('2'));
+    const best = d.raw.prepare('SELECT best_photo_id FROM photo_groups WHERE id = ?').get(gid) as {
+      best_photo_id: string;
+    };
+    expect(best.best_photo_id).toBe(id('2'));
+  });
+
+  it('ejecting an absent member rejects', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
+    const gid = groupIdOf(d, '1');
+    const { reconcileExternallyRemoved } = await import('./trashStore');
+    await reconcileExternallyRemoved(asExpo(d), [id('1')], AT + 50);
+    await expect(makePhotoSingles(asExpo(d), [id('1')], gid)).rejects.toThrow(
+      /changed while reviewing/,
+    );
+  });
+
+  it('requireGroupMembership rejects a keep-rest against a rebuilt group', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2'], [['1', '2']]);
+    const gid = groupIdOf(d, '1');
+    await expect(
+      applyReviewDecisions(
+        asExpo(d),
+        [
+          [id('1'), 'done'],
+          [id('2'), 'done'],
+        ],
+        AT + 100,
+        { requireGroupMembership: { groupId: gid + 999, assetIds: [id('1'), id('2')] } },
+      ),
+    ).rejects.toThrow(/changed while reviewing/);
+    expect(stateOf(d, '1').state).toBe('unreviewed');
+  });
+});

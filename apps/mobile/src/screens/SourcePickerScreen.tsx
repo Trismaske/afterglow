@@ -25,7 +25,7 @@ import {
   type PhotoSourceSetting,
 } from '../lib/sources';
 import { deleteSetting, setSetting } from '../db/store';
-import { requestRescan } from '../scan/scanRunner';
+import { requestRescan, supersedeScan } from '../scan/scanRunner';
 import { useReview } from '../review/ReviewContext';
 import { showToast } from '../lib/toast';
 import { BigButton } from '../components/BigButton';
@@ -118,6 +118,10 @@ export function SourcePickerScreen({ navigation }: Props) {
         : { mode: 'dirs', dirs: [...selected].sort((a, b) => a.localeCompare(b)) };
       await setSetting(db, PHOTO_SOURCES_KEY, serializePhotoSourceSetting(setting));
       invalidateSourceCatalog();
+      // Supersede the in-flight scan FIRST: an old-source window
+      // completing during the apply below could repopulate a group with
+      // newly excluded photos and have the scoped refresh render it.
+      supersedeScan();
       // FAIL CLOSED before leaving: the queue reads are source-scoped and
       // must drop excluded photos NOW (the queued rescan lands later). If
       // applying the new scope fails, ROLL BACK the committed setting —
@@ -148,11 +152,25 @@ export function SourcePickerScreen({ navigation }: Props) {
           );
           invalidateSourceCatalog();
         }
-        if (restored) await refresh().catch(() => {});
+        // Rebuild under whatever setting is durable now — the superseded
+        // scan was stopped above either way.
+        void requestRescan(db);
+        // Re-rendering the restored scope is PART of the rollback: a
+        // competing refresh may have painted the rejected scope, and a
+        // swallowed failure here would leave the queue disagreeing with
+        // the restored setting while back navigation stays enabled.
+        const rerendered = restored
+          ? await refresh().then(
+              () => true,
+              () => false,
+            )
+          : false;
         showToast(
-          restored
+          restored && rerendered
             ? 'Could not apply the new source — selection unchanged'
-            : 'Source change failed midway — reopen this screen to verify your selection',
+            : restored
+              ? 'Source restored, but the queue could not refresh — reopen this screen to retry'
+              : 'Source change failed midway — reopen this screen to verify your selection',
         );
         return;
       }

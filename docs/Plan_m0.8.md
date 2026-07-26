@@ -228,3 +228,8 @@ Final-review round 24 fixes, same pending vetting:
 
 88. **Rollback re-rendering is caller-ordered**: `refreshScoped`'s failure path only reverts the fallback (a context-side refresh would resolve the still-persisted rejected source); the picker refreshes AFTER its rollback write lands. A previously UNSET source rolls back to unset (`deleteSetting`) so the dynamic Camera-folder default stays dynamic instead of freezing a resolved snapshot.
 89. **The favourites tab reloads on focus** — the bottom-tab navigator keeps it mounted while blurred, so its mount-time-only load showed stale rows for intents queued later from the deck.
+
+Final-review round 25 fixes, same pending vetting:
+
+90. **The source picker fences the scan FIRST** (like the strictness flow): `supersedeScan()` before resolving/rendering the new scope — an old-source window completing mid-apply could repopulate a group with newly excluded photos; the rollback path rebuilds via `requestRescan` under whatever setting is durable.
+91. **Re-rendering the restored scope is PART of the rollback**: a failed post-rollback refresh no longer claims "selection unchanged" — the queue may still show the rejected scope, and the toast says to reopen and retry.

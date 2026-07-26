@@ -1084,15 +1084,21 @@ export async function getMetadataGroupIds(
 export async function getStagedCullBytes(
   db: SQLiteDatabase,
 ): Promise<{ knownBytes: number; unsizedUris: string[] }> {
-  const known = await db.getFirstAsync<{ total: number | null }>(
-    `SELECT SUM(size_bytes) AS total FROM photos
-     WHERE state IN ('culled', 'confirmed') AND is_present = 1 AND size_bytes IS NOT NULL`,
-  );
-  const unsized = await db.getAllAsync<{ uri: string }>(
-    `SELECT uri FROM photos
-     WHERE state IN ('culled', 'confirmed') AND is_present = 1 AND size_bytes IS NULL`,
-  );
-  return { knownBytes: Number(known?.total ?? 0), unsizedUris: unsized.map((r) => r.uri) };
+  // One snapshot: a scan sizing a row between split reads would drop it
+  // from BOTH populations, silently under-counting the "exact" total.
+  let out: { knownBytes: number; unsizedUris: string[] } = { knownBytes: 0, unsizedUris: [] };
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    const known = await txn.getFirstAsync<{ total: number | null }>(
+      `SELECT SUM(size_bytes) AS total FROM photos
+       WHERE state IN ('culled', 'confirmed') AND is_present = 1 AND size_bytes IS NOT NULL`,
+    );
+    const unsized = await txn.getAllAsync<{ uri: string }>(
+      `SELECT uri FROM photos
+       WHERE state IN ('culled', 'confirmed') AND is_present = 1 AND size_bytes IS NULL`,
+    );
+    out = { knownBytes: Number(known?.total ?? 0), unsizedUris: unsized.map((r) => r.uri) };
+  });
+  return out;
 }
 
 /** Alive tracked undated photos (the Unknown-day pseudo-day's

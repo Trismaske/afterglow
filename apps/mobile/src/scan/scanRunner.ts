@@ -366,6 +366,9 @@ async function processWindow(
     frozen,
   );
 
+  // Re-check right before the write — a user write may have started
+  // while the embed/regroup reads above were running.
+  await waitForUserWrites();
   await writeContinuousGroups(
     db,
     {

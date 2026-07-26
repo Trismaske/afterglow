@@ -49,9 +49,11 @@ export function waitForUserWrites(): Promise<void> {
   if (activeUserWrites === 0 || hungBypass) return Promise.resolve();
   return new Promise<void>((resolve) => {
     const timer = setTimeout(() => {
-      waiters = waiters.filter((w) => w !== wrapped);
-      hungBypass = true; // one timeout opens the gate for everyone
-      resolve();
+      // One timeout opens the gate for EVERYONE: releasing all waiters
+      // (each clears its own timer) prevents both lingering blocks and
+      // stale timers later un-arming a FRESH write's priority.
+      hungBypass = true;
+      releaseWaiters();
     }, MAX_YIELD_WAIT_MS);
     const wrapped = () => {
       clearTimeout(timer);

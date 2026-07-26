@@ -20,6 +20,7 @@ import {
   getGridPhotosByFilter,
   getPhotoFacts,
   getReviewGroup,
+  getStagedCullBytes,
   getStagedCulls,
   getStateCountsInScope,
   getUnreviewedDayRows,
@@ -70,6 +71,7 @@ function upsert(rawId: string, takenAt = AT - 3_600_000): ContinuousPhotoUpsert 
     day: '2026-07-20',
     volumeName: 'external_primary',
     rawId,
+    sizeBytes: 1_000,
   };
 }
 
@@ -1246,5 +1248,28 @@ describe('the Unknown-day pseudo-day', () => {
     expect(single.map((r) => r.asset_id)).toEqual([id('u3')]);
     const grouped = await getGridPhotosByFilter(asExpo(d), scope, null, 'in_group', 10, 0);
     expect(grouped.map((r) => r.asset_id).sort()).toEqual([id('u1'), id('u2')]);
+  });
+});
+
+// -------------------------------------------- exact reclaimable bytes (v14)
+
+describe('exact reclaimable bytes', () => {
+  it('sums scan-recorded sizes for staged culls and lists unsized rows', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3']);
+    await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('1'), 'culled'],
+        [id('2'), 'culled'],
+      ],
+      AT + 1,
+    );
+    // One row predates v14 sizing (NULL) — it must surface for the stat
+    // fallback instead of silently missing from the sum.
+    d.raw.prepare('UPDATE photos SET size_bytes = NULL WHERE asset_id = ?').run(id('2'));
+    const bytes = await getStagedCullBytes(asExpo(d));
+    expect(bytes.knownBytes).toBe(1_000);
+    expect(bytes.unsizedUris).toEqual(['file:///dcim/2.jpg']);
   });
 });

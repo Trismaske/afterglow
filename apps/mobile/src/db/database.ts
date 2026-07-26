@@ -30,7 +30,7 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 export const DATABASE_NAME = 'afterglow.db';
 
 /** Bump on ANY schema change before v1 — the open path resets mismatches. */
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 export const BASELINE_DDL = `
   CREATE TABLE photos (
@@ -49,6 +49,9 @@ export const BASELINE_DDL = `
     favourite_changed_at INTEGER,
     favourite_applied_at INTEGER,
     edit_completed_at    INTEGER,
+    -- File size at last scan (v14): NULL until scanned post-migration.
+    -- Powers the EXACT reclaimable-bytes sum (vetted: no estimates).
+    size_bytes           INTEGER,
     reviewed_at          INTEGER,
     culled_at            INTEGER,
     favourite_target     INTEGER
@@ -246,8 +249,12 @@ export const BASELINE_DDL = `
 
 /**
  * Open-path schema guarantee. Fresh database → create the baseline.
- * Matching version → no-op. ANY other version → destructive reset
- * (pre-v1 policy; the old data is deliberately discarded).
+ * Matching version → no-op. v13 → v14 is the one ADDITIVE migration
+ * (a nullable size_bytes column — destroying validated review data and
+ * 27k embeddings for a nullable column would be waste, and the pre-v1
+ * destructive policy permits destruction, it does not mandate it). ANY
+ * other version → destructive reset (pre-v1 policy; the old data is
+ * deliberately discarded).
  */
 export async function migrateDatabase(db: SQLiteDatabase): Promise<void> {
   await db.execAsync('PRAGMA journal_mode = WAL');
@@ -257,6 +264,13 @@ export async function migrateDatabase(db: SQLiteDatabase): Promise<void> {
   const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
   const current = row?.user_version ?? 0;
   if (current === SCHEMA_VERSION) return;
+  if (current === 13) {
+    await db.withExclusiveTransactionAsync(async (txn) => {
+      await txn.execAsync('ALTER TABLE photos ADD COLUMN size_bytes INTEGER');
+      await txn.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    });
+    return;
+  }
   await db.withExclusiveTransactionAsync(async (txn) => {
     if (current !== 0) await dropEverything(txn);
     await txn.execAsync(BASELINE_DDL);

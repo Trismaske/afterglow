@@ -45,6 +45,7 @@ function upsert(rawId: string, takenAt = AT - 3_600_000): ContinuousPhotoUpsert 
     day: '2027-01-15',
     volumeName: 'external_primary',
     rawId,
+    sizeBytes: 1_000,
   };
 }
 

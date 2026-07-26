@@ -1077,6 +1077,24 @@ export async function getMetadataGroupIds(
   return out;
 }
 
+/** EXACT reclaimable bytes for the staged culls (vetted: no capped
+ * estimates): the SUM of scan-recorded sizes, plus the uris of rows not
+ * yet sized (pre-v14 rows until their next scan) so the caller can stat
+ * just those — the set shrinks to empty after one scan. */
+export async function getStagedCullBytes(
+  db: SQLiteDatabase,
+): Promise<{ knownBytes: number; unsizedUris: string[] }> {
+  const known = await db.getFirstAsync<{ total: number | null }>(
+    `SELECT SUM(size_bytes) AS total FROM photos
+     WHERE state IN ('culled', 'confirmed') AND is_present = 1 AND size_bytes IS NOT NULL`,
+  );
+  const unsized = await db.getAllAsync<{ uri: string }>(
+    `SELECT uri FROM photos
+     WHERE state IN ('culled', 'confirmed') AND is_present = 1 AND size_bytes IS NULL`,
+  );
+  return { knownBytes: Number(known?.total ?? 0), unsizedUris: unsized.map((r) => r.uri) };
+}
+
 /** Alive tracked undated photos (the Unknown-day pseudo-day's
  * "MediaStore total" equivalent — MediaStore cannot be queried for
  * missing DATE_TAKEN, and the scan is the only review ingress, so the
@@ -1133,6 +1151,9 @@ export interface ContinuousPhotoUpsert {
   day: string | null;
   volumeName: string;
   rawId: string;
+  /** File size at scan time (v14) — NULL when the stat failed; powers
+   * the exact reclaimable-bytes sum. */
+  sizeBytes: number | null;
 }
 
 /** One group's continuous-scan write (post-reconciliation). */
@@ -1210,11 +1231,12 @@ export async function writeContinuousGroups(
     for (const photo of write.photos) {
       await txn.runAsync(
         `INSERT INTO photos (asset_id, uri, taken_at, state, mod_time, day,
-                             volume_name, raw_id)
-         VALUES (?, ?, ?, 'unreviewed', ?, ?, ?, ?)
+                             volume_name, raw_id, size_bytes)
+         VALUES (?, ?, ?, 'unreviewed', ?, ?, ?, ?, ?)
          ON CONFLICT(asset_id) DO UPDATE SET
            uri = excluded.uri,
            taken_at = excluded.taken_at,
+           size_bytes = COALESCE(excluded.size_bytes, photos.size_bytes),
            -- photos.mod_time is the in-place edit detector's baseline
            -- while a row is in an edit cycle: refreshing it here would
            -- make the pending edit look unchanged (silent detection loss).
@@ -1230,6 +1252,7 @@ export async function writeContinuousGroups(
         photo.day,
         photo.volumeName,
         photo.rawId,
+        photo.sizeBytes,
       );
     }
     // Revalidate the plan INSIDE the transaction: the runner computed it

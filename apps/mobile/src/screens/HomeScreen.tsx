@@ -32,7 +32,7 @@ import { resolveSources } from '../lib/sourceCatalog';
 import {
   countFavouriteQueue,
   countStagedCulls,
-  getStagedCulls,
+  getStagedCullBytes,
   countToEdit,
   getCorpusStats,
   getDaySummariesForDays,
@@ -100,8 +100,9 @@ export function HomeScreen({ navigation }: Props) {
     reviewed: number;
   } | null>(null);
   const [stagedCullCount, setStagedCullCount] = useState(0);
-  /** Estimated bytes the staged culls would free (gate 4 corpus stats;
-   * synchronous stat per staged file, capped — 0 hides the figure). */
+  /** EXACT bytes the staged culls would free (vetted): a SUM over
+   * scan-recorded sizes, plus transient per-file stats for rows the v14
+   * scan has not sized yet. */
   const [reclaimableBytes, setReclaimableBytes] = useState(0);
   const [shareCount, setShareCount] = useState(0);
   const [organizeCount, setOrganizeCount] = useState(0);
@@ -344,10 +345,14 @@ export function HomeScreen({ navigation }: Props) {
         setShareCount(shareQueue);
         setOrganizeCount(organizeQueue);
         setStagedCullCount(stagedCulls);
-        if (stagedCulls > 0 && stagedCulls <= 500) {
-          const staged = await getStagedCulls(db);
+        if (stagedCulls > 0) {
+          const staged = await getStagedCullBytes(db);
           if (cancelled) return;
-          setReclaimableBytes(staged.reduce((sum, row) => sum + fileSize(row.uri), 0));
+          // Unsized rows (pre-v14, until their next scan) stat here —
+          // the set shrinks to empty, keeping the figure EXACT.
+          setReclaimableBytes(
+            staged.knownBytes + staged.unsizedUris.reduce((sum, uri) => sum + fileSize(uri), 0),
+          );
         } else {
           setReclaimableBytes(0);
         }

@@ -193,6 +193,9 @@ export async function ensureEmbeddings(
             // scan reporting completion without its promised embedding.
             // (Hash writes below stay tolerant: hashes are a derived
             // cache, recomputed next run at grouping-equal cost.)
+            // Re-check right before the write — a user write may have
+            // started during the native embed await.
+            await waitForUserWrites();
             await setPhotoEmbedding(db, photo.item.id, bytes, photo.modTime);
             vec = vecFromBytes(bytes);
           } else {

@@ -199,3 +199,28 @@ describe('schema invariants', () => {
     d.raw.exec('ROLLBACK');
   });
 });
+
+describe('v13 → v14 additive migration', () => {
+  it('adds size_bytes WITHOUT destroying existing rows', async () => {
+    const d = openTestDb();
+    open.push(d);
+    await migrateDatabase(asExpo(d));
+    // Simulate a v13 database: remove the v14 column, wind the version
+    // back, and plant durable data that must survive.
+    d.raw.exec('ALTER TABLE photos DROP COLUMN size_bytes');
+    d.raw.exec(`
+      INSERT INTO photos (asset_id, uri, taken_at, state, day, volume_name, raw_id)
+      VALUES ('external_primary/keep', 'file:///dcim/keep.jpg', 1, 'done', '2026-07-20',
+              'external_primary', 'keep')
+    `);
+    d.raw.exec('PRAGMA user_version = 13');
+    await migrateDatabase(asExpo(d));
+    const row = d.raw
+      .prepare('SELECT state, size_bytes FROM photos WHERE asset_id = ?')
+      .get('external_primary/keep') as { state: string; size_bytes: number | null };
+    expect(row).toMatchObject({ state: 'done', size_bytes: null });
+    expect(
+      (d.raw.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+    ).toBe(SCHEMA_VERSION);
+  });
+});

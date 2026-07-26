@@ -36,6 +36,7 @@ import { createWindowAccumulator } from '../lib/scanWindows';
 import { resolveSources } from '../lib/sourceCatalog';
 import { GROUPING_STRICTNESS_KEY, parseStrictness } from '../lib/groupingPrefs';
 import { waitForUserWrites } from '../lib/writePriority';
+import { fileSize } from '../lib/hash';
 import { ensureEmbeddingModel } from '../db/embeddingStore';
 import {
   getGroupAssignments,
@@ -378,6 +379,9 @@ async function processWindow(
         day: p.undated ? null : dayKey(p.item.timestamp),
         volumeName: p.volumeName,
         rawId: p.rawId,
+        // v14: recorded so reclaimable bytes is an exact SUM (0 = the
+        // stat failed → NULL keeps the row in the transient stat-fallback).
+        sizeBytes: fileSize(p.item.uri) || null,
       })),
       groups: plan.groups,
       singles: plan.singles,

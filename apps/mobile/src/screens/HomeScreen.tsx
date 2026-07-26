@@ -35,6 +35,7 @@ import {
   type DaySummaryRow,
   getSetting,
   markEditDone,
+  setGroupBest,
   unstageCullDirect,
 } from '../db/store';
 import { runTrashAttempt } from '../lib/trashFlow';
@@ -236,8 +237,16 @@ export function HomeScreen({ navigation }: Props) {
                   // Definitively NOT applied (cancel/failure/unsupported):
                   // back to the edit queue — a true no-op from the
                   // user's view, so the copy prompt's question stays
-                  // open (pending match kept).
+                  // open (pending match kept) and the star the staging
+                  // cleared comes back.
                   await unstageCullDirect(db, head.originalAssetId, Date.now(), false);
+                  for (const star of attempt.clearedStars) {
+                    if (star.photoId !== head.originalAssetId) continue;
+                    // Best-effort: the group may have changed meanwhile —
+                    // setGroupBest validates and rejects stale writes.
+                    await setGroupBest(db, star.groupId, star.photoId).catch(() => {});
+                  }
+                  await reviewRefresh().catch(() => {});
                   if (attempt.status === 'unsupported') {
                     Alert.alert(
                       'System trash unavailable',

@@ -32,7 +32,7 @@ import {
   type StrictnessStep,
 } from '../lib/groupingPrefs';
 import { requestRescan, supersedeScan } from '../scan/scanRunner';
-import { resetUnreviewedGroups } from '../db/store';
+import { applyGroupingSettingChange } from '../db/store';
 import { COMPARE_AUTO_CULL_KEY, serializeCompareAutoCull } from '../lib/comparePrefs';
 import { getSetting, setSetting } from '../db/store';
 import { ACCENT_PRESETS } from '../lib/accentTheme';
@@ -103,8 +103,14 @@ export function SettingsScreen({ navigation }: Props) {
               // could repopulate exactly what the reset cleared.
               supersedeScan();
               setStrictness(step);
-              void setSetting(db, GROUPING_STRICTNESS_KEY, serializeStrictness(step))
-                .then(() => resetUnreviewedGroups(db))
+              // Setting + assignment reset commit ATOMICALLY (process
+              // death between them would strand old-threshold groups
+              // under the new setting).
+              void applyGroupingSettingChange(
+                db,
+                GROUPING_STRICTNESS_KEY,
+                serializeStrictness(step),
+              )
                 // Refresh BEFORE the rescan: the rendered queue still
                 // shows the reset groups — a decision on one of those
                 // stale members would permanently lose its whole-group
@@ -124,7 +130,7 @@ export function SettingsScreen({ navigation }: Props) {
                   // durable one and the rescan rebuilds under it.
                   let restored = false;
                   if (previous) {
-                    restored = await setSetting(
+                    restored = await applyGroupingSettingChange(
                       db,
                       GROUPING_STRICTNESS_KEY,
                       serializeStrictness(previous),

@@ -29,6 +29,9 @@ export interface TrashAttemptResult {
   unknownIds: string[];
   /** Verified bytes credited by this attempt (at-most-once, P8#3). */
   creditedBytes: number;
+  /** Best stars the stage-and-reserve transition cleared (edited-copy
+   * culls) — a DEFINITIVE non-application restores them. */
+  clearedStars: { groupId: number; photoId: string }[];
 }
 
 export async function runTrashAttempt(
@@ -50,6 +53,7 @@ export async function runTrashAttempt(
       trashedIds: [],
       unknownIds: [],
       creditedBytes: 0,
+      clearedStars: [],
     };
   }
   if (!batch) {
@@ -59,6 +63,7 @@ export async function runTrashAttempt(
       trashedIds: [],
       unknownIds: [],
       creditedBytes: 0,
+      clearedStars: [],
     };
   }
   const ids = batch.members.map((m) => m.photoId);
@@ -105,6 +110,7 @@ export async function runTrashAttempt(
       ),
       unknownIds: ids.filter((id) => resolved.outcomes[id] === 'unknown'),
       creditedBytes: resolved.creditedBytes,
+      clearedStars: batch.clearedStars,
     };
   } catch (error) {
     // The batch was durably prepared but a later step rejected (transient
@@ -136,6 +142,7 @@ export async function runTrashAttempt(
         ),
         unknownIds: ids.filter((id) => recovered.outcomes[id] === 'unknown'),
         creditedBytes: recovered.creditedBytes,
+        clearedStars: batch.clearedStars,
       };
     } catch {
       // Release failed too — next launch's recovery handles the batch;
@@ -147,6 +154,7 @@ export async function runTrashAttempt(
         trashedIds: [],
         unknownIds: ids,
         creditedBytes: 0,
+        clearedStars: batch.clearedStars,
       };
     }
   }

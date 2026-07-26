@@ -951,8 +951,8 @@ export async function getCorpusStats(
  * groups and user singles stay untouched (the regroup boundary would
  * freeze them anyway; deleting their assignments would lose membership).
  */
-export async function resetUnreviewedGroups(db: SQLiteDatabase): Promise<void> {
-  await db.withExclusiveTransactionAsync(async (txn) => {
+async function resetUnreviewedGroupsIn(txn: SQLiteDatabase): Promise<void> {
+  {
     // A group with ANY reviewed member — or GROUP-LEVEL metadata (starred
     // best, recorded duels) — is frozen WHOLE by the regroup boundary;
     // deleting its members here would dissolve it and lose the star and
@@ -976,6 +976,39 @@ export async function resetUnreviewedGroups(db: SQLiteDatabase): Promise<void> {
          ))`,
     );
     await repairGroupMembership(txn);
+  }
+}
+
+/** Public wrapper (tests). */
+export async function resetUnreviewedGroups(db: SQLiteDatabase): Promise<void> {
+  await db.withExclusiveTransactionAsync((txn) => resetUnreviewedGroupsIn(txn));
+}
+
+/**
+ * A grouping-relevant setting change (photo source, strictness) and its
+ * unfrozen-assignment reset commit in ONE exclusive transaction — a
+ * process death between them would leave the next launch rendering old
+ * assignments under the new scope (whole-group rendering could expose
+ * excluded members whose decisions freeze stale membership). `value =
+ * null` deletes the row (an unset source keeps its dynamic default).
+ */
+export async function applyGroupingSettingChange(
+  db: SQLiteDatabase,
+  key: string,
+  value: string | null,
+): Promise<void> {
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    if (value === null) {
+      await txn.runAsync('DELETE FROM settings WHERE key = ?', key);
+    } else {
+      await txn.runAsync(
+        `INSERT INTO settings (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        key,
+        value,
+      );
+    }
+    await resetUnreviewedGroupsIn(txn);
   });
 }
 

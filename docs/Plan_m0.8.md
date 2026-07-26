@@ -256,3 +256,8 @@ Final-review round 29 fixes, same pending vetting:
 Final-review round 30 fixes, same pending vetting:
 
 99. **The queue read is ONE cross-slice snapshot** (`readReviewQueue`: groups, singles feed, and counts in a single exclusive transaction — independent reads could cache a photo as both grouped and single mid-scan, with counts disagreeing with the arrays), and the ambiguous edited-copy cull branch refreshes the cached queue (the original already moved `to_edit → culled` with its star cleared before the alert).
+
+Final-review round 31 fixes, same pending vetting:
+
+100. **A cancelled edited-copy cull restores the star it cleared**: `prepareTrashBatch` records the stars its stage-and-reserve transition cleared (`clearedStars`, carried through the attempt result) and the definitive non-application branch restores them via the validating `setGroupBest` — a normal sheet cancellation must be a true no-op, star included.
+101. **A grouping setting and its assignment reset commit ATOMICALLY** (`applyGroupingSettingChange`: setting upsert/delete + unfrozen-assignment reset in one exclusive transaction, used by both flows and their rollbacks) — a process death between the two would leave the next launch rendering old assignments under the new scope.

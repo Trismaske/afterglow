@@ -24,7 +24,7 @@ import {
   serializePhotoSourceSetting,
   type PhotoSourceSetting,
 } from '../lib/sources';
-import { deleteSetting, resetUnreviewedGroups, setSetting } from '../db/store';
+import { applyGroupingSettingChange } from '../db/store';
 import { requestRescan, supersedeScan } from '../scan/scanRunner';
 import { useReview } from '../review/ReviewContext';
 import { showToast } from '../lib/toast';
@@ -116,23 +116,21 @@ export function SourcePickerScreen({ navigation }: Props) {
       const setting: PhotoSourceSetting = allFolders
         ? { mode: 'all' }
         : { mode: 'dirs', dirs: [...selected].sort((a, b) => a.localeCompare(b)) };
-      await setSetting(db, PHOTO_SOURCES_KEY, serializePhotoSourceSetting(setting));
-      invalidateSourceCatalog();
       // Supersede the in-flight scan FIRST: an old-source window
       // completing during the apply below could repopulate a group with
       // newly excluded photos and have the scoped refresh render it.
       supersedeScan();
+      // Setting + unfrozen-assignment reset commit ATOMICALLY — a process
+      // death between them would leave the next launch rendering old
+      // assignments under the new scope.
+      await applyGroupingSettingChange(db, PHOTO_SOURCES_KEY, serializePhotoSourceSetting(setting));
+      invalidateSourceCatalog();
       // FAIL CLOSED before leaving: the queue reads are source-scoped and
       // must drop excluded photos NOW (the queued rescan lands later). If
       // applying the new scope fails, ROLL BACK the committed setting —
       // header/back navigation stays enabled, so a half-applied narrower
       // scope must never outlive this screen.
       try {
-        // Reset unfrozen assignments FIRST (same as the strictness flow):
-        // an unreviewed cross-source group still queues via its in-source
-        // member and renders WHOLE — deciding its excluded member before
-        // the rescan would freeze the stale cross-source membership.
-        await resetUnreviewedGroups(db);
         const resolved = await resolveSources(db);
         // STRICT: read under the just-resolved roots — the general
         // refresh's fail-open fallback could silently keep the old scope.
@@ -147,10 +145,10 @@ export function SourcePickerScreen({ navigation }: Props) {
         const previous = previousSettingRef.current;
         let restored = false;
         if (previous) {
-          restored = await (
-            previous.kind === 'unset'
-              ? deleteSetting(db, PHOTO_SOURCES_KEY)
-              : setSetting(db, PHOTO_SOURCES_KEY, serializePhotoSourceSetting(previous.setting))
+          restored = await applyGroupingSettingChange(
+            db,
+            PHOTO_SOURCES_KEY,
+            previous.kind === 'unset' ? null : serializePhotoSourceSetting(previous.setting),
           ).then(
             () => true,
             () => false,

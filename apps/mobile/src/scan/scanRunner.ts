@@ -184,12 +184,12 @@ async function scan(db: SQLiteDatabase): Promise<void> {
     for (const photo of batch.sort((a, b) => b.item.timestamp - a.item.timestamp)) {
       for (const window of tail.feed(photo)) {
         if (superseded()) return; // same fence as the dated stream
-        await processWindow(db, window, engine, strictness.baseThreshold);
+        await processWindow(db, window, engine, strictness.baseThreshold, superseded);
       }
     }
     for (const window of tail.flush()) {
       if (superseded()) return;
-      await processWindow(db, window, engine, strictness.baseThreshold);
+      await processWindow(db, window, engine, strictness.baseThreshold, superseded);
     }
   };
   for (;;) {
@@ -212,7 +212,7 @@ async function scan(db: SQLiteDatabase): Promise<void> {
           console.log('[scan] superseded by a settings change — stopping for the queued rescan');
           return;
         }
-        await processWindow(db, window, engine, strictness.baseThreshold);
+        await processWindow(db, window, engine, strictness.baseThreshold, superseded);
       }
     }
   }
@@ -221,7 +221,11 @@ async function scan(db: SQLiteDatabase): Promise<void> {
     return;
   }
   for (const window of accumulator.flush()) {
-    await processWindow(db, window, engine, strictness.baseThreshold);
+    if (superseded()) {
+      console.log('[scan] superseded by a settings change — stopping for the queued rescan');
+      return;
+    }
+    await processWindow(db, window, engine, strictness.baseThreshold, superseded);
   }
   await processUndatedBatch(undated.splice(0));
   // Backstop for tiny corpora that never reached the consecutive-error
@@ -273,6 +277,7 @@ async function processWindow(
   window: LoadedPhoto[],
   engine: EngineHealth,
   baseThreshold: number,
+  stale?: () => boolean,
 ): Promise<void> {
   const ids = window.map((p) => p.item.id);
 
@@ -355,6 +360,10 @@ async function processWindow(
       singles: plan.singles,
     },
     Date.now(),
+    // Checked INSIDE the exclusive transaction: a window superseded
+    // mid-embed must not commit after the strictness reset cleared the
+    // queue (the entry fence alone leaves that race open).
+    { abortIf: stale },
   );
   update({ windowsGrouped: status.windowsGrouped + 1 });
 }

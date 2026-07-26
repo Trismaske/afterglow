@@ -124,14 +124,26 @@ export function SourcePickerScreen({ navigation }: Props) {
         // refresh's fail-open fallback could silently keep the old scope.
         await refreshScoped(resolved.roots ?? null);
       } catch {
+        // A FAILED rollback must say so — the new source is then durable
+        // while the rendered queue may still show the old scope.
         const previous = previousSettingRef.current;
+        let restored = false;
         if (previous) {
-          await setSetting(db, PHOTO_SOURCES_KEY, serializePhotoSourceSetting(previous)).catch(
-            () => {},
+          restored = await setSetting(
+            db,
+            PHOTO_SOURCES_KEY,
+            serializePhotoSourceSetting(previous),
+          ).then(
+            () => true,
+            () => false,
           );
           invalidateSourceCatalog();
         }
-        showToast('Could not apply the new source — selection unchanged');
+        showToast(
+          restored
+            ? 'Could not apply the new source — selection unchanged'
+            : 'Source change failed midway — reopen this screen to verify your selection',
+        );
         return;
       }
       // The scan reads the source at run start: rescan over the new

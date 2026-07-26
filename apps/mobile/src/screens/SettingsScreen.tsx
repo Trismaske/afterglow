@@ -119,18 +119,28 @@ export function SettingsScreen({ navigation }: Props) {
                   // ROLL BACK: the preference may already be durable and
                   // assignments may already be deleted. Restore the
                   // setting, then REBUILD under it — a rescan is the only
-                  // way back to a populated queue — and refresh.
+                  // way back to a populated queue — and refresh. A FAILED
+                  // restore must say so: the new threshold is then the
+                  // durable one and the rescan rebuilds under it.
+                  let restored = false;
                   if (previous) {
-                    await setSetting(
+                    restored = await setSetting(
                       db,
                       GROUPING_STRICTNESS_KEY,
                       serializeStrictness(previous),
-                    ).catch(() => {});
-                    setStrictness(previous);
+                    ).then(
+                      () => true,
+                      () => false,
+                    );
+                    if (restored) setStrictness(previous);
                   }
                   void requestRescan(db);
                   void refresh().catch(() => {});
-                  showToast('Could not change strictness — restored; regrouping');
+                  showToast(
+                    restored
+                      ? 'Could not change strictness — restored; regrouping'
+                      : 'Strictness change failed midway — check Settings; regrouping',
+                  );
                 });
             },
           },

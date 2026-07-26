@@ -618,9 +618,12 @@ export async function listGroupsForDay(
     ...src.params,
   );
   const groups = await Promise.all(ids.map((r) => getReviewGroup(db, Number(r.group_id))));
+  // Members are chronologically ASCENDING — newest-first ordering keys
+  // on each group's LAST member.
+  const newest = (g: ReviewGroupRow): number => g.members[g.members.length - 1]?.taken_at ?? 0;
   return groups
     .filter((g): g is ReviewGroupRow => g !== null)
-    .sort((a, b) => (b.members[0]?.taken_at ?? 0) - (a.members[0]?.taken_at ?? 0));
+    .sort((a, b) => newest(b) - newest(a));
 }
 
 /** Everything the standard photo viewer's detail panel shows for one
@@ -922,9 +925,14 @@ export async function writeContinuousGroups(
   db: SQLiteDatabase,
   write: ContinuousWindowWrite,
   at: number,
+  /** Checked INSIDE the exclusive transaction: a scan window whose
+   * settings were superseded mid-embed must not commit after the reset
+   * cleared the queue (entry-time fences alone leave that race open). */
+  options: { abortIf?: () => boolean } = {},
 ): Promise<void> {
   if (write.photos.length === 0) return;
   await db.withExclusiveTransactionAsync(async (txn) => {
+    if (options.abortIf?.()) return;
     // A scanned photo EXISTS in MediaStore — authoritative presence. A row
     // still marked trashed was restored outside Afterglow (Gallery
     // "Restore"); apply the standard restore transition (same semantics as

@@ -202,3 +202,8 @@ Final-review round 18 fixes, same pending vetting:
 79. **Supersession is ordered and complete**: `supersedeScan()` fires BEFORE the strictness reset/refresh (the old flight must stop writing old-threshold groups first); the undated-batch writer checks the fence per window like the dated stream.
 80. **The source apply path uses a STRICT scoped refresh** (`refreshScoped(roots)` — reads under the just-resolved roots, no silent fail-open fallback; rejections reach the rollback), and a failed strictness change now also REBUILDS under the restored setting (requestRescan + refresh — assignments may already be deleted, and a restored preference with an empty queue would strand pending photos until the next launch).
 81. **`setGroupBest` rejects zero-row (stale-group) writes** like the compare and ejection paths — a warm scan can rebuild an unreviewed group under a new id between render and the Best tap, and a silently ignored star must not report success.
+
+Final-review round 19 fixes, same pending vetting:
+
+82. **The window write itself carries the supersession fence** (`writeContinuousGroups` `abortIf` checked INSIDE the exclusive transaction) — a window superseded mid-embed could otherwise commit after the strictness reset cleared the queue; entry-time fences alone left that race open.
+83. **Failed rollbacks surface honestly** in both settings flows (a restore that itself fails now says the change stuck, instead of claiming restoration), and DayProgress's group list sorts by each group's NEWEST member (members are chronologically ascending — `members[0]` was the oldest).

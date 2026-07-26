@@ -1163,7 +1163,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
             <Pressable
               style={styles.secondaryButton}
               disabled={busy}
-              onPress={() => void run(() => makeSingle(current.id))}
+              onPress={() => group && void run(() => makeSingle(current.id, group.groupId))}
             >
               <MaterialCommunityIcons name="image-move" size={18} color={colors.textDim} />
               <Text style={styles.secondaryText}>Not related</Text>

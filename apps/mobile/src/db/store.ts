@@ -445,9 +445,27 @@ export async function repairGroupMembership(txn: SQLiteDatabase): Promise<void> 
 export async function makePhotoSingles(
   db: SQLiteDatabase,
   assetIds: readonly string[],
+  /** The group the USER was looking at — a background rescan can rebuild
+   * an all-unreviewed group between render and tap; ejecting from the
+   * wrong group (and user_single-freezing its unseen survivor) must
+   * abort whole instead. Omit for callers without a group context. */
+  expectedGroupId?: number,
 ): Promise<void> {
   if (assetIds.length === 0) return;
-  await db.withExclusiveTransactionAsync((txn) => applyPhotoSingles(txn, assetIds));
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    if (expectedGroupId !== undefined) {
+      const rows = await txn.getAllAsync<{ photo_id: string }>(
+        `SELECT photo_id FROM photo_group_assignments
+         WHERE group_id = ? AND photo_id IN (${assetIds.map(() => '?').join(',')})`,
+        expectedGroupId,
+        ...assetIds,
+      );
+      if (rows.length !== assetIds.length) {
+        throw new Error('This group changed while reviewing — reopen it and try again.');
+      }
+    }
+    await applyPhotoSingles(txn, assetIds);
+  });
 }
 
 // --------------------------------------------- m0.8 DB-backed review reads
@@ -488,7 +506,7 @@ export async function listReviewGroups(
     `SELECT g.id, g.best_photo_id,
             (SELECT MAX(p.taken_at) FROM photo_group_assignments a
               JOIN photos p ON p.asset_id = a.photo_id
-              WHERE a.group_id = g.id) AS newest
+              WHERE a.group_id = g.id AND p.is_present = 1) AS newest
      FROM photo_groups g
      WHERE EXISTS (
        SELECT 1 FROM photo_group_assignments a
@@ -841,7 +859,11 @@ export interface ContinuousPhotoUpsert {
   uri: string;
   takenAt: number;
   modTime: number;
-  day: string;
+  /** Local day key — NULL for UNDATED photos (no DATE_TAKEN): their
+   * taken_at is only the mtime fallback, and finite MediaStore day/range
+   * queries exclude them, so the DB day surfaces must too. They stay
+   * fully reviewable via the queue and all-photos surfaces. */
+  day: string | null;
   volumeName: string;
   rawId: string;
 }

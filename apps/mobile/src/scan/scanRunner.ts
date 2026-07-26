@@ -314,7 +314,9 @@ async function processWindow(
         uri: p.item.uri,
         takenAt: p.item.timestamp,
         modTime: p.modTime,
-        day: dayKey(p.item.timestamp),
+        // Undated photos carry NO day: their timestamp is only the mtime
+        // fallback, and the day surfaces exclude them on both sides.
+        day: p.undated ? null : dayKey(p.item.timestamp),
         volumeName: p.volumeName,
         rawId: p.rawId,
       })),

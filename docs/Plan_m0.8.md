@@ -184,3 +184,10 @@ Final-review round 15 fixes, same pending vetting:
 70. **Undated photos process in memory-bounded BATCHES of 5,000 — nothing is discarded** (the round-14 cap silently dropped the remainder forever); a batch boundary may split a would-be window, the price of not buffering an unbounded undated set (WhatsApp-style libraries commonly have null DATE_TAKEN).
 71. **Compare verdicts validate group membership INSIDE the transaction** (both endpoints must still belong to the starred group; a warm scan can rebuild an all-unreviewed group between Compare's load and the write — the verdict now aborts whole and surfaces instead of committing a duel against the wrong group).
 72. **Saving a photo-source change refreshes the queue immediately** (the reads are source-scoped; the queued rescan lands later — excluded photos must leave the rendered queue at save time).
+
+Final-review round 16 fixes, same pending vetting:
+
+73. **Release identifiers bumped to 0.8.0 / versionCode 7** (preflight would reject the `mobile-m0.8` tag against 0.7.2/6; tagging itself stays a Gate-6 human call).
+74. **Undated photos persist `day = NULL`** — finite MediaStore day/range queries exclude them, so the DB day surfaces (day rows, summaries, day groups) must too; they stay fully reviewable via the queue and all-photos surfaces (no schema change: the column was already nullable).
+75. **Ejection validates the DISPLAYED group in the transaction** (`makePhotoSingles(…, expectedGroupId)`; a background rescan can rebuild an all-unreviewed group between render and the "Not related" tap — ejecting from the wrong group and user_single-freezing its unseen survivor now aborts whole), and the queue's newest-first ordering ignores absent members.
+76. **The source picker fails CLOSED on scope refresh**: it resolves the new scope and refreshes before navigating away; on failure it stays open with a toast (the setting is saved; the old queue must not remain actionable under the old scope).

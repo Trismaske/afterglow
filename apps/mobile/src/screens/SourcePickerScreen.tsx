@@ -27,6 +27,7 @@ import {
 import { setSetting } from '../db/store';
 import { requestRescan } from '../scan/scanRunner';
 import { useReview } from '../review/ReviewContext';
+import { showToast } from '../lib/toast';
 import { BigButton } from '../components/BigButton';
 import { colors, touch, useTheme } from '../theme';
 
@@ -108,10 +109,17 @@ export function SourcePickerScreen({ navigation }: Props) {
         : { mode: 'dirs', dirs: [...selected].sort((a, b) => a.localeCompare(b)) };
       await setSetting(db, PHOTO_SOURCES_KEY, serializePhotoSourceSetting(setting));
       invalidateSourceCatalog();
-      // Refresh NOW: the queue reads are source-scoped, so the rendered
-      // groups/counts must drop excluded photos immediately — the queued
-      // rescan only lands later.
-      await refresh().catch(() => {});
+      // FAIL CLOSED before leaving: the queue reads are source-scoped and
+      // must drop excluded photos NOW (the queued rescan lands later). If
+      // the new scope cannot be resolved, stay here — navigating away
+      // would leave the old queue actionable under the old scope.
+      try {
+        await resolveSources(db);
+        await refresh();
+      } catch {
+        showToast('Saved, but the queue could not refresh — check photo access and retry');
+        return;
+      }
       // The scan reads the source at run start: rescan over the new
       // selection (an in-flight run finishes its old buckets first).
       void requestRescan(db);

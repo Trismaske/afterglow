@@ -96,8 +96,10 @@ interface ReviewContextValue {
   /** Finish a group: every remaining unreviewed member keeps (done). */
   keepRest: (groupId: number) => Promise<void>;
   markBest: (groupId: number, assetId: string | null) => Promise<void>;
-  /** "Not related — review as single" (durable user ejection). */
-  makeSingle: (assetId: string) => Promise<void>;
+  /** "Not related — review as single" (durable user ejection). The
+   * displayed group id is validated in the transaction — a background
+   * rescan may have rebuilt the group since render. */
+  makeSingle: (assetId: string, expectedGroupId: number) => Promise<void>;
   /** Compare: winner is better, both stay (stars the best). */
   recordCompare: (groupId: number, winnerId: string, loserId: string) => Promise<void>;
   /** Compare: cull the loser (records history + stages the cull). */
@@ -313,9 +315,9 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   );
 
   const makeSingle = useCallback(
-    (assetId: string) =>
+    (assetId: string, expectedGroupId: number) =>
       write(async () => {
-        await makePhotoSingles(db, [assetId]);
+        await makePhotoSingles(db, [assetId], expectedGroupId);
       }),
     [db, write],
   );

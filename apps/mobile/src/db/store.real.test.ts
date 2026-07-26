@@ -1025,3 +1025,53 @@ describe('compare verdicts validate membership in the transaction', () => {
     expect(stateOf(d, '2').state).toBe('unreviewed');
   });
 });
+
+// -------------------------------------------- final-review round 16
+
+describe('undated photos carry no day', () => {
+  it('day surfaces exclude a NULL-day photo while review includes it', async () => {
+    const d = await fresh();
+    await writeContinuousGroups(
+      asExpo(d),
+      {
+        photos: [upsert('1'), { ...upsert('u'), day: null }],
+        groups: [],
+        singles: [id('1'), id('u')],
+      },
+      AT,
+    );
+    const days = await getUnreviewedDayRows(asExpo(d));
+    expect(days).toEqual([{ day: '2026-07-20', pending: 1 }]);
+    const summaries = await getDaySummariesForDays(asExpo(d), ['2026-07-20']);
+    expect(summaries.get('2026-07-20')?.tracked).toBe(1);
+    // The undated photo still reviews via the queue.
+    const feed = await listSinglesFeed(asExpo(d), 10);
+    expect(feed.map((m) => m.asset_id).sort()).toEqual([id('1'), id('u')]);
+  });
+});
+
+describe('ejection validates the displayed group', () => {
+  it('aborts whole when the group was rebuilt since render', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
+    const staleGid = groupIdOf(d, '1') + 999;
+    await expect(makePhotoSingles(asExpo(d), [id('1')], staleGid)).rejects.toThrow(
+      /changed while reviewing/,
+    );
+    // Nothing moved: the photo keeps its real group, no survivor frozen.
+    const row = d.raw
+      .prepare('SELECT group_id, user_single FROM photo_group_assignments WHERE photo_id = ?')
+      .get(id('1')) as { group_id: number | null; user_single: number };
+    expect(row.group_id).not.toBeNull();
+    expect(row.user_single).toBe(0);
+    // The matching id still works.
+    await makePhotoSingles(asExpo(d), [id('1')], groupIdOf(d, '1'));
+    expect(
+      (
+        d.raw
+          .prepare('SELECT user_single FROM photo_group_assignments WHERE photo_id = ?')
+          .get(id('1')) as { user_single: number }
+      ).user_single,
+    ).toBe(1);
+  });
+});

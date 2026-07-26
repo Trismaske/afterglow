@@ -219,3 +219,7 @@ Final-review round 21 fixes, same pending vetting:
 Final-review round 22 fixes, same pending vetting:
 
 86. **`refreshScoped` retries until it commits as the LATEST refresh** (bounded at 5, then throws into the picker's rollback) and installs the strict roots as the fallback UP FRONT — a concurrent scan-status refresh could supersede its commit and, on a transient resolution failure, fall back to the superseded broader scope. Compare labels and the picker now number GROUP candidates by live-deck position too (unreviewed + staged culls — `liveIds`), completing round 21's position fix for groups.
+
+Final-review round 23 fix, same pending vetting:
+
+87. **A failed `refreshScoped` reverts its eager fallback WITH the caller's setting rollback and re-renders the restored scope** — a competing refresh may already have painted the rejected scope, and the fallback roots must never outlive the setting they belonged to.

@@ -225,19 +225,29 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       // The given roots ARE the just-persisted truth — install them as
       // the fallback up front so any concurrent refresh that fails
       // resolution falls back to the NEW scope, never the old one.
+      const previousFallback = lastRootsRef.current;
       lastRootsRef.current = { roots };
-      // Retry until this strict scope verifiably commits as the LATEST
-      // refresh — a concurrent scan-status refresh can supersede a pass
-      // mid-read, and the picker's fail-closed contract needs the new
-      // scope actually rendered before it navigates away.
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        const generation = ++refreshGenRef.current;
-        await commitRefresh(await refreshWithRoots(roots, generation));
-        if (generation === refreshGenRef.current) return;
+      try {
+        // Retry until this strict scope verifiably commits as the LATEST
+        // refresh — a concurrent scan-status refresh can supersede a pass
+        // mid-read, and the picker's fail-closed contract needs the new
+        // scope actually rendered before it navigates away.
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          const generation = ++refreshGenRef.current;
+          await commitRefresh(await refreshWithRoots(roots, generation));
+          if (generation === refreshGenRef.current) return;
+        }
+        throw new Error('queue refresh kept being superseded — try again');
+      } catch (error) {
+        // FAILURE reverts the eager fallback WITH the caller's setting
+        // rollback, and re-renders the restored scope — a competing
+        // refresh may already have painted the rejected one.
+        lastRootsRef.current = previousFallback;
+        void refresh().catch(() => {});
+        throw error;
       }
-      throw new Error('queue refresh kept being superseded — try again');
     },
-    [refreshWithRoots, commitRefresh],
+    [refreshWithRoots, commitRefresh, refresh],
   );
 
   const loadGroup = useCallback(

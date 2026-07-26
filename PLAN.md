@@ -19,23 +19,22 @@ They are separate apps with separate release trains, but the intelligence — ti
 | Desktop stack | **Electron + TypeScript**, proper security model (preload + `contextBridge`) from day one. Chosen over Tauri for reliable bundled video codecs and over Flutter for web-tech slideshow strengths + TS code sharing with React Native. |
 | Mobile stack | **React Native (Expo), Android first.** iOS later. |
 | App split | Two apps sharing a core package. Desktop = screensaver + organizer modes in one app. |
-| RAW strategy | Keep it — it's the differentiator. **darktable XMPs rendered faithfully** via `darktable-cli`; **Lightroom via tiered fallbacks** — preview-cache extraction, DNG/embedded previews (see below). Per-image routing by sniffing XMP namespaces (`darktable:` vs `crs:`). JPEG-only libraries work fine regardless. |
+| RAW strategy | Keep it — it's the differentiator. Per-image routing to the editor that owns the edits (sidecar + namespace sniffing): **darktable XMPs via `darktable-cli`**, **RawTherapee pp3s via `rawtherapee-cli`**, **Lightroom via the Afterglow companion plugin** driving the machine's own LR Classic (no headless Adobe path exists — verified). Unedited/unrenderable RAWs show the embedded camera preview, honestly labeled, behind a setting. JPEG-only libraries work fine regardless. |
 | Mobile app name | **Afterglow Companion.** |
 | Mobile workflow | State machine converging on `done` (see below); swipe-deck group review (replaced the m0.1–m0.3 duel bracket in m0.4; the bracket stays in core for desktop reuse); stored compare/duel history instead of full ranking; completed groups advance directly to the next unfinished group; to-edit queue lives in-app with `ACTION_EDIT` launch. |
 | Distribution | GitHub Releases, CI-built installers per tag. Auto-update later. |
 
-## The Lightroom reality (verified 2026-07-17)
+## The Lightroom reality
 
-**There is no local/headless Lightroom API.** Lightroom Classic's only extensibility is the Lua plugin SDK, which runs *inside* a running Lightroom instance — nothing external can ask it to render a photo. Adobe's cloud REST API exists but only covers cloud-synced Lightroom CC libraries and is gated to approved partner integrations. So "use Lightroom if installed" works only indirectly, and RAW support has honest tiers:
+**There is no local/headless Lightroom API** — no CLI, no COM/AppleScript, no headless Camera Raw; the cloud REST API is partner-gated and cloud-only. `darktable-cli` silently ignores `crs:` XMPs (verified pixel-identical output), so no non-Adobe engine can render Lightroom edits. The honest tiers:
 
 1. **darktable users:** pixel-faithful rendering via `darktable-cli` with the sidecar XMP. Flagship feature.
-2. **Lightroom Classic users — preview-cache extraction:** `Previews.lrdata` beside the catalog holds JPEG previews *with edits applied* (SQLite index + `.lrprev` files). Unofficial format that could break with an LR update, but works offline and shows the real edit; quality depends on the user's preview-size setting. User points Afterglow at their catalog once.
-3. **Lightroom + DNG users** who enable "Update DNG Preview & Metadata": the DNG's embedded preview *includes their edits* — extract and show it.
-4. **Lightroom + proprietary RAW (CR2/NEF/ARW…), no catalog access:** the embedded preview is the *camera's* rendition, not the edit. Show it, but label it honestly ("camera preview").
-5. **Anyone:** exported JPEGs always work; when a JPEG sits next to its RAW, prefer it and don't show the photo twice.
-6. **Later (1.0+):** an optional companion Lightroom plugin (official Lua SDK) that auto-exports edited photos to an Afterglow cache folder — faithful and supported, but requires LR running and a plugin install.
+2. **RawTherapee users:** pixel-faithful rendering via `rawtherapee-cli` with the `.pp3` sidecar (`-S` = only-if-edited).
+3. **Lightroom users — the companion plugin** (`apps/lightroom-plugin/`, hand-rolled Lua, file-based job queue): drives the machine's own LR Classic against a **dedicated Afterglow render catalog** — import, forced sidecar read (`photo:readMetadata()` — import alone loads no edits), `LrExportSession` into Afterglow's render buffer. User catalogs are never imported into or metadata-read. While a user's own LR session is open, jobs defer by default; the opt-in **close-Lightroom-on-screensaver-start** setting adds one exception to the close policy: on a screensaver-triggered launch only (manual starts never qualify) a user-owned session may be closed **gracefully** — a blocked close (unsaved dialog) falls back to deferral, and force-kill never happens. Outside that opt-in, Afterglow closes only instances it launched. Sidecars (`crs:` XMP + `.acr` AI masks) are machine-portable and render faithfully. Requires LR installed + running; Afterglow launches LR minimized when LR jobs are pending and gracefully closes only instances it launched. **Unattended operation is dialog-free** (LR's metadata-read prompt is suppressed via preference keys verified at onboarding); photos whose render would raise a dialog (AI-settings updates, if unsuppressible) are excluded from unattended rendering and handled by an explicit attended maintenance pass.
+4. **No editor / no edits:** the embedded camera preview (full-res for NEF/CR2; ~1080p for CR3/ARW), labeled "camera preview", behind a setting (show [default] / only full-res / skip).
+5. **Anyone:** exported JPEGs always work; a JPEG sibling (same folder or the `JPEG\` subfolder convention) is preferred over re-rendering — unless it is stale (older than any edit dependency, a dependency's stored digest changed — catches mtime-preserving sync rewrites — or the source RAW's own mtime/size identity changed since the sibling was last judged fresh) or the RAW carries a **multi-editor conflict** (a conflicted photo renders through the selected editor; a sibling cannot be attributed to it). Stale → shown with an "outdated edit" label until its JIT render supersedes it — but only as far as the unrenderable-edits fallback setting permits (`skip` means skipped, not shown) — and auto-flagged into the flag queue for review (known-outdated output is never shown silently).
 
-**Per-image renderer routing:** sidecar XMPs self-identify — darktable writes `darktable:` namespaces (its history stack), Lightroom writes `crs:` (Camera Raw Settings). Sniff the XMP → route to `darktable-cli` or the Lightroom tiers. If only one path is available, use it (darktable can best-effort import basic `crs:` settings as a last resort). The UI and README must state these tiers plainly so Lightroom users aren't promised fidelity we can't deliver.
+Reading Lightroom's preview cache (`Previews.lrdata`) is deliberately not a tier — it requires the catalog on the Afterglow machine and undercuts the RAW+sidecar parity goal. The UI and README must state these tiers plainly so Lightroom users aren't promised fidelity we can't deliver.
 
 ---
 
@@ -46,7 +45,7 @@ They are separate apps with separate release trains, but the intelligence — ti
 **Display**
 - Fullscreen slideshow: JPEG/PNG/WebP (later GIF, HEIC via optional codec work), crossfade transitions, optional Ken Burns pan/zoom.
 - Muted video playback (MP4/WebM/MOV — honest list only; no AVI/MKV claims), per-video duration cap.
-- RAW via the tiers above, with a background pre-render queue and a bounded, hash-keyed cache.
+- RAW via the tiers above, rendered just-in-time for a moment-aware look-ahead queue into an ephemeral buffer (deleted after leaving recent history; re-rendered on next appearance — compute is free on an idle machine). A slide may hold a few extra seconds while the next photo renders (stated in settings); up-to-date exported JPEG siblings are used directly instead of rendering.
 - Multi-monitor: all displays covered (mirrored or independent streams).
 - De-duplication: RAW+JPEG pairs shown once.
 
@@ -66,7 +65,7 @@ They are separate apps with separate release trains, but the intelligence — ti
 - Culling assistant: surface bursts/near-duplicates from the index (time proximity first; perceptual-hash similarity later), side-by-side compare, pick the keeper.
 
 **Platform & ops**
-- Settings UI: media folders (multiple), durations, transition, story-mode weights, cache size cap + clear button. Persisted (`electron-store`).
+- Settings UI: media folders (multiple), durations, transition, story-mode weights, unedited-RAW handling, unrenderable-edits fallback (labeled sibling/preview vs skip), video sound (default muted), close-Lightroom-on-screensaver-start (default off), render look-ahead depth (default 10), navigation-history size (default 200). Persisted via the atomic `<userData>/settings.json` store.
 - Exit on mouse-move/key/click through one code path (flag keys excepted).
 - Idle/screensaver integration, per platform, in priority order: Windows `.scr` wrapper or Task Scheduler idle trigger → Linux (systemd/X11 idle hooks) → macOS (no `.saver` possible from Electron; use hot-corner + launcher guidance).
 - CI: lint, tests, tagged releases building Windows NSIS/portable, Linux AppImage/deb, macOS dmg.
@@ -129,12 +128,12 @@ Two trains. v0.1–v0.5 and m0.1–m0.7 have shipped; next up: the desktop RAW p
 - **v0.4** — muted video (MP4/WebM/MOV) in the rotation, per-video duration cap.
 - **v0.5** — feedback release: settings-first launch (show exits back to settings; `--show` for straight-in), arrow-key navigation with history, shortcut legend, N/T flags (rename / date fix), video cap 0 = full length, display-sleep suppression, warm start from the persisted index, Windows "Set as default screensaver" button (`.scr` via the NSIS installer, same settings store).
 
-**v0.6 — The RAW pipeline (next)**
-`execFile`-based `darktable-cli` wrapper (never shell strings); cache keyed on hash(path + XMP mtime + output size); background pre-render queue with concurrency limit that stays ahead of playback; cache size cap + LRU eviction + settings UI. Per-image renderer routing by XMP namespace (`darktable:` vs `crs:`); embedded-preview extraction for the Lightroom tiers, with `Previews.lrdata` catalog extraction as the stretch goal (or v0.6.x follow-up). RAW+JPEG pair de-dup.
-*This is the release where it becomes Afterglow. Budget a real week; it's the hardest engineering in the app.*
+**v0.6 — The RAW pipeline + Lightroom companion plugin (next; plan: `docs/Plan_v0.6.md`)**
+Per-image routing to the owning editor (sidecar/namespace detection); `execFile`-based `darktable-cli` and `rawtherapee-cli` wrappers (never shell strings; serialized renders; private darktable configdir); the LR companion plugin (import → forced sidecar read → export, with Afterglow managing LR's lifecycle); embedded-preview fallback behind a setting, honestly labeled; just-in-time ephemeral rendering for a moment-aware look-ahead queue (fresh JPEG siblings used directly; stale siblings shown labeled + auto-flagged for review; renders keyed by full render identity — RAW mtime/size, sidecar content digests, artifact route, renderer version, output settings — and deleted after leaving recent history); substitution-or-brief-hold when a render isn't ready; RAW+JPEG pair de-dup (incl. `JPEG\` subfolders + staleness); FUSE/network-mount exclusion; flag queue reachable from the settings screen (tester feedback).
+*This is the release where it becomes Afterglow. Budget a real week+; it's the hardest engineering in the app.*
 
 **v0.7 — Organizer mode**
-Queue actions (OS trash, move, open in editor — including rename and date-fix flag actions). Burst-culling compare UI over the index.
+The flag queue becomes workable and the library becomes organizable, reusing the mobile model (states converge to done; durable queues; plan/preview → one confirmed batch apply; decisions reversible until commit). Every operation works on the photo's **file family** (RAW + JPEG sibling + every edit sidecar): renames, moves, and trash carry the whole family in lockstep — with one defined exception, the **sibling-only delete** for stale-export flags (the entry names the export itself; deleting just it is the intent). Byte-identical RAWs whose sidecars differ are surfaced as edit conflicts for review — never auto-trashed as duplicates. Four rungs sharing one plan/apply/verify machinery: exact-duplicate cleanup (size-bucketed SHA-256 over family-aware groups); rename + date normalization (`YYYYMMDD_HHMMSS_<CameraModel>`, camera segment dropped when no camera metadata exists — scans, old JPGs; `_1` collision suffixes; conflicts among strong date signals — EXIF/filename/folder — always queue for human review, mtime being fallback-only; adjudications written back to EXIF via exiftool); folder-layout moves against a per-library configurable template (default `<YYYY>/<YYYYMMDD>`; deliberate non-dated folders — person albums, scans — are legitimate, not violations); burst-culling compare UI over the index (`groupBySimilarity` + `DeckSession` from core). Queue actions cover the D/E/M/R/N/T flags (OS trash, move, open in editor, rename, date-fix). New shared-core modules: duplicate matching, rename planning, multi-signal date resolution — desktop consumes first, mobile later.
 
 **v0.8 — Retrospectives + multi-monitor + polish**
 This-day-in-history and month/year modes; all-displays support; overlay/settings polish.
@@ -171,7 +170,7 @@ Linux idle hooks (systemd/X11); macOS hot-corner + launcher guidance (no `.saver
 Build these only when their trigger fires; no release target until then.
 
 - **Desktop `indexReady` IPC push** — pushes the whole library over IPC; chunk/incrementalize when a library passes ~100k photos.
-- **Desktop startup speed** — v0.5's warm-start-from-index was the first pass; if still slow, a profiling pass rides with v0.6 (the RAW pre-render queue touches the same path).
+- **Desktop startup speed** — v0.5's warm-start-from-index was the first pass; if still slow, a profiling pass rides with v0.6 (the RAW look-ahead scheduler touches the same path).
 - **`.scr` thin stub** — the screensaver is currently a full copy of the installed exe; a thin stub can replace the copy in a later release without touching registration logic. Cost today: one duplicated exe on disk.
 - **Desktop video capture dates** — videos index by file mtime only; container-metadata creation dates are a possible refinement. Low priority.
 - **`expo-media-library/legacy` migration** — mobile deliberately uses the legacy module for queries (battle-tested cursor paging); migrate to the SDK's class-based Query/Asset API when Expo deprecates the legacy path in earnest (m0.8+). All access funnels through `src/lib/media.ts`, so it stays a one-file migration.
@@ -181,8 +180,8 @@ Build these only when their trigger fires; no release target until then.
 
 - **Unsigned builds.** Windows builds trip SmartScreen — testers are told to expect "More info → Run anyway"; code signing is a later cost decision. Android photo-permission UX varies by OEM/version.
 - **Edit detection is heuristic.** In-place edits (Samsung) are detectable via MediaStore changes; copy-saving editors need name/timestamp sniffing; both can miss. Mitigation: manual mark-done always exists; detection is a convenience layer, not a correctness dependency.
-- **darktable-cli throughput** (seconds per 4K render). Mitigation is architectural and non-negotiable: background queue + cache, never convert on the display path (v0.6).
-- **Lightroom fidelity disappointment.** Mitigation: the tiered messaging above, in-app labels included.
+- **darktable-cli throughput** (seconds per 4K render). Mitigation is architectural and non-negotiable: renders run out-of-process for a look-ahead queue ahead of their slot, with substitution-or-brief-hold when one isn't ready — the show never blocks indefinitely on a render (v0.6).
+- **Lightroom coupling.** The LR tier needs LR installed, running, and a plugin loaded, and unattended operation must stay dialog-free (the metadata-read prompt is solved via verified preference keys; the AI-updates dialog for AI-mask photos is the one unresolved case). Mitigation: the tiered messaging above, in-app labels included; if the AI dialog proves unsuppressible, AI-mask photos are excluded from unattended rendering (labeled fallback) and handled by an explicit attended maintenance pass.
 - **EXIF timestamp quirks** (timezones, missing `DateTimeOriginal`, WhatsApp-stripped files). Mitigation: fall back to file mtime, cluster on local naive time, and treat clustering as best-effort.
 - **HEIC** (default on many phones) doesn't decode in Chromium; fine on Android. Desktop HEIC is a later, deliberate feature — document as unsupported until then.
 

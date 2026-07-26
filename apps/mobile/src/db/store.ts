@@ -114,6 +114,12 @@ export async function setSetting(db: SQLiteDatabase, key: string, value: string)
   );
 }
 
+/** Remove a setting row entirely — an UNSET setting is distinct from any
+ * explicit value (e.g. the photo-source dynamic default). */
+export async function deleteSetting(db: SQLiteDatabase, key: string): Promise<void> {
+  await db.runAsync('DELETE FROM settings WHERE key = ?', key);
+}
+
 function chunk<T>(items: readonly T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += size) out.push([...items.slice(i, i + size)]);

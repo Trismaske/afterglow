@@ -239,15 +239,15 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
         }
         throw new Error('queue refresh kept being superseded — try again');
       } catch (error) {
-        // FAILURE reverts the eager fallback WITH the caller's setting
-        // rollback, and re-renders the restored scope — a competing
-        // refresh may already have painted the rejected one.
+        // FAILURE reverts the eager fallback; re-rendering the restored
+        // scope is the CALLER's job AFTER its setting rollback lands — a
+        // refresh fired here would resolve the still-persisted rejected
+        // source and re-commit exactly the scope being rolled back.
         lastRootsRef.current = previousFallback;
-        void refresh().catch(() => {});
         throw error;
       }
     },
-    [refreshWithRoots, commitRefresh, refresh],
+    [refreshWithRoots, commitRefresh],
   );
 
   const loadGroup = useCallback(

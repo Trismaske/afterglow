@@ -223,3 +223,8 @@ Final-review round 22 fixes, same pending vetting:
 Final-review round 23 fix, same pending vetting:
 
 87. **A failed `refreshScoped` reverts its eager fallback WITH the caller's setting rollback and re-renders the restored scope** — a competing refresh may already have painted the rejected scope, and the fallback roots must never outlive the setting they belonged to.
+
+Final-review round 24 fixes, same pending vetting:
+
+88. **Rollback re-rendering is caller-ordered**: `refreshScoped`'s failure path only reverts the fallback (a context-side refresh would resolve the still-persisted rejected source); the picker refreshes AFTER its rollback write lands. A previously UNSET source rolls back to unset (`deleteSetting`) so the dynamic Camera-folder default stays dynamic instead of freezing a resolved snapshot.
+89. **The favourites tab reloads on focus** — the bottom-tab navigator keeps it mounted while blurred, so its mount-time-only load showed stale rows for intents queued later from the deck.

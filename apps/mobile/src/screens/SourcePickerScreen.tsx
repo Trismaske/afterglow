@@ -24,7 +24,7 @@ import {
   serializePhotoSourceSetting,
   type PhotoSourceSetting,
 } from '../lib/sources';
-import { setSetting } from '../db/store';
+import { deleteSetting, setSetting } from '../db/store';
 import { requestRescan } from '../scan/scanRunner';
 import { useReview } from '../review/ReviewContext';
 import { showToast } from '../lib/toast';
@@ -42,14 +42,17 @@ export function SourcePickerScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const db = useSQLiteContext();
-  const { refreshScoped } = useReview();
+  const { refresh, refreshScoped } = useReview();
   const [rows, setRows] = useState<Row[] | null>(null);
   const [allFolders, setAllFolders] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
-  /** The persisted setting at load — the rollback target if applying a
-   * new scope fails after it committed. */
-  const previousSettingRef = useRef<PhotoSourceSetting | null>(null);
+  /** The persisted state at load — the rollback target if applying a new
+   * scope fails after it committed. `unset` preserves the DYNAMIC default
+   * (rolling back to a resolved snapshot would freeze it). */
+  const previousSettingRef = useRef<
+    { kind: 'set'; setting: PhotoSourceSetting } | { kind: 'unset' } | null
+  >(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -57,7 +60,9 @@ export function SourcePickerScreen({ navigation }: Props) {
       (async () => {
         const [dirs, current] = await Promise.all([listSourceDirs(true), resolveSources(db)]);
         if (cancelled) return;
-        previousSettingRef.current = current.setting;
+        previousSettingRef.current = current.isDefault
+          ? { kind: 'unset' }
+          : { kind: 'set', setting: current.setting };
         const catalog: Row[] = [...dirs];
         const chosen = new Set<string>();
         if (current.setting.mode === 'all') {
@@ -125,20 +130,25 @@ export function SourcePickerScreen({ navigation }: Props) {
         await refreshScoped(resolved.roots ?? null);
       } catch {
         // A FAILED rollback must say so — the new source is then durable
-        // while the rendered queue may still show the old scope.
+        // while the rendered queue may still show the old scope. An
+        // unset previous state rolls back to UNSET (the dynamic default
+        // must stay dynamic). The queue re-renders only AFTER the
+        // rollback landed — a refresh before it would resolve and paint
+        // the rejected source.
         const previous = previousSettingRef.current;
         let restored = false;
         if (previous) {
-          restored = await setSetting(
-            db,
-            PHOTO_SOURCES_KEY,
-            serializePhotoSourceSetting(previous),
+          restored = await (
+            previous.kind === 'unset'
+              ? deleteSetting(db, PHOTO_SOURCES_KEY)
+              : setSetting(db, PHOTO_SOURCES_KEY, serializePhotoSourceSetting(previous.setting))
           ).then(
             () => true,
             () => false,
           );
           invalidateSourceCatalog();
         }
+        if (restored) await refresh().catch(() => {});
         showToast(
           restored
             ? 'Could not apply the new source — selection unchanged'
@@ -153,7 +163,7 @@ export function SourcePickerScreen({ navigation }: Props) {
     } finally {
       setSaving(false);
     }
-  }, [valid, saving, allFolders, selected, db, navigation, refreshScoped]);
+  }, [valid, saving, allFolders, selected, db, navigation, refresh, refreshScoped]);
 
   const roots = useMemo(() => [...selected], [selected]);
 

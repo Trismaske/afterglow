@@ -4,7 +4,8 @@
  * verified before SQLite commits the result. Cancelled and failed work stays
  * visible and retryable across restarts.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import { Alert, FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -44,9 +45,13 @@ export function FavouritesQueueScreen() {
     }
   }, [db]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  // Focus-driven: the bottom-tab navigator keeps this screen mounted
+  // while blurred — intents queued from the deck must show on return.
+  useFocusEffect(
+    useCallback(() => {
+      void refresh();
+    }, [refresh]),
+  );
 
   const applyRows = useMemo(() => rows.filter((row) => row.favourite_target === 1), [rows]);
   const removeRows = useMemo(() => rows.filter((row) => row.favourite_target === 0), [rows]);

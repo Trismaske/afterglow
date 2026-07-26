@@ -62,6 +62,9 @@ export interface EditDetectionResult {
   /** Edited copies detected (copy already tracked as done) — the caller
    * prompts keep-or-cull for each original. */
   copies: DetectedCopy[];
+  /** Externally removed photos reconciled during this run — group
+   * membership may have changed; the caller must refresh its queue. */
+  reconciled: number;
 }
 
 interface LiveRow {
@@ -79,7 +82,7 @@ export async function runEditDetection(
   db: SQLiteDatabase,
   onAutoDone?: (assetId: string) => void,
 ): Promise<EditDetectionResult> {
-  const result: EditDetectionResult = { autoDoneIds: [], copies: [] };
+  const result: EditDetectionResult = { autoDoneIds: [], copies: [], reconciled: 0 };
   const rows = await getEditDetectionRows(db);
   if (rows.length === 0) return result;
 
@@ -240,6 +243,7 @@ export async function runEditDetection(
         // scan lands here again); the reverse order would strand a
         // 'done' row for an absent photo with no way back.
         await reconcileExternallyRemoved(db, [match.copy_id], Date.now());
+        result.reconciled += 1;
         await dismissCopyMatch(db, match.original_id, match.copy_id);
       }
       continue;

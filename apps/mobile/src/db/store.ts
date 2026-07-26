@@ -557,10 +557,18 @@ export async function listReviewGroups(
 ): Promise<ReviewGroupRow[]> {
   // The source filter gates which groups QUEUE (a pending in-source
   // member); a queued group still shows all its members — the deck always
-  // works on whole groups.
+  // works on whole groups. Headers and members read from ONE exclusive
+  // snapshot: a scan window committing between the two queries could
+  // return obsolete groups with empty member lists (blank deck).
   const src = sourceClause(roots, 'p.uri');
-  const groups = await db.getAllAsync<{ id: number; best_photo_id: string | null; newest: number }>(
-    `SELECT g.id, g.best_photo_id,
+  let out: ReviewGroupRow[] = [];
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    const groups = await txn.getAllAsync<{
+      id: number;
+      best_photo_id: string | null;
+      newest: number;
+    }>(
+      `SELECT g.id, g.best_photo_id,
             (SELECT MAX(p.taken_at) FROM photo_group_assignments a
               JOIN photos p ON p.asset_id = a.photo_id
               WHERE a.group_id = g.id AND p.is_present = 1) AS newest
@@ -572,37 +580,39 @@ export async function listReviewGroups(
      )
      ORDER BY newest DESC
      LIMIT ?`,
-    ...src.params,
-    limit,
-  );
-  if (groups.length === 0) return [];
-  const members = await db.getAllAsync<ReviewMemberRow & { group_id: number }>(
-    `SELECT a.group_id, p.asset_id, p.uri, p.taken_at, p.state, p.needs_edit, a.time_attached
-     FROM photo_group_assignments a
-     JOIN photos p ON p.asset_id = a.photo_id
-     WHERE a.group_id IN (${groups.map(() => '?').join(',')}) AND p.is_present = 1
-     ORDER BY p.taken_at ASC, p.asset_id ASC`,
-    ...groups.map((g) => g.id),
-  );
-  const byGroup = new Map<number, ReviewMemberRow[]>();
-  for (const m of members) {
-    const bucket = byGroup.get(Number(m.group_id));
-    const row: ReviewMemberRow = {
-      asset_id: m.asset_id,
-      uri: m.uri,
-      taken_at: m.taken_at,
-      state: m.state,
-      needs_edit: m.needs_edit,
-      time_attached: m.time_attached,
-    };
-    if (bucket) bucket.push(row);
-    else byGroup.set(Number(m.group_id), [row]);
-  }
-  return groups.map((g) => ({
-    groupId: Number(g.id),
-    bestPhotoId: g.best_photo_id,
-    members: byGroup.get(Number(g.id)) ?? [],
-  }));
+      ...src.params,
+      limit,
+    );
+    if (groups.length === 0) return;
+    const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
+      `SELECT a.group_id, p.asset_id, p.uri, p.taken_at, p.state, p.needs_edit, a.time_attached
+       FROM photo_group_assignments a
+       JOIN photos p ON p.asset_id = a.photo_id
+       WHERE a.group_id IN (${groups.map(() => '?').join(',')}) AND p.is_present = 1
+       ORDER BY p.taken_at ASC, p.asset_id ASC`,
+      ...groups.map((g) => g.id),
+    );
+    const byGroup = new Map<number, ReviewMemberRow[]>();
+    for (const m of members) {
+      const bucket = byGroup.get(Number(m.group_id));
+      const row: ReviewMemberRow = {
+        asset_id: m.asset_id,
+        uri: m.uri,
+        taken_at: m.taken_at,
+        state: m.state,
+        needs_edit: m.needs_edit,
+        time_attached: m.time_attached,
+      };
+      if (bucket) bucket.push(row);
+      else byGroup.set(Number(m.group_id), [row]);
+    }
+    out = groups.map((g) => ({
+      groupId: Number(g.id),
+      bestPhotoId: g.best_photo_id,
+      members: byGroup.get(Number(g.id)) ?? [],
+    }));
+  });
+  return out;
 }
 
 /**
@@ -614,21 +624,26 @@ export async function getReviewGroup(
   db: SQLiteDatabase,
   groupId: number,
 ): Promise<ReviewGroupRow | null> {
-  const group = await db.getFirstAsync<{ id: number; best_photo_id: string | null }>(
-    'SELECT id, best_photo_id FROM photo_groups WHERE id = ?',
-    groupId,
-  );
-  if (!group) return null;
-  const members = await db.getAllAsync<ReviewMemberRow>(
-    `SELECT p.asset_id, p.uri, p.taken_at, p.state, p.needs_edit, a.time_attached
-     FROM photo_group_assignments a
-     JOIN photos p ON p.asset_id = a.photo_id
-     WHERE a.group_id = ? AND p.is_present = 1
-     ORDER BY p.taken_at ASC, p.asset_id ASC`,
-    groupId,
-  );
-  if (members.length === 0) return null;
-  return { groupId: Number(group.id), bestPhotoId: group.best_photo_id, members };
+  // One snapshot for header + members (same race as listReviewGroups).
+  let out: ReviewGroupRow | null = null;
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    const group = await txn.getFirstAsync<{ id: number; best_photo_id: string | null }>(
+      'SELECT id, best_photo_id FROM photo_groups WHERE id = ?',
+      groupId,
+    );
+    if (!group) return;
+    const members = await txn.getAllAsync<ReviewMemberRow>(
+      `SELECT p.asset_id, p.uri, p.taken_at, p.state, p.needs_edit, a.time_attached
+       FROM photo_group_assignments a
+       JOIN photos p ON p.asset_id = a.photo_id
+       WHERE a.group_id = ? AND p.is_present = 1
+       ORDER BY p.taken_at ASC, p.asset_id ASC`,
+      groupId,
+    );
+    if (members.length === 0) return;
+    out = { groupId: Number(group.id), bestPhotoId: group.best_photo_id, members };
+  });
+  return out;
 }
 
 /**
@@ -674,13 +689,17 @@ export async function listGroupsForDay(
     day,
     ...src.params,
   );
-  const groups = await Promise.all(ids.map((r) => getReviewGroup(db, Number(r.group_id))));
+  // Sequential: each getReviewGroup opens its own snapshot transaction —
+  // interleaving them via Promise.all would nest transactions.
+  const groups: ReviewGroupRow[] = [];
+  for (const r of ids) {
+    const group = await getReviewGroup(db, Number(r.group_id));
+    if (group) groups.push(group);
+  }
   // Members are chronologically ASCENDING — newest-first ordering keys
   // on each group's LAST member.
   const newest = (g: ReviewGroupRow): number => g.members[g.members.length - 1]?.taken_at ?? 0;
-  return groups
-    .filter((g): g is ReviewGroupRow => g !== null)
-    .sort((a, b) => newest(b) - newest(a));
+  return groups.sort((a, b) => newest(b) - newest(a));
 }
 
 /** Everything the standard photo viewer's detail panel shows for one

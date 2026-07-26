@@ -278,7 +278,7 @@ export function HomeScreen({ navigation }: Props) {
       (async () => {
         const result = await runEditDetection(db).catch(() => null);
         if (!result) return;
-        if (result.autoDoneIds.length > 0 || result.copies.length > 0) {
+        if (result.autoDoneIds.length > 0 || result.copies.length > 0 || result.reconciled > 0) {
           // Detection wrote states directly — the cached review queue
           // must observe them (a stale unreviewed copy left actionable
           // in the deck could overwrite the durable done later).

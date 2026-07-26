@@ -247,3 +247,8 @@ Final-review round 27 fixes, same pending vetting:
 Final-review round 28 fixes, same pending vetting:
 
 96. **The round-27 picker reset actually landed** (the fix script had aborted mid-run before writing the picker — codex re-flagged it; now verified by grep in-repo), and direct-SQLite mutations refresh the cached review queue: an organize apply with moves refreshes ReviewContext and rescans (photos.uri changed — cached rows held dead pre-move URIs), and edit detection refreshes after any auto-done or copy-state write (a stale unreviewed copy left actionable in the deck could overwrite the durable done).
+
+Final-review round 29 fixes, same pending vetting:
+
+97. **Queue reads use ONE snapshot**: `listReviewGroups` and `getReviewGroup` read headers + members inside one exclusive transaction (a scan window committing between the two split queries could render obsolete groups with empty member lists — a blank deck); `listGroupsForDay` fetches sequentially (parallel snapshots would nest transactions).
+98. **Both remaining reconciliation paths refresh the queue**: edit detection reports `reconciled` (a deleted edited copy dissolving a cached group), and History's page reconciliation refreshes ReviewContext directly.

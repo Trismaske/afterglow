@@ -27,6 +27,7 @@ import { checkMediaPresence } from '../lib/media';
 import { formatDayClock } from '../lib/format';
 import { DecisionBadge, type DecisionKind } from '../components/DecisionBadge';
 import { PhotoViewer } from '../components/PhotoViewer';
+import { useReview } from '../review/ReviewContext';
 import { colors, touch } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'History'>;
@@ -51,6 +52,7 @@ function badgeOf(row: Extract<HistoryRow, { kind: 'photo' }>): DecisionKind | nu
 export function HistoryScreen(_props: Props) {
   const insets = useSafeAreaInsets();
   const db = useSQLiteContext();
+  const { refresh: refreshReview } = useReview();
 
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [rows, setRows] = useState<HistoryRow[] | null>(null);
@@ -77,9 +79,12 @@ export function HistoryScreen(_props: Props) {
       }
       if (gone.size === 0) return pageRows;
       await reconcileExternallyRemoved(db, [...gone], Date.now());
+      // The removal may have dissolved a cached group or moved its
+      // survivor to singles — the review queue must observe it.
+      void refreshReview().catch(() => {});
       return pageRows.filter((row) => row.kind !== 'photo' || !gone.has(row.asset_id));
     },
-    [db],
+    [db, refreshReview],
   );
 
   const reload = useCallback(

@@ -59,6 +59,8 @@ export function ReDecideSheet({
       try {
         await redecideStaged(item.id, target);
         onClose();
+      } catch {
+        // surfaced by the provider alert; the sheet stays open
       } finally {
         setBusy(false);
       }

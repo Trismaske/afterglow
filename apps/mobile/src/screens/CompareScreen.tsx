@@ -279,7 +279,11 @@ export function CompareScreen({ navigation, route }: Props) {
   const betterKeepBoth = useCallback(
     async (winnerId: string, loserId: string) => {
       if (numericGroupId === null) return;
-      await recordCompare(numericGroupId, winnerId, loserId);
+      try {
+        await recordCompare(numericGroupId, winnerId, loserId);
+      } catch {
+        return; // surfaced by the provider alert; stay on the screen
+      }
       showToast(`Photo ${posOf(winnerId)} starred best of group — compare recorded`);
       navigation.goBack();
     },
@@ -291,7 +295,11 @@ export function CompareScreen({ navigation, route }: Props) {
   const betterCullLoser = useCallback(
     async (winnerId: string, loserId: string) => {
       if (numericGroupId === null) return;
-      await compareCull(numericGroupId, loserId, winnerId);
+      try {
+        await compareCull(numericGroupId, loserId, winnerId);
+      } catch {
+        return; // surfaced by the provider alert; stay on the screen
+      }
       showToast(`Photo ${posOf(winnerId)} kept — photo ${posOf(loserId)} staged to cull`);
       navigation.goBack();
     },
@@ -306,6 +314,8 @@ export function CompareScreen({ navigation, route }: Props) {
         try {
           await decide(winnerId, 'keep');
           navigation.goBack();
+        } catch {
+          // surfaced by the provider alert; stay on the screen
         } finally {
           setBusy(false);
         }
@@ -373,6 +383,8 @@ export function CompareScreen({ navigation, route }: Props) {
           await compareCull(numericGroupId, loserId, winnerId);
         }
         navigation.goBack();
+      } catch {
+        // surfaced by the provider alert; stay on the screen
       } finally {
         setBusy(false);
       }
@@ -463,7 +475,7 @@ export function CompareScreen({ navigation, route }: Props) {
           style={[styles.editTag, needsEdit(visible.id) && styles.editTagActive]}
           hitSlop={8}
           disabled={busy}
-          onPress={() => void toggleNeedsEdit(visible.id)}
+          onPress={() => void toggleNeedsEdit(visible.id).catch(() => {})}
         >
           <MaterialCommunityIcons
             name={needsEdit(visible.id) ? 'pencil' : 'pencil-outline'}
@@ -479,7 +491,7 @@ export function CompareScreen({ navigation, route }: Props) {
             style={[styles.editTag, favourite && styles.favouriteTagActive]}
             hitSlop={8}
             disabled={busy}
-            onPress={() => void toggleFavourite(visible.id)}
+            onPress={() => void toggleFavourite(visible.id).catch(() => {})}
           >
             <MaterialCommunityIcons
               name={favourite ? 'heart' : 'heart-outline'}

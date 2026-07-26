@@ -208,7 +208,11 @@ export function EditQueueScreen(_props: Props) {
           items={rows.map((r) => ({ id: r.asset_id, uri: r.uri, takenAt: r.taken_at }))}
           initialIndex={viewerIndex}
           onClose={() => setViewerId(null)}
-          onChanged={() => void reload().then(refresh)}
+          onChanged={() =>
+            void reload()
+              .then(refresh)
+              .catch(() => {})
+          }
         />
       ) : null}
       {matrixAssetId !== null ? (

@@ -87,6 +87,27 @@ export function PhotoViewer({
   const current: ViewerItem | null = items[cursor] ?? null;
   const currentId = current?.id ?? null;
 
+  // The viewer is anchored to a PHOTO, not a position: a host reload can
+  // reorder items (History reorders on activity_at), and the numeric
+  // cursor would silently switch photos. Follow the anchored id; a photo
+  // that left the list clamps to the nearest position.
+  const anchorIdRef = useRef<string | null>(null);
+  anchorIdRef.current = currentId ?? anchorIdRef.current;
+  useEffect(() => {
+    const anchored = anchorIdRef.current;
+    if (anchored === null) return;
+    const index = items.findIndex((i) => i.id === anchored);
+    setCursor((previous) => {
+      const next = index >= 0 ? index : Math.min(previous, Math.max(0, items.length - 1));
+      if (next !== previous) {
+        listRef.current?.scrollToOffset({ offset: next * width, animated: false });
+      }
+      return next;
+    });
+    // Only item-set changes re-anchor; swipes drive the cursor directly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
+
   // ------------------------------------------------------ pinch zoom
   const [zoomed, setZoomed] = useState(false);
   const scale = useSharedValue(1);
@@ -373,7 +394,7 @@ export function PhotoViewer({
           onClose={() => setEditing(null)}
           onChanged={() => {
             setFactsTick((t) => t + 1);
-            void refreshReview();
+            void refreshReview().catch(() => {});
             onChanged?.();
           }}
         />

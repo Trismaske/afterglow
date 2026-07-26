@@ -153,3 +153,8 @@ Final-review round 9 fixes, same pending vetting:
 
 58. **Browse-mode Best gates only on the culled state** — a completed group's done/to_edit keepers stay starrable (the aliveness check had disabled Best for every browsed member).
 59. **Off-page groups return to their origin on completion/dissolution** (DayProgress-opened groups outside the bounded queue page — the page cannot name their successor), and the deck header drops the meaningless "Group 0 of N" position for them.
+
+Final-review round 10 fixes, same pending vetting:
+
+60. **The viewer anchors to the PHOTO, not a position**: a host reload that reorders items (History reorders on `activity_at`) re-finds the anchored id and moves the pager with it — the numeric cursor was silently switching photos.
+61. **Write rejections are caught at every UI boundary**: the provider's `writeError` alert is the surface; deck `run()`, Compare handlers (which also skip their success toast/navigation on failure), the re-decide sheet (stays open), and the viewer/queue `onChanged` reloads all swallow the re-thrown rejection instead of leaking unhandled promise rejections.

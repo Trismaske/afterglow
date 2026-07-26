@@ -540,6 +540,9 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
       setBusy(true);
       try {
         await action();
+      } catch {
+        // The provider already surfaced the write error (alert) — the
+        // rejection must not escape as unhandled.
       } finally {
         setBusy(false);
       }
@@ -654,7 +657,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
       if (!isBest && offer && Platform.OS === 'android' && Number(Platform.Version) >= 30) {
         Alert.alert('Best of this group', 'Would you also like to favourite it in your gallery?', [
           { text: 'Not now', style: 'cancel' },
-          { text: 'Favourite', onPress: () => void toggleFavourite(current.id) },
+          { text: 'Favourite', onPress: () => void toggleFavourite(current.id).catch(() => {}) },
         ]);
       }
     });
@@ -1091,7 +1094,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
             <Pressable
               style={[styles.secondaryButton, flagged && styles.secondaryButtonEdit]}
               disabled={busy}
-              onPress={() => void toggleNeedsEdit(current.id)}
+              onPress={() => void run(() => toggleNeedsEdit(current.id))}
             >
               <MaterialCommunityIcons
                 name="pencil"
@@ -1233,7 +1236,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
           items={deckItems.map((i) => ({ id: i.id, uri: i.uri, takenAt: i.timestamp }))}
           initialIndex={cursor}
           onClose={() => setViewerOpen(false)}
-          onChanged={() => void refresh()}
+          onChanged={() => void refresh().catch(() => {})}
         />
       )}
 

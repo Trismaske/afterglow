@@ -276,7 +276,7 @@ export function OrganizeQueueScreen(_props: Props) {
           items={rows.map((r) => ({ id: r.photo_id, uri: r.uri, takenAt: r.taken_at }))}
           initialIndex={viewerIndex}
           onClose={() => setViewerId(null)}
-          onChanged={() => void reload()}
+          onChanged={() => void reload().catch(() => {})}
         />
       ) : null}
       {count > 0 ? (

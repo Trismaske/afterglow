@@ -137,7 +137,7 @@ export function FavouritesQueueScreen() {
               items={rows.map((r) => ({ id: r.asset_id, uri: r.uri, takenAt: r.taken_at }))}
               initialIndex={index}
               onClose={() => setViewerId(null)}
-              onChanged={() => void refresh()}
+              onChanged={() => void refresh().catch(() => {})}
             />
           );
         })()}

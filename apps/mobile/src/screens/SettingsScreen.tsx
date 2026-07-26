@@ -82,27 +82,30 @@ export function SettingsScreen({ navigation }: Props) {
 
   const pickStrictness = useCallback(
     (step: StrictnessStep) => {
-      setStrictness(step);
-      void setSetting(db, GROUPING_STRICTNESS_KEY, serializeStrictness(step)).then(() => {
-        // Decision 5: settings changes offer an EXPLICIT opt-in regroup of
-        // everything not yet reviewed; declining means the new strictness
-        // only shapes groups the scan builds from now on.
-        Alert.alert(
-          'Regroup existing photos?',
-          'Apply the new strictness to every photo you have not reviewed yet? Reviewed groups and ejected singles are never touched.',
-          [
-            { text: 'Only new photos', style: 'cancel' },
-            {
-              text: 'Regroup not-yet-reviewed',
-              onPress: () =>
-                void resetUnreviewedGroups(db).then(() => {
+      // The continuous scan re-derives every not-yet-reviewed group on each
+      // pass, so a strictness change ALWAYS regroups them on the next scan
+      // — an "only new photos" mode would need per-photo threshold
+      // provenance the schema does not keep. Confirm honestly instead of
+      // promising an opt-out the next launch would break.
+      Alert.alert(
+        'Change grouping strictness?',
+        'Photos you have not reviewed yet will be regrouped under the new setting. Reviewed groups and photos you made single are never touched.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Change & regroup',
+            onPress: () => {
+              setStrictness(step);
+              void setSetting(db, GROUPING_STRICTNESS_KEY, serializeStrictness(step))
+                .then(() => resetUnreviewedGroups(db))
+                .then(() => {
                   void requestRescan(db);
                   showToast('Regrouping in the background');
-                }),
+                });
             },
-          ],
-        );
-      });
+          },
+        ],
+      );
     },
     [db],
   );

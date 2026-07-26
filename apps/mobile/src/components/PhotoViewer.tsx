@@ -32,6 +32,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSQLiteContext } from 'expo-sqlite';
+import { useReview } from '../review/ReviewContext';
 import { getPhotoFacts, type PhotoFacts } from '../db/store';
 import { isInShareQueue } from '../db/shareStore';
 import { classifyPhotoState } from '../lib/progress';
@@ -69,6 +70,9 @@ export function PhotoViewer({
   onChanged?: () => void;
 }) {
   const db = useSQLiteContext();
+  // Viewer edits write SQLite directly (StateEditorSheet) — the review
+  // queue must observe them even when the host only reloads local rows.
+  const { refresh: refreshReview } = useReview();
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -238,7 +242,7 @@ export function PhotoViewer({
       factLines.push({ icon: 'heart', text: 'Favourited in your gallery.' });
     else if (facts.favourite_state === 'queued_apply')
       factLines.push({ icon: 'heart-outline', text: 'Favourite queued for gallery confirmation.' });
-    if (facts.needs_edit === 1 && facts.state === 'done')
+    if (facts.edit_completed_at != null)
       factLines.push({ icon: 'pencil', text: 'Was edited via the edit queue.' });
     if (shareQueued) factLines.push({ icon: 'share-variant', text: 'In the share queue.' });
     if (facts.organize_applied_at != null)
@@ -369,6 +373,7 @@ export function PhotoViewer({
           onClose={() => setEditing(null)}
           onChanged={() => {
             setFactsTick((t) => t + 1);
+            void refreshReview();
             onChanged?.();
           }}
         />

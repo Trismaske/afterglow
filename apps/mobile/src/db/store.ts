@@ -50,6 +50,9 @@ export interface PersistDecisionExtras {
    * un-culling answers the copy prompt's question, so its stale re-emit
    * must not return, nor block a future cycle's fresh match (C#12). */
   resolveCopyMatchesFor?: readonly string[];
+  /** Star a group best in the SAME transaction (compare verdicts: duel,
+   * loser state, and the star must land or fail together). */
+  setBest?: { groupId: number; assetId: string | null };
 }
 
 /**
@@ -73,12 +76,15 @@ function scopeClause(scope: PhotoScope): { sql: string; params: (string | number
  * DB-side counterpart of the album matching in sources.ts — see its
  * module docs for the accepted looseness.
  */
-function sourceClause(roots: readonly string[] | null | undefined): {
+function sourceClause(
+  roots: readonly string[] | null | undefined,
+  column = 'uri',
+): {
   sql: string;
   params: string[];
 } {
   if (!roots || roots.length === 0) return { sql: '', params: [] };
-  const likes = roots.map(() => "uri LIKE ? ESCAPE '\\'").join(' OR ');
+  const likes = roots.map(() => `${column} LIKE ? ESCAPE '\\'`).join(' OR ');
   return { sql: ` AND (${likes})`, params: roots.map(sourceLikePattern) };
 }
 
@@ -246,6 +252,14 @@ export async function applyReviewDecisions(
         assetId,
       );
     }
+    if (extras.setBest) {
+      await txn.runAsync(
+        'UPDATE photo_groups SET best_photo_id = ? WHERE id = ?',
+        extras.setBest.assetId,
+        extras.setBest.groupId,
+      );
+    }
+
     if (extras.duel) {
       await txn.runAsync(
         `INSERT INTO duels (group_id, winner_id, loser_id, kept_both, at)
@@ -403,7 +417,12 @@ export interface ReviewGroupRow {
 export async function listReviewGroups(
   db: SQLiteDatabase,
   limit: number,
+  roots: readonly string[] | null = null,
 ): Promise<ReviewGroupRow[]> {
+  // The source filter gates which groups QUEUE (a pending in-source
+  // member); a queued group still shows all its members — the deck always
+  // works on whole groups.
+  const src = sourceClause(roots, 'p.uri');
   const groups = await db.getAllAsync<{ id: number; best_photo_id: string | null; newest: number }>(
     `SELECT g.id, g.best_photo_id,
             (SELECT MAX(p.taken_at) FROM photo_group_assignments a
@@ -413,10 +432,11 @@ export async function listReviewGroups(
      WHERE EXISTS (
        SELECT 1 FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
-       WHERE a.group_id = g.id AND p.state = 'unreviewed' AND p.is_present = 1
+       WHERE a.group_id = g.id AND p.state = 'unreviewed' AND p.is_present = 1${src.sql}
      )
      ORDER BY newest DESC
      LIMIT ?`,
+    ...src.params,
     limit,
   );
   if (groups.length === 0) return [];
@@ -484,14 +504,17 @@ export async function getReviewGroup(
 export async function listSinglesFeed(
   db: SQLiteDatabase,
   limit: number,
+  roots: readonly string[] | null = null,
 ): Promise<ReviewMemberRow[]> {
+  const src = sourceClause(roots, 'p.uri');
   return db.getAllAsync<ReviewMemberRow>(
     `SELECT p.asset_id, p.uri, p.taken_at, p.state, p.needs_edit, a.time_attached
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
-     WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled') AND p.is_present = 1
+     WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled') AND p.is_present = 1${src.sql}
      ORDER BY p.taken_at DESC, p.asset_id DESC
      LIMIT ?`,
+    ...src.params,
     limit,
   );
 }
@@ -502,12 +525,18 @@ export async function listSinglesFeed(
  * groups for browse/re-decide (gate 5). Members outside the day ride
  * along (groups may span midnight; the deck always shows whole groups).
  */
-export async function listGroupsForDay(db: SQLiteDatabase, day: string): Promise<ReviewGroupRow[]> {
+export async function listGroupsForDay(
+  db: SQLiteDatabase,
+  day: string,
+  roots: readonly string[] | null = null,
+): Promise<ReviewGroupRow[]> {
+  const src = sourceClause(roots, 'p.uri');
   const ids = await db.getAllAsync<{ group_id: number }>(
     `SELECT DISTINCT a.group_id FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
-     WHERE a.group_id IS NOT NULL AND p.day = ? AND p.is_present = 1`,
+     WHERE a.group_id IS NOT NULL AND p.day = ? AND p.is_present = 1${src.sql}`,
     day,
+    ...src.params,
   );
   const groups = await Promise.all(ids.map((r) => getReviewGroup(db, Number(r.group_id))));
   return groups
@@ -527,6 +556,8 @@ export interface PhotoFacts {
   organize_state: string;
   organize_applied_at: number | null;
   reviewed_at: number | null;
+  /** Last completed edit-queue cycle (durable marker). */
+  edit_completed_at: number | null;
   /** Continuous group membership (null = single). */
   group_id: number | null;
   /** Grouped by time only — embedding missing (decision 5). */
@@ -543,7 +574,7 @@ export async function getPhotoFacts(
 ): Promise<PhotoFacts | null> {
   return db.getFirstAsync<PhotoFacts>(
     `SELECT p.asset_id, p.uri, p.taken_at, p.state, p.needs_edit, p.favourite_state,
-            p.organize_state, p.organize_applied_at, p.reviewed_at,
+            p.organize_state, p.organize_applied_at, p.reviewed_at, p.edit_completed_at,
             a.group_id, COALESCE(a.time_attached, 0) AS time_attached,
             COALESCE(a.user_single, 0) AS user_single,
             CASE WHEN g.best_photo_id = p.asset_id THEN 1 ELSE 0 END AS is_best
@@ -567,14 +598,17 @@ export async function setGroupBest(
 /** Home CTA counts: unreviewed present photos in groups / as singles. */
 export async function countReviewQueue(
   db: SQLiteDatabase,
+  roots: readonly string[] | null = null,
 ): Promise<{ grouped: number; singles: number }> {
+  const src = sourceClause(roots, 'p.uri');
   const row = await db.getFirstAsync<{ grouped: number; singles: number }>(
     `SELECT
        SUM(CASE WHEN a.group_id IS NOT NULL THEN 1 ELSE 0 END) AS grouped,
        SUM(CASE WHEN a.group_id IS NULL THEN 1 ELSE 0 END) AS singles
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
-     WHERE p.state = 'unreviewed' AND p.is_present = 1`,
+     WHERE p.state = 'unreviewed' AND p.is_present = 1${src.sql}`,
+    ...src.params,
   );
   return { grouped: row?.grouped ?? 0, singles: row?.singles ?? 0 };
 }
@@ -594,14 +628,17 @@ export async function getReviewedCountsByDay(
   return new Map(rows.map((r) => [r.day, r.n]));
 }
 
-/** Home corpus stats: groups found + reviewed rows (decision: live stats). */
+/** Home corpus stats: groups found + rows with a CURRENT verdict (a
+ * cleared verdict returns to the pending pool even though reviewed_at
+ * stays first-stamped for lifetime stats). */
 export async function getCorpusStats(
   db: SQLiteDatabase,
 ): Promise<{ groupsFound: number; reviewed: number }> {
   const row = await db.getFirstAsync<{ groups: number; reviewed: number }>(
     `SELECT
        (SELECT COUNT(*) FROM photo_groups) AS groups,
-       (SELECT COUNT(*) FROM photos WHERE reviewed_at IS NOT NULL) AS reviewed`,
+       (SELECT COUNT(*) FROM photos
+        WHERE state IN ('done', 'to_edit', 'culled', 'confirmed', 'trashed')) AS reviewed`,
   );
   return { groupsFound: row?.groups ?? 0, reviewed: row?.reviewed ?? 0 };
 }
@@ -682,6 +719,26 @@ export async function writeContinuousGroups(
 ): Promise<void> {
   if (write.photos.length === 0) return;
   await db.withExclusiveTransactionAsync(async (txn) => {
+    // A scanned photo EXISTS in MediaStore — authoritative presence. A row
+    // still marked trashed was restored outside Afterglow (Gallery
+    // "Restore"); apply the standard restore transition (same semantics as
+    // trashStore.markPhotoRestored: back to review, generation bump so a
+    // later verified re-trash counts again, fresh edit-cycle baseline).
+    for (const ids of chunk(
+      write.photos.map((p) => p.assetId),
+      IN_CHUNK,
+    )) {
+      if (ids.length === 0) continue;
+      await txn.runAsync(
+        `UPDATE photos SET state = 'unreviewed', is_present = 1,
+           trash_generation = trash_generation + 1,
+           to_edit_at = NULL, mod_time = NULL, content_hash = NULL,
+           activity_at = ?
+         WHERE asset_id IN (${ids.map(() => '?').join(',')}) AND state = 'trashed'`,
+        at,
+        ...ids,
+      );
+    }
     for (const photo of write.photos) {
       await txn.runAsync(
         `INSERT INTO photos (asset_id, uri, taken_at, state, mod_time, day,
@@ -1409,7 +1466,9 @@ export async function getGridPhotosByFilter(
   const where = scopeClause(scope);
   const src = sourceClause(roots);
   return db.getAllAsync<GridPhotoRow>(
-    `SELECT asset_id, uri, taken_at, state, (group_id IS NOT NULL) AS grouped
+    `SELECT asset_id, uri, taken_at, state,
+            EXISTS (SELECT 1 FROM photo_group_assignments a
+                    WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped
      FROM photos WHERE ${where.sql} AND (${GRID_FILTER_SQL[filter]})${src.sql}
      ORDER BY taken_at DESC, asset_id DESC LIMIT ? OFFSET ?`,
     ...where.params,

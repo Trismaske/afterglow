@@ -10,7 +10,10 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 import { migrateDatabase } from './database';
 import {
   applyReviewDecisions,
+  countReviewQueue,
+  getCorpusStats,
   getDaySummariesForDays,
+  getGridPhotosByFilter,
   getPhotoFacts,
   getReviewGroup,
   getStagedCulls,
@@ -512,3 +515,126 @@ describe('gate 5: getPhotoFacts', () => {
 function P0(rawId: string) {
   return { rawId, day: '2026-07-20', takenAt: AT - 3_600_000 };
 }
+
+// -------------------------------------------- final-review regressions
+
+describe('grid filters (schema-v13 regression)', () => {
+  it('every DB-backed filter queries without the removed group_id column', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3', '4'], [['1', '2']]);
+    await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('3'), 'to_edit'],
+        [id('4'), 'culled'],
+      ],
+      AT + 1,
+    );
+    const scope = { startMs: 0, endMs: AT * 2 };
+    const inGroup = await getGridPhotosByFilter(asExpo(d), scope, null, 'in_group', 10, 0);
+    expect(inGroup.map((r) => r.asset_id).sort()).toEqual([id('1'), id('2')]);
+    expect(inGroup.every((r) => Number(r.grouped) === 1)).toBe(true);
+    expect(
+      (await getGridPhotosByFilter(asExpo(d), scope, null, 'to_edit', 10, 0))[0].asset_id,
+    ).toBe(id('3'));
+    expect((await getGridPhotosByFilter(asExpo(d), scope, null, 'staged', 10, 0))[0].asset_id).toBe(
+      id('4'),
+    );
+    expect(await getGridPhotosByFilter(asExpo(d), scope, null, 'done', 10, 0)).toEqual([]);
+  });
+});
+
+describe('scan reconciles externally restored photos', () => {
+  it('a trashed row seen again by the scan returns to review with a generation bump', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2']);
+    d.raw
+      .prepare(
+        "UPDATE photos SET state = 'trashed', is_present = 0, trash_generation = 1 WHERE asset_id = ?",
+      )
+      .run(id('1'));
+    await seed(d, ['1', '2']); // the next scan window sees the restored photo
+    const row = d.raw
+      .prepare('SELECT state, is_present, trash_generation FROM photos WHERE asset_id = ?')
+      .get(id('1')) as Record<string, unknown>;
+    expect(row).toMatchObject({ state: 'unreviewed', is_present: 1, trash_generation: 2 });
+  });
+});
+
+describe('corpus stats count current verdicts', () => {
+  it('a cleared verdict returns the photo to the pending pool', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'done']], AT + 1);
+    expect((await getCorpusStats(asExpo(d))).reviewed).toBe(1);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'unreviewed']], AT + 2);
+    expect((await getCorpusStats(asExpo(d))).reviewed).toBe(0);
+  });
+});
+
+describe('source-scoped queue reads', () => {
+  async function seedSourced(d: TestDb): Promise<void> {
+    const photo = (rawId: string, folder: string) => ({
+      ...upsert(rawId),
+      uri: `file:///storage/emulated/0/${folder}/${rawId}.jpg`,
+    });
+    await writeContinuousGroups(
+      asExpo(d),
+      {
+        photos: [
+          photo('c1', 'DCIM/Camera'),
+          photo('c2', 'DCIM/Camera'),
+          photo('w1', 'WhatsApp/Media'),
+          photo('w2', 'WhatsApp/Media'),
+        ],
+        groups: [
+          { members: [id('c1'), id('c2')], timeAttached: [] },
+          { members: [id('w1'), id('w2')], timeAttached: [] },
+        ],
+        singles: [],
+      },
+      AT,
+    );
+  }
+  const CAMERA = ['DCIM/Camera'];
+
+  it('groups, singles feed, counts and day groups all honor the roots filter', async () => {
+    const d = await fresh();
+    await seedSourced(d);
+    const groups = await listReviewGroups(asExpo(d), 10, CAMERA);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].members.map((m) => m.asset_id).sort()).toEqual([id('c1'), id('c2')]);
+    expect(await countReviewQueue(asExpo(d), CAMERA)).toEqual({ grouped: 2, singles: 0 });
+    expect(await listGroupsForDay(asExpo(d), '2026-07-20', CAMERA)).toHaveLength(1);
+    // Singles: ejecting one member of each pair dissolves it (both become
+    // singles) — the feed must list only the Camera two.
+    await makePhotoSingles(asExpo(d), [id('c1'), id('w1')]);
+    const feed = await listSinglesFeed(asExpo(d), 10, CAMERA);
+    expect(feed.map((m) => m.asset_id).sort()).toEqual([id('c1'), id('c2')]);
+  });
+});
+
+describe('atomic compare verdicts', () => {
+  it('duel, loser verdict, and the star land in one write', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2'], [['1', '2']]);
+    const gid = groupIdOf(d, '1');
+    await applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 1, {
+      duel: {
+        groupId: String(gid),
+        winnerId: id('1'),
+        loserId: id('2'),
+        keptBoth: false,
+        at: AT + 1,
+      },
+      setBest: { groupId: gid, assetId: id('1') },
+    });
+    expect(stateOf(d, '2').state).toBe('culled');
+    const best = d.raw.prepare('SELECT best_photo_id FROM photo_groups WHERE id = ?').get(gid) as {
+      best_photo_id: string;
+    };
+    expect(best.best_photo_id).toBe(id('1'));
+    expect(d.raw.prepare('SELECT COUNT(*) AS n FROM duels').get()).toEqual({ n: 1 });
+    expect(foreignKeyCheck(d)).toEqual([]);
+  });
+});

@@ -256,16 +256,16 @@ export function CompareScreen({ navigation, route }: Props) {
     [numericGroupId, recordCompare, posOf, navigation],
   );
 
-  /** Star the winner + stage the two-photo-group loser. */
+  /** Star the winner + stage the two-photo-group loser (one atomic
+   * write inside compareCull — a partial verdict is impossible). */
   const betterCullLoser = useCallback(
     async (winnerId: string, loserId: string) => {
       if (numericGroupId === null) return;
-      await markBest(numericGroupId, winnerId);
       await compareCull(numericGroupId, loserId, winnerId);
       showToast(`Photo ${posOf(winnerId)} kept — photo ${posOf(loserId)} staged to cull`);
       navigation.goBack();
     },
-    [numericGroupId, markBest, compareCull, posOf, navigation],
+    [numericGroupId, compareCull, posOf, navigation],
   );
 
   const decideBetter = useCallback(

@@ -92,7 +92,7 @@ Gate-3 implementation judgment calls (pending the end-of-build vetting round Tri
 Gate-4/5 implementation judgment calls (same pending vetting round):
 
 25. **Streaks re-color history against the CURRENT goal.** A goal change retroactively re-evaluates past days (no per-day goal journal); an unfinished today never breaks the streak it is about to extend.
-26. **Strictness steps are ±0.04/±0.08 around 0.50** (five labeled steps, band-clamped to the calibrated 0.42–0.58 range); choosing a step offers the decision-5 opt-in ("Only new photos" vs "Regroup not-yet-reviewed").
+26. **Strictness steps are ±0.04/±0.08 around 0.50** (five labeled steps, band-clamped to the calibrated 0.42–0.58 range). A change is a confirm/cancel dialog stating honestly that not-yet-reviewed photos regroup on the next scan — an "only new photos" opt-out is impossible without per-photo threshold provenance (the continuous scan re-derives every unfrozen group each pass), so it is not offered (final-review round 1).
 27. **Tab badges poll**: queue counts refresh on review-version changes plus a 15-second interval (queues mutate outside the review write path — e.g. share passes).
 28. **The undo banner is gone** (gate 5): a culled photo stays in the deck badged and re-decidable — strictly more capable than the 4-second banner it replaced.
 29. **Reviewed = done + to-edit + staged** in every day/percentage count (matches the `reviewed_at` stamp; "done" alone under-counted days whose remaining work is edits or cull confirmation).
@@ -101,3 +101,10 @@ Gate-4/5 implementation judgment calls (same pending vetting round):
 32. **`listGroupsForDay` returns whole groups** — members outside a midnight-spanning day ride along (the deck always shows complete groups).
 33. **Older-days expander is inline and capped at 60 days** (an all-days browse already lives in Progress); "still to review" rows list the 2 newest older days with unreviewed photos.
 34. **Compare stays alive-only** (deck + singles feed): staged culls re-decide via chips, never via Compare verdicts.
+
+Final-review round 1 (full-m0.8 codex pass) fixes, same pending vetting:
+
+35. **The scan reconciles externally RESTORED photos**: a row still marked trashed that reappears in a MediaStore scan gets the standard restore transition (back to unreviewed, generation bump, fresh edit-cycle baseline) inside the window write — Gate 3 had orphaned `markPhotoRestored`.
+36. **Queue reads are source-scoped at read time** (groups/singles/counts/day groups): rows from excluded folders stay frozen in SQLite and are filtered out by the roots clause; a group queues only for a pending IN-SOURCE member but always shows whole.
+37. **Corpus % counts CURRENT verdicts** (`state IN done/to_edit/culled/confirmed/trashed`); `reviewed_at` stays the lifetime/goal metric — clearing a verdict returns the photo to the pending pool.
+38. **Compare verdicts are atomic**: duel, loser verdict, and the winner's star land in one `applyReviewDecisions` transaction (`extras.setBest`); the viewer's state edits also refresh ReviewContext directly.

@@ -30,6 +30,7 @@ import { runTrashAttempt } from '../lib/trashFlow';
 import { recoverTrashBatches } from '../db/trashStore';
 import { recoverShareBatches } from '../db/shareStore';
 import { verifyTrashedTriState } from '../lib/media';
+import { resolveSources } from '../lib/sourceCatalog';
 import { startContinuousScan, subscribeScanStatus } from '../scan/scanRunner';
 import { nextFavouriteIntent, NO_FAVOURITE, type FavouriteStatus } from '../lib/favouriteState';
 import {
@@ -136,10 +137,13 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   const startedRef = useRef(false);
 
   const refresh = useCallback(async () => {
+    // The photo-source folder filter scopes every queue read (the scan
+    // freezes out-of-source rows in place; reads must not resurface them).
+    const roots = (await resolveSources(db).catch(() => null))?.roots ?? null;
     const [nextGroups, nextSingles, counts] = await Promise.all([
-      listReviewGroups(db, GROUP_PAGE),
-      listSinglesFeed(db, SINGLES_PAGE),
-      countReviewQueue(db),
+      listReviewGroups(db, GROUP_PAGE, roots),
+      listSinglesFeed(db, SINGLES_PAGE, roots),
+      countReviewQueue(db, roots),
     ]);
     const ids = [
       ...nextGroups.flatMap((g) => g.members.map((m) => m.asset_id)),
@@ -285,8 +289,12 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
         keptBoth,
         at: Date.now(),
       };
-      await applyReviewDecisions(db, keptBoth ? [] : [[loserId, 'culled']], duel.at, { duel });
-      if (keptBoth) await setGroupBest(db, groupId, winnerId);
+      // Duel, loser verdict, and the winner's star land in ONE
+      // transaction — a partial compare verdict must be impossible.
+      await applyReviewDecisions(db, keptBoth ? [] : [[loserId, 'culled']], duel.at, {
+        duel,
+        setBest: { groupId, assetId: winnerId },
+      });
     },
     [db],
   );

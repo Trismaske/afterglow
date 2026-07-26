@@ -18,6 +18,7 @@ import { rangeOfDayKey } from '../lib/dates';
 import { formatClock } from '../lib/format';
 import { remainingReviewable, type StateBreakdown } from '../lib/progress';
 import { listGroupsForDay, type ReviewGroupRow } from '../db/store';
+import { resolveSources } from '../lib/sourceCatalog';
 import { ProgressView } from '../components/progress/ProgressView';
 import { DecisionBadge, type DecisionKind } from '../components/DecisionBadge';
 import { BigButton } from '../components/BigButton';
@@ -43,9 +44,12 @@ export function DayProgressScreen({ route, navigation }: Props) {
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
-      void listGroupsForDay(db, day).then((rows) => {
+      void (async () => {
+        // Same source scoping as the page's totals and grid.
+        const roots = (await resolveSources(db).catch(() => null))?.roots ?? null;
+        const rows = await listGroupsForDay(db, day, roots);
         if (!cancelled) setGroups(rows);
-      });
+      })();
       return () => {
         cancelled = true;
       };

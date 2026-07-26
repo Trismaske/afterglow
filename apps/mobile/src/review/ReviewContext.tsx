@@ -196,29 +196,37 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   );
 
   const refresh = useCallback(async () => {
-    const generation = ++refreshGenRef.current;
-    // The photo-source folder filter scopes every queue read (the scan
-    // freezes out-of-source rows in place; reads must not resurface them).
-    // FAIL CLOSED on resolution errors: null means "all folders" to the
-    // store, so a transient failure must fall back to the last known
-    // roots — or skip the refresh entirely before any resolution succeeds
-    // — never silently broaden a narrowed source.
-    let roots: readonly string[] | null;
-    try {
-      roots = (await resolveSources(db)).roots ?? null;
-      // Only the LATEST refresh may move the fallback roots — an older
-      // refresh resolving a superseded broader source must not overwrite
-      // what refreshScoped just recorded (its queue commit is already
-      // rejected by the generation guard; the fallback must match).
-      if (generation === refreshGenRef.current) lastRootsRef.current = { roots };
-    } catch (error) {
-      if (!lastRootsRef.current) {
-        console.warn('[review] source resolution failed — queue refresh skipped:', String(error));
-        return;
+    // Retry until a pass verifiably commits as the LATEST refresh —
+    // barrier callers (the settings flows) await refresh() before
+    // unlocking navigation, and a silently superseded pass could leave
+    // reset/rejected-scope groups actionable if the newer refresh fails.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const generation = ++refreshGenRef.current;
+      // The photo-source folder filter scopes every queue read (the scan
+      // freezes out-of-source rows in place; reads must not resurface
+      // them). FAIL CLOSED on resolution errors: null means "all folders"
+      // to the store, so a transient failure must fall back to the last
+      // known roots — or skip the refresh entirely before any resolution
+      // succeeds — never silently broaden a narrowed source.
+      let roots: readonly string[] | null;
+      try {
+        roots = (await resolveSources(db)).roots ?? null;
+        // Only the LATEST refresh may move the fallback roots — an older
+        // refresh resolving a superseded broader source must not
+        // overwrite what refreshScoped just recorded.
+        if (generation === refreshGenRef.current) lastRootsRef.current = { roots };
+      } catch (error) {
+        if (!lastRootsRef.current) {
+          // Deliberate skip (cold start, nothing rendered yet).
+          console.warn('[review] source resolution failed — queue refresh skipped:', String(error));
+          return;
+        }
+        roots = lastRootsRef.current.roots;
       }
-      roots = lastRootsRef.current.roots;
+      await commitRefresh(await refreshWithRoots(roots, generation));
+      if (generation === refreshGenRef.current) return;
     }
-    await commitRefresh(await refreshWithRoots(roots, generation));
+    throw new Error('queue refresh kept being superseded — try again');
   }, [db, refreshWithRoots, commitRefresh]);
 
   const refreshScoped = useCallback(

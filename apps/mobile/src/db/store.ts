@@ -361,17 +361,25 @@ export async function applyReviewDecisions(
       );
     }
     for (const change of extras.favouriteChanges ?? []) {
-      await txn.runAsync(
+      const applied = await txn.runAsync(
         `UPDATE photos
          SET favourite_state = ?, favourite_target = ?, favourite_changed_at = ?,
              activity_at = ?
-         WHERE asset_id = ?`,
+         WHERE asset_id = ?
+           -- Removal cleanup cancelled the row's intents; a stale tile's
+           -- toggle must not recreate an impossible gallery operation.
+           AND is_present = 1`,
         change.state,
         change.target === null ? null : change.target ? 1 : 0,
         at,
         at,
         change.assetId,
       );
+      if (Number(applied.changes) === 0 && changes.length === 0) {
+        // A lone favourite toggle on a reconciled photo surfaces like a
+        // lone verdict would (batch paths converge on refresh).
+        throw new Error('This photo is no longer available — it was removed outside Afterglow.');
+      }
     }
     if (extras.madeSingles && extras.madeSingles.length > 0) {
       await applyPhotoSingles(txn, extras.madeSingles);

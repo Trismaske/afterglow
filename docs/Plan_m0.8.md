@@ -274,3 +274,7 @@ Final-review round 33 fixes, same pending vetting:
 Final-review round 34 fixes, same pending vetting:
 
 105. **ANY failed album probe rejects the source catalog** (a partial catalog missing DCIM/Camera would make the unset default silently broaden to all folders), and a failed source-setting transaction is caught: the picker toasts, restarts the fenced scan under the unchanged durable setting, and stays open (previously an unhandled rejection with scanning stopped until an app restart).
+
+Final-review round 35 fixes, same pending vetting:
+
+106. **`refresh()` retries until it commits as the LATEST pass** (bounded, like `refreshScoped`) — the settings flows await it as a barrier before unlocking navigation, and a silently superseded pass could leave reset groups actionable if the newer refresh failed. Favourite intents require presence (`is_present = 1`; a lone stale toggle surfaces like a lone verdict), and the source picker catches catalog failures with a Retry state instead of a stuck loader.

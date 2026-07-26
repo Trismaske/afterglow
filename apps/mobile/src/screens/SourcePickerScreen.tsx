@@ -52,6 +52,8 @@ export function SourcePickerScreen({ navigation }: Props) {
   const db = useSQLiteContext();
   const { refresh, refreshScoped } = useReview();
   const [rows, setRows] = useState<Row[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadTick, setLoadTick] = useState(0);
   const [allFolders, setAllFolders] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
@@ -78,7 +80,18 @@ export function SourcePickerScreen({ navigation }: Props) {
     useCallback(() => {
       let cancelled = false;
       (async () => {
-        const [dirs, current] = await Promise.all([listSourceDirs(true), resolveSources(db)]);
+        setLoadFailed(false);
+        let dirs: SourceDir[];
+        let current: Awaited<ReturnType<typeof resolveSources>>;
+        try {
+          [dirs, current] = await Promise.all([listSourceDirs(true), resolveSources(db)]);
+        } catch (error) {
+          // A transient unreadable album fails the catalog (fail-closed
+          // contract) — surface a retry instead of a stuck loader.
+          console.warn('[sources] catalog unavailable:', String(error));
+          if (!cancelled) setLoadFailed(true);
+          return;
+        }
         if (cancelled) return;
         previousSettingRef.current = current.isDefault
           ? { kind: 'unset' }
@@ -107,7 +120,9 @@ export function SourcePickerScreen({ navigation }: Props) {
       return () => {
         cancelled = true;
       };
-    }, [db]),
+      // loadTick re-runs this on Retry.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [db, loadTick]),
   );
 
   const toggleAll = useCallback(() => {
@@ -270,7 +285,17 @@ export function SourcePickerScreen({ navigation }: Props) {
           </View>
         </Pressable>
 
-        {rows === null && <Text style={styles.loading}>Listing photo folders…</Text>}
+        {rows === null && !loadFailed && <Text style={styles.loading}>Listing photo folders…</Text>}
+        {loadFailed && (
+          <View style={styles.loadFailed}>
+            <Text style={styles.loading}>
+              Could not read the photo folders — an album was unreadable.
+            </Text>
+            <Pressable style={styles.retryButton} onPress={() => setLoadTick((t) => t + 1)}>
+              <Text style={[styles.retryText, { color: theme.accent }]}>Retry</Text>
+            </Pressable>
+          </View>
+        )}
         {rows !== null && rows.length === 0 && (
           <Text style={styles.loading}>No photo folders found.</Text>
         )}
@@ -321,6 +346,9 @@ export function SourcePickerScreen({ navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
+  loadFailed: { gap: 10, alignItems: 'flex-start' },
+  retryButton: { minHeight: 44, justifyContent: 'center' },
+  retryText: { fontSize: 15, fontWeight: '700' },
   applyingOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.7)',

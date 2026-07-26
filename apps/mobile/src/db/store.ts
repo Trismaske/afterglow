@@ -175,6 +175,21 @@ export async function applyReviewDecisions(
   extras: PersistDecisionExtras = {},
 ): Promise<void> {
   await db.withExclusiveTransactionAsync(async (txn) => {
+    // Compare verdicts validate IN the transaction: a warm scan can
+    // replace an all-unreviewed group between Compare's load and this
+    // write — starring/culling against the wrong group must abort whole
+    // (the provider surfaces the error; nothing commits).
+    if (extras.duel && extras.setBest) {
+      const members = await txn.getAllAsync<{ photo_id: string }>(
+        'SELECT photo_id FROM photo_group_assignments WHERE group_id = ? AND photo_id IN (?, ?)',
+        extras.setBest.groupId,
+        extras.duel.winnerId,
+        extras.duel.loserId,
+      );
+      if (members.length !== 2) {
+        throw new Error('This group changed while comparing — reopen it and try again.');
+      }
+    }
     for (const change of extras.needsEditChanges ?? []) {
       const flag = change.needsEdit ? 1 : 0;
       await txn.runAsync(

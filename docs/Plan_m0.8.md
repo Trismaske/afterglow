@@ -178,3 +178,9 @@ Final-review round 14 fixes, same pending vetting:
 67. **Open-ended MediaStore queries omit BOTH date bounds** (`endMs = Infinity` is the explicit contract; a finite `createdBefore` renders as `DATE_TAKEN < x` — FALSE for SQL NULL — so round 13's lower-bound fix alone still excluded null-dated photos). The scan, Home's corpus count, and Progress "All photos" are open-ended; day/range scopes stay DATE_TAKEN-bounded by design (a dateless photo belongs to no specific day; its DB `day` uses the mtime fallback).
 68. **Undated photos scan in their own ordered pass**: MediaStore sorts them at the END of the DATE_TAKEN stream while their effective timestamps are mtime-recent, violating the accumulator's descending contract — they group among themselves by effective time (capped 5,000/run, loudly; merging into the dated stream would require buffering the whole corpus).
 69. **Queue refreshes carry a generation token** — only the latest refresh commits; an older scan-status refresh finishing after a decision's refresh could resurrect pre-decision groups and stale flag/favourite maps.
+
+Final-review round 15 fixes, same pending vetting:
+
+70. **Undated photos process in memory-bounded BATCHES of 5,000 — nothing is discarded** (the round-14 cap silently dropped the remainder forever); a batch boundary may split a would-be window, the price of not buffering an unbounded undated set (WhatsApp-style libraries commonly have null DATE_TAKEN).
+71. **Compare verdicts validate group membership INSIDE the transaction** (both endpoints must still belong to the starred group; a warm scan can rebuild an all-unreviewed group between Compare's load and the write — the verdict now aborts whole and surfaces instead of committing a duel against the wrong group).
+72. **Saving a photo-source change refreshes the queue immediately** (the reads are source-scoped; the queued rescan lands later — excluded photos must leave the rendered queue at save time).

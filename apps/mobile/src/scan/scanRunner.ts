@@ -154,11 +154,25 @@ async function scan(db: SQLiteDatabase): Promise<void> {
   const seenIds = new Set<string>();
   // MediaStore orders the stream by DATE_TAKEN — undated photos land at
   // the END with mtime-fallback timestamps that would violate the
-  // accumulator's descending contract. They get their own ordered pass
-  // (grouping among themselves by effective time; a merge into the dated
-  // stream would require buffering the whole corpus).
+  // accumulator's descending contract. They get their own ordered passes
+  // in memory-bounded BATCHES: every batch sorts by effective time and
+  // windows among itself (a boundary may split a would-be window — the
+  // price of not buffering an unbounded undated set, e.g. WhatsApp
+  // libraries where DATE_TAKEN is commonly null). Nothing is discarded.
   const undated: LoadedPhoto[] = [];
-  const UNDATED_CAP = 5_000;
+  const UNDATED_BATCH = 5_000;
+  const processUndatedBatch = async (batch: LoadedPhoto[]): Promise<void> => {
+    if (batch.length === 0) return;
+    const tail = createWindowAccumulator(ADJACENT_MERGE_MAX_GAP_MS);
+    for (const photo of batch.sort((a, b) => b.item.timestamp - a.item.timestamp)) {
+      for (const window of tail.feed(photo)) {
+        await processWindow(db, window, engine, strictness.baseThreshold);
+      }
+    }
+    for (const window of tail.flush()) {
+      await processWindow(db, window, engine, strictness.baseThreshold);
+    }
+  };
   for (;;) {
     const photos = await pager.next(SCAN_PAGE_SIZE);
     if (photos.length === 0) break;
@@ -166,7 +180,8 @@ async function scan(db: SQLiteDatabase): Promise<void> {
     update({ scanned: status.scanned + photos.length });
     for (const photo of photos) {
       if (photo.undated) {
-        if (undated.length < UNDATED_CAP) undated.push(photo);
+        undated.push(photo);
+        if (undated.length >= UNDATED_BATCH) await processUndatedBatch(undated.splice(0));
         continue;
       }
       for (const window of accumulator.feed(photo)) {
@@ -177,21 +192,7 @@ async function scan(db: SQLiteDatabase): Promise<void> {
   for (const window of accumulator.flush()) {
     await processWindow(db, window, engine, strictness.baseThreshold);
   }
-  if (undated.length > 0) {
-    if (undated.length >= UNDATED_CAP) {
-      // Loud, once: beyond the cap the remainder waits for later scans.
-      console.warn(`[scan] undated-photo cap reached (${UNDATED_CAP}) — remainder next run`);
-    }
-    const tail = createWindowAccumulator(ADJACENT_MERGE_MAX_GAP_MS);
-    for (const photo of [...undated].sort((a, b) => b.item.timestamp - a.item.timestamp)) {
-      for (const window of tail.feed(photo)) {
-        await processWindow(db, window, engine, strictness.baseThreshold);
-      }
-    }
-    for (const window of tail.flush()) {
-      await processWindow(db, window, engine, strictness.baseThreshold);
-    }
-  }
+  await processUndatedBatch(undated.splice(0));
   // Backstop for tiny corpora that never reached the consecutive-error
   // threshold: a scan with engine errors and literally zero successes must
   // never end as 'done' with time-only groups posing as grouped output.

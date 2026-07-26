@@ -26,6 +26,7 @@ import {
 } from '../lib/sources';
 import { setSetting } from '../db/store';
 import { requestRescan } from '../scan/scanRunner';
+import { useReview } from '../review/ReviewContext';
 import { BigButton } from '../components/BigButton';
 import { colors, touch, useTheme } from '../theme';
 
@@ -40,6 +41,7 @@ export function SourcePickerScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const db = useSQLiteContext();
+  const { refresh } = useReview();
   const [rows, setRows] = useState<Row[] | null>(null);
   const [allFolders, setAllFolders] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -106,6 +108,10 @@ export function SourcePickerScreen({ navigation }: Props) {
         : { mode: 'dirs', dirs: [...selected].sort((a, b) => a.localeCompare(b)) };
       await setSetting(db, PHOTO_SOURCES_KEY, serializePhotoSourceSetting(setting));
       invalidateSourceCatalog();
+      // Refresh NOW: the queue reads are source-scoped, so the rendered
+      // groups/counts must drop excluded photos immediately — the queued
+      // rescan only lands later.
+      await refresh().catch(() => {});
       // The scan reads the source at run start: rescan over the new
       // selection (an in-flight run finishes its old buckets first).
       void requestRescan(db);
@@ -113,7 +119,7 @@ export function SourcePickerScreen({ navigation }: Props) {
     } finally {
       setSaving(false);
     }
-  }, [valid, saving, allFolders, selected, db, navigation]);
+  }, [valid, saving, allFolders, selected, db, navigation, refresh]);
 
   const roots = useMemo(() => [...selected], [selected]);
 

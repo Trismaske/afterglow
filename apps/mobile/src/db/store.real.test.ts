@@ -998,3 +998,30 @@ describe('best-star hygiene', () => {
     expect(foreignKeyCheck(d)).toEqual([]);
   });
 });
+
+// -------------------------------------------- final-review round 15
+
+describe('compare verdicts validate membership in the transaction', () => {
+  it('aborts whole when the group was rebuilt out from under Compare', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3'], [['1', '2']]);
+    const gid = groupIdOf(d, '1');
+    // The group dissolves (ejection) before the compare verdict lands.
+    await makePhotoSingles(asExpo(d), [id('1')]);
+    await expect(
+      applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 100, {
+        duel: {
+          groupId: String(gid),
+          winnerId: id('1'),
+          loserId: id('2'),
+          keptBoth: false,
+          at: AT + 100,
+        },
+        setBest: { groupId: gid, assetId: id('1') },
+      }),
+    ).rejects.toThrow(/changed while comparing/);
+    // NOTHING committed: no duel, loser still unreviewed.
+    expect(d.raw.prepare('SELECT COUNT(*) AS n FROM duels').get()).toEqual({ n: 0 });
+    expect(stateOf(d, '2').state).toBe('unreviewed');
+  });
+});

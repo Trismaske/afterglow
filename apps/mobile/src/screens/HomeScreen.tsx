@@ -437,7 +437,13 @@ export function HomeScreen({ navigation }: Props) {
   const expandOlderDays = useCallback(async () => {
     const build = buildOlderRowsRef.current;
     if (!build || olderDays.length === 0) return;
-    setOlderRows(await build(olderDays));
+    try {
+      setOlderRows(await build(olderDays));
+    } catch (error) {
+      // Same contract as the day-row loader: an unavailable count keeps
+      // the collapsed state instead of leaking an unhandled rejection.
+      console.warn('[home] older-day expansion failed — kept collapsed:', String(error));
+    }
   }, [olderDays]);
 
   const openProgress = useCallback(() => {

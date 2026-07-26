@@ -558,10 +558,10 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     const id = current.id;
     const index = cursor;
     void run(async () => {
-      await decide(id, 'cull');
+      await decide(id, 'cull', singlesMode ? null : (group?.groupId ?? undefined));
       if (index + 1 < deckItems.length) jumpTo(index + 1);
     });
-  }, [current, cursor, deckItems.length, jumpTo, run, decide]);
+  }, [current, cursor, deckItems.length, jumpTo, run, decide, singlesMode, group?.groupId]);
 
   const isBest = !!current && !singlesMode && info?.bestId === current.id;
 
@@ -752,7 +752,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     if (activeTarget === target) await clearDecision(id);
     else if (state !== 'unreviewed' && (target === 'keep' || target === 'to_edit'))
       await redecideDecided(id, target);
-    else await decide(id, target);
+    else await decide(id, target, singlesMode ? null : (group?.groupId ?? undefined));
   };
 
   const decideSingleCurrent = async (target: RedecideTarget) => {
@@ -1056,7 +1056,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
                 void run(() =>
                   currentState === 'culled'
                     ? redecideDecided(current.id, 'keep')
-                    : decide(current.id, 'keep'),
+                    : decide(current.id, 'keep', group?.groupId ?? undefined),
                 )
               }
             >

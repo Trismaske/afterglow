@@ -278,3 +278,8 @@ Final-review round 34 fixes, same pending vetting:
 Final-review round 35 fixes, same pending vetting:
 
 106. **`refresh()` retries until it commits as the LATEST pass** (bounded, like `refreshScoped`) — the settings flows await it as a barrier before unlocking navigation, and a silently superseded pass could leave reset groups actionable if the newer refresh failed. Favourite intents require presence (`is_present = 1`; a lone stale toggle surfaces like a lone verdict), and the source picker catches catalog failures with a Retry state instead of a stuck loader.
+
+Final-review round 36 fixes, same pending vetting:
+
+107. **Every verdict carries its RENDERED assignment**: `decide` (deck, singles, Compare) validates the displayed group-or-single assignment in the transaction (`extras.requireAssignment`), and "Keep remaining (singles)" requires every target to STILL be a single — a scan reassignment between render and tap must reject, never freeze a group the user never reviewed.
+108. **Remaining edges**: needs-edit toggles require presence (a reconciled row regaining the flag would turn a post-restore Keep into to_edit; lone toggles surface); DayProgress's group list reloads on review-version changes (viewer edits refresh without leave-and-return); older-day expansion catches count failures like the day-row loader.

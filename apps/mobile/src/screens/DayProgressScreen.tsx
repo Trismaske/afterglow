@@ -20,6 +20,7 @@ import { remainingReviewable, type StateBreakdown } from '../lib/progress';
 import { listGroupsForDay, type ReviewGroupRow } from '../db/store';
 import { resolveSources } from '../lib/sourceCatalog';
 import { ProgressView } from '../components/progress/ProgressView';
+import { useReview } from '../review/ReviewContext';
 import { DecisionBadge, type DecisionKind } from '../components/DecisionBadge';
 import { BigButton } from '../components/BigButton';
 import { colors, touch } from '../theme';
@@ -38,6 +39,7 @@ function decisionKindOf(member: ReviewGroupRow['members'][number]): DecisionKind
 export function DayProgressScreen({ route, navigation }: Props) {
   const { day } = route.params;
   const db = useSQLiteContext();
+  const { version } = useReview();
   const range = useMemo(() => rangeOfDayKey(day), [day]);
   const [groups, setGroups] = useState<ReviewGroupRow[] | null>(null);
 
@@ -60,7 +62,12 @@ export function DayProgressScreen({ route, navigation }: Props) {
       return () => {
         cancelled = true;
       };
-    }, [db, day]),
+      // version is a deliberate refresh trigger: viewer edits refresh the
+      // review context, and the day's group list (badges, pending counts)
+      // must follow without a leave-and-return (a closing Modal does not
+      // refocus the screen).
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [db, day, version]),
   );
 
   const renderCta = useCallback(

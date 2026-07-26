@@ -87,8 +87,16 @@ interface ReviewContextValue {
   /** A decision write failed — the row is unchanged; retry the action. */
   writeError: string | null;
   clearWriteError: () => void;
-  /** Verdict writes (decision 2 semantics; 'keep' → done). */
-  decide: (assetId: string, action: SingleReviewAction) => Promise<void>;
+  /** Verdict writes (decision 2 semantics; 'keep' → done). The optional
+   * expected assignment (group id, or null for a single) is validated in
+   * the transaction — a scan reassignment between render and tap must
+   * reject rather than freeze a group the user never reviewed;
+   * `undefined` skips the check (callers without a rendered context). */
+  decide: (
+    assetId: string,
+    action: SingleReviewAction,
+    expectedGroupId?: number | null,
+  ) => Promise<void>;
   /** Clear a photo's verdict back to unreviewed (active-chip tap). */
   clearDecision: (assetId: string) => Promise<void>;
   /** State-aware change of mind on a DECIDED photo (gate 5 browse):
@@ -331,11 +339,15 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   );
 
   const decide = useCallback(
-    (assetId: string, action: SingleReviewAction) =>
+    (assetId: string, action: SingleReviewAction, expectedGroupId?: number | null) =>
       write(async () => {
         const verdict: ReviewVerdict =
           action === 'keep' ? 'done' : action === 'cull' ? 'culled' : 'to_edit';
-        await applyReviewDecisions(db, [[assetId, verdict]], Date.now());
+        await applyReviewDecisions(db, [[assetId, verdict]], Date.now(), {
+          ...(expectedGroupId !== undefined
+            ? { requireAssignment: [{ assetId, groupId: expectedGroupId }] }
+            : {}),
+        });
       }),
     [db, write],
   );
@@ -504,7 +516,13 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
         const changes = singles
           .filter((m) => m.state === 'unreviewed')
           .map((m) => [m.asset_id, 'done'] as [string, ReviewVerdict]);
-        if (changes.length > 0) await applyReviewDecisions(db, changes, Date.now());
+        if (changes.length > 0)
+          await applyReviewDecisions(db, changes, Date.now(), {
+            // Every target must STILL be a single — a scan can move one
+            // into a group mid-tap, and keeping it would silently freeze
+            // the newly formed group.
+            requireAssignment: changes.map(([id]) => ({ assetId: id, groupId: null })),
+          });
       }),
     [db, singles, write],
   );

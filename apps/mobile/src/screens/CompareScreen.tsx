@@ -318,7 +318,7 @@ export function CompareScreen({ navigation, route }: Props) {
       if (singles) {
         setBusy(true);
         try {
-          await decide(winnerId, 'keep');
+          await decide(winnerId, 'keep', null);
           navigation.goBack();
         } catch {
           // surfaced by the provider alert; stay on the screen
@@ -384,7 +384,7 @@ export function CompareScreen({ navigation, route }: Props) {
       setBusy(true);
       try {
         if (singles) {
-          await decide(loserId, 'cull');
+          await decide(loserId, 'cull', null);
         } else if (numericGroupId !== null) {
           await compareCull(numericGroupId, loserId, winnerId);
         }

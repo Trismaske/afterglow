@@ -58,6 +58,11 @@ export interface PersistDecisionExtras {
    * an all-unreviewed group between render and tap; writing the stale
    * member list would partially freeze the superseding groups). */
   requireGroupMembership?: { groupId: number; assetIds: readonly string[] };
+  /** Validate each photo's RENDERED assignment (group id, or null for a
+   * single) inside the transaction — a scan can reassign an unreviewed
+   * photo between render and tap, and a verdict against the stale
+   * assignment would freeze a group the user never reviewed. */
+  requireAssignment?: readonly { assetId: string; groupId: number | null }[];
 }
 
 /**
@@ -186,6 +191,17 @@ export async function applyReviewDecisions(
   extras: PersistDecisionExtras = {},
 ): Promise<void> {
   await db.withExclusiveTransactionAsync(async (txn) => {
+    for (const expected of extras.requireAssignment ?? []) {
+      const row = await txn.getFirstAsync<{ group_id: number | null }>(
+        'SELECT group_id FROM photo_group_assignments WHERE photo_id = ?',
+        expected.assetId,
+      );
+      const actual = row === null ? null : row.group_id === null ? null : Number(row.group_id);
+      const wanted = expected.groupId;
+      if ((row === null && wanted !== null) || (row !== null && actual !== wanted)) {
+        throw new Error('This group changed while reviewing — reopen it and try again.');
+      }
+    }
     if (extras.requireGroupMembership) {
       const { groupId, assetIds } = extras.requireGroupMembership;
       if (assetIds.length > 0) {
@@ -226,7 +242,7 @@ export async function applyReviewDecisions(
     }
     for (const change of extras.needsEditChanges ?? []) {
       const flag = change.needsEdit ? 1 : 0;
-      await txn.runAsync(
+      const flagged = await txn.runAsync(
         `UPDATE photos
          SET needs_edit = ?,
              state = CASE
@@ -241,7 +257,10 @@ export async function applyReviewDecisions(
              mod_time = CASE WHEN ? = 1 AND state = 'done' THEN NULL ELSE mod_time END,
              content_hash = CASE WHEN ? = 1 AND state = 'done' THEN NULL ELSE content_hash END,
              activity_at = ?
-         WHERE asset_id = ?`,
+         WHERE asset_id = ?
+           -- A reconciled (absent) row must not regain the flag: a later
+           -- Gallery restore would turn an ordinary Keep into to_edit.
+           AND is_present = 1`,
         flag,
         flag,
         flag,
@@ -252,6 +271,15 @@ export async function applyReviewDecisions(
         at,
         change.assetId,
       );
+      if (
+        Number(flagged.changes) === 0 &&
+        changes.length === 0 &&
+        (extras.needsEditChanges?.length ?? 0) === 1
+      ) {
+        // A lone flag toggle on a reconciled photo surfaces (batch
+        // paths converge on refresh).
+        throw new Error('This photo is no longer available — it was removed outside Afterglow.');
+      }
     }
     let staleChanges = 0;
     for (const [assetId, verdict] of changes) {

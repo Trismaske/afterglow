@@ -89,16 +89,18 @@ export function PhotoViewer({
 
   // The viewer is anchored to a PHOTO, not a position: a host reload can
   // reorder items (History reorders on activity_at), and the numeric
-  // cursor would silently switch photos. Follow the anchored id; a photo
-  // that left the list clamps to the nearest position.
-  const anchorIdRef = useRef<string | null>(null);
-  anchorIdRef.current = currentId ?? anchorIdRef.current;
+  // cursor would silently switch photos. The anchor updates ONLY on
+  // user-driven navigation (mount, swipe) — a render must never re-derive
+  // it from an already-reordered list, or the effect below compares the
+  // wrong id and keeps the wrong position.
+  const anchorIdRef = useRef<string | null>(items[initialIndex]?.id ?? null);
   useEffect(() => {
     const anchored = anchorIdRef.current;
     if (anchored === null) return;
     const index = items.findIndex((i) => i.id === anchored);
     setCursor((previous) => {
       const next = index >= 0 ? index : Math.min(previous, Math.max(0, items.length - 1));
+      if (index < 0) anchorIdRef.current = items[next]?.id ?? null; // photo left — re-anchor
       if (next !== previous) {
         listRef.current?.scrollToOffset({ offset: next * width, animated: false });
       }
@@ -225,9 +227,13 @@ export function PhotoViewer({
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       if (!width) return;
       const index = Math.round(event.nativeEvent.contentOffset.x / width);
-      if (index !== cursor) setCursor(Math.min(Math.max(0, index), items.length - 1));
+      if (index !== cursor) {
+        const clamped = Math.min(Math.max(0, index), items.length - 1);
+        anchorIdRef.current = items[clamped]?.id ?? null; // user navigation moves the anchor
+        setCursor(clamped);
+      }
     },
-    [width, cursor, items.length],
+    [width, cursor, items],
   );
 
   const renderPage = useCallback(

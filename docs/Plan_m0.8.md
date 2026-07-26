@@ -158,3 +158,7 @@ Final-review round 10 fixes, same pending vetting:
 
 60. **The viewer anchors to the PHOTO, not a position**: a host reload that reorders items (History reorders on `activity_at`) re-finds the anchored id and moves the pager with it — the numeric cursor was silently switching photos.
 61. **Write rejections are caught at every UI boundary**: the provider's `writeError` alert is the surface; deck `run()`, Compare handlers (which also skip their success toast/navigation on failure), the re-decide sheet (stays open), and the viewer/queue `onChanged` reloads all swallow the re-thrown rejection instead of leaking unhandled promise rejections.
+
+Final-review round 11 fixes, same pending vetting:
+
+62. **The viewer anchor updates only on user navigation** (mount, swipe) — the round-10 render-time assignment re-derived it from the already-reordered list, defeating the fix; a photo that left the list re-anchors to the clamped position. History's viewer `onChanged` reload also gained the boundary catch.

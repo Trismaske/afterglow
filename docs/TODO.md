@@ -51,3 +51,16 @@ PLAN.md (roadmap / trigger-based backlog) once decided.
    GitHub Release notes currently capture, what gets lost when
    Feedback/Plan docs are deleted after shipping, and whether a
    lightweight standard (or none) fits.
+
+6. **Upstream expo-image-manipulator native leak report** (m0.8 device
+   testing, 2026-07-25). The scan's thumbnail decode path observed a
+   native-memory leak in `expo-image-manipulator` (worked around — the
+   embedder module decodes natively instead). File a minimal-repro issue
+   upstream so the workaround can eventually be dropped.
+
+7. **`ReviewContext.extraIdsRef` is never cleared** (m0.8 review,
+   2026-07-25). `loadGroup` installs the browsed group's member ids so
+   needs-edit/favourite overlays cover out-of-queue groups, and the ids
+   persist until the next `loadGroup`. Bounded (one group's worth), but
+   a stale group's ids keep riding every refresh's overlay query;
+   decide whether route-blur should clear them.

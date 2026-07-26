@@ -1075,3 +1075,42 @@ describe('ejection validates the displayed group', () => {
     ).toBe(1);
   });
 });
+
+// -------------------------------------------- final-review round 26
+
+describe('decisions reject externally removed photos', () => {
+  it('a single-photo decision on a reconciled row surfaces and saves nothing', async () => {
+    const d = await fresh();
+    await seed(d, ['1']);
+    const { reconcileExternallyRemoved } = await import('./trashStore');
+    await reconcileExternallyRemoved(asExpo(d), [id('1')], AT + 50);
+    await expect(applyReviewDecisions(asExpo(d), [[id('1'), 'done']], AT + 100)).rejects.toThrow(
+      /no longer available/,
+    );
+    // The trashed convergence survives — the scan restore path stays open.
+    const row = d.raw
+      .prepare('SELECT state, is_present FROM photos WHERE asset_id = ?')
+      .get(id('1')) as { state: string; is_present: number };
+    expect(row).toMatchObject({ state: 'trashed', is_present: 0 });
+  });
+
+  it('a batch keep skips reconciled members and applies the rest', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2']);
+    const { reconcileExternallyRemoved } = await import('./trashStore');
+    await reconcileExternallyRemoved(asExpo(d), [id('1')], AT + 50);
+    await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('1'), 'done'],
+        [id('2'), 'done'],
+      ],
+      AT + 100,
+    );
+    expect(stateOf(d, '2').state).toBe('done');
+    const gone = d.raw.prepare('SELECT state FROM photos WHERE asset_id = ?').get(id('1')) as {
+      state: string;
+    };
+    expect(gone.state).toBe('trashed');
+  });
+});

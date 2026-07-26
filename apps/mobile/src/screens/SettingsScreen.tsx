@@ -134,12 +134,20 @@ export function SettingsScreen({ navigation }: Props) {
                     );
                     if (restored) setStrictness(previous);
                   }
+                  // COMPLETE the reset-state refresh before anything else — the
+                  // deleted groups must leave the rendered queue before the user
+                  // can navigate back and decide one (freezing a member alone).
+                  const rerendered = await refresh().then(
+                    () => true,
+                    () => false,
+                  );
                   void requestRescan(db);
-                  void refresh().catch(() => {});
                   showToast(
-                    restored
+                    restored && rerendered
                       ? 'Could not change strictness — restored; regrouping'
-                      : 'Strictness change failed midway — check Settings; regrouping',
+                      : restored
+                        ? 'Strictness restored, but the queue could not refresh — reopen review'
+                        : 'Strictness change failed midway — check Settings; regrouping',
                   );
                 });
             },

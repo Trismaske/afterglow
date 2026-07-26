@@ -225,8 +225,9 @@ export async function applyReviewDecisions(
         change.assetId,
       );
     }
+    let staleChanges = 0;
     for (const [assetId, verdict] of changes) {
-      await txn.runAsync(
+      const applied = await txn.runAsync(
         `UPDATE photos
          SET state = CASE
                WHEN ? = 'done' AND needs_edit = 1 THEN 'to_edit'
@@ -264,7 +265,11 @@ export async function applyReviewDecisions(
                ELSE culled_at
              END,
              activity_at = ?
-         WHERE asset_id = ?`,
+         WHERE asset_id = ?
+           -- Externally removed/converged rows reject decisions: a stale
+           -- deck tile deciding a reconciled photo would overwrite
+           -- 'trashed' and strand it from the scan's restore path.
+           AND is_present = 1 AND state NOT IN ('trashed', 'confirmed')`,
         verdict,
         verdict,
         verdict,
@@ -283,6 +288,10 @@ export async function applyReviewDecisions(
         at,
         assetId,
       );
+      if (Number(applied.changes) === 0) {
+        staleChanges += 1;
+        continue;
+      }
       if (verdict === 'culled') {
         // A staged cull is not ALIVE — a star pointing at it would show a
         // cull as best and freeze the group via the metadata boundary.
@@ -293,6 +302,16 @@ export async function applyReviewDecisions(
           assetId,
         );
       }
+    }
+    if (staleChanges > 0) {
+      if (changes.length === 1) {
+        // A single-photo decision on a reconciled row must SURFACE — the
+        // deck tile is stale and nothing was saved.
+        throw new Error('This photo is no longer available — it was removed outside Afterglow.');
+      }
+      // Batch keeps (keep-rest / keep-all) racing reconciliation converge
+      // on the refresh; loud once, no user interruption.
+      console.warn(`[review] ${staleChanges} decisions skipped — photos removed externally`);
     }
     if (extras.setBest) {
       await txn.runAsync(

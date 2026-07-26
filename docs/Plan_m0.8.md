@@ -233,3 +233,8 @@ Final-review round 25 fixes, same pending vetting:
 
 90. **The source picker fences the scan FIRST** (like the strictness flow): `supersedeScan()` before resolving/rendering the new scope — an old-source window completing mid-apply could repopulate a group with newly excluded photos; the rollback path rebuilds via `requestRescan` under whatever setting is durable.
 91. **Re-rendering the restored scope is PART of the rollback**: a failed post-rollback refresh no longer claims "selection unchanged" — the queue may still show the rejected scope, and the toast says to reopen and retry.
+
+Final-review round 26 fixes, same pending vetting:
+
+92. **Decisions reject externally removed photos**: the verdict write requires `is_present = 1 AND state NOT IN ('trashed','confirmed')` — a stale deck tile deciding a reconciled photo would overwrite `trashed` and strand it from the scan's restore path. A single-photo decision surfaces the staleness; batch keeps skip reconciled members loudly (they converge on refresh).
+93. **The strictness rollback COMPLETES its queue refresh before returning** (the deleted groups must leave the rendered queue before back-navigation can reach one), with the toast reflecting an un-rerendered rollback; and a failed SQLite source rollback installs and renders the DURABLE (new) scope — the reverted fallback matched nothing persisted.

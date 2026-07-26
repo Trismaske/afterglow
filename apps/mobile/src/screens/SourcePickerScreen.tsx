@@ -155,6 +155,17 @@ export function SourcePickerScreen({ navigation }: Props) {
         // Rebuild under whatever setting is durable now — the superseded
         // scan was stopped above either way.
         void requestRescan(db);
+        if (!restored) {
+          // The NEW source stays durable: install and render IT (the
+          // failed refreshScoped reverted the fallback to the previous
+          // scope, which no longer matches anything persisted).
+          try {
+            const durable = await resolveSources(db);
+            await refreshScoped(durable.roots ?? null);
+          } catch {
+            // The harsh midway toast below already directs a reopen.
+          }
+        }
         // Re-rendering the restored scope is PART of the rollback: a
         // competing refresh may have painted the rejected scope, and a
         // swallowed failure here would leave the queue disagreeing with

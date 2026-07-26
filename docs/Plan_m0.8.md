@@ -148,3 +148,8 @@ Final-review round 8 fixes, same pending vetting:
 
 56. **Staged culls are fully fenced out of Compare** (neither endpoint may be culled — a compare verdict could re-star a cull; the live Compare button disables on a culled current card), and the live deck's Keep on a staged cull takes the state-aware `redecideDecided` path (flag cleared, matches resolved).
 57. **The edited-copy stage-and-reserve transition clears stars too** (`prepareTrashBatch stageToEditMembers` — every transition to `culled` shares the hygiene), and rejected off-page group loads settle as terminal ('missing') in both the deck and Compare instead of stranding blank screens.
+
+Final-review round 9 fixes, same pending vetting:
+
+58. **Browse-mode Best gates only on the culled state** — a completed group's done/to_edit keepers stay starrable (the aliveness check had disabled Best for every browsed member).
+59. **Off-page groups return to their origin on completion/dissolution** (DayProgress-opened groups outside the bounded queue page — the page cannot name their successor), and the deck header drops the meaningless "Group 0 of N" position for them.

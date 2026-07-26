@@ -394,7 +394,8 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
         if (busy || !isFocused) return;
         if (
           completionRef.current.groupId === explicitGroupId &&
-          completionRef.current.complete !== null
+          completionRef.current.complete !== null &&
+          completionRef.current.index >= 0
         ) {
           const destination = destinationAfterGroup(
             groups.map((g) => ({ id: String(g.groupId), complete: false })),
@@ -408,7 +409,8 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
             navigation.replace(destination.screen);
           }
         } else {
-          navigation.goBack(); // stale group id — nothing to show
+          // Off-page dissolution or a stale id — return to the origin.
+          navigation.goBack();
         }
       }
       return;
@@ -478,10 +480,17 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     completionRef.current = {
       groupId: explicitGroupId,
       complete: info.complete,
-      index: groupIndex,
+      index: groupIndex >= 0 ? groupIndex : previous.index,
     };
     if (!justCompleted) return;
 
+    // An OFF-PAGE group (opened from DayProgress, outside the bounded
+    // queue page — no known position) returns to its origin on
+    // completion; the queue page cannot name its successor.
+    if (previous.index < 0 && groupIndex < 0) {
+      navigation.goBack();
+      return;
+    }
     // The refresh already removed the completed group from `groups`, so
     // pass its stored former index — the successor sits there now.
     const destination = destinationAfterGroup(
@@ -752,7 +761,9 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
             ? `Singles · ${keepCount - singlesPending} of ${keepCount} reviewed`
             : browse
               ? `Group · ${keepCount} reviewed`
-              : `Group ${groupIndex + 1} of ${groups.length} · ${aliveItems.length} of ${keepCount} to review`}
+              : groupIndex >= 0
+                ? `Group ${groupIndex + 1} of ${groups.length} · ${aliveItems.length} of ${keepCount} to review`
+                : `Group · ${aliveItems.length} of ${keepCount} to review`}
         </Text>
         <Text style={styles.headerHint}>
           {singlesMode
@@ -999,9 +1010,10 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
                   styles.secondaryButton,
                   isBest && { backgroundColor: theme.accentMuted, borderColor: theme.accent },
                 ]}
-                // A staged cull in browse mode is not ALIVE — core
-                // rejects it as best; re-decide it as kept first.
-                disabled={busy || (browse && !!current && !info?.aliveIds.includes(current.id))}
+                // Only a staged cull is barred from Best (cull-star
+                // hygiene) — a completed group's done/to_edit keepers
+                // stay starrable in browse mode.
+                disabled={busy || currentState === 'culled'}
                 onPress={toggleBest}
               >
                 <MaterialCommunityIcons

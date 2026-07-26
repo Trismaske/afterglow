@@ -212,6 +212,10 @@ export function SourcePickerScreen({ navigation }: Props) {
       // The scan reads the source at run start: rescan over the new
       // selection (an in-flight run finishes its old buckets first).
       void requestRescan(db);
+      // Release the exit guard BEFORE leaving — beforeRemove would
+      // otherwise cancel our own successful goBack.
+      savingRef.current = false;
+      setSaving(false);
       navigation.goBack();
     } finally {
       setSaving(false);

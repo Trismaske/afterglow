@@ -35,7 +35,6 @@ import {
   type DaySummaryRow,
   getSetting,
   markEditDone,
-  setGroupBest,
   unstageCullDirect,
 } from '../db/store';
 import { runTrashAttempt } from '../lib/trashFlow';
@@ -239,13 +238,16 @@ export function HomeScreen({ navigation }: Props) {
                   // user's view, so the copy prompt's question stays
                   // open (pending match kept) and the star the staging
                   // cleared comes back.
-                  await unstageCullDirect(db, head.originalAssetId, Date.now(), false);
-                  for (const star of attempt.clearedStars) {
-                    if (star.photoId !== head.originalAssetId) continue;
-                    // Best-effort: the group may have changed meanwhile —
-                    // setGroupBest validates and rejects stale writes.
-                    await setGroupBest(db, star.groupId, star.photoId).catch(() => {});
-                  }
+                  await unstageCullDirect(
+                    db,
+                    head.originalAssetId,
+                    Date.now(),
+                    false,
+                    // One transaction with the un-staging: a crash between
+                    // separate writes would lose the star forever
+                    // (clearedStars lives only in memory).
+                    attempt.clearedStars.filter((star) => star.photoId === head.originalAssetId),
+                  );
                   await reviewRefresh().catch(() => {});
                   if (attempt.status === 'unsupported') {
                     Alert.alert(

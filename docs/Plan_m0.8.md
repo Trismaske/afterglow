@@ -266,3 +266,7 @@ Final-review round 32 fixes, same pending vetting:
 
 102. **Applying a grouping change BLOCKS every exit** (both flows: a `beforeRemove` navigation block plus a full-screen shield Modal with a spinner) — with the apply queued behind an active scan, a user backing out mid-apply could decide a cached stale group and freeze a lone member before the refresh lands.
 103. **Edge hardening**: an all-probes-failed source catalog THROWS instead of resolving to an empty "all folders" default (silently broadening the previous Camera scope); the stage-and-reserve transition clears/records a star only when the staging update actually applied (a stale copy prompt would otherwise silently lose the star with no `clearedStars` to restore); the Settings About row says "Afterglow" (rename stragglers).
+
+Final-review round 33 fixes, same pending vetting:
+
+104. **The picker releases its exit guard before its own successful goBack** (the round-32 `beforeRemove` block was cancelling the save's navigation — a self-inflicted regression codex caught); ProgressView keeps its previously rendered scope when source resolution fails (the catalog throw would otherwise become an all-folders render there); and the cancelled-cull star restore rides IN the un-staging transaction (`unstageCullDirect(…, restoreStars)`) — a crash between separate writes would lose the star forever, `clearedStars` being memory-only.

@@ -80,9 +80,18 @@ export function ProgressView({
       let cancelled = false;
       (async () => {
         // Respect the photo-source folder filter (m0.3.1) on both sides.
-        const sources = await resolveSources(db).catch(() => null);
-        const roots = sources?.roots ?? null;
-        const albumIds = sources?.albumIds ?? null;
+        // FAIL CLOSED: a resolution failure keeps the previously rendered
+        // scope (or stays loading before any success) — null's meaning is
+        // "all folders", which would silently broaden a narrowed source.
+        let sources: Awaited<ReturnType<typeof resolveSources>>;
+        try {
+          sources = await resolveSources(db);
+        } catch (error) {
+          console.warn('[progress] source resolution failed — scope kept:', String(error));
+          return;
+        }
+        const roots = sources.roots ?? null;
+        const albumIds = sources.albumIds ?? null;
         const [msTotal, counts] = await Promise.all([
           countPhotosInRange(startMs, endMs, albumIds).catch(() => 0),
           getStateCountsInScope(db, scope, roots),

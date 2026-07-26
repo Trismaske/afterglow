@@ -1945,6 +1945,11 @@ export async function unstageCullDirect(
    * and the prompt must stay re-emittable.
    */
   resolveCopyMatches: boolean,
+  /** Stars the staging cleared (edited-copy cancel, round 31) — restored
+   * in THIS transaction so a crash between the two writes cannot lose
+   * them (clearedStars lives only in memory). Best-effort per star: the
+   * group must still exist with this photo as a present member. */
+  restoreStars: readonly { groupId: number; photoId: string }[] = [],
 ): Promise<void> {
   await db.withExclusiveTransactionAsync(async (txn) => {
     await txn.runAsync(
@@ -1964,6 +1969,23 @@ export async function unstageCullDirect(
       await txn.runAsync(
         "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
         assetId,
+      );
+    }
+    for (const star of restoreStars) {
+      // Same validity guard as setGroupBest; a changed group skips
+      // silently (best-effort restore of the user's prior star).
+      await txn.runAsync(
+        `UPDATE photo_groups SET best_photo_id = ?
+         WHERE id = ? AND EXISTS (
+           SELECT 1 FROM photo_group_assignments a
+           JOIN photos p ON p.asset_id = a.photo_id
+           WHERE a.group_id = photo_groups.id AND a.photo_id = ?
+             AND p.is_present = 1
+             AND p.state NOT IN ('culled', 'confirmed', 'trashed')
+         )`,
+        star.photoId,
+        star.groupId,
+        star.photoId,
       );
     }
   });

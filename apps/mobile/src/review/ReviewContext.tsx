@@ -139,6 +139,27 @@ interface ReviewContextValue {
   confirmStagedCulls: () => Promise<ConfirmResult>;
 }
 
+/** Barrier for one not-yet-started refresh pass: handed to every
+ * refresh() caller before the pass exists, settled when that pass
+ * completes. Fire-and-forget callers may drop the promise, so
+ * rejections are pre-marked handled — awaiting callers still see them. */
+interface PassBarrier {
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+}
+
+function makePassBarrier(): PassBarrier {
+  let resolve!: () => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  promise.catch(() => {});
+  return { promise, resolve, reject };
+}
+
 const ReviewContext = createContext<ReviewContextValue | null>(null);
 
 export function ReviewProvider({ children }: { children: React.ReactNode }) {
@@ -166,6 +187,14 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
    * multi-thousand-photo rescan. */
   const refreshTailRef = useRef<Promise<void> | null>(null);
   const refreshAgainRef = useRef(false);
+  /** Barrier for the NEXT pass to start — swapped fresh as each pass
+   * begins, so a request always awaits a pass started at/after it and
+   * never global quiescence (starvation-proof under sustained
+   * scan-status requests). */
+  const nextPassRef = useRef<PassBarrier | null>(null);
+  /** Held by refreshScoped for exclusivity: the chain exits at its next
+   * pass boundary and refresh() queues instead of starting a chain. */
+  const chainPauseRef = useRef(false);
   const startedRef = useRef(false);
 
   const commitRefresh = useCallback(
@@ -239,36 +268,44 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   }, [db, refreshWithRoots, commitRefresh]);
 
   const refresh = useCallback((): Promise<void> => {
-    // SINGLE-FLIGHT + COALESCE. Scan status ticks request refreshes every
-    // couple of seconds during an active scan; running them concurrently
-    // let each pass supersede the others' generations so NO pass ever
-    // committed (device-observed livelock: an empty queue for an entire
-    // rescan). Instead one chain runs passes back-to-back: a request
-    // arriving mid-pass sets the rerun flag and awaits the chain, which
-    // loops until no rerun is pending. Barrier semantics hold — the
-    // promise a caller receives resolves only after a pass that STARTED
-    // at/after its request has committed (or deliberately skipped).
+    // SINGLE-FLIGHT + COALESCE with PER-PASS settlement. Scan status
+    // ticks request refreshes every couple of seconds during an active
+    // scan; running them concurrently let each pass supersede the
+    // others' generations so NO pass ever committed (device-observed
+    // livelock: an empty queue for an entire rescan). One chain runs
+    // passes back-to-back instead — and each caller is settled by the
+    // FIRST pass that starts at/after its request (commit or deliberate
+    // skip), never by chain quiescence: under sustained requests the
+    // chain may run for a whole scan, and barrier callers (decision
+    // writes, the settings flows) must not starve behind it. A failing
+    // pass rejects only its own waiters; later requests get fresh
+    // passes.
+    if (!nextPassRef.current) nextPassRef.current = makePassBarrier();
+    const barrier = nextPassRef.current.promise;
     refreshAgainRef.current = true;
-    if (refreshTailRef.current) return refreshTailRef.current;
-    const run = (async () => {
-      try {
-        while (refreshAgainRef.current) {
-          refreshAgainRef.current = false;
-          await refreshOnce();
+    if (!refreshTailRef.current && !chainPauseRef.current) {
+      refreshTailRef.current = (async () => {
+        // Loop-exit check, barrier settlement, and the tail clear below
+        // share one synchronous block — a request can only interleave
+        // during a pass's await, where the re-check still sees it.
+        try {
+          while (refreshAgainRef.current && !chainPauseRef.current) {
+            refreshAgainRef.current = false;
+            const mine = nextPassRef.current ?? makePassBarrier();
+            nextPassRef.current = makePassBarrier();
+            try {
+              await refreshOnce();
+              mine.resolve();
+            } catch (error) {
+              mine.reject(error);
+            }
+          }
+        } finally {
+          refreshTailRef.current = null;
         }
-      } catch (error) {
-        // An aborted chain takes its pending rerun requests with it —
-        // every coalesced caller receives this rejection. A stale flag
-        // left behind would hand a later scoped pass an unowned
-        // follow-up nobody awaits.
-        refreshAgainRef.current = false;
-        throw error;
-      } finally {
-        refreshTailRef.current = null;
-      }
-    })();
-    refreshTailRef.current = run;
-    return run;
+      })();
+    }
+    return barrier;
   }, [refreshOnce]);
 
   const refreshScoped = useCallback(
@@ -278,11 +315,12 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       // resolution falls back to the NEW scope, never the old one.
       const previousFallback = lastRootsRef.current;
       lastRootsRef.current = { roots };
-      // Drain the general refresh chain, then HOLD the single-flight slot
-      // for the strict pass — chain passes and this one must never
-      // interleave (mutual generation supersession). refresh() requests
-      // arriving meanwhile coalesce onto the slot and are served by one
-      // follow-up chain pass after this settles.
+      // PAUSE the chain (it exits at its next pass boundary — bounded,
+      // no quiescence wait) and drain it — chain passes and the strict
+      // one must never interleave (mutual generation supersession).
+      // refresh() requests arriving meanwhile hold pass barriers and are
+      // served (or rejected) by the slot below.
+      chainPauseRef.current = true;
       while (refreshTailRef.current) {
         await refreshTailRef.current.catch(() => {});
       }
@@ -314,39 +352,50 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           throw error;
         }
       })();
-      // The slot promise handed to coalesced refresh() callers: after the
-      // strict pass SUCCEEDS it runs the coalesced passes before settling
-      // — a barrier caller must stay pending until a pass that started
-      // at/after its request commits. After a strict-pass FAILURE it
-      // REJECTS them instead: a pass run now would resolve the
+      // The slot: holds single-flight while the strict pass runs, then —
+      // on strict SUCCESS — unpauses and serves the coalesced passes,
+      // settling each waiter per pass. On strict FAILURE it REJECTS the
+      // pending waiters instead: a pass run now would resolve the
       // still-persisted rejected source and repaint exactly the scope
-      // the settings flow is rolling back.
+      // the settings flow is rolling back. The slot itself never
+      // rejects; barriers carry the errors.
       const slot = (async () => {
         try {
           try {
             await run;
           } catch {
-            // The settings flow owns the strict pass's own failure.
-            throw new Error('queue refresh unavailable during a scope rollback — try again');
+            // The settings flow owns the strict pass's own failure. The
+            // rejection, flag clear, and tail clear below share one
+            // synchronous block — only requests that arrived during the
+            // strict pass are rejected, none slip in after.
+            if (refreshAgainRef.current) {
+              refreshAgainRef.current = false;
+              const pending = nextPassRef.current ?? makePassBarrier();
+              nextPassRef.current = makePassBarrier();
+              pending.reject(
+                new Error('queue refresh unavailable during a scope rollback — try again'),
+              );
+            }
+            return;
           }
+          chainPauseRef.current = false;
           while (refreshAgainRef.current) {
             refreshAgainRef.current = false;
-            await refreshOnce();
+            const mine = nextPassRef.current ?? makePassBarrier();
+            nextPassRef.current = makePassBarrier();
+            try {
+              await refreshOnce();
+              mine.resolve();
+            } catch (error) {
+              mine.reject(error);
+            }
           }
-        } catch (error) {
-          // Aborting takes the pending rerun requests with it (their
-          // callers all receive this rejection) — no unowned flag.
-          refreshAgainRef.current = false;
-          throw error;
         } finally {
+          chainPauseRef.current = false;
           refreshTailRef.current = null;
         }
       })();
       refreshTailRef.current = slot;
-      // With no coalesced caller holding the slot, its rejection would
-      // otherwise surface as an unhandled promise rejection. This extra
-      // handler marks it handled; callers holding the slot still reject.
-      slot.catch(() => {});
       // The scoped caller itself awaits only the strict pass (and its
       // failure) — the coalesced tail settles on its own for its callers.
       await run;

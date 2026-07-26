@@ -31,7 +31,7 @@ import {
   STRICTNESS_STEPS,
   type StrictnessStep,
 } from '../lib/groupingPrefs';
-import { requestRescan } from '../scan/scanRunner';
+import { requestRescan, supersedeScan } from '../scan/scanRunner';
 import { resetUnreviewedGroups } from '../db/store';
 import { COMPARE_AUTO_CULL_KEY, serializeCompareAutoCull } from '../lib/comparePrefs';
 import { getSetting, setSetting } from '../db/store';
@@ -98,6 +98,10 @@ export function SettingsScreen({ navigation }: Props) {
             text: 'Change & regroup',
             onPress: () => {
               const previous = strictness;
+              // Supersede the in-flight scan FIRST: it must stop writing
+              // old-threshold groups before the reset/refresh below, or it
+              // could repopulate exactly what the reset cleared.
+              supersedeScan();
               setStrictness(step);
               void setSetting(db, GROUPING_STRICTNESS_KEY, serializeStrictness(step))
                 .then(() => resetUnreviewedGroups(db))
@@ -112,8 +116,10 @@ export function SettingsScreen({ navigation }: Props) {
                   showToast('Regrouping in the background');
                 })
                 .catch(async () => {
-                  // ROLL BACK: the preference may already be durable while
-                  // the reset/refresh failed — "not changed" must be true.
+                  // ROLL BACK: the preference may already be durable and
+                  // assignments may already be deleted. Restore the
+                  // setting, then REBUILD under it — a rescan is the only
+                  // way back to a populated queue — and refresh.
                   if (previous) {
                     await setSetting(
                       db,
@@ -122,7 +128,9 @@ export function SettingsScreen({ navigation }: Props) {
                     ).catch(() => {});
                     setStrictness(previous);
                   }
-                  showToast('Could not change strictness — setting restored');
+                  void requestRescan(db);
+                  void refresh().catch(() => {});
+                  showToast('Could not change strictness — restored; regrouping');
                 });
             },
           },

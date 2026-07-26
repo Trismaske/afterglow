@@ -121,13 +121,20 @@ export function startContinuousScan(db: SQLiteDatabase): Promise<void> {
 export function requestRescan(db: SQLiteDatabase): Promise<void> {
   if (flight) {
     rescanQueued = true;
-    // Supersede the in-flight run: it stops writing at the next window
-    // boundary (its persisted progress stays; the queued rescan re-reads
-    // every setting when it starts).
-    scanGeneration += 1;
+    supersedeScan();
     return flight;
   }
   return startContinuousScan(db);
+}
+
+/**
+ * Stop any in-flight scan from persisting further windows (it exits at
+ * the next boundary; persisted progress stays). Settings flows call this
+ * BEFORE resetting/refreshing so the old flight cannot repopulate what
+ * the change is about to reset — then requestRescan starts the new run.
+ */
+export function supersedeScan(): void {
+  scanGeneration += 1;
 }
 
 async function scan(db: SQLiteDatabase): Promise<void> {
@@ -176,10 +183,12 @@ async function scan(db: SQLiteDatabase): Promise<void> {
     const tail = createWindowAccumulator(ADJACENT_MERGE_MAX_GAP_MS);
     for (const photo of batch.sort((a, b) => b.item.timestamp - a.item.timestamp)) {
       for (const window of tail.feed(photo)) {
+        if (superseded()) return; // same fence as the dated stream
         await processWindow(db, window, engine, strictness.baseThreshold);
       }
     }
     for (const window of tail.flush()) {
+      if (superseded()) return;
       await processWindow(db, window, engine, strictness.baseThreshold);
     }
   };

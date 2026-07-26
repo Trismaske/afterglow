@@ -716,13 +716,23 @@ export async function applyRedecision(
   });
 }
 
-/** Star/unstar a group's best (NULL clears; FK enforces membership). */
+/** Star/unstar a group's best (NULL clears; FK enforces membership). A
+ * warm scan can rebuild an unreviewed group under a new id between
+ * render and tap — a zero-row update is a STALE write and rejects, like
+ * the compare and ejection paths. */
 export async function setGroupBest(
   db: SQLiteDatabase,
   groupId: number,
   bestPhotoId: string | null,
 ): Promise<void> {
-  await db.runAsync('UPDATE photo_groups SET best_photo_id = ? WHERE id = ?', bestPhotoId, groupId);
+  const result = await db.runAsync(
+    'UPDATE photo_groups SET best_photo_id = ? WHERE id = ?',
+    bestPhotoId,
+    groupId,
+  );
+  if (Number(result.changes) === 0) {
+    throw new Error('This group changed while reviewing — reopen it and try again.');
+  }
 }
 
 /** Home CTA counts: unreviewed present photos in groups / as singles. */

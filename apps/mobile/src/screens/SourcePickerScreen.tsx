@@ -42,7 +42,7 @@ export function SourcePickerScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const db = useSQLiteContext();
-  const { refresh } = useReview();
+  const { refreshScoped } = useReview();
   const [rows, setRows] = useState<Row[] | null>(null);
   const [allFolders, setAllFolders] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -119,8 +119,10 @@ export function SourcePickerScreen({ navigation }: Props) {
       // header/back navigation stays enabled, so a half-applied narrower
       // scope must never outlive this screen.
       try {
-        await resolveSources(db);
-        await refresh();
+        const resolved = await resolveSources(db);
+        // STRICT: read under the just-resolved roots — the general
+        // refresh's fail-open fallback could silently keep the old scope.
+        await refreshScoped(resolved.roots ?? null);
       } catch {
         const previous = previousSettingRef.current;
         if (previous) {
@@ -139,7 +141,7 @@ export function SourcePickerScreen({ navigation }: Props) {
     } finally {
       setSaving(false);
     }
-  }, [valid, saving, allFolders, selected, db, navigation, refresh]);
+  }, [valid, saving, allFolders, selected, db, navigation, refreshScoped]);
 
   const roots = useMemo(() => [...selected], [selected]);
 

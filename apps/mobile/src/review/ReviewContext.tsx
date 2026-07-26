@@ -78,6 +78,10 @@ interface ReviewContextValue {
   queueCounts: { grouped: number; singles: number };
   /** Re-read everything from the durable rows. */
   refresh: () => Promise<void>;
+  /** STRICT scoped refresh: reads under the GIVEN roots, no resolution,
+   * no fallback — rejections propagate. The settings apply paths use it
+   * so a silent fail-open can never leave an old scope actionable. */
+  refreshScoped: (roots: readonly string[] | null) => Promise<void>;
   /** Fetch ONE group by id, completion irrespective (gate 5 browse of a
    * finished group). Its members join the flag/favourite tracking so the
    * deck's toggles work outside the queue; null = gone (dissolved). */
@@ -150,6 +154,46 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   const refreshGenRef = useRef(0);
   const startedRef = useRef(false);
 
+  const commitRefresh = useCallback(
+    async (read: {
+      nextGroups: ReviewGroupRow[];
+      nextSingles: ReviewMemberRow[];
+      counts: { grouped: number; singles: number };
+      generation: number;
+    }) => {
+      const { nextGroups, nextSingles, counts, generation } = read;
+      const ids = [
+        ...nextGroups.flatMap((g) => g.members.map((m) => m.asset_id)),
+        ...nextSingles.map((m) => m.asset_id),
+        ...extraIdsRef.current,
+      ];
+      const [needsEdit, favourites] = await Promise.all([
+        getNeedsEditAssets(db, ids),
+        getFavouriteStates(db, ids),
+      ]);
+      if (generation !== refreshGenRef.current) return; // superseded mid-read
+      needsEditRef.current = needsEdit;
+      favouriteRef.current = favourites;
+      setGroups(nextGroups);
+      setSingles(nextSingles);
+      setQueueCounts(counts);
+      setVersion((v) => v + 1);
+    },
+    [db],
+  );
+
+  const refreshWithRoots = useCallback(
+    async (roots: readonly string[] | null, generation: number) => {
+      const [nextGroups, nextSingles, counts] = await Promise.all([
+        listReviewGroups(db, GROUP_PAGE, roots),
+        listSinglesFeed(db, SINGLES_PAGE, roots),
+        countReviewQueue(db, roots),
+      ]);
+      return { nextGroups, nextSingles, counts, generation };
+    },
+    [db],
+  );
+
   const refresh = useCallback(async () => {
     const generation = ++refreshGenRef.current;
     // The photo-source folder filter scopes every queue read (the scan
@@ -169,28 +213,17 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       }
       roots = lastRootsRef.current.roots;
     }
-    const [nextGroups, nextSingles, counts] = await Promise.all([
-      listReviewGroups(db, GROUP_PAGE, roots),
-      listSinglesFeed(db, SINGLES_PAGE, roots),
-      countReviewQueue(db, roots),
-    ]);
-    const ids = [
-      ...nextGroups.flatMap((g) => g.members.map((m) => m.asset_id)),
-      ...nextSingles.map((m) => m.asset_id),
-      ...extraIdsRef.current,
-    ];
-    const [needsEdit, favourites] = await Promise.all([
-      getNeedsEditAssets(db, ids),
-      getFavouriteStates(db, ids),
-    ]);
-    if (generation !== refreshGenRef.current) return; // superseded mid-read
-    needsEditRef.current = needsEdit;
-    favouriteRef.current = favourites;
-    setGroups(nextGroups);
-    setSingles(nextSingles);
-    setQueueCounts(counts);
-    setVersion((v) => v + 1);
-  }, [db]);
+    await commitRefresh(await refreshWithRoots(roots, generation));
+  }, [db, refreshWithRoots, commitRefresh]);
+
+  const refreshScoped = useCallback(
+    async (roots: readonly string[] | null) => {
+      const generation = ++refreshGenRef.current;
+      await commitRefresh(await refreshWithRoots(roots, generation));
+      lastRootsRef.current = { roots };
+    },
+    [refreshWithRoots, commitRefresh],
+  );
 
   const loadGroup = useCallback(
     async (groupId: number): Promise<ReviewGroupRow | null> => {
@@ -485,6 +518,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     singles,
     queueCounts,
     refresh,
+    refreshScoped,
     loadGroup,
     writeError,
     clearWriteError,

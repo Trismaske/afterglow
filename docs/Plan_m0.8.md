@@ -196,3 +196,9 @@ Final-review round 17 fixes, same pending vetting:
 
 77. **A settings change generation-fences the in-flight scan**: `requestRescan` bumps a generation and the running flight stops persisting at the next window boundary — groups written under superseded source/strictness settings would repopulate exactly what the change reset (a verdict on one would freeze it wrongly forever).
 78. **Both settings flows ROLL BACK on failure**: a source save that cannot resolve+refresh the new scope restores the previous setting before staying open (header/back navigation cannot be blocked, so a half-applied narrower scope must never outlive the screen); a strictness change whose reset/refresh fails restores the previous step — "not changed" stays true.
+
+Final-review round 18 fixes, same pending vetting:
+
+79. **Supersession is ordered and complete**: `supersedeScan()` fires BEFORE the strictness reset/refresh (the old flight must stop writing old-threshold groups first); the undated-batch writer checks the fence per window like the dated stream.
+80. **The source apply path uses a STRICT scoped refresh** (`refreshScoped(roots)` — reads under the just-resolved roots, no silent fail-open fallback; rejections reach the rollback), and a failed strictness change now also REBUILDS under the restored setting (requestRescan + refresh — assignments may already be deleted, and a restored preference with an empty queue would strand pending photos until the next launch).
+81. **`setGroupBest` rejects zero-row (stale-group) writes** like the compare and ejection paths — a warm scan can rebuild an unreviewed group under a new id between render and the Best tap, and a silently ignored star must not report success.

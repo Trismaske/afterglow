@@ -778,3 +778,91 @@ describe('corpus stats honor the source scope', () => {
     expect(await getCorpusStats(asExpo(d))).toEqual({ groupsFound: 2, reviewed: 2 });
   });
 });
+
+// -------------------------------------------- final-review round 4
+
+describe('group-level metadata freezes regroup rewrites', () => {
+  it('a starred all-unreviewed group survives a window rewrite intact', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
+    const gid = groupIdOf(d, '1');
+    await setGroupBest(asExpo(d), gid, id('2'));
+    // The next window computes a DIFFERENT split — the starred group must
+    // freeze whole (in-transaction revalidation), not be rebuilt.
+    await writeContinuousGroups(
+      asExpo(d),
+      {
+        photos: ['1', '2', '3'].map((r) => upsert(r)),
+        groups: [{ members: [id('1'), id('2')], timeAttached: [] }],
+        singles: [id('3')],
+      },
+      AT + 10,
+    );
+    expect(groupIdOf(d, '1')).toBe(gid);
+    expect(groupIdOf(d, '3')).toBe(gid);
+    const best = d.raw.prepare('SELECT best_photo_id FROM photo_groups WHERE id = ?').get(gid) as {
+      best_photo_id: string;
+    };
+    expect(best.best_photo_id).toBe(id('2'));
+  });
+});
+
+describe('clearing a verdict resets the full edit-cycle baseline', () => {
+  it('culled → unreviewed clears to_edit_at, mod_time and content_hash', async () => {
+    const d = await fresh();
+    await seed(d, ['1']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'to_edit']], AT + 100);
+    d.raw
+      .prepare('UPDATE photos SET mod_time = 123, content_hash = ? WHERE asset_id = ?')
+      .run('h', id('1'));
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 200);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'unreviewed']], AT + 300);
+    const row = stateOf(d, '1');
+    expect(row).toMatchObject({
+      state: 'unreviewed',
+      to_edit_at: null,
+      mod_time: null,
+      content_hash: null,
+      needs_edit: 0,
+    });
+  });
+
+  it('restoreCarriedCull resets the baseline and can preserve pending matches', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '9']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'to_edit']], AT + 100);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 200);
+    d.raw
+      .prepare(
+        `INSERT INTO edit_copy_matches (original_id, copy_id, detected_at, state)
+         VALUES (?, ?, ?, 'pending')`,
+      )
+      .run(id('1'), id('9'), AT + 250);
+    await restoreCarriedCull(asExpo(d), id('1'), AT + 300, false);
+    const row = stateOf(d, '1');
+    expect(row).toMatchObject({ state: 'unreviewed', to_edit_at: null, mod_time: null });
+    const match = d.raw
+      .prepare('SELECT state FROM edit_copy_matches WHERE original_id = ?')
+      .get(id('1')) as { state: string };
+    expect(match.state).toBe('pending'); // tap-to-clear answers nothing
+  });
+});
+
+describe('absent members dissolve their groups', () => {
+  it('a pair whose member went absent stops queueing as a 1-photo group', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2'], [['1', '2']]);
+    const { reconcileExternallyRemoved } = await import('./trashStore');
+    await reconcileExternallyRemoved(asExpo(d), [id('1')], AT + 100);
+    const groups = await listReviewGroups(asExpo(d), 10);
+    expect(groups).toEqual([]);
+    // The present survivor is a plain single again (not user-ejected).
+    const row = d.raw
+      .prepare('SELECT group_id, user_single FROM photo_group_assignments WHERE photo_id = ?')
+      .get(id('2')) as { group_id: number | null; user_single: number };
+    expect(row).toMatchObject({ group_id: null, user_single: 0 });
+    const feed = await listSinglesFeed(asExpo(d), 10);
+    expect(feed.map((m) => m.asset_id)).toEqual([id('2')]);
+    expect(foreignKeyCheck(d)).toEqual([]);
+  });
+});

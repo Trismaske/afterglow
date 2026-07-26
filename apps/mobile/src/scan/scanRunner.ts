@@ -34,6 +34,7 @@ import { ensureEmbeddingModel } from '../db/embeddingStore';
 import {
   getGroupAssignments,
   getGroupMembers,
+  getMetadataGroupIds,
   getPresentAssetIds,
   getSetting,
   getStatesForAssets,
@@ -263,7 +264,12 @@ async function processWindow(
   for (const memberIds of members.values()) for (const id of memberIds) stateIds.add(id);
   const states = await getStatesForAssets(db, [...stateIds]);
 
-  const frozen = frozenPhotos(ids, { states, assignments, groupMembers: members });
+  const frozen = frozenPhotos(ids, {
+    states,
+    assignments,
+    groupMembers: members,
+    metadataGroups: await getMetadataGroupIds(db, touchedGroups),
+  });
   const plan = reconcileWindowGroups(
     groups.map((g) => ({
       members: g.items.map((item) => item.id),

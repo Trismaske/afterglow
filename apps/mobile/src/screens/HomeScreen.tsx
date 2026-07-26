@@ -310,7 +310,20 @@ export function HomeScreen({ navigation }: Props) {
           setReclaimableBytes(0);
         }
 
-        const src = permission?.granted ? await resolveSources(db).catch(() => null) : null;
+        // FAIL CLOSED: a source-resolution error keeps the previous day
+        // rows — null's store meaning is "all folders", and the
+        // still-to-review discovery below must never silently broaden a
+        // narrowed source.
+        let src: { roots: string[] | null; albumIds: string[] | null } | null = null;
+        if (permission?.granted) {
+          try {
+            const resolved = await resolveSources(db);
+            src = { roots: resolved.roots ?? null, albumIds: resolved.albumIds ?? null };
+          } catch (error) {
+            console.warn('[home] source resolution failed — day rows kept:', String(error));
+            return;
+          }
+        }
         if (cancelled) return;
         const toRow = (day: string, dbRow: DaySummaryRow | undefined, msTotal: number): DayRow => {
           // Trashed photos are gone from MediaStore, so the day's true

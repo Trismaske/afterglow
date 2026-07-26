@@ -212,15 +212,18 @@ export async function applyReviewDecisions(
              to_edit_at = CASE
                WHEN ? IN ('to_edit', 'done') AND (needs_edit = 1 OR ? = 'to_edit')
                     AND to_edit_at IS NULL THEN ?
-               WHEN ? = 'unreviewed' AND state IN ('done', 'to_edit') THEN NULL
+               WHEN ? = 'unreviewed' THEN NULL
                ELSE to_edit_at
              END,
+             -- EVERY return to 'unreviewed' resets the full edit-cycle
+             -- baseline (also from 'culled'): a later re-flag must never
+             -- reuse a previous cycle's detection evidence.
              mod_time = CASE
-               WHEN ? = 'unreviewed' AND state = 'done' THEN NULL
+               WHEN ? = 'unreviewed' THEN NULL
                ELSE mod_time
              END,
              content_hash = CASE
-               WHEN ? = 'unreviewed' AND state = 'done' THEN NULL
+               WHEN ? = 'unreviewed' THEN NULL
                ELSE content_hash
              END,
              reviewed_at = CASE
@@ -373,17 +376,21 @@ async function applyPhotoSingles(txn: SQLiteDatabase, assetIds: readonly string[
 }
 
 /**
- * Shared membership repairs (N#1, applied by session draws and single
- * ejections alike): a group under 2 members dissolves; an orphaned best
+ * Shared membership repairs (N#1, applied by single ejections, regroup
+ * resets, window writes, and removal reconciliation alike): a group with
+ * fewer than 2 PRESENT members dissolves — an absent (trashed/removed)
+ * member must not hold a one-photo group in the deck; an orphaned best
  * clears; empty groups are deleted. photo_group_assignments is the ONE
  * membership truth (m0.8: the legacy photos.group_id column is gone).
  */
-async function repairGroupMembership(txn: SQLiteDatabase): Promise<void> {
+export async function repairGroupMembership(txn: SQLiteDatabase): Promise<void> {
   await txn.runAsync(
     `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0
      WHERE group_id IN (
        SELECT g.id FROM photo_groups g
-       WHERE (SELECT COUNT(*) FROM photo_group_assignments a WHERE a.group_id = g.id) < 2
+       WHERE (SELECT COUNT(*) FROM photo_group_assignments a
+              JOIN photos p ON p.asset_id = a.photo_id
+              WHERE a.group_id = g.id AND p.is_present = 1) < 2
      )`,
   );
   await txn.runAsync(
@@ -659,11 +666,12 @@ export async function getCorpusStats(
     `SELECT
        (SELECT COUNT(DISTINCT a.group_id) FROM photo_group_assignments a
         JOIN photos p ON p.asset_id = a.photo_id
-        WHERE a.group_id IS NOT NULL${src.sql}) AS groups,
+        WHERE a.group_id IS NOT NULL AND p.is_present = 1${src.sql}) AS groups,
        (SELECT COUNT(*) FROM photos p
-        -- trashed rows left MediaStore, and Home's denominator is the
-        -- MediaStore total — count only verdicts on present photos.
-        WHERE p.state IN ('done', 'to_edit', 'culled', 'confirmed')${src.sql}) AS reviewed`,
+        -- Home's denominator is the current MediaStore corpus — count
+        -- only verdicts on PRESENT photos (trashed/removed rows left it).
+        WHERE p.state IN ('done', 'to_edit', 'culled', 'confirmed')
+          AND p.is_present = 1${src.sql}) AS reviewed`,
     ...src.params,
     ...src.params,
   );
@@ -695,6 +703,28 @@ export async function resetUnreviewedGroups(db: SQLiteDatabase): Promise<void> {
     );
     await repairGroupMembership(txn);
   });
+}
+
+/** Among the given groups, those carrying GROUP-LEVEL review metadata —
+ * a starred best or recorded duels — which freezes them whole against
+ * regroup rewrites even while every member is still unreviewed. */
+export async function getMetadataGroupIds(
+  db: SQLiteDatabase,
+  groupIds: readonly number[],
+): Promise<Set<number>> {
+  const out = new Set<number>();
+  for (const ids of chunk(groupIds, IN_CHUNK)) {
+    if (ids.length === 0) continue;
+    const rows = await db.getAllAsync<{ id: number }>(
+      `SELECT id FROM photo_groups
+       WHERE id IN (${ids.map(() => '?').join(',')})
+         AND (best_photo_id IS NOT NULL
+              OR EXISTS (SELECT 1 FROM duels d WHERE d.group_id = CAST(photo_groups.id AS TEXT)))`,
+      ...ids,
+    );
+    for (const row of rows) out.add(Number(row.id));
+  }
+  return out;
 }
 
 /** Present tracked asset ids inside the source scope — the scan's
@@ -835,6 +865,7 @@ export async function writeContinuousGroups(
       states: liveStates,
       assignments: liveAssignments,
       groupMembers: liveMembers,
+      metadataGroups: await getMetadataGroupIds(txn, [...liveMembers.keys()]),
     });
     const plan = reconcileWindowGroups(
       [...write.groups, ...write.singles.map((s) => ({ members: [s], timeAttached: [] }))],
@@ -1555,26 +1586,34 @@ export async function markDoneToEdit(
 }
 
 /**
- * Cull-list "Restore to unreviewed" for a CARRIED cull (staged in an
- * earlier session, absent from the active one): back to the review pool.
- * Like every other un-staging path, the restore resolves any pending
- * edited-copy match (C#12) in the same transaction.
+ * "Restore to unreviewed" for a staged cull: back to the review pool,
+ * resetting the edit-cycle baseline like every other return to
+ * 'unreviewed'. CullList's explicit Restore resolves any pending
+ * edited-copy match (C#12 — the user handled the photo); the re-decide
+ * sheet's tap-to-clear passes resolvePendingMatches=false — going back
+ * to unreviewed answers nothing, and the prompt must survive.
  */
 export async function restoreCarriedCull(
   db: SQLiteDatabase,
   assetId: string,
   at: number,
+  resolvePendingMatches = true,
 ): Promise<void> {
   await db.withExclusiveTransactionAsync(async (txn) => {
     await txn.runAsync(
-      "UPDATE photos SET state = 'unreviewed', activity_at = ? WHERE asset_id = ? AND state = 'culled'",
+      `UPDATE photos SET state = 'unreviewed',
+         to_edit_at = NULL, mod_time = NULL, content_hash = NULL, needs_edit = 0,
+         activity_at = ?
+       WHERE asset_id = ? AND state = 'culled'`,
       at,
       assetId,
     );
-    await txn.runAsync(
-      "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
-      assetId,
-    );
+    if (resolvePendingMatches) {
+      await txn.runAsync(
+        "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
+        assetId,
+      );
+    }
   });
 }
 

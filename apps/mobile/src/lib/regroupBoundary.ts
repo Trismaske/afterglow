@@ -5,10 +5,13 @@
  *
  * A photo is FROZEN — its durable assignment must not be rewritten — when
  * its own review state has left 'unreviewed' (a missing row counts as
- * unreviewed: the photo has never been seen), or when it is currently
+ * unreviewed: the photo has never been seen), when it is currently
  * assigned to a group any of whose members has left 'unreviewed'
  * (rebuilding around a reviewed member would silently reshape a group
- * the user already worked through).
+ * the user already worked through), or when its group carries
+ * GROUP-LEVEL review metadata (a starred best, recorded compares) — a
+ * rebuild would discard the star and orphan the duels even though every
+ * member is still 'unreviewed'.
  *
  * Frozen photos are removed from the engine's computed groups before
  * writing; a computed group left with one unfrozen member degrades to a
@@ -30,6 +33,8 @@ export interface ReconcileMaps {
   assignments: ReadonlyMap<string, AssignmentInfo>;
   /** Full member list of every group referenced by `assignments`. */
   groupMembers: ReadonlyMap<number, readonly string[]>;
+  /** Groups carrying group-level review metadata (best star, duels). */
+  metadataGroups: ReadonlySet<number>;
 }
 
 /** Photos in `windowIds` whose assignments must not be rewritten. */
@@ -51,6 +56,10 @@ export function frozenPhotos(windowIds: readonly string[], maps: ReconcileMaps):
       continue;
     }
     if (assignment.groupId === null) continue;
+    if (maps.metadataGroups.has(assignment.groupId)) {
+      frozen.add(id);
+      continue;
+    }
     const members = maps.groupMembers.get(assignment.groupId) ?? [];
     if (members.some((member) => !unreviewed(member))) frozen.add(id);
   }

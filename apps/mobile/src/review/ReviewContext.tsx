@@ -386,10 +386,10 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       write(async () => {
         if (target === 'cull') {
           // The active-verdict tap: the sheet promises "tap the current
-          // decision to return to unreviewed" — restore, exactly like the
-          // CullList Restore semantics (no copy-match resolution: going
-          // back to unreviewed answers nothing).
-          await restoreCarriedCull(db, assetId, Date.now());
+          // decision to return to unreviewed" — restore, PRESERVING any
+          // pending copy match (going back to unreviewed answers nothing;
+          // the prompt must survive for the next edit cycle).
+          await restoreCarriedCull(db, assetId, Date.now(), false);
           return;
         }
         const verdict: ReviewVerdict = target === 'keep' ? 'done' : 'to_edit';

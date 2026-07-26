@@ -6,6 +6,7 @@ function maps(partial: Partial<ReconcileMaps>): ReconcileMaps {
     states: partial.states ?? new Map(),
     assignments: partial.assignments ?? new Map(),
     groupMembers: partial.groupMembers ?? new Map(),
+    metadataGroups: partial.metadataGroups ?? new Set(),
   };
 }
 
@@ -113,5 +114,26 @@ describe('reconcileWindowGroups', () => {
     );
     expect(plan.groups).toEqual([{ members: ['a', 'c'], timeAttached: ['c'] }]);
     expect(plan.singles).toEqual(['d']);
+  });
+});
+
+describe('frozenPhotos (group-level metadata)', () => {
+  it('freezes an all-unreviewed group that carries a best star or duels', () => {
+    const frozen = frozenPhotos(
+      ['a', 'b', 'c'],
+      maps({
+        assignments: new Map([
+          ['a', { groupId: 7, userSingle: false }],
+          ['b', { groupId: 7, userSingle: false }],
+          ['c', { groupId: 8, userSingle: false }],
+        ]),
+        groupMembers: new Map([
+          [7, ['a', 'b']],
+          [8, ['c']],
+        ]),
+        metadataGroups: new Set([7]),
+      }),
+    );
+    expect([...frozen].sort()).toEqual(['a', 'b']);
   });
 });

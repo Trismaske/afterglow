@@ -28,6 +28,9 @@
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { closeShareCycleIfQueueEmpty } from './shareStore';
+// Runtime-only circular edge (store also imports a trashStore helper):
+// both are plain function refs resolved at call time — safe under ESM.
+import { repairGroupMembership } from './store';
 
 /** Conservative app cap per MediaStore consent request (P5#4; platform
  * limit is 2000 — autonomous: 500, matching the SQL chunk size). */
@@ -210,6 +213,9 @@ export async function reconcileExternallyRemoved(
   if (photoIds.length === 0) return;
   await db.withExclusiveTransactionAsync(async (txn) => {
     for (const id of photoIds) await applyRemovalCleanup(txn, id, at, false);
+    // A removal can leave a group with one present member — dissolve it
+    // in the same transaction so the deck never receives a 1-photo group.
+    await repairGroupMembership(txn);
     await closeShareCycleIfQueueEmpty(txn, at);
   });
 }
@@ -300,6 +306,9 @@ export async function resolveTrashBatch(
       await txn.runAsync('DELETE FROM trash_reservations WHERE photo_id = ?', member.photo_id);
     }
 
+    // Verified removals can leave 1-present-member groups — dissolve them
+    // with the outcomes (same transaction).
+    await repairGroupMembership(txn);
     // Trash cleanup may have emptied the share queue — the open cycle
     // must end with it (N#5) so a later requeue starts a fresh cycle.
     await closeShareCycleIfQueueEmpty(txn, input.at);

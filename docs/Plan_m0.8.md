@@ -123,3 +123,10 @@ Final-review round 3 fixes, same pending vetting:
 45. **Pair ejection is durable for BOTH photos**: the survivor of a group the ejection shrinks to one member is marked `user_single` inside the same transaction ("not related" judged both; the bare dissolve left the survivor silently regroupable — the session flow had persisted both ids).
 46. **Flow routing counts the DB queue, not the feed page**: pending-singles predicates (deck linear flow, Groups continue-CTA, singles auto-advance) read `queueCounts.singles` — the 500-row feed page can hold only staged culls while older unreviewed singles remain.
 47. **Every corpus/day surface shares the queue's source scope and fails closed**: Home corpus stats resolve sources (MediaStore denominator and verdict/group numerators count the same photos; resolution errors keep the last stats), and DayProgress hides its groups section on resolution failure instead of broadening to all folders.
+
+Final-review round 4 fixes, same pending vetting:
+
+48. **Group-level metadata freezes the whole group**: a starred best or recorded duels freeze an all-unreviewed group against regroup rewrites (`ReconcileMaps.metadataGroups`, applied at both freeze sites incl. the in-transaction revalidation) — a rebuild would discard the star and orphan the duels.
+49. **Every return to `unreviewed` resets the full edit-cycle baseline** (`to_edit_at`/`mod_time`/`content_hash`, from culled too) — stale evidence could auto-complete a later re-flag; `restoreCarriedCull` does the same.
+50. **The re-decide sheet's tap-to-clear PRESERVES pending copy matches** (`restoreCarriedCull(…, resolvePendingMatches=false)`) — returning to unreviewed answers nothing; CullList's explicit Restore still resolves (the user handled it).
+51. **Groups dissolve on lost PRESENT membership**: `repairGroupMembership` counts present members and runs inside both removal-reconciliation transactions — a pair whose member was trashed/externally removed becomes a plain single, never a 1-photo deck group. Corpus numerators likewise require `is_present = 1`; Home's still-to-review discovery fails closed on source-resolution errors.

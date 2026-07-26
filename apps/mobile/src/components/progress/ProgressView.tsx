@@ -18,7 +18,8 @@ import {
   type ProgressFilter,
   type StateBreakdown,
 } from '../../lib/progress';
-import { getStateCountsInScope, type PhotoScope } from '../../db/store';
+import { countUndatedAlive, getStateCountsInScope, type PhotoScope } from '../../db/store';
+import { UNDATED_DAY_KEY } from '../../lib/dates';
 import { countPhotosInRange } from '../../lib/media';
 import { resolveSources } from '../../lib/sourceCatalog';
 import { StateProgressBar } from '../StateProgressBar';
@@ -92,8 +93,13 @@ export function ProgressView({
         }
         const roots = sources.roots ?? null;
         const albumIds = sources.albumIds ?? null;
+        // The Unknown-day pseudo-day cannot be counted via MediaStore
+        // (no DATE_TAKEN query) — the tracked rows ARE its population.
+        const undatedScope = 'day' in scope && scope.day === UNDATED_DAY_KEY;
         const [msTotal, counts] = await Promise.all([
-          countPhotosInRange(startMs, endMs, albumIds).catch(() => 0),
+          undatedScope
+            ? countUndatedAlive(db, roots)
+            : countPhotosInRange(startMs, endMs, albumIds).catch(() => 0),
           getStateCountsInScope(db, scope, roots),
         ]);
         if (cancelled) return;

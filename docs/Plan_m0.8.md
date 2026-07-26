@@ -287,3 +287,7 @@ Final-review round 36 fixes, same pending vetting:
 Final-review round 37 fixes, same pending vetting:
 
 109. **Present-but-unseen assets refresh their PATH** during scan reconciliation (a photo moved without changing MediaStore id — e.g. out of the selected source — kept its stale in-scope uri, surfacing out-of-scope with a dead file path forever), and a MISSING assignment row always fails the rendered-assignment validation (a settings reset deleting a rendered single's row coerced to the same value as a real single — a verdict would freeze a photo whose assignment can never rebuild).
+
+Post-vetting addition (Tristan, 2026-07-26 — during the vetting round):
+
+110. **The Unknown-day pseudo-day** (`UNDATED_DAY_KEY`): undated photos get their own always-visible "Unknown day" row in Home's still-to-review section (outside the 2-older-days slice) and a full day-progress page — state summary, DB-paged grids (MediaStore cannot be queried for missing DATE_TAKEN; the tracked rows are the population), and "Groups this day" over the undated groups. Vetted design entries 26/28/29/53 and the as-built undated treatment (65–70, 74) were approved in the same round; strictness stays the honest confirm.

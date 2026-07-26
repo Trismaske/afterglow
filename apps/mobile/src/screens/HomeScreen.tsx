@@ -19,7 +19,13 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainTabScreenProps } from '../navigation';
 import { countShareQueue } from '../db/shareStore';
 import { countOrganizeQueue } from '../db/organizeStore';
-import { dayKey, labelForDayKey, recentDayKeys, rangeOfDayKey } from '../lib/dates';
+import {
+  dayKey,
+  labelForDayKey,
+  recentDayKeys,
+  rangeOfDayKey,
+  UNDATED_DAY_KEY,
+} from '../lib/dates';
 import { DAILY_GOAL_KEY, goalProgress, goalStreaks, parseDailyGoal } from '../lib/dailyGoal';
 import { countPhotosByDayInRange, countPhotosInRange } from '../lib/media';
 import { resolveSources } from '../lib/sourceCatalog';
@@ -386,6 +392,16 @@ export function HomeScreen({ navigation }: Props) {
           const summaries = await getDaySummariesForDays(db, days, src?.roots ?? null);
           const rows: DayRow[] = [];
           for (const day of days) {
+            if (day === UNDATED_DAY_KEY) {
+              // No MediaStore count exists for undated photos — the
+              // tracked rows are the population (alive = tracked-trashed;
+              // toRow adds trashed back for the true total).
+              const summary = summaries.get(day);
+              const alive = (summary?.tracked ?? 0) - (summary?.trashed ?? 0);
+              const row = toRow(day, summary, alive);
+              if (row.total > 0) rows.push(row);
+              continue;
+            }
             const range = rangeOfDayKey(day);
             const msTotal = permission?.granted
               ? await countPhotosByDayInRange(
@@ -404,12 +420,18 @@ export function HomeScreen({ navigation }: Props) {
           const unreviewedDays = permission?.granted
             ? await getUnreviewedDayRows(db, src?.roots ?? null)
             : [];
+          const undatedPending = unreviewedDays.some((u) => u.day === UNDATED_DAY_KEY);
           const olderUnreviewed = unreviewedDays
             .map((u) => u.day)
-            .filter((day) => !recentKeys.includes(day));
+            .filter((day) => !recentKeys.includes(day) && day !== UNDATED_DAY_KEY);
           const [recentRows, unreviewedRows] = await Promise.all([
             buildRows(recentKeys),
-            buildRows(olderUnreviewed.slice(0, UNREVIEWED_DAY_ROWS)),
+            // The Unknown-day row is not one of the "2 older days" — it
+            // always shows while undated photos await review.
+            buildRows([
+              ...olderUnreviewed.slice(0, UNREVIEWED_DAY_ROWS),
+              ...(undatedPending ? [UNDATED_DAY_KEY] : []),
+            ]),
           ]);
           if (cancelled) return;
           setDayRows(recentRows);

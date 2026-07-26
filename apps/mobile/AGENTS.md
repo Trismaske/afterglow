@@ -23,7 +23,7 @@ Expo dev-client Android app (Expo Go won't do — media permissions + local modu
 | editMatrix.ts                        | Gate-0 editor-launch diagnostic matrix: probe sequencing, write-request branch, shareable report (pure)      |
 | detect.ts / editDetection.ts         | Edit detection on Home focus (MediaStore+SQLite wiring) / pure decision heuristics                           |
 | sources.ts / sourceCatalog.ts        | Photo-source folder targeting (pure) / MediaStore album catalog + persisted selection                        |
-| dates.ts                             | Day/range scope date math, local time                                                                        |
+| dates.ts                             | Day/range scope date math, local time; `UNDATED_DAY_KEY` pseudo-day                                                                        |
 | progress.ts / progressPager.ts       | Progress/state-bar logic / newest-first k-way merged pager                                                   |
 | groupFlow.ts                         | Automatic next-unfinished-group routing after a group is completed                                           |
 | hash.ts                              | Lazy content-hash fallback identity (only for staged culls)                                                  |

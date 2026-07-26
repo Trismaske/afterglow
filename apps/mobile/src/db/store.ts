@@ -21,6 +21,7 @@ import { lifetimeReclaimedBytes } from './trashStore';
 import type { LoadedPhoto } from '../lib/media';
 import { frozenPhotos, reconcileWindowGroups } from '../lib/regroupBoundary';
 import { sourceLikePattern } from '../lib/sources';
+import { UNDATED_DAY_KEY } from '../lib/dates';
 import type { StateCounts } from '../lib/progress';
 
 /** Max ids per IN (...) chunk — stays under SQLite's bind-parameter limit. */
@@ -75,7 +76,10 @@ export type PhotoScope = { day: string } | { startMs: number; endMs: number };
 
 function scopeClause(scope: PhotoScope): { sql: string; params: (string | number)[] } {
   return 'day' in scope
-    ? { sql: 'day = ?', params: [scope.day] }
+    ? scope.day === UNDATED_DAY_KEY
+      ? // The Unknown-day pseudo-day: photos without a capture date.
+        { sql: 'day IS NULL', params: [] }
+      : { sql: 'day = ?', params: [scope.day] }
     : {
         sql: 'taken_at BETWEEN ? AND ?',
         // An open-ended range arrives as Infinity (undated-photo
@@ -741,11 +745,12 @@ export async function listGroupsForDay(
   roots: readonly string[] | null = null,
 ): Promise<ReviewGroupRow[]> {
   const src = sourceClause(roots, 'p.uri');
+  const dayPredicate = day === UNDATED_DAY_KEY ? 'p.day IS NULL' : 'p.day = ?';
   const ids = await db.getAllAsync<{ group_id: number }>(
     `SELECT DISTINCT a.group_id FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
-     WHERE a.group_id IS NOT NULL AND p.day = ? AND p.is_present = 1${src.sql}`,
-    day,
+     WHERE a.group_id IS NOT NULL AND ${dayPredicate} AND p.is_present = 1${src.sql}`,
+    ...(day === UNDATED_DAY_KEY ? [] : [day]),
     ...src.params,
   );
   // Sequential: each getReviewGroup opens its own snapshot transaction —
@@ -1070,6 +1075,23 @@ export async function getMetadataGroupIds(
     for (const row of rows) out.add(Number(row.id));
   }
   return out;
+}
+
+/** Alive tracked undated photos (the Unknown-day pseudo-day's
+ * "MediaStore total" equivalent — MediaStore cannot be queried for
+ * missing DATE_TAKEN, and the scan is the only review ingress, so the
+ * tracked rows ARE the population). */
+export async function countUndatedAlive(
+  db: SQLiteDatabase,
+  roots: readonly string[] | null = null,
+): Promise<number> {
+  const src = sourceClause(roots);
+  const row = await db.getFirstAsync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM photos
+     WHERE day IS NULL AND is_present = 1${src.sql}`,
+    ...src.params,
+  );
+  return row?.n ?? 0;
 }
 
 /** Refresh a photo's uri after it moved WITHOUT changing MediaStore id
@@ -1883,7 +1905,17 @@ export interface GridPhotoRow {
 }
 
 /** SQL predicate per DB-backed grid filter (see getGridPhotosByFilter). */
-const GRID_FILTER_SQL: Record<'in_group' | 'to_edit' | 'staged' | 'done', string> = {
+const GRID_FILTER_SQL: Record<
+  'in_group' | 'to_edit' | 'staged' | 'done' | 'all' | 'unreviewed',
+  string
+> = {
+  // 'all'/'unreviewed' are DB-backed ONLY for the Unknown-day pseudo-day
+  // (its photos cannot be paged from MediaStore; the tracked rows are the
+  // complete population there).
+  all: "state <> 'trashed'",
+  unreviewed:
+    "state = 'unreviewed' AND NOT EXISTS (SELECT 1 FROM photo_group_assignments a " +
+    'WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL)',
   in_group:
     "state = 'unreviewed' AND EXISTS (SELECT 1 FROM photo_group_assignments a " +
     'WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL)',
@@ -2112,12 +2144,29 @@ export async function getDaySummariesForDays(
 ): Promise<Map<string, DaySummaryRow>> {
   if (days.length === 0) return new Map();
   const src = sourceClause(roots);
-  const rows = await db.getAllAsync<DaySummaryRow>(
-    `${DAY_SUMMARY_SELECT} AND day IN (${days.map(() => '?').join(',')})${src.sql} GROUP BY day`,
-    ...days,
-    ...src.params,
-  );
-  return new Map(rows.map((r) => [r.day, r]));
+  const dated = days.filter((d) => d !== UNDATED_DAY_KEY);
+  const out = new Map<string, DaySummaryRow>();
+  if (dated.length > 0) {
+    const rows = await db.getAllAsync<DaySummaryRow>(
+      `${DAY_SUMMARY_SELECT} AND day IN (${dated.map(() => '?').join(',')})${src.sql} GROUP BY day`,
+      ...dated,
+      ...src.params,
+    );
+    for (const r of rows) out.set(r.day, r);
+  }
+  if (days.includes(UNDATED_DAY_KEY)) {
+    const row = await db.getFirstAsync<Omit<DaySummaryRow, 'day'>>(
+      `SELECT COUNT(*) AS tracked,
+              SUM(CASE WHEN state IN ('done', 'trashed') THEN 1 ELSE 0 END) AS done,
+              SUM(CASE WHEN state = 'trashed' THEN 1 ELSE 0 END) AS trashed,
+              SUM(CASE WHEN state = 'to_edit' THEN 1 ELSE 0 END) AS toEdit,
+              SUM(CASE WHEN state IN ('culled', 'confirmed') THEN 1 ELSE 0 END) AS staged
+       FROM photos WHERE day IS NULL${src.sql}`,
+      ...src.params,
+    );
+    if (row && Number(row.tracked) > 0) out.set(UNDATED_DAY_KEY, { day: UNDATED_DAY_KEY, ...row });
+  }
+  return out;
 }
 
 /** Local days that still hold unreviewed present photos, newest first,
@@ -2127,12 +2176,21 @@ export async function getUnreviewedDayRows(
   roots: readonly string[] | null = null,
 ): Promise<{ day: string; pending: number }[]> {
   const src = sourceClause(roots);
-  return db.getAllAsync<{ day: string; pending: number }>(
+  const rows = await db.getAllAsync<{ day: string; pending: number }>(
     `SELECT day, COUNT(*) AS pending FROM photos
      WHERE day IS NOT NULL AND state = 'unreviewed' AND is_present = 1${src.sql}
      GROUP BY day ORDER BY day DESC`,
     ...src.params,
   );
+  // The Unknown-day pseudo-day rides along (after the dated days) when
+  // undated photos await review.
+  const undated = await db.getFirstAsync<{ pending: number }>(
+    `SELECT COUNT(*) AS pending FROM photos
+     WHERE day IS NULL AND state = 'unreviewed' AND is_present = 1${src.sql}`,
+    ...src.params,
+  );
+  if ((undated?.pending ?? 0) > 0) rows.push({ day: UNDATED_DAY_KEY, pending: undated!.pending });
+  return rows;
 }
 
 // ------------------------------------------------ favourite queue + lifetime metrics

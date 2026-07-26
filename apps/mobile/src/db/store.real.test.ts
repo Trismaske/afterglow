@@ -8,10 +8,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { migrateDatabase } from './database';
+import { UNDATED_DAY_KEY } from '../lib/dates';
 import {
   applyRedecision,
   applyReviewDecisions,
   countReviewQueue,
+  countUndatedAlive,
   getCorpusStats,
   getDayReviewSummary,
   getDaySummariesForDays,
@@ -19,6 +21,7 @@ import {
   getPhotoFacts,
   getReviewGroup,
   getStagedCulls,
+  getStateCountsInScope,
   getUnreviewedDayRows,
   listGroupsForDay,
   listReviewGroups,
@@ -1041,7 +1044,11 @@ describe('undated photos carry no day', () => {
       AT,
     );
     const days = await getUnreviewedDayRows(asExpo(d));
-    expect(days).toEqual([{ day: '2026-07-20', pending: 1 }]);
+    // The Unknown-day pseudo-day rides along after the dated rows.
+    expect(days).toEqual([
+      { day: '2026-07-20', pending: 1 },
+      { day: 'undated', pending: 1 },
+    ]);
     const summaries = await getDaySummariesForDays(asExpo(d), ['2026-07-20']);
     expect(summaries.get('2026-07-20')?.tracked).toBe(1);
     // The undated photo still reviews via the queue.
@@ -1180,5 +1187,64 @@ describe('stale actions against absent/regrouped photos reject', () => {
       ),
     ).rejects.toThrow(/changed while reviewing/);
     expect(stateOf(d, '1').state).toBe('unreviewed');
+  });
+});
+
+// -------------------------------------------- Unknown-day pseudo-day
+
+describe('the Unknown-day pseudo-day', () => {
+  async function seedUndated(d: TestDb): Promise<void> {
+    await writeContinuousGroups(
+      asExpo(d),
+      {
+        photos: [
+          upsert('1'),
+          { ...upsert('u1'), day: null },
+          { ...upsert('u2'), day: null },
+          { ...upsert('u3'), day: null },
+        ],
+        groups: [{ members: [id('u1'), id('u2')], timeAttached: [] }],
+        singles: [id('1'), id('u3')],
+      },
+      AT,
+    );
+  }
+
+  it('scope, summaries, groups, and counts all resolve the sentinel', async () => {
+    const d = await fresh();
+    await seedUndated(d);
+    await applyReviewDecisions(asExpo(d), [[id('u3'), 'done']], AT + 1);
+
+    const counts = await getStateCountsInScope(asExpo(d), { day: UNDATED_DAY_KEY }, null);
+    expect(counts.tracked).toBe(3);
+    expect(counts.done).toBe(1);
+
+    const summaries = await getDaySummariesForDays(asExpo(d), [UNDATED_DAY_KEY, '2026-07-20']);
+    expect(summaries.get(UNDATED_DAY_KEY)).toMatchObject({ tracked: 3, done: 1 });
+    expect(summaries.get('2026-07-20')?.tracked).toBe(1);
+
+    const groups = await listGroupsForDay(asExpo(d), UNDATED_DAY_KEY);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].members.map((m) => m.asset_id).sort()).toEqual([id('u1'), id('u2')]);
+
+    expect(await countUndatedAlive(asExpo(d))).toBe(3);
+
+    const days = await getUnreviewedDayRows(asExpo(d));
+    expect(days).toEqual([
+      { day: '2026-07-20', pending: 1 },
+      { day: UNDATED_DAY_KEY, pending: 2 },
+    ]);
+  });
+
+  it('the DB-backed all/unreviewed grid filters page the pseudo-day', async () => {
+    const d = await fresh();
+    await seedUndated(d);
+    const scope = { day: UNDATED_DAY_KEY };
+    const all = await getGridPhotosByFilter(asExpo(d), scope, null, 'all', 10, 0);
+    expect(all.map((r) => r.asset_id).sort()).toEqual([id('u1'), id('u2'), id('u3')]);
+    const single = await getGridPhotosByFilter(asExpo(d), scope, null, 'unreviewed', 10, 0);
+    expect(single.map((r) => r.asset_id)).toEqual([id('u3')]);
+    const grouped = await getGridPhotosByFilter(asExpo(d), scope, null, 'in_group', 10, 0);
+    expect(grouped.map((r) => r.asset_id).sort()).toEqual([id('u1'), id('u2')]);
   });
 });

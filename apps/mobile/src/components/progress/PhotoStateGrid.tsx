@@ -25,6 +25,7 @@ import { classifyPhotoState, type EffectiveState, type ProgressFilter } from '..
 import { createMergedDescendingPager, type MergedPager } from '../../lib/progressPager';
 import { fetchPhotoPageDesc, type LoadedPhoto } from '../../lib/media';
 import { getGridPhotosByFilter, getStateRowsForAssets, type PhotoScope } from '../../db/store';
+import { UNDATED_DAY_KEY } from '../../lib/dates';
 import { colors, useTheme } from '../../theme';
 import { stateMetaFor } from './stateMeta';
 
@@ -45,6 +46,13 @@ type DbFilter = (typeof DB_FILTERS)[number];
 
 function isDbFilter(filter: ProgressFilter): filter is DbFilter {
   return (DB_FILTERS as readonly string[]).includes(filter);
+}
+
+/** The Unknown-day pseudo-day pages EVERY filter from SQLite — its
+ * photos (no DATE_TAKEN) cannot be paged from MediaStore, and the
+ * tracked rows are the complete population there. */
+function isUndatedScope(scope: PhotoScope): boolean {
+  return 'day' in scope && scope.day === UNDATED_DAY_KEY;
 }
 
 export function PhotoStateGrid({
@@ -95,7 +103,7 @@ export function PhotoStateGrid({
       setLoading(true);
       try {
         const fresh = () => gen === genRef.current;
-        if (isDbFilter(filter)) {
+        if (isDbFilter(filter) || isUndatedScope(scope)) {
           const rows = await getGridPhotosByFilter(
             db,
             scope,
@@ -160,7 +168,7 @@ export function PhotoStateGrid({
     offsetRef.current = 0;
     setItems([]);
     setExhausted(false);
-    if (isDbFilter(filter)) {
+    if (isDbFilter(filter) || isUndatedScope(scope)) {
       pagerRef.current = null;
     } else {
       const buckets: (string | undefined)[] = albumIds ? [...albumIds] : [undefined];

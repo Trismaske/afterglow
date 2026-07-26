@@ -14,7 +14,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
-import { rangeOfDayKey } from '../lib/dates';
+import { labelForDayKey, rangeOfDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { formatClock } from '../lib/format';
 import { remainingReviewable, type StateBreakdown } from '../lib/progress';
 import { listGroupsForDay, type ReviewGroupRow } from '../db/store';
@@ -40,7 +40,16 @@ export function DayProgressScreen({ route, navigation }: Props) {
   const { day } = route.params;
   const db = useSQLiteContext();
   const { version } = useReview();
-  const range = useMemo(() => rangeOfDayKey(day), [day]);
+  // The Unknown-day pseudo-day has no calendar range: heading from the
+  // shared label, an open-ended ms range (the grid and totals read from
+  // the DB for it anyway).
+  const range = useMemo(
+    () =>
+      day === UNDATED_DAY_KEY
+        ? { startMs: 0, endMs: Number.POSITIVE_INFINITY, label: labelForDayKey(day) }
+        : rangeOfDayKey(day),
+    [day],
+  );
   const [groups, setGroups] = useState<ReviewGroupRow[] | null>(null);
 
   useFocusEffect(

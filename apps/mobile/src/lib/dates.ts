@@ -58,8 +58,17 @@ export function rangeOfDayKey(key: string): DateRange {
   };
 }
 
+/**
+ * The pseudo-day for photos WITHOUT a capture date (NULL day in SQLite,
+ * no DATE_TAKEN in MediaStore). It gets its own still-to-review row and
+ * day-progress page; the reserved key can never collide with a
+ * "YYYY-MM-DD" calendar key.
+ */
+export const UNDATED_DAY_KEY = 'undated';
+
 /** "Today" / "Yesterday" / "Jul 12" for a day key, relative to now. */
 export function labelForDayKey(key: string, now: Date = new Date()): string {
+  if (key === UNDATED_DAY_KEY) return 'Unknown day';
   if (key === dayKey(now.getTime())) return 'Today';
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);

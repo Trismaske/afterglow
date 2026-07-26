@@ -252,3 +252,7 @@ Final-review round 29 fixes, same pending vetting:
 
 97. **Queue reads use ONE snapshot**: `listReviewGroups` and `getReviewGroup` read headers + members inside one exclusive transaction (a scan window committing between the two split queries could render obsolete groups with empty member lists — a blank deck); `listGroupsForDay` fetches sequentially (parallel snapshots would nest transactions).
 98. **Both remaining reconciliation paths refresh the queue**: edit detection reports `reconciled` (a deleted edited copy dissolving a cached group), and History's page reconciliation refreshes ReviewContext directly.
+
+Final-review round 30 fixes, same pending vetting:
+
+99. **The queue read is ONE cross-slice snapshot** (`readReviewQueue`: groups, singles feed, and counts in a single exclusive transaction — independent reads could cache a photo as both grouped and single mid-scan, with counts disagreeing with the arrays), and the ambiguous edited-copy cull branch refreshes the cached queue (the original already moved `to_edit → culled` with its star cleared before the alert).

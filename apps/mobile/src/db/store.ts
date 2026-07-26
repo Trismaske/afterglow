@@ -550,19 +550,16 @@ export interface ReviewGroupRow {
  * present member, newest group first (continuous scan fills newest-first,
  * so review starts with the most recent shots). `limit` bounds the page.
  */
-export async function listReviewGroups(
-  db: SQLiteDatabase,
+async function listReviewGroupsIn(
+  txn: SQLiteDatabase,
   limit: number,
-  roots: readonly string[] | null = null,
+  roots: readonly string[] | null,
 ): Promise<ReviewGroupRow[]> {
   // The source filter gates which groups QUEUE (a pending in-source
   // member); a queued group still shows all its members — the deck always
-  // works on whole groups. Headers and members read from ONE exclusive
-  // snapshot: a scan window committing between the two queries could
-  // return obsolete groups with empty member lists (blank deck).
+  // works on whole groups.
   const src = sourceClause(roots, 'p.uri');
-  let out: ReviewGroupRow[] = [];
-  await db.withExclusiveTransactionAsync(async (txn) => {
+  {
     const groups = await txn.getAllAsync<{
       id: number;
       best_photo_id: string | null;
@@ -583,7 +580,7 @@ export async function listReviewGroups(
       ...src.params,
       limit,
     );
-    if (groups.length === 0) return;
+    if (groups.length === 0) return [];
     const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
       `SELECT a.group_id, p.asset_id, p.uri, p.taken_at, p.state, p.needs_edit, a.time_attached
        FROM photo_group_assignments a
@@ -606,11 +603,25 @@ export async function listReviewGroups(
       if (bucket) bucket.push(row);
       else byGroup.set(Number(m.group_id), [row]);
     }
-    out = groups.map((g) => ({
+    return groups.map((g) => ({
       groupId: Number(g.id),
       bestPhotoId: g.best_photo_id,
       members: byGroup.get(Number(g.id)) ?? [],
     }));
+  }
+}
+
+/** Public wrapper: headers and members read from ONE exclusive snapshot —
+ * a scan window committing between the split queries could return
+ * obsolete groups with empty member lists (blank deck). */
+export async function listReviewGroups(
+  db: SQLiteDatabase,
+  limit: number,
+  roots: readonly string[] | null = null,
+): Promise<ReviewGroupRow[]> {
+  let out: ReviewGroupRow[] = [];
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    out = await listReviewGroupsIn(txn, limit, roots);
   });
   return out;
 }
@@ -652,13 +663,13 @@ export async function getReviewGroup(
  * until the final delete confirmation, so re-deciding never needs a
  * detour through the cull list. Newest first.
  */
-export async function listSinglesFeed(
-  db: SQLiteDatabase,
+async function listSinglesFeedIn(
+  txn: SQLiteDatabase,
   limit: number,
-  roots: readonly string[] | null = null,
+  roots: readonly string[] | null,
 ): Promise<ReviewMemberRow[]> {
   const src = sourceClause(roots, 'p.uri');
-  return db.getAllAsync<ReviewMemberRow>(
+  return txn.getAllAsync<ReviewMemberRow>(
     `SELECT p.asset_id, p.uri, p.taken_at, p.state, p.needs_edit, a.time_attached
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
@@ -668,6 +679,16 @@ export async function listSinglesFeed(
     ...src.params,
     limit,
   );
+}
+
+/** Public wrapper (tests, ad-hoc reads); ReviewContext uses
+ * readReviewQueue for a cross-slice snapshot. */
+export async function listSinglesFeed(
+  db: SQLiteDatabase,
+  limit: number,
+  roots: readonly string[] | null = null,
+): Promise<ReviewMemberRow[]> {
+  return listSinglesFeedIn(db, limit, roots);
 }
 
 /**
@@ -830,12 +851,12 @@ export async function setGroupBest(
 }
 
 /** Home CTA counts: unreviewed present photos in groups / as singles. */
-export async function countReviewQueue(
-  db: SQLiteDatabase,
-  roots: readonly string[] | null = null,
+async function countReviewQueueIn(
+  txn: SQLiteDatabase,
+  roots: readonly string[] | null,
 ): Promise<{ grouped: number; singles: number }> {
   const src = sourceClause(roots, 'p.uri');
-  const row = await db.getFirstAsync<{ grouped: number; singles: number }>(
+  const row = await txn.getFirstAsync<{ grouped: number; singles: number }>(
     `SELECT
        SUM(CASE WHEN a.group_id IS NOT NULL THEN 1 ELSE 0 END) AS grouped,
        SUM(CASE WHEN a.group_id IS NULL THEN 1 ELSE 0 END) AS singles
@@ -845,6 +866,43 @@ export async function countReviewQueue(
     ...src.params,
   );
   return { grouped: row?.grouped ?? 0, singles: row?.singles ?? 0 };
+}
+
+/** Public wrapper (Home CTA counts outside the queue snapshot). */
+export async function countReviewQueue(
+  db: SQLiteDatabase,
+  roots: readonly string[] | null = null,
+): Promise<{ grouped: number; singles: number }> {
+  return countReviewQueueIn(db, roots);
+}
+
+/** THE queue read (gate 5 + final review): groups, singles feed, and
+ * counts from ONE exclusive snapshot — a scan window committing between
+ * independent reads could cache a photo as both grouped and single, or
+ * counts disagreeing with the arrays. */
+export async function readReviewQueue(
+  db: SQLiteDatabase,
+  groupLimit: number,
+  singlesLimit: number,
+  roots: readonly string[] | null = null,
+): Promise<{
+  groups: ReviewGroupRow[];
+  singles: ReviewMemberRow[];
+  counts: { grouped: number; singles: number };
+}> {
+  let out: {
+    groups: ReviewGroupRow[];
+    singles: ReviewMemberRow[];
+    counts: { grouped: number; singles: number };
+  } = { groups: [], singles: [], counts: { grouped: 0, singles: 0 } };
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    out = {
+      groups: await listReviewGroupsIn(txn, groupLimit, roots),
+      singles: await listSinglesFeedIn(txn, singlesLimit, roots),
+      counts: await countReviewQueueIn(txn, roots),
+    };
+  });
+  return out;
 }
 
 /** Reviewed-photo counts per local day (first-review stamps; the daily

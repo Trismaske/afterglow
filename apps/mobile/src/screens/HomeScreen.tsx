@@ -225,6 +225,9 @@ export function HomeScreen({ navigation }: Props) {
                   // verify) — the photo MAY be in system trash, so it
                   // conservatively stays staged in the durable cull list
                   // (the vetted fallback); the next confirm re-verifies.
+                  // The original already moved to_edit → culled (star
+                  // cleared) — the cached queue must observe it.
+                  await reviewRefresh().catch(() => {});
                   Alert.alert(
                     'Could not verify the move',
                     'The photo stays staged in the cull list until the move can be verified.',

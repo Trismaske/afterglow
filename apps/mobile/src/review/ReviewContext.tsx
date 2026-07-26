@@ -35,12 +35,10 @@ import { startContinuousScan, subscribeScanStatus } from '../scan/scanRunner';
 import { nextFavouriteIntent, NO_FAVOURITE, type FavouriteStatus } from '../lib/favouriteState';
 import {
   applyReviewDecisions,
-  countReviewQueue,
+  readReviewQueue,
   getFavouriteStates,
   getNeedsEditAssets,
   getStagedCulls,
-  listReviewGroups,
-  listSinglesFeed,
   getReviewGroup,
   applyRedecision,
   makePhotoSingles,
@@ -184,12 +182,15 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
 
   const refreshWithRoots = useCallback(
     async (roots: readonly string[] | null, generation: number) => {
-      const [nextGroups, nextSingles, counts] = await Promise.all([
-        listReviewGroups(db, GROUP_PAGE, roots),
-        listSinglesFeed(db, SINGLES_PAGE, roots),
-        countReviewQueue(db, roots),
-      ]);
-      return { nextGroups, nextSingles, counts, generation };
+      // ONE snapshot for all three slices — independent reads could cache
+      // a photo as both grouped and single mid-scan.
+      const queue = await readReviewQueue(db, GROUP_PAGE, SINGLES_PAGE, roots);
+      return {
+        nextGroups: queue.groups,
+        nextSingles: queue.singles,
+        counts: queue.counts,
+        generation,
+      };
     },
     [db],
   );

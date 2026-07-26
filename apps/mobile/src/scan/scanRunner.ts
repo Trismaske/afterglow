@@ -23,7 +23,8 @@ import { ADJACENT_MERGE_MAX_GAP_MS, groupByEmbedding, MOMENTS_GAP_MS } from '@af
 import { MODEL_SHA256 } from '../../modules/image-embedder';
 import { dayKey } from '../lib/dates';
 import { ensureEmbeddings, newEngineHealth, type EngineHealth } from '../lib/embeddings';
-import { fetchPhotoPageDesc, type LoadedPhoto } from '../lib/media';
+import { checkMediaPresence, fetchPhotoPageDesc, type LoadedPhoto } from '../lib/media';
+import { reconcileExternallyRemoved } from '../db/trashStore';
 import { createMergedDescendingPager, type PageFetcher } from '../lib/progressPager';
 import { frozenPhotos, reconcileWindowGroups } from '../lib/regroupBoundary';
 import { createWindowAccumulator } from '../lib/scanWindows';
@@ -33,6 +34,7 @@ import { ensureEmbeddingModel } from '../db/embeddingStore';
 import {
   getGroupAssignments,
   getGroupMembers,
+  getPresentAssetIds,
   getSetting,
   getStatesForAssets,
   writeContinuousGroups,
@@ -147,9 +149,11 @@ async function scan(db: SQLiteDatabase): Promise<void> {
 
   const accumulator = createWindowAccumulator(ADJACENT_MERGE_MAX_GAP_MS);
   const engine = newEngineHealth();
+  const seenIds = new Set<string>();
   for (;;) {
     const photos = await pager.next(SCAN_PAGE_SIZE);
     if (photos.length === 0) break;
+    for (const photo of photos) seenIds.add(photo.item.id);
     update({ scanned: status.scanned + photos.length });
     for (const photo of photos) {
       for (const window of accumulator.feed(photo)) {
@@ -169,6 +173,31 @@ async function scan(db: SQLiteDatabase): Promise<void> {
         `0 of ${engine.attempts} fresh embeds succeeded`,
     );
   }
+  // A COMPLETE pass enumerated every in-source MediaStore photo, so a
+  // tracked present row the pager never met was removed outside Afterglow.
+  // Absence-from-enumeration alone is not authoritative (photos can land
+  // mid-scan behind the cursor), so each candidate gets the tri-state
+  // presence check and only verified 'trashed'/'absent' rows converge —
+  // exactly the History reconciliation contract.
+  const tracked = await getPresentAssetIds(db, sources.roots ?? null);
+  const unseen = tracked.filter((id) => !seenIds.has(id));
+  const RECONCILE_CAP = 500;
+  if (unseen.length > RECONCILE_CAP) {
+    // Loud, once: the remainder reconciles on later scans/History pages.
+    console.warn(
+      `[scan] ${unseen.length} unseen tracked photos — verifying only ${RECONCILE_CAP} this run`,
+    );
+  }
+  const gone: string[] = [];
+  for (const id of unseen.slice(0, RECONCILE_CAP)) {
+    const presence = await checkMediaPresence(id);
+    if (presence === 'trashed' || presence === 'absent') gone.push(id);
+  }
+  if (gone.length > 0) {
+    await reconcileExternallyRemoved(db, gone, Date.now());
+    console.log(`[scan] reconciled ${gone.length} externally removed photos`);
+  }
+
   update({ phase: 'done' });
   // One summary line per run — the only permanent scan log besides errors
   // (release builds have no inspectable DB; this is the field diagnostic).

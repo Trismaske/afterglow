@@ -38,7 +38,7 @@ export function GroupsScreen({ navigation }: Props) {
 
   const nextStep = useMemo(() => {
     if (groups.length > 0) return 'Deck' as const;
-    if (singles.length > 0) return 'Singles' as const;
+    if (singles.some((m) => m.state === 'unreviewed')) return 'Singles' as const;
     return 'CullList' as const;
   }, [groups, singles]);
 

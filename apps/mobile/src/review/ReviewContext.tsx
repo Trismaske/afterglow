@@ -109,8 +109,9 @@ interface ReviewContextValue {
   /** Keep every still-unreviewed single in one write. */
   keepAllSingles: () => Promise<void>;
   /** Re-decide a STAGED cull from the cull list: keep → done, to_edit →
-   * queued, cull → no-op-stays-culled; keep/to_edit are explicit
-   * un-staging decisions and resolve any pending copy match (C#12). */
+   * queued, cull (the active chip) → restore to unreviewed; keep/to_edit
+   * are explicit un-staging decisions and resolve any pending copy match
+   * (C#12) — a restore answers nothing and resolves nothing. */
   redecideStaged: (assetId: string, target: RedecideTarget) => Promise<void>;
   /**
    * THE one delete path (P4#1): loop the durable GLOBAL cull queue
@@ -134,12 +135,28 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   /** Members of an out-of-queue group the deck browses (gate 5): refresh
    * keeps their flag/favourite entries alive alongside the queue's. */
   const extraIdsRef = useRef<string[]>([]);
+  /** Last successfully resolved source roots (fail-closed fallback). */
+  const lastRootsRef = useRef<{ roots: readonly string[] | null } | null>(null);
   const startedRef = useRef(false);
 
   const refresh = useCallback(async () => {
     // The photo-source folder filter scopes every queue read (the scan
     // freezes out-of-source rows in place; reads must not resurface them).
-    const roots = (await resolveSources(db).catch(() => null))?.roots ?? null;
+    // FAIL CLOSED on resolution errors: null means "all folders" to the
+    // store, so a transient failure must fall back to the last known
+    // roots — or skip the refresh entirely before any resolution succeeds
+    // — never silently broaden a narrowed source.
+    let roots: readonly string[] | null;
+    try {
+      roots = (await resolveSources(db)).roots ?? null;
+      lastRootsRef.current = { roots };
+    } catch (error) {
+      if (!lastRootsRef.current) {
+        console.warn('[review] source resolution failed — queue refresh skipped:', String(error));
+        return;
+      }
+      roots = lastRootsRef.current.roots;
+    }
     const [nextGroups, nextSingles, counts] = await Promise.all([
       listReviewGroups(db, GROUP_PAGE, roots),
       listSinglesFeed(db, SINGLES_PAGE, roots),
@@ -367,7 +384,14 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   const redecideStaged = useCallback(
     (assetId: string, target: RedecideTarget) =>
       write(async () => {
-        if (target === 'cull') return; // already staged
+        if (target === 'cull') {
+          // The active-verdict tap: the sheet promises "tap the current
+          // decision to return to unreviewed" — restore, exactly like the
+          // CullList Restore semantics (no copy-match resolution: going
+          // back to unreviewed answers nothing).
+          await restoreCarriedCull(db, assetId, Date.now());
+          return;
+        }
         const verdict: ReviewVerdict = target === 'keep' ? 'done' : 'to_edit';
         await applyReviewDecisions(db, [[assetId, verdict]], Date.now(), {
           resolveCopyMatchesFor: [assetId],

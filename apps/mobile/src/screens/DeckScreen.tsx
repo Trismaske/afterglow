@@ -365,7 +365,9 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
   // Linear flow follows the first incomplete group, then singles and the
   // cull list. Explicitly opening an ALREADY completed group still permits
   // browse/re-decide mode.
-  const hasSingles = singles.length > 0;
+  // Routing looks at PENDING singles: a feed holding only staged culls
+  // must not trap the linear flow on an already-complete Singles screen.
+  const hasSingles = singles.some((m) => m.state === 'unreviewed');
   useEffect(() => {
     if (singlesMode) return;
     if (explicitGroupId) {
@@ -466,10 +468,13 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     };
     if (!justCompleted) return;
 
+    // The refresh already removed the completed group from `groups`, so
+    // pass its stored former index — the successor sits there now.
     const destination = destinationAfterGroup(
       groups.map((g) => ({ id: String(g.groupId), complete: false })),
       explicitGroupId,
       hasSingles,
+      previous.index,
     );
     if (destination.screen === 'Deck') {
       navigation.replace('Deck', { groupId: destination.groupId });

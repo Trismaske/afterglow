@@ -12,6 +12,7 @@ import {
   applyReviewDecisions,
   countReviewQueue,
   getCorpusStats,
+  getDayReviewSummary,
   getDaySummariesForDays,
   getGridPhotosByFilter,
   getPhotoFacts,
@@ -25,6 +26,7 @@ import {
   markEditDone,
   markFavouriteBatchApplied,
   markFavouriteBatchError,
+  resetUnreviewedGroups,
   restoreCarriedCull,
   setGroupBest,
   setNeedsEdit,
@@ -636,5 +638,73 @@ describe('atomic compare verdicts', () => {
     expect(best.best_photo_id).toBe(id('1'));
     expect(d.raw.prepare('SELECT COUNT(*) AS n FROM duels').get()).toEqual({ n: 1 });
     expect(foreignKeyCheck(d)).toEqual([]);
+  });
+});
+
+// -------------------------------------------- final-review round 2
+
+describe('resetUnreviewedGroups spares mixed groups', () => {
+  it('only fully-unreviewed groups and plain singles reset', async () => {
+    const d = await fresh();
+    // g1 mixed (one done member), g2 fully unreviewed, s single, e ejected.
+    await seed(
+      d,
+      ['1', '2', '3', '4', 's', 'e'],
+      [
+        ['1', '2'],
+        ['3', '4'],
+      ],
+    );
+    await makePhotoSingles(asExpo(d), [id('e')]);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'done']], AT + 1);
+    await resetUnreviewedGroups(asExpo(d));
+    const rows = d.raw
+      .prepare('SELECT photo_id, group_id, user_single FROM photo_group_assignments')
+      .all() as { photo_id: string; group_id: number | null; user_single: number }[];
+    const byId = new Map(rows.map((r) => [r.photo_id, r]));
+    // Mixed group survives whole; its unreviewed member keeps membership.
+    expect(byId.get(id('1'))?.group_id).not.toBeNull();
+    expect(byId.get(id('2'))?.group_id).toBe(byId.get(id('1'))?.group_id);
+    // Fully-unreviewed group and the plain single reset (assignments gone).
+    expect(byId.has(id('3'))).toBe(false);
+    expect(byId.has(id('4'))).toBe(false);
+    expect(byId.has(id('s'))).toBe(false);
+    // The user-ejected single is untouchable.
+    expect(byId.get(id('e'))).toMatchObject({ group_id: null, user_single: 1 });
+    expect(foreignKeyCheck(d)).toEqual([]);
+  });
+});
+
+describe('getDayReviewSummary (decision-day accounting)', () => {
+  it('counts photos DECIDED that day whatever their capture day', async () => {
+    const d = await fresh();
+    // Captured on 2026-07-20 (seed default); decided "today" = 2026-07-25.
+    await seed(d, ['1', '2', '3', '4']);
+    const decidedAt = Date.UTC(2026, 6, 25, 12, 0, 0);
+    await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('1'), 'done'],
+        [id('2'), 'culled'],
+        [id('3'), 'to_edit'],
+      ],
+      decidedAt,
+    );
+    const day = new Date(decidedAt).toISOString().slice(0, 10);
+    const summary = await getDayReviewSummary(asExpo(d), day);
+    expect(summary).toMatchObject({ reviewed: 3, done: 1, staged: 1, trashed: 0 });
+    expect(await getDayReviewSummary(asExpo(d), '2026-07-20')).toMatchObject({ reviewed: 0 });
+  });
+});
+
+describe('corpus stats vs MediaStore denominator', () => {
+  it('trashed rows (gone from MediaStore) leave the numerator', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'done']], AT + 1);
+    d.raw
+      .prepare("UPDATE photos SET state = 'trashed', is_present = 0 WHERE asset_id = ?")
+      .run(id('2'));
+    expect((await getCorpusStats(asExpo(d))).reviewed).toBe(1);
   });
 });

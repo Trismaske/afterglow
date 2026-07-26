@@ -638,7 +638,9 @@ export async function getCorpusStats(
     `SELECT
        (SELECT COUNT(*) FROM photo_groups) AS groups,
        (SELECT COUNT(*) FROM photos
-        WHERE state IN ('done', 'to_edit', 'culled', 'confirmed', 'trashed')) AS reviewed`,
+        -- trashed rows left MediaStore, and Home's denominator is the
+        -- MediaStore total — count only verdicts on present photos.
+        WHERE state IN ('done', 'to_edit', 'culled', 'confirmed')) AS reviewed`,
   );
   return { groupsFound: row?.groups ?? 0, reviewed: row?.reviewed ?? 0 };
 }
@@ -652,13 +654,36 @@ export async function getCorpusStats(
  */
 export async function resetUnreviewedGroups(db: SQLiteDatabase): Promise<void> {
   await db.withExclusiveTransactionAsync(async (txn) => {
+    // A group with ANY reviewed member is frozen WHOLE by the regroup
+    // boundary — deleting its unreviewed members here would dissolve it
+    // and lose membership/best. Reset only fully-unreviewed groups and
+    // non-ejected singles.
     await txn.runAsync(
       `DELETE FROM photo_group_assignments
        WHERE user_single = 0
-         AND photo_id IN (SELECT asset_id FROM photos WHERE state = 'unreviewed')`,
+         AND photo_id IN (SELECT asset_id FROM photos WHERE state = 'unreviewed')
+         AND (group_id IS NULL OR group_id NOT IN (
+           SELECT a2.group_id FROM photo_group_assignments a2
+           JOIN photos p2 ON p2.asset_id = a2.photo_id
+           WHERE a2.group_id IS NOT NULL AND p2.state <> 'unreviewed'
+         ))`,
     );
     await repairGroupMembership(txn);
   });
+}
+
+/** Present tracked asset ids inside the source scope — the scan's
+ * completion reconciliation diffs these against what it actually saw. */
+export async function getPresentAssetIds(
+  db: SQLiteDatabase,
+  roots: readonly string[] | null = null,
+): Promise<string[]> {
+  const src = sourceClause(roots);
+  const rows = await db.getAllAsync<{ asset_id: string }>(
+    `SELECT asset_id FROM photos WHERE is_present = 1${src.sql}`,
+    ...src.params,
+  );
+  return rows.map((r) => r.asset_id);
 }
 
 /** One photo row the continuous scan upserts (m0.8 gate 2). */
@@ -1580,6 +1605,36 @@ const DAY_SUMMARY_SELECT = `SELECT day,
             SUM(CASE WHEN state = 'to_edit' THEN 1 ELSE 0 END) AS toEdit,
             SUM(CASE WHEN state IN ('culled', 'confirmed') THEN 1 ELSE 0 END) AS staged
      FROM photos WHERE day IS NOT NULL`;
+
+/** What was DECIDED on one local day (Summary "done for today"): counts
+ * by current state over photos whose first review stamp fell that day —
+ * capture-day rollups miss older photos reviewed today. */
+export async function getDayReviewSummary(
+  db: SQLiteDatabase,
+  day: string,
+): Promise<{ reviewed: number; done: number; staged: number; trashed: number }> {
+  const row = await db.getFirstAsync<{
+    reviewed: number;
+    done: number;
+    staged: number;
+    trashed: number;
+  }>(
+    `SELECT COUNT(*) AS reviewed,
+            SUM(CASE WHEN state = 'done' THEN 1 ELSE 0 END) AS done,
+            SUM(CASE WHEN state IN ('culled', 'confirmed') THEN 1 ELSE 0 END) AS staged,
+            SUM(CASE WHEN state = 'trashed' THEN 1 ELSE 0 END) AS trashed
+     FROM photos
+     WHERE reviewed_at IS NOT NULL
+       AND date(reviewed_at / 1000, 'unixepoch', 'localtime') = ?`,
+    day,
+  );
+  return {
+    reviewed: row?.reviewed ?? 0,
+    done: row?.done ?? 0,
+    staged: row?.staged ?? 0,
+    trashed: row?.trashed ?? 0,
+  };
+}
 
 /** Per-day rollups for every day >= sinceDay that has tracked photos. */
 export async function getDaySummaries(

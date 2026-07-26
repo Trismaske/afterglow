@@ -108,3 +108,12 @@ Final-review round 1 (full-m0.8 codex pass) fixes, same pending vetting:
 36. **Queue reads are source-scoped at read time** (groups/singles/counts/day groups): rows from excluded folders stay frozen in SQLite and are filtered out by the roots clause; a group queues only for a pending IN-SOURCE member but always shows whole.
 37. **Corpus % counts CURRENT verdicts** (`state IN done/to_edit/culled/confirmed/trashed`); `reviewed_at` stays the lifetime/goal metric — clearing a verdict returns the photo to the pending pool.
 38. **Compare verdicts are atomic**: duel, loser verdict, and the winner's star land in one `applyReviewDecisions` transaction (`extras.setBest`); the viewer's state edits also refresh ReviewContext directly.
+
+Final-review round 2 fixes, same pending vetting:
+
+39. **Regroup reset spares MIXED groups**: a group with any reviewed member is frozen whole (deleting its unreviewed members would dissolve it and lose best/membership) — only fully-unreviewed groups and non-ejected singles reset.
+40. **Source resolution fails CLOSED in queue reads**: a resolution error falls back to the last successfully resolved roots, or skips the refresh before any success — `null` means "all folders" to the store and must never be a silent error fallback.
+41. **The active cull chip on the re-decide sheet restores to unreviewed** (the sheet's promised tap-to-clear; same semantics as CullList Restore, resolving no copy match).
+42. **Linear-flow routing counts PENDING singles** (a feed holding only badged staged culls routes to CullList, not an already-complete Singles screen); completing an out-of-order group advances from its stored former index.
+43. **Summary "today" is DECISION-day accounting** (`getDayReviewSummary` over `reviewed_at` localtime; keepers = current `done` only) — capture-day rollups missed older photos reviewed today and double-counted trashed ones. Corpus % likewise excludes trashed rows from the numerator (its denominator is the MediaStore total, which no longer contains them).
+44. **A complete scan reconciles external removals**: tracked present rows the full in-source pass never met get the tri-state presence check; only verified trashed/absent rows converge (capped at 500/run, loudly). The native CI job now fetches the pinned embedder model like the release workflow.

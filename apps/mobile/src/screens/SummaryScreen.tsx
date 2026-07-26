@@ -6,7 +6,7 @@ import { useSQLiteContext } from 'expo-sqlite';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import {
-  getDaySummaries,
+  getDayReviewSummary,
   getLifetimeStats,
   getReviewedCountsByDay,
   getSetting,
@@ -41,11 +41,12 @@ export function SummaryScreen({ navigation }: Props) {
     (async () => {
       const todayKey = dayKey(Date.now());
       const keys = recentDayKeys(120);
-      const [reviewedByDay, rawGoal, totals, summaries] = await Promise.all([
+      const [reviewedByDay, rawGoal, totals, todaySummary] = await Promise.all([
         getReviewedCountsByDay(db, keys[keys.length - 1] ?? todayKey),
         getSetting(db, DAILY_GOAL_KEY),
         getLifetimeStats(db),
-        getDaySummaries(db, todayKey),
+        // Decision-day summary: older photos reviewed today count too.
+        getDayReviewSummary(db, todayKey),
       ]);
       if (cancelled) return;
       // Streak days are GOAL-REACHED days (gate 4 definition — same math
@@ -56,13 +57,7 @@ export function SummaryScreen({ navigation }: Props) {
         currentStreak: streaks.current,
         longestStreak: streaks.longest,
       });
-      const day = summaries.get(todayKey);
-      setToday({
-        reviewed: (day?.done ?? 0) + (day?.toEdit ?? 0) + (day?.staged ?? 0),
-        done: day?.done ?? 0,
-        staged: day?.staged ?? 0,
-        trashed: day?.trashed ?? 0,
-      });
+      setToday(todaySummary);
     })();
     return () => {
       cancelled = true;

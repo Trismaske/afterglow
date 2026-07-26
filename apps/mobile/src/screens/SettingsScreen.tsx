@@ -7,8 +7,18 @@
  * suppressed confirmation dialogs, and the app version. Values persist
  * in the m0.3.1 settings table.
  */
-import React, { useCallback, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  View,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -50,6 +60,19 @@ export function SettingsScreen({ navigation }: Props) {
   const [sourceLabel, setSourceLabel] = useState<string | null>(null);
   const [goal, setGoal] = useState<number | null>(null);
   const [strictness, setStrictness] = useState<StrictnessStep | null>(null);
+  const [applying, setApplying] = useState(false);
+  const applyingRef = useRef(false);
+
+  // While a strictness change applies (setting+reset txn, refresh,
+  // possibly a rollback), EVERY exit is blocked — leaving mid-apply would
+  // let the cached old-threshold queue take decisions that freeze a lone
+  // stale member before the refresh removes the obsolete group.
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (event) => {
+      if (applyingRef.current) event.preventDefault();
+    });
+    return unsubscribe;
+  }, [navigation]);
 
   useFocusEffect(
     useCallback(() => {
@@ -103,6 +126,8 @@ export function SettingsScreen({ navigation }: Props) {
               // could repopulate exactly what the reset cleared.
               supersedeScan();
               setStrictness(step);
+              setApplying(true);
+              applyingRef.current = true;
               // Setting + assignment reset commit ATOMICALLY (process
               // death between them would strand old-threshold groups
               // under the new setting).
@@ -155,6 +180,10 @@ export function SettingsScreen({ navigation }: Props) {
                         ? 'Strictness restored, but the queue could not refresh — reopen review'
                         : 'Strictness change failed midway — check Settings; regrouping',
                   );
+                })
+                .finally(() => {
+                  setApplying(false);
+                  applyingRef.current = false;
                 });
             },
           },
@@ -173,139 +202,149 @@ export function SettingsScreen({ navigation }: Props) {
   const version = Constants.expoConfig?.version ?? '?';
 
   return (
-    <ScrollView
-      style={styles.root}
-      contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
-    >
-      <Text style={styles.sectionLabel}>Photos</Text>
-      <Pressable style={styles.row} onPress={() => navigation.navigate('SourcePicker')}>
-        <View style={styles.rowBody}>
-          <Text style={styles.rowTitle}>Photo source</Text>
-          <Text style={styles.rowHint} numberOfLines={1}>
-            {sourceLabel ?? 'Which folders feed your reviews'}
-          </Text>
+    <>
+      <Modal visible={applying} transparent animationType="fade">
+        {/* Full-screen touch shield while the strictness apply/rollback
+            chain runs — paired with the beforeRemove navigation block. */}
+        <View style={styles.applyingOverlay}>
+          <ActivityIndicator size="large" color={theme.accent} />
+          <Text style={styles.applyingText}>Applying grouping change…</Text>
         </View>
-        <Text style={[styles.chevron, { color: theme.accent }]}>›</Text>
-      </Pressable>
-
-      <Text style={styles.sectionLabel}>Daily goal</Text>
-      <Text style={styles.hint}>
-        A gentle target for photos reviewed per day — it drives the Home ring and streaks, and never
-        blocks anything.
-      </Text>
-      <View style={styles.chipRow}>
-        {DAILY_GOAL_CHOICES.map((value) => {
-          const active = goal === value;
-          return (
-            <Pressable
-              key={value}
-              onPress={() => pickGoal(value)}
-              style={[
-                styles.chip,
-                active && { backgroundColor: theme.accent, borderColor: theme.accent },
-              ]}
-            >
-              <Text style={[styles.chipText, active && { color: theme.onAccent }]}>{value}</Text>
-            </Pressable>
-          );
-        })}
-      </View>
-
-      <Text style={styles.sectionLabel}>Grouping</Text>
-      <Text style={styles.hint}>
-        How similar photos must look to land in the same group. Stricter makes smaller, tighter
-        groups; looser catches more near-duplicates.
-      </Text>
-      <View style={styles.chipRow}>
-        {STRICTNESS_STEPS.map((step) => {
-          const active = strictness?.id === step.id;
-          return (
-            <Pressable
-              key={step.id}
-              onPress={() => pickStrictness(step)}
-              style={[
-                styles.chip,
-                active && { backgroundColor: theme.accent, borderColor: theme.accent },
-              ]}
-            >
-              <Text style={[styles.chipText, active && { color: theme.onAccent }]}>
-                {step.label}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
-
-      <Text style={styles.sectionLabel}>Appearance</Text>
-      <View style={styles.card}>
-        <Text style={styles.rowTitle}>Accent color</Text>
-        <Text style={styles.explainer}>
-          Colors the buttons, chips, and highlights. System follows your phone's Material You
-          palette, so it changes with your wallpaper.
-        </Text>
-        <View style={styles.accentWrap}>
-          <Pressable
-            disabled={!systemAvailable}
-            onPress={() => theme.setChoice('system')}
-            style={[
-              styles.accentChip,
-              theme.choice === 'system' && { borderColor: theme.accent },
-              !systemAvailable && styles.accentChipDisabled,
-            ]}
-          >
-            <View
-              style={[
-                styles.accentSwatch,
-                { backgroundColor: theme.systemAccent ?? colors.surfaceRaised },
-              ]}
-            />
-            <Text
-              style={[styles.accentLabel, theme.choice === 'system' && styles.accentLabelActive]}
-            >
-              System
+      </Modal>
+      <ScrollView
+        style={styles.root}
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+      >
+        <Text style={styles.sectionLabel}>Photos</Text>
+        <Pressable style={styles.row} onPress={() => navigation.navigate('SourcePicker')}>
+          <View style={styles.rowBody}>
+            <Text style={styles.rowTitle}>Photo source</Text>
+            <Text style={styles.rowHint} numberOfLines={1}>
+              {sourceLabel ?? 'Which folders feed your reviews'}
             </Text>
-          </Pressable>
-          {ACCENT_PRESETS.map((preset) => {
-            const active = theme.choice === preset.id;
+          </View>
+          <Text style={[styles.chevron, { color: theme.accent }]}>›</Text>
+        </Pressable>
+
+        <Text style={styles.sectionLabel}>Daily goal</Text>
+        <Text style={styles.hint}>
+          A gentle target for photos reviewed per day — it drives the Home ring and streaks, and
+          never blocks anything.
+        </Text>
+        <View style={styles.chipRow}>
+          {DAILY_GOAL_CHOICES.map((value) => {
+            const active = goal === value;
             return (
               <Pressable
-                key={preset.id}
-                onPress={() => theme.setChoice(preset.id)}
-                style={[styles.accentChip, active && { borderColor: theme.accent }]}
+                key={value}
+                onPress={() => pickGoal(value)}
+                style={[
+                  styles.chip,
+                  active && { backgroundColor: theme.accent, borderColor: theme.accent },
+                ]}
               >
-                <View style={[styles.accentSwatch, { backgroundColor: preset.hex }]} />
-                <Text style={[styles.accentLabel, active && styles.accentLabelActive]}>
-                  {preset.label}
+                <Text style={[styles.chipText, active && { color: theme.onAccent }]}>{value}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <Text style={styles.sectionLabel}>Grouping</Text>
+        <Text style={styles.hint}>
+          How similar photos must look to land in the same group. Stricter makes smaller, tighter
+          groups; looser catches more near-duplicates.
+        </Text>
+        <View style={styles.chipRow}>
+          {STRICTNESS_STEPS.map((step) => {
+            const active = strictness?.id === step.id;
+            return (
+              <Pressable
+                key={step.id}
+                onPress={() => pickStrictness(step)}
+                style={[
+                  styles.chip,
+                  active && { backgroundColor: theme.accent, borderColor: theme.accent },
+                ]}
+              >
+                <Text style={[styles.chipText, active && { color: theme.onAccent }]}>
+                  {step.label}
                 </Text>
               </Pressable>
             );
           })}
         </View>
-        {!systemAvailable && (
-          <Text style={styles.stepHint}>
-            System needs Android 12 or newer — the fixed colors below still work.
-          </Text>
-        )}
-      </View>
 
-      <Text style={styles.sectionLabel}>Confirmations</Text>
-      <Pressable style={styles.row} onPress={resetConfirmations}>
-        <View style={styles.rowBody}>
-          <Text style={styles.rowTitle}>Reset confirmation dialogs</Text>
-          <Text style={styles.rowHint}>
-            Dialogs skipped with "Don't ask again" (compare auto-cull) ask again.
+        <Text style={styles.sectionLabel}>Appearance</Text>
+        <View style={styles.card}>
+          <Text style={styles.rowTitle}>Accent color</Text>
+          <Text style={styles.explainer}>
+            Colors the buttons, chips, and highlights. System follows your phone's Material You
+            palette, so it changes with your wallpaper.
           </Text>
+          <View style={styles.accentWrap}>
+            <Pressable
+              disabled={!systemAvailable}
+              onPress={() => theme.setChoice('system')}
+              style={[
+                styles.accentChip,
+                theme.choice === 'system' && { borderColor: theme.accent },
+                !systemAvailable && styles.accentChipDisabled,
+              ]}
+            >
+              <View
+                style={[
+                  styles.accentSwatch,
+                  { backgroundColor: theme.systemAccent ?? colors.surfaceRaised },
+                ]}
+              />
+              <Text
+                style={[styles.accentLabel, theme.choice === 'system' && styles.accentLabelActive]}
+              >
+                System
+              </Text>
+            </Pressable>
+            {ACCENT_PRESETS.map((preset) => {
+              const active = theme.choice === preset.id;
+              return (
+                <Pressable
+                  key={preset.id}
+                  onPress={() => theme.setChoice(preset.id)}
+                  style={[styles.accentChip, active && { borderColor: theme.accent }]}
+                >
+                  <View style={[styles.accentSwatch, { backgroundColor: preset.hex }]} />
+                  <Text style={[styles.accentLabel, active && styles.accentLabelActive]}>
+                    {preset.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          {!systemAvailable && (
+            <Text style={styles.stepHint}>
+              System needs Android 12 or newer — the fixed colors below still work.
+            </Text>
+          )}
         </View>
-      </Pressable>
 
-      <Text style={styles.sectionLabel}>About</Text>
-      <View style={styles.row}>
-        <View style={styles.rowBody}>
-          <Text style={styles.rowTitle}>Afterglow Companion</Text>
-          <Text style={styles.rowHint}>Version {version}</Text>
+        <Text style={styles.sectionLabel}>Confirmations</Text>
+        <Pressable style={styles.row} onPress={resetConfirmations}>
+          <View style={styles.rowBody}>
+            <Text style={styles.rowTitle}>Reset confirmation dialogs</Text>
+            <Text style={styles.rowHint}>
+              Dialogs skipped with "Don't ask again" (compare auto-cull) ask again.
+            </Text>
+          </View>
+        </Pressable>
+
+        <Text style={styles.sectionLabel}>About</Text>
+        <View style={styles.row}>
+          <View style={styles.rowBody}>
+            <Text style={styles.rowTitle}>Afterglow</Text>
+            <Text style={styles.rowHint}>Version {version}</Text>
+          </View>
         </View>
-      </View>
-    </ScrollView>
+      </ScrollView>
+    </>
   );
 }
 
@@ -313,6 +352,14 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
   content: { padding: 20, gap: 12 },
   hint: { color: colors.textDim, fontSize: 13, lineHeight: 18, marginBottom: 4 },
+  applyingOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 14,
+  },
+  applyingText: { color: colors.text, fontSize: 15, fontWeight: '600' },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: {
     paddingHorizontal: 14,

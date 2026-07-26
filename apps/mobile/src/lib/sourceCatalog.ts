@@ -56,6 +56,7 @@ export async function listSourceDirs(force = false): Promise<SourceDir[]> {
   }
   const albums = await MediaLibrary.getAlbumsAsync();
   const byDir = new Map<string, SourceDir>();
+  let failedProbes = 0;
   for (const album of albums) {
     try {
       const page = await MediaLibrary.getAssetsAsync({
@@ -76,7 +77,15 @@ export async function listSourceDirs(force = false): Promise<SourceDir[]> {
       }
     } catch {
       // One unreadable bucket must not sink the whole catalog.
+      failedProbes += 1;
     }
+  }
+  if (byDir.size === 0 && failedProbes > 0) {
+    // EVERY probe failed: an empty catalog here is an incomplete read,
+    // not an empty device — resolving it would silently broaden the
+    // dynamic default to "all folders". Fail so callers keep their
+    // last-known scope (never cached).
+    throw new Error(`source catalog unavailable — ${failedProbes} album probes failed`);
   }
   const dirs = [...byDir.values()].sort((a, b) => a.dir.localeCompare(b.dir));
   catalogCache = { at: Date.now(), dirs };

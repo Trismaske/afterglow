@@ -4,8 +4,16 @@
  * from MediaStore buckets (see sourceCatalog.ts); selection is recursive
  * — a chosen folder includes its subfolders, shown as "included" rows.
  */
-import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -47,6 +55,18 @@ export function SourcePickerScreen({ navigation }: Props) {
   const [allFolders, setAllFolders] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+
+  // While the apply/rollback transaction chain runs, EVERY exit is
+  // blocked (header back, hardware back, gestures): leaving mid-apply
+  // would let the cached old-scope queue take decisions that freeze
+  // stale membership before the strict refresh lands.
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (event) => {
+      if (savingRef.current) event.preventDefault();
+    });
+    return unsubscribe;
+  }, [navigation]);
   /** The persisted state at load — the rollback target if applying a new
    * scope fails after it committed. `unset` preserves the DYNAMIC default
    * (rolling back to a resolved snapshot would freeze it). */
@@ -112,6 +132,7 @@ export function SourcePickerScreen({ navigation }: Props) {
   const save = useCallback(async () => {
     if (!valid || saving) return;
     setSaving(true);
+    savingRef.current = true;
     try {
       const setting: PhotoSourceSetting = allFolders
         ? { mode: 'all' }
@@ -194,6 +215,7 @@ export function SourcePickerScreen({ navigation }: Props) {
       navigation.goBack();
     } finally {
       setSaving(false);
+      savingRef.current = false;
     }
   }, [valid, saving, allFolders, selected, db, navigation, refresh, refreshScoped]);
 
@@ -201,6 +223,14 @@ export function SourcePickerScreen({ navigation }: Props) {
 
   return (
     <View style={styles.root}>
+      <Modal visible={saving} transparent animationType="fade">
+        {/* Full-screen touch shield while the source apply/rollback chain
+            runs — paired with the beforeRemove navigation block. */}
+        <View style={styles.applyingOverlay}>
+          <ActivityIndicator size="large" color={theme.accent} />
+          <Text style={styles.applyingText}>Applying photo source…</Text>
+        </View>
+      </Modal>
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={[styles.content, { paddingBottom: 16 }]}
@@ -275,6 +305,14 @@ export function SourcePickerScreen({ navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
+  applyingOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 14,
+  },
+  applyingText: { color: colors.text, fontSize: 15, fontWeight: '600' },
   root: { flex: 1, backgroundColor: colors.background },
   scroll: { flex: 1 },
   content: { padding: 16, gap: 10 },

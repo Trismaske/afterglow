@@ -85,13 +85,17 @@ export async function prepareTrashBatch(
     const clearedStars: { groupId: number; photoId: string }[] = [];
     if (options.stageToEditMembers) {
       for (const member of eligible) {
-        await txn.runAsync(
+        const staged = await txn.runAsync(
           `UPDATE photos SET state = 'culled', culled_at = COALESCE(culled_at, ?), activity_at = ?
            WHERE asset_id = ? AND state = 'to_edit'`,
           at,
           at,
           member.photoId,
         );
+        // A stale prompt whose original left to_edit stages NOTHING —
+        // clearing its star anyway would lose it silently (the empty
+        // batch returns null and Home never sees clearedStars).
+        if (Number(staged.changes) === 0) continue;
         // Every transition to 'culled' clears a star pointing at the
         // photo (same hygiene as applyReviewDecisions): if the attempt
         // stays ambiguous the photo remains staged, and a culled best

@@ -261,3 +261,8 @@ Final-review round 31 fixes, same pending vetting:
 
 100. **A cancelled edited-copy cull restores the star it cleared**: `prepareTrashBatch` records the stars its stage-and-reserve transition cleared (`clearedStars`, carried through the attempt result) and the definitive non-application branch restores them via the validating `setGroupBest` — a normal sheet cancellation must be a true no-op, star included.
 101. **A grouping setting and its assignment reset commit ATOMICALLY** (`applyGroupingSettingChange`: setting upsert/delete + unfrozen-assignment reset in one exclusive transaction, used by both flows and their rollbacks) — a process death between the two would leave the next launch rendering old assignments under the new scope.
+
+Final-review round 32 fixes, same pending vetting:
+
+102. **Applying a grouping change BLOCKS every exit** (both flows: a `beforeRemove` navigation block plus a full-screen shield Modal with a spinner) — with the apply queued behind an active scan, a user backing out mid-apply could decide a cached stale group and freeze a lone member before the refresh lands.
+103. **Edge hardening**: an all-probes-failed source catalog THROWS instead of resolving to an empty "all folders" default (silently broadening the previous Camera scope); the stage-and-reserve transition clears/records a star only when the staging update actually applied (a stale copy prompt would otherwise silently lose the star with no `clearedStars` to restore); the Settings About row says "Afterglow" (rename stragglers).

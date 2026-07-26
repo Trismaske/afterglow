@@ -35,6 +35,7 @@ import { frozenPhotos, reconcileWindowGroups } from '../lib/regroupBoundary';
 import { createWindowAccumulator } from '../lib/scanWindows';
 import { resolveSources } from '../lib/sourceCatalog';
 import { GROUPING_STRICTNESS_KEY, parseStrictness } from '../lib/groupingPrefs';
+import { waitForUserWrites } from '../lib/writePriority';
 import { ensureEmbeddingModel } from '../db/embeddingStore';
 import {
   getGroupAssignments,
@@ -298,6 +299,9 @@ async function processWindow(
   baseThreshold: number,
   stale?: () => boolean,
 ): Promise<void> {
+  // WRITE PRIORITY (vetted): a pending user decision reaches SQLite
+  // before this window's transactions.
+  await waitForUserWrites();
   const ids = window.map((p) => p.item.id);
 
   // dHash floor input rides the embed pipeline (module-computed from the

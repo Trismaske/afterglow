@@ -31,6 +31,7 @@ import { recoverTrashBatches } from '../db/trashStore';
 import { recoverShareBatches } from '../db/shareStore';
 import { verifyTrashedTriState } from '../lib/media';
 import { resolveSources } from '../lib/sourceCatalog';
+import { withUserWritePriority } from '../lib/writePriority';
 import { startContinuousScan, subscribeScanStatus } from '../scan/scanRunner';
 import { nextFavouriteIntent, NO_FAVOURITE, type FavouriteStatus } from '../lib/favouriteState';
 import {
@@ -322,11 +323,13 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     });
   }, [refresh]);
 
-  /** Run a decision write; failures surface loudly, rows stay unchanged. */
+  /** Run a decision write; failures surface loudly, rows stay unchanged.
+   * Takes WRITE PRIORITY: the scan yields at its next boundary instead
+   * of queueing the decision behind a burst of window transactions. */
   const write = useCallback(
     async (fn: () => Promise<void>) => {
       try {
-        await fn();
+        await withUserWritePriority(fn);
         setWriteError(null);
       } catch (error) {
         setWriteError(error instanceof Error ? error.message : String(error));

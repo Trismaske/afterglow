@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
 import { editorActions, type EditorAction } from '../../lib/progress';
 import { markDoneToEdit, markEditDone, unstageCullDirect } from '../../db/store';
+import { withUserWritePriority } from '../../lib/writePriority';
 import { dayKey, labelForDayKey } from '../../lib/dates';
 import { formatClockSeconds } from '../../lib/format';
 import { colors, touch, useTheme } from '../../theme';
@@ -66,15 +67,18 @@ export function StateEditorSheet({
       setBusy(true);
       try {
         // Every store call is state-guarded (`AND state = '…'`), so a
-        // stale sheet acting on an already-changed row is a no-op.
-        if (action === 'mark_done') {
-          await markEditDone(db, photo.id);
-        } else if (action === 'queue_edit') {
-          await markDoneToEdit(db, photo.id, Date.now());
-        } else {
-          // An explicit restore decision — it settles the copy prompt.
-          await unstageCullDirect(db, photo.id, Date.now(), true);
-        }
+        // stale sheet acting on an already-changed row is a no-op. User
+        // write priority: the scan yields instead of queueing this.
+        await withUserWritePriority(async () => {
+          if (action === 'mark_done') {
+            await markEditDone(db, photo.id);
+          } else if (action === 'queue_edit') {
+            await markDoneToEdit(db, photo.id, Date.now());
+          } else {
+            // An explicit restore decision — it settles the copy prompt.
+            await unstageCullDirect(db, photo.id, Date.now(), true);
+          }
+        });
         onChanged();
         onClose();
       } catch (error) {

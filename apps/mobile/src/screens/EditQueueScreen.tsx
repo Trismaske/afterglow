@@ -8,6 +8,7 @@ import { useSQLiteContext } from 'expo-sqlite';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainTabScreenProps } from '../navigation';
 import { getToEditPhotos, markEditDone, type ToEditRow } from '../db/store';
+import { withUserWritePriority } from '../lib/writePriority';
 import { useReview } from '../review/ReviewContext';
 import { getEditableContentUri } from '../lib/media';
 import { launchEditor, launchViewer } from '../lib/edit';
@@ -55,7 +56,7 @@ export function EditQueueScreen(_props: Props) {
 
   const markDone = useCallback(
     async (assetId: string) => {
-      await markEditDone(db, assetId);
+      await withUserWritePriority(() => markEditDone(db, assetId));
       await refresh();
       await reload();
     },

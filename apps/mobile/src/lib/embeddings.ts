@@ -30,6 +30,7 @@ import {
 } from '../../modules/image-embedder';
 import type { LoadedPhoto } from './media';
 import { getPhotoEmbeddings, setPhotoEmbedding } from '../db/embeddingStore';
+import { waitForUserWrites } from './writePriority';
 import { getPhotoHashes, setPhotoHash } from '../db/store';
 
 const MIN_WORKERS = 2;
@@ -160,6 +161,9 @@ export async function ensureEmbeddings(
   const worker = async (): Promise<void> => {
     for (;;) {
       if (health.dead) return;
+      // WRITE PRIORITY (vetted): a pending user decision reaches SQLite
+      // before this photo's embed persists.
+      await waitForUserWrites();
       const index = next++;
       if (index >= total) return;
       const photo = todo[index];

@@ -278,6 +278,12 @@ export function HomeScreen({ navigation }: Props) {
       (async () => {
         const result = await runEditDetection(db).catch(() => null);
         if (!result) return;
+        if (result.autoDoneIds.length > 0 || result.copies.length > 0) {
+          // Detection wrote states directly — the cached review queue
+          // must observe them (a stale unreviewed copy left actionable
+          // in the deck could overwrite the durable done later).
+          void reviewRefresh().catch(() => {});
+        }
         if (result.autoDoneIds.length > 0) {
           setDetectionNotice(
             result.autoDoneIds.length === 1
@@ -296,7 +302,7 @@ export function HomeScreen({ navigation }: Props) {
       return () => {
         cancelled = true;
       };
-    }, [db, permission?.granted, promptForCopies]),
+    }, [db, permission?.granted, promptForCopies, reviewRefresh]),
   );
 
   // Edit-queue badge + recent-days progress, refreshed on focus. Both

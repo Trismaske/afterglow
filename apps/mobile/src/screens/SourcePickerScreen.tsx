@@ -24,7 +24,7 @@ import {
   serializePhotoSourceSetting,
   type PhotoSourceSetting,
 } from '../lib/sources';
-import { deleteSetting, setSetting } from '../db/store';
+import { deleteSetting, resetUnreviewedGroups, setSetting } from '../db/store';
 import { requestRescan, supersedeScan } from '../scan/scanRunner';
 import { useReview } from '../review/ReviewContext';
 import { showToast } from '../lib/toast';
@@ -128,6 +128,11 @@ export function SourcePickerScreen({ navigation }: Props) {
       // header/back navigation stays enabled, so a half-applied narrower
       // scope must never outlive this screen.
       try {
+        // Reset unfrozen assignments FIRST (same as the strictness flow):
+        // an unreviewed cross-source group still queues via its in-source
+        // member and renders WHOLE — deciding its excluded member before
+        // the rescan would freeze the stale cross-source membership.
+        await resetUnreviewedGroups(db);
         const resolved = await resolveSources(db);
         // STRICT: read under the just-resolved roots — the general
         // refresh's fail-open fallback could silently keep the old scope.

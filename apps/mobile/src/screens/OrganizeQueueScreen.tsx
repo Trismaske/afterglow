@@ -38,12 +38,15 @@ import { labelForDayKey } from '../lib/dates';
 import { formatClock } from '../lib/format';
 import { colors, touch } from '../theme';
 import { PhotoViewer } from '../components/PhotoViewer';
+import { useReview } from '../review/ReviewContext';
+import { requestRescan } from '../scan/scanRunner';
 
 type Props = MainTabScreenProps<'OrganizeQueue'>;
 
 export function OrganizeQueueScreen(_props: Props) {
   const insets = useSafeAreaInsets();
   const db = useSQLiteContext();
+  const { refresh: refreshReview } = useReview();
   const [rows, setRows] = useState<OrganizeQueueRow[] | null>(null);
   const [busy, setBusy] = useState(false);
   // Synchronous apply lock: async continuations (picker load, intent
@@ -202,11 +205,18 @@ export function OrganizeQueueScreen(_props: Props) {
             : `Moved ${moved}, ${failed} failed (kept queued)`,
       );
       await reload();
+      if (moved > 0) {
+        // Moves changed photos.uri (and possibly their source folder):
+        // the cached review queue would keep dead pre-move URIs — and a
+        // rescan re-derives windows under the fresh paths.
+        await refreshReview().catch(() => {});
+        void requestRescan(db);
+      }
     } finally {
       setBusy(false);
       busyRef.current = false;
     }
-  }, [busy, db, rows, reload]);
+  }, [busy, db, rows, reload, refreshReview]);
 
   const renderItem = useCallback(
     ({ item }: { item: OrganizeQueueRow }) => (

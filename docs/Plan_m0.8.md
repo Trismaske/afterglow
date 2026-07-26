@@ -243,3 +243,7 @@ Final-review round 27 fixes, same pending vetting:
 
 94. **The presence/membership lens covers every group write**: compare endpoints must be present AND unreviewed at write time; a non-null best must be a present, reviewable member (reconciliation keeps absent assignments); ejection requires present rows (an absent `user_single` would never regroup after a Gallery restore); "Keep remaining" validates its whole member list against the displayed group inside the decision transaction (`extras.requireGroupMembership`).
 95. **A source narrow resets unfrozen assignments before rendering** (same as the strictness flow) — an unreviewed cross-source group still queues via its in-source member and would render whole; deciding its excluded member pre-rescan would freeze the stale membership.
+
+Final-review round 28 fixes, same pending vetting:
+
+96. **The round-27 picker reset actually landed** (the fix script had aborted mid-run before writing the picker — codex re-flagged it; now verified by grep in-repo), and direct-SQLite mutations refresh the cached review queue: an organize apply with moves refreshes ReviewContext and rescans (photos.uri changed — cached rows held dead pre-move URIs), and edit detection refreshes after any auto-done or copy-state write (a stale unreviewed copy left actionable in the deck could overwrite the durable done).

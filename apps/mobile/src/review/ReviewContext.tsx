@@ -301,21 +301,32 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           throw error;
         }
       })();
-      // Coalesced refresh() callers must not surface THIS pass's failure
-      // (the settings flow owns it) — they resolve when the slot frees.
-      refreshTailRef.current = run.then(
-        () => undefined,
-        () => undefined,
-      );
-      try {
-        await run;
-      } finally {
-        refreshTailRef.current = null;
-        // Serve any requests that coalesced while the slot was held.
-        if (refreshAgainRef.current) void refresh().catch(() => {});
-      }
+      // The slot promise handed to coalesced refresh() callers: it
+      // swallows THIS pass's failure (the settings flow owns it) but then
+      // RUNS the coalesced passes before settling — a barrier caller must
+      // stay pending until a pass that started at/after its request
+      // commits, and a follow-up pass's failure is the callers' to see.
+      const slot = (async () => {
+        try {
+          try {
+            await run;
+          } catch {
+            // Scoped-pass failure belongs to the settings flow below.
+          }
+          while (refreshAgainRef.current) {
+            refreshAgainRef.current = false;
+            await refreshOnce();
+          }
+        } finally {
+          refreshTailRef.current = null;
+        }
+      })();
+      refreshTailRef.current = slot;
+      // The scoped caller itself awaits only the strict pass (and its
+      // failure) — the coalesced tail settles on its own for its callers.
+      await run;
     },
-    [refreshWithRoots, commitRefresh, refresh],
+    [refreshWithRoots, commitRefresh, refreshOnce],
   );
 
   const loadGroup = useCallback(

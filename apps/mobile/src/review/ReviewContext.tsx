@@ -256,6 +256,13 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           refreshAgainRef.current = false;
           await refreshOnce();
         }
+      } catch (error) {
+        // An aborted chain takes its pending rerun requests with it —
+        // every coalesced caller receives this rejection. A stale flag
+        // left behind would hand a later scoped pass an unowned
+        // follow-up nobody awaits.
+        refreshAgainRef.current = false;
+        throw error;
       } finally {
         refreshTailRef.current = null;
       }
@@ -301,27 +308,39 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           throw error;
         }
       })();
-      // The slot promise handed to coalesced refresh() callers: it
-      // swallows THIS pass's failure (the settings flow owns it) but then
-      // RUNS the coalesced passes before settling — a barrier caller must
-      // stay pending until a pass that started at/after its request
-      // commits, and a follow-up pass's failure is the callers' to see.
+      // The slot promise handed to coalesced refresh() callers: after the
+      // strict pass SUCCEEDS it runs the coalesced passes before settling
+      // — a barrier caller must stay pending until a pass that started
+      // at/after its request commits. After a strict-pass FAILURE it
+      // REJECTS them instead: a pass run now would resolve the
+      // still-persisted rejected source and repaint exactly the scope
+      // the settings flow is rolling back.
       const slot = (async () => {
         try {
           try {
             await run;
           } catch {
-            // Scoped-pass failure belongs to the settings flow below.
+            // The settings flow owns the strict pass's own failure.
+            throw new Error('queue refresh unavailable during a scope rollback — try again');
           }
           while (refreshAgainRef.current) {
             refreshAgainRef.current = false;
             await refreshOnce();
           }
+        } catch (error) {
+          // Aborting takes the pending rerun requests with it (their
+          // callers all receive this rejection) — no unowned flag.
+          refreshAgainRef.current = false;
+          throw error;
         } finally {
           refreshTailRef.current = null;
         }
       })();
       refreshTailRef.current = slot;
+      // With no coalesced caller holding the slot, its rejection would
+      // otherwise surface as an unhandled promise rejection. This extra
+      // handler marks it handled; callers holding the slot still reject.
+      slot.catch(() => {});
       // The scoped caller itself awaits only the strict pass (and its
       // failure) — the coalesced tail settles on its own for its callers.
       await run;

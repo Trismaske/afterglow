@@ -205,7 +205,11 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     let roots: readonly string[] | null;
     try {
       roots = (await resolveSources(db)).roots ?? null;
-      lastRootsRef.current = { roots };
+      // Only the LATEST refresh may move the fallback roots — an older
+      // refresh resolving a superseded broader source must not overwrite
+      // what refreshScoped just recorded (its queue commit is already
+      // rejected by the generation guard; the fallback must match).
+      if (generation === refreshGenRef.current) lastRootsRef.current = { roots };
     } catch (error) {
       if (!lastRootsRef.current) {
         console.warn('[review] source resolution failed — queue refresh skipped:', String(error));
@@ -220,7 +224,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     async (roots: readonly string[] | null) => {
       const generation = ++refreshGenRef.current;
       await commitRefresh(await refreshWithRoots(roots, generation));
-      lastRootsRef.current = { roots };
+      if (generation === refreshGenRef.current) lastRootsRef.current = { roots };
     },
     [refreshWithRoots, commitRefresh],
   );

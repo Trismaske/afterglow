@@ -211,3 +211,7 @@ Final-review round 19 fixes, same pending vetting:
 Final-review round 20 fixes, same pending vetting:
 
 84. **Singles UI edge polish**: the Groups screen hides the singles row when the feed is empty (tapping it opened a blank deck the entered-complete guard deliberately kept open), and the singles compare picker renders the same unreviewed-only candidate set `openCompare` accepts (staged-cull thumbnails were rendered but silently rejected).
+
+Final-review round 21 fixes, same pending vetting:
+
+85. **Fallback roots move only with the LATEST refresh** (generation-guarded `lastRootsRef` writes — an older refresh resolving a superseded broader source could overwrite what `refreshScoped` just recorded); the singles Compare button's disabled state mirrors `openCompare`'s exact eligibility (two unreviewed candidates AND an unreviewed current), and the compare picker labels photos by their DECK position, matching the header and Compare's own labels.

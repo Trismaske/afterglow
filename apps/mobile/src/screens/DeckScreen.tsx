@@ -711,6 +711,14 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     return <View style={styles.root} />;
   }
 
+  // Compare eligibility mirrors openCompare exactly: unreviewed
+  // candidates only, and the CURRENT photo must be one of them.
+  const compareCandidateCount = singlesMode
+    ? deckItems.filter((i) => (stateOf.get(i.id) ?? 'unreviewed') === 'unreviewed').length
+    : aliveItems.length;
+  const compareEligible =
+    compareCandidateCount >= 2 && (stateOf.get(current.id) ?? 'unreviewed') === 'unreviewed';
+
   const flagged = needsEdit(current.id);
   const favourite = isFavouriteSelected(favouriteStatus(current.id));
   const keepCount = deckItems.length;
@@ -936,7 +944,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
               // happens through the chips above instead.
               <Pressable
                 style={[styles.actionButton, styles.compareButton]}
-                disabled={busy || deckItems.length < 2}
+                disabled={busy || !compareEligible}
                 onPress={() => openCompare()}
               >
                 <MaterialCommunityIcons
@@ -944,9 +952,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
                   size={20}
                   color={colors.textDim}
                 />
-                <Text
-                  style={[styles.actionText, deckItems.length < 2 && styles.actionTextDisabled]}
-                >
+                <Text style={[styles.actionText, !compareEligible && styles.actionTextDisabled]}>
                   Compare
                 </Text>
               </Pressable>
@@ -1253,9 +1259,11 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
             <Text style={styles.pickerHint}>Pick the photo to compare against {cursor + 1}.</Text>
             <View style={styles.pickerGrid}>
               {(singlesMode
-                ? deckItems.filter((i) => (stateOf.get(i.id) ?? 'unreviewed') === 'unreviewed')
-                : aliveItems
-              ).map((item, index) =>
+                ? deckItems
+                    .map((item, deckIndex) => ({ item, deckIndex }))
+                    .filter(({ item }) => (stateOf.get(item.id) ?? 'unreviewed') === 'unreviewed')
+                : aliveItems.map((item, deckIndex) => ({ item, deckIndex }))
+              ).map(({ item, deckIndex }) =>
                 item.id === current.id ? null : (
                   <Pressable key={item.id} onPress={() => openCompare(item.id)}>
                     <Image
@@ -1265,7 +1273,10 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
                       recyclingKey={item.id}
                     />
                     <View style={styles.pickerIndex}>
-                      <Text style={styles.pickerIndexText}>{index + 1}</Text>
+                      {/* The DECK position — the header and Compare's
+                          labels use it; a filtered subset index would
+                          disagree after a staged cull. */}
+                      <Text style={styles.pickerIndexText}>{deckIndex + 1}</Text>
                     </View>
                   </Pressable>
                 ),

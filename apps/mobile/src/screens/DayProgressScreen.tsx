@@ -45,10 +45,17 @@ export function DayProgressScreen({ route, navigation }: Props) {
     useCallback(() => {
       let cancelled = false;
       void (async () => {
-        // Same source scoping as the page's totals and grid.
-        const roots = (await resolveSources(db).catch(() => null))?.roots ?? null;
-        const rows = await listGroupsForDay(db, day, roots);
-        if (!cancelled) setGroups(rows);
+        // Same source scoping as the page's totals and grid. FAIL CLOSED:
+        // a resolution error hides the section rather than broadening a
+        // narrowed source to all folders (null's store meaning).
+        try {
+          const roots = (await resolveSources(db)).roots ?? null;
+          const rows = await listGroupsForDay(db, day, roots);
+          if (!cancelled) setGroups(rows);
+        } catch (error) {
+          console.warn('[day] source resolution failed — day groups hidden:', String(error));
+          if (!cancelled) setGroups([]);
+        }
       })();
       return () => {
         cancelled = true;

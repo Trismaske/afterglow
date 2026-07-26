@@ -345,6 +345,25 @@ export async function setNeedsEdit(
  */
 async function applyPhotoSingles(txn: SQLiteDatabase, assetIds: readonly string[]): Promise<void> {
   const placeholders = assetIds.map(() => '?').join(',');
+  // "Not related" on a pair judged BOTH photos: the survivor of a group
+  // this ejection shrinks to one member becomes a durable user single too
+  // — the bare membership repair would leave it regroupable, silently
+  // undoing the decision (the session flow persisted both ids).
+  await txn.runAsync(
+    `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0, user_single = 1
+     WHERE photo_id IN (
+       SELECT a.photo_id FROM photo_group_assignments a
+       WHERE a.group_id IS NOT NULL
+         AND a.photo_id NOT IN (${placeholders})
+         AND a.group_id IN (SELECT group_id FROM photo_group_assignments
+                            WHERE photo_id IN (${placeholders}) AND group_id IS NOT NULL)
+         AND (SELECT COUNT(*) FROM photo_group_assignments b
+              WHERE b.group_id = a.group_id AND b.photo_id NOT IN (${placeholders})) = 1
+     )`,
+    ...assetIds,
+    ...assetIds,
+    ...assetIds,
+  );
   await txn.runAsync(
     `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0, user_single = 1
      WHERE photo_id IN (${placeholders})`,
@@ -633,14 +652,20 @@ export async function getReviewedCountsByDay(
  * stays first-stamped for lifetime stats). */
 export async function getCorpusStats(
   db: SQLiteDatabase,
+  roots: readonly string[] | null = null,
 ): Promise<{ groupsFound: number; reviewed: number }> {
+  const src = sourceClause(roots, 'p.uri');
   const row = await db.getFirstAsync<{ groups: number; reviewed: number }>(
     `SELECT
-       (SELECT COUNT(*) FROM photo_groups) AS groups,
-       (SELECT COUNT(*) FROM photos
+       (SELECT COUNT(DISTINCT a.group_id) FROM photo_group_assignments a
+        JOIN photos p ON p.asset_id = a.photo_id
+        WHERE a.group_id IS NOT NULL${src.sql}) AS groups,
+       (SELECT COUNT(*) FROM photos p
         -- trashed rows left MediaStore, and Home's denominator is the
         -- MediaStore total — count only verdicts on present photos.
-        WHERE state IN ('done', 'to_edit', 'culled', 'confirmed')) AS reviewed`,
+        WHERE p.state IN ('done', 'to_edit', 'culled', 'confirmed')${src.sql}) AS reviewed`,
+    ...src.params,
+    ...src.params,
   );
   return { groupsFound: row?.groups ?? 0, reviewed: row?.reviewed ?? 0 };
 }

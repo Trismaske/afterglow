@@ -708,3 +708,73 @@ describe('corpus stats vs MediaStore denominator', () => {
     expect((await getCorpusStats(asExpo(d))).reviewed).toBe(1);
   });
 });
+
+// -------------------------------------------- final-review round 3
+
+describe('pair ejection is durable for BOTH photos', () => {
+  it('the survivor of a dissolved pair becomes a user single too', async () => {
+    const d = await fresh();
+    await seed(
+      d,
+      ['1', '2', '3', '4', '5'],
+      [
+        ['1', '2'],
+        ['3', '4', '5'],
+      ],
+    );
+    await makePhotoSingles(asExpo(d), [id('1'), id('3')]);
+    const rows = d.raw
+      .prepare('SELECT photo_id, group_id, user_single FROM photo_group_assignments')
+      .all() as { photo_id: string; group_id: number | null; user_single: number }[];
+    const byId = new Map(rows.map((r) => [r.photo_id, r]));
+    // The pair: ejected AND survivor are durable singles.
+    expect(byId.get(id('1'))).toMatchObject({ group_id: null, user_single: 1 });
+    expect(byId.get(id('2'))).toMatchObject({ group_id: null, user_single: 1 });
+    // The trio: survivors keep their (now pair) group, not user_single.
+    expect(byId.get(id('3'))).toMatchObject({ group_id: null, user_single: 1 });
+    expect(byId.get(id('4'))?.group_id).not.toBeNull();
+    expect(byId.get(id('4'))?.user_single).toBe(0);
+    expect(byId.get(id('5'))?.group_id).toBe(byId.get(id('4'))?.group_id);
+    expect(foreignKeyCheck(d)).toEqual([]);
+  });
+});
+
+describe('corpus stats honor the source scope', () => {
+  it('groups and verdicts count only in-source photos', async () => {
+    const d = await fresh();
+    const photo = (rawId: string, folder: string) => ({
+      ...upsert(rawId),
+      uri: `file:///storage/emulated/0/${folder}/${rawId}.jpg`,
+    });
+    await writeContinuousGroups(
+      asExpo(d),
+      {
+        photos: [
+          photo('c1', 'DCIM/Camera'),
+          photo('c2', 'DCIM/Camera'),
+          photo('w1', 'WhatsApp/Media'),
+          photo('w2', 'WhatsApp/Media'),
+        ],
+        groups: [
+          { members: [id('c1'), id('c2')], timeAttached: [] },
+          { members: [id('w1'), id('w2')], timeAttached: [] },
+        ],
+        singles: [],
+      },
+      AT,
+    );
+    await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('c1'), 'done'],
+        [id('w1'), 'done'],
+      ],
+      AT + 1,
+    );
+    expect(await getCorpusStats(asExpo(d), ['DCIM/Camera'])).toEqual({
+      groupsFound: 1,
+      reviewed: 1,
+    });
+    expect(await getCorpusStats(asExpo(d))).toEqual({ groupsFound: 2, reviewed: 2 });
+  });
+});

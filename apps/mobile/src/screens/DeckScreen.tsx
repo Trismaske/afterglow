@@ -104,6 +104,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
   const {
     groups,
     singles,
+    queueCounts,
     decide,
     clearDecision,
     keepRest,
@@ -365,9 +366,11 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
   // Linear flow follows the first incomplete group, then singles and the
   // cull list. Explicitly opening an ALREADY completed group still permits
   // browse/re-decide mode.
-  // Routing looks at PENDING singles: a feed holding only staged culls
-  // must not trap the linear flow on an already-complete Singles screen.
-  const hasSingles = singles.some((m) => m.state === 'unreviewed');
+  // Routing looks at PENDING singles from the DB COUNT — the feed is a
+  // 500-row page, so "no unreviewed rows loaded" is not "none pending"
+  // (and a feed of only staged culls must not trap the linear flow on an
+  // already-complete Singles screen).
+  const hasSingles = queueCounts.singles > 0;
   useEffect(() => {
     if (singlesMode) return;
     if (explicitGroupId) {
@@ -430,16 +433,18 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
       return;
     }
     if (singlesEnteredCompleteRef.current === null) {
-      singlesEnteredCompleteRef.current = singlesPending === 0;
+      singlesEnteredCompleteRef.current = queueCounts.singles === 0;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [singlesMode]);
   useEffect(() => {
-    if (!singlesMode || singlesPending > 0 || busy || !isFocused) return;
+    // Gate on the DB count: pending singles beyond the loaded feed page
+    // must keep the screen (the next refresh pages them in).
+    if (!singlesMode || queueCounts.singles > 0 || busy || !isFocused) return;
     if (singlesEnteredCompleteRef.current === true) return; // deliberate revisit
     if (groups.length > 0) navigation.goBack();
     else navigation.replace('CullList');
-  }, [busy, isFocused, navigation, groups, singlesMode, singlesPending]);
+  }, [busy, isFocused, navigation, groups, singlesMode, queueCounts.singles]);
 
   // A group that becomes complete during this visit advances immediately.
   // This covers Keep rest, culling/ejecting the final member, and completion

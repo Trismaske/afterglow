@@ -38,15 +38,16 @@ export function GroupsScreen({ navigation }: Props) {
 
   const nextStep = useMemo(() => {
     if (groups.length > 0) return 'Deck' as const;
-    if (singles.some((m) => m.state === 'unreviewed')) return 'Singles' as const;
+    // The DB count — the feed is a bounded page (see DeckScreen routing).
+    if (queueCounts.singles > 0) return 'Singles' as const;
     return 'CullList' as const;
-  }, [groups, singles]);
+  }, [groups, queueCounts.singles]);
 
   const continueLabel = useMemo(() => {
     if (nextStep === 'Deck') return 'Review groups';
-    if (nextStep === 'Singles') return `Review singles (${stats.singlesPending})`;
+    if (nextStep === 'Singles') return `Review singles (${queueCounts.singles})`;
     return 'Review cull list';
-  }, [stats, nextStep]);
+  }, [nextStep, queueCounts.singles]);
 
   const stateOf = useMemo(() => {
     const map = new Map<string, string>();

@@ -117,3 +117,9 @@ Final-review round 2 fixes, same pending vetting:
 42. **Linear-flow routing counts PENDING singles** (a feed holding only badged staged culls routes to CullList, not an already-complete Singles screen); completing an out-of-order group advances from its stored former index.
 43. **Summary "today" is DECISION-day accounting** (`getDayReviewSummary` over `reviewed_at` localtime; keepers = current `done` only) — capture-day rollups missed older photos reviewed today and double-counted trashed ones. Corpus % likewise excludes trashed rows from the numerator (its denominator is the MediaStore total, which no longer contains them).
 44. **A complete scan reconciles external removals**: tracked present rows the full in-source pass never met get the tri-state presence check; only verified trashed/absent rows converge (capped at 500/run, loudly). The native CI job now fetches the pinned embedder model like the release workflow.
+
+Final-review round 3 fixes, same pending vetting:
+
+45. **Pair ejection is durable for BOTH photos**: the survivor of a group the ejection shrinks to one member is marked `user_single` inside the same transaction ("not related" judged both; the bare dissolve left the survivor silently regroupable — the session flow had persisted both ids).
+46. **Flow routing counts the DB queue, not the feed page**: pending-singles predicates (deck linear flow, Groups continue-CTA, singles auto-advance) read `queueCounts.singles` — the 500-row feed page can hold only staged culls while older unreviewed singles remain.
+47. **Every corpus/day surface shares the queue's source scope and fails closed**: Home corpus stats resolve sources (MediaStore denominator and verdict/group numerators count the same photos; resolution errors keep the last stats), and DayProgress hides its groups section on resolution failure instead of broadening to all folders.

@@ -125,11 +125,26 @@ export function HomeScreen({ navigation }: Props) {
       void (async () => {
         const today = dayKey(Date.now());
         const since = recentDayKeys(120)[119] ?? today;
+        // Corpus stats share the queue's source scope: the MediaStore
+        // denominator and the verdict/group numerators must count the
+        // same photos. FAIL CLOSED: a resolution error keeps the last
+        // rendered stats instead of broadening to all folders.
+        let src: { roots: string[] | null; albumIds: string[] | null } | null = null;
+        if (permission?.granted) {
+          try {
+            const resolved = await resolveSources(db);
+            src = { roots: resolved.roots ?? null, albumIds: resolved.albumIds ?? null };
+          } catch (error) {
+            console.warn('[home] source resolution failed — corpus stats skipped:', String(error));
+          }
+        }
         const [rawGoal, reviewedByDay, stats, total] = await Promise.all([
           getSetting(db, DAILY_GOAL_KEY),
           getReviewedCountsByDay(db, since),
-          getCorpusStats(db),
-          permission?.granted ? countPhotosInRange(0, Date.now()).catch(() => 0) : 0,
+          permission?.granted && src ? getCorpusStats(db, src.roots) : null,
+          permission?.granted && src
+            ? countPhotosInRange(0, Date.now(), src.albumIds).catch(() => 0)
+            : 0,
         ]);
         if (cancelled) return;
         const currentGoal = parseDailyGoal(rawGoal);
@@ -137,7 +152,7 @@ export function HomeScreen({ navigation }: Props) {
         setReviewedToday(reviewedByDay.get(today) ?? 0);
         const keys = [...recentDayKeys(120)].reverse();
         setStreaks(goalStreaks(reviewedByDay, keys, currentGoal));
-        setCorpus({ total, groupsFound: stats.groupsFound, reviewed: stats.reviewed });
+        if (stats) setCorpus({ total, groupsFound: stats.groupsFound, reviewed: stats.reviewed });
       })();
       return () => {
         cancelled = true;

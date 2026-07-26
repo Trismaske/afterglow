@@ -270,3 +270,7 @@ Final-review round 32 fixes, same pending vetting:
 Final-review round 33 fixes, same pending vetting:
 
 104. **The picker releases its exit guard before its own successful goBack** (the round-32 `beforeRemove` block was cancelling the save's navigation — a self-inflicted regression codex caught); ProgressView keeps its previously rendered scope when source resolution fails (the catalog throw would otherwise become an all-folders render there); and the cancelled-cull star restore rides IN the un-staging transaction (`unstageCullDirect(…, restoreStars)`) — a crash between separate writes would lose the star forever, `clearedStars` being memory-only.
+
+Final-review round 34 fixes, same pending vetting:
+
+105. **ANY failed album probe rejects the source catalog** (a partial catalog missing DCIM/Camera would make the unset default silently broaden to all folders), and a failed source-setting transaction is caught: the picker toasts, restarts the fenced scan under the unchanged durable setting, and stays open (previously an unhandled rejection with scanning stopped until an app restart).

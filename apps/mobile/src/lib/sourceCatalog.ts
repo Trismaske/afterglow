@@ -80,12 +80,12 @@ export async function listSourceDirs(force = false): Promise<SourceDir[]> {
       failedProbes += 1;
     }
   }
-  if (byDir.size === 0 && failedProbes > 0) {
-    // EVERY probe failed: an empty catalog here is an incomplete read,
-    // not an empty device — resolving it would silently broaden the
-    // dynamic default to "all folders". Fail so callers keep their
-    // last-known scope (never cached).
-    throw new Error(`source catalog unavailable — ${failedProbes} album probes failed`);
+  if (failedProbes > 0) {
+    // ANY failed probe makes the catalog incomplete — if the missing
+    // bucket is DCIM/Camera, the unset-default resolution would conclude
+    // Camera does not exist and silently broaden to "all folders". Fail
+    // so callers keep their last-known scope (never cached).
+    throw new Error(`source catalog incomplete — ${failedProbes} album probes failed`);
   }
   const dirs = [...byDir.values()].sort((a, b) => a.dir.localeCompare(b.dir));
   catalogCache = { at: Date.now(), dirs };

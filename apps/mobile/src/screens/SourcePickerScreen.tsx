@@ -144,7 +144,19 @@ export function SourcePickerScreen({ navigation }: Props) {
       // Setting + unfrozen-assignment reset commit ATOMICALLY — a process
       // death between them would leave the next launch rendering old
       // assignments under the new scope.
-      await applyGroupingSettingChange(db, PHOTO_SOURCES_KEY, serializePhotoSourceSetting(setting));
+      try {
+        await applyGroupingSettingChange(
+          db,
+          PHOTO_SOURCES_KEY,
+          serializePhotoSourceSetting(setting),
+        );
+      } catch {
+        // Nothing committed — but supersedeScan already fenced the active
+        // run, so restart scanning under the (unchanged) durable setting.
+        void requestRescan(db);
+        showToast('Could not save the photo source — try again');
+        return;
+      }
       invalidateSourceCatalog();
       // FAIL CLOSED before leaving: the queue reads are source-scoped and
       // must drop excluded photos NOW (the queued rescan lands later). If

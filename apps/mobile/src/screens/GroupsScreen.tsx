@@ -140,16 +140,19 @@ export function GroupsScreen({ navigation }: Props) {
         contentContainerStyle={styles.list}
         extraData={version}
         ListFooterComponent={
-          <Pressable style={styles.groupRow} onPress={() => navigation.navigate('Singles')}>
-            <View style={styles.groupHeader}>
-              <Text style={styles.groupTitle}>Singles · {singles.length} photos</Text>
-              <Text
-                style={[styles.groupStatus, stats.singlesPending === 0 && styles.groupStatusDone]}
-              >
-                {stats.singlesPending === 0 ? 'Reviewed' : `${stats.singlesPending} pending`}
-              </Text>
-            </View>
-          </Pressable>
+          // An empty feed has nothing to review OR browse — no row.
+          singles.length === 0 ? null : (
+            <Pressable style={styles.groupRow} onPress={() => navigation.navigate('Singles')}>
+              <View style={styles.groupHeader}>
+                <Text style={styles.groupTitle}>Singles · {singles.length} photos</Text>
+                <Text
+                  style={[styles.groupStatus, stats.singlesPending === 0 && styles.groupStatusDone]}
+                >
+                  {stats.singlesPending === 0 ? 'Reviewed' : `${stats.singlesPending} pending`}
+                </Text>
+              </View>
+            </Pressable>
+          )
         }
       />
       <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>

@@ -207,3 +207,7 @@ Final-review round 19 fixes, same pending vetting:
 
 82. **The window write itself carries the supersession fence** (`writeContinuousGroups` `abortIf` checked INSIDE the exclusive transaction) — a window superseded mid-embed could otherwise commit after the strictness reset cleared the queue; entry-time fences alone left that race open.
 83. **Failed rollbacks surface honestly** in both settings flows (a restore that itself fails now says the change stuck, instead of claiming restoration), and DayProgress's group list sorts by each group's NEWEST member (members are chronologically ascending — `members[0]` was the oldest).
+
+Final-review round 20 fixes, same pending vetting:
+
+84. **Singles UI edge polish**: the Groups screen hides the singles row when the feed is empty (tapping it opened a blank deck the entered-complete guard deliberately kept open), and the singles compare picker renders the same unreviewed-only candidate set `openCompare` accepts (staged-cull thumbnails were rendered but silently rejected).

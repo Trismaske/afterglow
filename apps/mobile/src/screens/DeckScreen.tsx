@@ -1252,7 +1252,10 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
             <Text style={styles.pickerTitle}>Compare with…</Text>
             <Text style={styles.pickerHint}>Pick the photo to compare against {cursor + 1}.</Text>
             <View style={styles.pickerGrid}>
-              {(singlesMode ? deckItems : aliveItems).map((item, index) =>
+              {(singlesMode
+                ? deckItems.filter((i) => (stateOf.get(i.id) ?? 'unreviewed') === 'unreviewed')
+                : aliveItems
+              ).map((item, index) =>
                 item.id === current.id ? null : (
                   <Pressable key={item.id} onPress={() => openCompare(item.id)}>
                     <Image

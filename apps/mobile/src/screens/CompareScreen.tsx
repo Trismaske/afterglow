@@ -13,7 +13,7 @@ import Animated, {
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { useReview } from '../review/ReviewContext';
-import { getSetting, setSetting } from '../db/store';
+import { getSetting, setSetting, type ReviewGroupRow } from '../db/store';
 import {
   COMPARE_AUTO_CULL_KEY,
   parseCompareAutoCull,
@@ -69,22 +69,40 @@ export function CompareScreen({ navigation, route }: Props) {
     decide,
     favouriteStatus,
     toggleFavourite,
+    loadGroup,
   } = useReview();
   const numericGroupId = groupId ? Number(groupId) : null;
-  const group = useMemo(
+  const queueGroup = useMemo(
     () =>
       numericGroupId !== null ? (groups.find((g) => g.groupId === numericGroupId) ?? null) : null,
     [groups, numericGroupId],
   );
+  // An explicitly opened group can sit outside the queue page (DayProgress,
+  // a scan pushing it off) — fetch it directly, like the deck does.
+  const [loadedGroup, setLoadedGroup] = useState<ReviewGroupRow | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (numericGroupId === null || queueGroup) {
+      setLoadedGroup(null);
+      return;
+    }
+    void loadGroup(numericGroupId).then((fetched) => {
+      if (!cancelled) setLoadedGroup(fetched);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [numericGroupId, queueGroup, loadGroup]);
+  const group = queueGroup ?? loadedGroup;
   const itemLookup = useMemo(() => {
     const map = new Map<string, { id: string; timestamp: number; uri: string }>();
-    for (const g of groups)
+    for (const g of [...groups, ...(loadedGroup ? [loadedGroup] : [])])
       for (const m of g.members)
         map.set(m.asset_id, { id: m.asset_id, timestamp: m.taken_at, uri: m.uri });
     for (const m of singleRows)
       map.set(m.asset_id, { id: m.asset_id, timestamp: m.taken_at, uri: m.uri });
     return map;
-  }, [groups, singleRows]);
+  }, [groups, singleRows, loadedGroup]);
   const [busy, setBusy] = useState(false);
   const [showB, setShowB] = useState(false);
   const [autoCull, setAutoCull] = useState(false);

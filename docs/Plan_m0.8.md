@@ -134,3 +134,8 @@ Final-review round 4 fixes, same pending vetting:
 Final-review round 5 fixes, same pending vetting:
 
 52. **The strictness reset also spares metadata groups** (starred best / recorded duels — the same exclusions as the regroup boundary), and Home fails closed on MediaStore COUNT failures too: a failed corpus count keeps the last rendered stats (never an authoritative-looking "0 photos · 0%"), and a failed per-day count keeps the previous day rows instead of making days disappear.
+
+Final-review round 6 fixes, same pending vetting:
+
+53. **Re-decisions are state-aware** (`applyRedecision`, used by deck browse and the cull-list sheet): Keep on a flagged photo lands on `done` with the flag CLEARED (the initial-decision verdict path would bounce it back to `to_edit`), To edit from `done`/`culled` starts a FRESH cycle (unconditional `to_edit_at` + baseline reset), and both targets resolve pending copy matches (C#12). Initial decisions on unreviewed photos keep the flag-honoring verdict path.
+54. **Off-page groups work everywhere**: `keepRest` fetches an explicitly opened group absent from the 100-group queue page instead of silently no-opping, and Compare loads such a group directly (same `loadGroup` mechanism as the deck).

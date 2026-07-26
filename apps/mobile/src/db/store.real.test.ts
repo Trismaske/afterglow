@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { migrateDatabase } from './database';
 import {
+  applyRedecision,
   applyReviewDecisions,
   countReviewQueue,
   getCorpusStats,
@@ -895,5 +896,64 @@ describe('strictness reset spares metadata groups', () => {
       .get(id('3'));
     expect(plain).toBeUndefined();
     expect(foreignKeyCheck(d)).toEqual([]);
+  });
+});
+
+// -------------------------------------------- final-review round 6
+
+describe('applyRedecision (state-aware change of mind)', () => {
+  it('Keep on a flagged to_edit photo lands on done with the flag cleared', async () => {
+    const d = await fresh();
+    await seed(d, ['1']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'to_edit']], AT + 100);
+    await applyRedecision(asExpo(d), id('1'), 'keep', AT + 200);
+    const row = stateOf(d, '1');
+    expect(row).toMatchObject({ state: 'done', needs_edit: 0, to_edit_at: null, mod_time: null });
+  });
+
+  it('Keep on a flagged staged cull lands on done, resolving its copy match', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '9']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'to_edit']], AT + 100);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 200);
+    d.raw
+      .prepare(
+        `INSERT INTO edit_copy_matches (original_id, copy_id, detected_at, state)
+         VALUES (?, ?, ?, 'pending')`,
+      )
+      .run(id('1'), id('9'), AT + 250);
+    await applyRedecision(asExpo(d), id('1'), 'keep', AT + 300);
+    expect(stateOf(d, '1')).toMatchObject({ state: 'done', needs_edit: 0 });
+    const match = d.raw
+      .prepare('SELECT state FROM edit_copy_matches WHERE original_id = ?')
+      .get(id('1')) as { state: string };
+    expect(match.state).toBe('resolved'); // an explicit keep answers the prompt
+  });
+
+  it('To edit on a done photo starts a FRESH cycle, never reusing stale evidence', async () => {
+    const d = await fresh();
+    await seed(d, ['1']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'to_edit']], AT + 100);
+    d.raw
+      .prepare('UPDATE photos SET mod_time = 123, content_hash = ? WHERE asset_id = ?')
+      .run('stale', id('1'));
+    await markEditDone(asExpo(d), id('1'), AT + 200);
+    await applyRedecision(asExpo(d), id('1'), 'to_edit', AT + 300);
+    const row = stateOf(d, '1');
+    expect(row).toMatchObject({
+      state: 'to_edit',
+      needs_edit: 1,
+      to_edit_at: AT + 300,
+      mod_time: null,
+      content_hash: null,
+    });
+  });
+
+  it('is a no-op for the already-active target state', async () => {
+    const d = await fresh();
+    await seed(d, ['1']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'to_edit']], AT + 100);
+    await applyRedecision(asExpo(d), id('1'), 'to_edit', AT + 200);
+    expect(stateOf(d, '1').to_edit_at).toBe(AT + 100); // in-progress cycle untouched
   });
 });

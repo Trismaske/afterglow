@@ -612,6 +612,57 @@ export async function getPhotoFacts(
   );
 }
 
+/**
+ * State-aware RE-decision on an already-decided photo (gate 5 browse,
+ * cull-list sheet) — the initial-decision verdict path deliberately
+ * honors the needs-edit flag and first-entry cycle stamps, which is
+ * wrong for an explicit change of mind:
+ * - keep: done + flag CLEARED (an explicit Keep overrides the flag; the
+ *   initial path would bounce a flagged photo straight back to to_edit)
+ *   with the abandoned cycle's baseline reset;
+ * - to_edit: a FRESH edit cycle (unconditional to_edit_at + baseline
+ *   reset — reusing a completed cycle's stamp would let stale detection
+ *   evidence auto-complete the new cycle).
+ * Both targets resolve pending edited-copy matches (C#12: an explicit
+ * keep/to-edit answers the copy prompt). Only decided states transition;
+ * an unreviewed photo takes the normal verdict path instead.
+ */
+export async function applyRedecision(
+  db: SQLiteDatabase,
+  assetId: string,
+  target: 'keep' | 'to_edit',
+  at: number,
+): Promise<void> {
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    if (target === 'keep') {
+      await txn.runAsync(
+        `UPDATE photos SET state = 'done', needs_edit = 0,
+           to_edit_at = NULL, mod_time = NULL, content_hash = NULL,
+           reviewed_at = COALESCE(reviewed_at, ?), activity_at = ?
+         WHERE asset_id = ? AND state IN ('culled', 'to_edit')`,
+        at,
+        at,
+        assetId,
+      );
+    } else {
+      await txn.runAsync(
+        `UPDATE photos SET state = 'to_edit', needs_edit = 1,
+           to_edit_at = ?, mod_time = NULL, content_hash = NULL,
+           reviewed_at = COALESCE(reviewed_at, ?), activity_at = ?
+         WHERE asset_id = ? AND state IN ('culled', 'done')`,
+        at,
+        at,
+        at,
+        assetId,
+      );
+    }
+    await txn.runAsync(
+      "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
+      assetId,
+    );
+  });
+}
+
 /** Star/unstar a group's best (NULL clears; FK enforces membership). */
 export async function setGroupBest(
   db: SQLiteDatabase,

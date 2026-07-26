@@ -42,6 +42,7 @@ import {
   listReviewGroups,
   listSinglesFeed,
   getReviewGroup,
+  applyRedecision,
   makePhotoSingles,
   restoreCarriedCull,
   setGroupBest,
@@ -88,6 +89,10 @@ interface ReviewContextValue {
   decide: (assetId: string, action: SingleReviewAction) => Promise<void>;
   /** Clear a photo's verdict back to unreviewed (active-chip tap). */
   clearDecision: (assetId: string) => Promise<void>;
+  /** State-aware change of mind on a DECIDED photo (gate 5 browse):
+   * keep clears the edit flag; to_edit starts a fresh cycle; both
+   * resolve pending copy matches. */
+  redecideDecided: (assetId: string, target: 'keep' | 'to_edit') => Promise<void>;
   /** Finish a group: every remaining unreviewed member keeps (done). */
   keepRest: (groupId: number) => Promise<void>;
   markBest: (groupId: number, assetId: string | null) => Promise<void>;
@@ -271,7 +276,11 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   const keepRest = useCallback(
     (groupId: number) =>
       write(async () => {
-        const group = groups.find((g) => g.groupId === groupId);
+        // The queue page holds only GROUP_PAGE groups — an explicitly
+        // opened group (DayProgress, off-page) is fetched directly so
+        // "Keep remaining" never silently no-ops.
+        const group =
+          groups.find((g) => g.groupId === groupId) ?? (await getReviewGroup(db, groupId));
         if (!group) return;
         const changes = group.members
           .filter((m) => m.state === 'unreviewed')
@@ -279,6 +288,14 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
         if (changes.length > 0) await applyReviewDecisions(db, changes, Date.now());
       }),
     [db, groups, write],
+  );
+
+  const redecideDecided = useCallback(
+    (assetId: string, target: 'keep' | 'to_edit') =>
+      write(async () => {
+        await applyRedecision(db, assetId, target, Date.now());
+      }),
+    [db, write],
   );
 
   const markBest = useCallback(
@@ -392,10 +409,10 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           await restoreCarriedCull(db, assetId, Date.now(), false);
           return;
         }
-        const verdict: ReviewVerdict = target === 'keep' ? 'done' : 'to_edit';
-        await applyReviewDecisions(db, [[assetId, verdict]], Date.now(), {
-          resolveCopyMatchesFor: [assetId],
-        });
+        // State-aware: Keep must land on done even when the edited-copy
+        // flow left needs_edit set (the verdict path would bounce it to
+        // to_edit); to_edit starts a fresh cycle. Both resolve matches.
+        await applyRedecision(db, assetId, target, Date.now());
       }),
     [db, write],
   );
@@ -465,6 +482,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     clearWriteError,
     decide,
     clearDecision,
+    redecideDecided,
     keepRest,
     markBest,
     makeSingle,

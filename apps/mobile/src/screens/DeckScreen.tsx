@@ -117,6 +117,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     keepAllSingles,
     version,
     loadGroup,
+    redecideDecided,
     refresh,
   } = useReview();
   const [busy, setBusy] = useState(false);
@@ -702,7 +703,11 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
           : 'keep'
         : null;
 
-  // Re-decide: tapping the ACTIVE verdict clears back to unreviewed.
+  // Re-decide: tapping the ACTIVE verdict clears back to unreviewed; a
+  // DECIDED photo changing to keep/to_edit takes the state-aware path
+  // (keep clears the edit flag, to_edit starts a fresh cycle, both
+  // resolve pending copy matches) — the initial-decision verdict would
+  // bounce a flagged photo straight back to to_edit.
   const redecide = async (id: string, target: RedecideTarget) => {
     const state = stateOf.get(id) ?? 'unreviewed';
     const activeTarget: RedecideTarget | null =
@@ -714,6 +719,8 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
             ? 'keep'
             : null;
     if (activeTarget === target) await clearDecision(id);
+    else if (state !== 'unreviewed' && (target === 'keep' || target === 'to_edit'))
+      await redecideDecided(id, target);
     else await decide(id, target);
   };
 

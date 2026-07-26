@@ -12,7 +12,8 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
 import {
   computeBreakdown,
-  donePct,
+  reviewedOf,
+  reviewedPct,
   type EffectiveState,
   type ProgressFilter,
   type StateBreakdown,
@@ -24,7 +25,7 @@ import { StateProgressBar } from '../StateProgressBar';
 import { colors, touch, useTheme } from '../../theme';
 import { stateMetaFor, STATE_ORDER } from './stateMeta';
 import { PhotoStateGrid, type GridPhoto } from './PhotoStateGrid';
-import { StateEditorSheet } from './StateEditorSheet';
+import { PhotoViewer, type ViewerItem } from '../PhotoViewer';
 
 interface ResolvedSrc {
   roots: string[] | null;
@@ -69,7 +70,7 @@ export function ProgressView({
   const [src, setSrc] = useState<ResolvedSrc | null>(null);
   const [data, setData] = useState<{ breakdown: StateBreakdown; trashed: number } | null>(null);
   const [filter, setFilter] = useState<ProgressFilter>('all');
-  const [selected, setSelected] = useState<GridPhoto | null>(null);
+  const [viewer, setViewer] = useState<{ items: ViewerItem[]; index: number } | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
   const scopeKey = 'day' in scope ? `d:${scope.day}` : `r:${scope.startMs}:${scope.endMs}`;
@@ -107,16 +108,17 @@ export function ProgressView({
   const header = useMemo(() => {
     if (!data) return <View />;
     const b = data.breakdown;
-    const pct = donePct(b);
+    const reviewed = reviewedOf(b);
+    const pct = reviewedPct(b);
     return (
       <View style={styles.header}>
         <Text style={styles.title}>{heading}</Text>
         <Text style={styles.subtitle}>
           {b.total === 0
             ? 'No photos here.'
-            : b.done === b.total
-              ? `Inbox zero — all ${b.total} photos done`
-              : `${b.done} of ${b.total} photos done · ${pct}%`}
+            : reviewed === b.total
+              ? `All ${b.total} photos reviewed`
+              : `${reviewed} of ${b.total} photos reviewed · ${pct}%`}
         </Text>
 
         <StateProgressBar
@@ -155,8 +157,8 @@ export function ProgressView({
           })}
         </View>
         <Text style={styles.footnote}>
-          Tap a state to filter the photos below — tap again for all states. Tap a photo to change
-          its state.
+          Tap a state to filter the photos below — tap again for all states. Tap a photo to view it
+          and change its state.
         </Text>
 
         {renderCta?.(b)}
@@ -191,9 +193,21 @@ export function ProgressView({
         refreshKey={refreshTick}
         header={header}
         bottomInset={insets.bottom}
-        onPhotoPress={setSelected}
+        onPhotoPress={(_photo, siblings, index) =>
+          setViewer({
+            items: siblings.map((g) => ({ id: g.id, uri: g.uri, takenAt: g.takenAt })),
+            index,
+          })
+        }
       />
-      <StateEditorSheet photo={selected} onClose={() => setSelected(null)} onChanged={onChanged} />
+      {viewer && (
+        <PhotoViewer
+          items={viewer.items}
+          initialIndex={viewer.index}
+          onClose={() => setViewer(null)}
+          onChanged={onChanged}
+        />
+      )}
     </>
   );
 }

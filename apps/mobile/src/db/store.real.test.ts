@@ -10,12 +10,20 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 import { migrateDatabase } from './database';
 import {
   applyReviewDecisions,
+  getDaySummariesForDays,
+  getPhotoFacts,
+  getReviewGroup,
   getStagedCulls,
+  getUnreviewedDayRows,
+  listGroupsForDay,
+  listReviewGroups,
+  listSinglesFeed,
   makePhotoSingles,
   markEditDone,
   markFavouriteBatchApplied,
   markFavouriteBatchError,
   restoreCarriedCull,
+  setGroupBest,
   setNeedsEdit,
   unstageCullDirect,
   writeContinuousGroups,
@@ -327,3 +335,180 @@ describe('activity_at transitions', () => {
     expect(row.activity_at).toBe(AT + 500);
   });
 });
+
+// ------------------------------------------------------------- gate 5
+
+/** Seed with explicit days/timestamps (the gate-5 day queries need more
+ * than the default single-day corpus). */
+async function seedDays(
+  d: TestDb,
+  photos: { rawId: string; day: string; takenAt: number }[],
+  groups: string[][] = [],
+  timeAttached: string[] = [],
+): Promise<void> {
+  await writeContinuousGroups(
+    asExpo(d),
+    {
+      photos: photos.map((p) => ({
+        ...upsert(p.rawId, p.takenAt),
+        day: p.day,
+      })),
+      groups: groups.map((g) => ({
+        members: g.map(id),
+        timeAttached: timeAttached.filter((t) => g.includes(t)).map(id),
+      })),
+      singles: photos
+        .map((p) => id(p.rawId))
+        .filter((a) => !groups.some((g) => g.map(id).includes(a))),
+    },
+    AT,
+  );
+}
+
+function groupIdOf(d: TestDb, rawId: string): number {
+  const row = d.raw
+    .prepare('SELECT group_id FROM photo_group_assignments WHERE photo_id = ?')
+    .get(id(rawId)) as { group_id: number };
+  return Number(row.group_id);
+}
+
+describe('gate 5: singles feed + completed-group browse', () => {
+  it('listSinglesFeed keeps staged culls in the feed, drops done/to_edit', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3', '4']);
+    await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('1'), 'culled'],
+        [id('2'), 'done'],
+        [id('3'), 'to_edit'],
+      ],
+      AT + 1,
+    );
+    const feed = await listSinglesFeed(asExpo(d), 10);
+    expect(feed.map((m) => m.asset_id).sort()).toEqual([id('1'), id('4')].sort());
+    expect(feed.find((m) => m.asset_id === id('1'))?.state).toBe('culled');
+  });
+
+  it('getReviewGroup returns a COMPLETED group the queue no longer lists', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
+    const gid = groupIdOf(d, '1');
+    await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('1'), 'done'],
+        [id('2'), 'culled'],
+        [id('3'), 'done'],
+      ],
+      AT + 1,
+    );
+    expect(await listReviewGroups(asExpo(d), 10)).toEqual([]);
+    const group = await getReviewGroup(asExpo(d), gid);
+    expect(group?.groupId).toBe(gid);
+    expect(group?.members.map((m) => m.state).sort()).toEqual(['culled', 'done', 'done']);
+    expect(await getReviewGroup(asExpo(d), gid + 999)).toBeNull();
+  });
+});
+
+describe('gate 5: day queries', () => {
+  const P = (rawId: string, day: string, hour: number) => ({
+    rawId,
+    day,
+    takenAt: AT - 10 * 86_400_000 + hour * 3_600_000,
+  });
+
+  it("listGroupsForDay returns the day's groups, completed included, newest first", async () => {
+    const d = await fresh();
+    await seedDays(
+      d,
+      [
+        P('1', '2026-07-18', 1),
+        P('2', '2026-07-18', 1),
+        P('3', '2026-07-18', 5),
+        P('4', '2026-07-18', 5),
+        P('5', '2026-07-19', 2),
+        P('6', '2026-07-19', 2),
+      ],
+      [
+        ['1', '2'],
+        ['3', '4'],
+        ['5', '6'],
+      ],
+    );
+    await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('1'), 'done'],
+        [id('2'), 'done'],
+      ],
+      AT + 1,
+    );
+    const day18 = await listGroupsForDay(asExpo(d), '2026-07-18');
+    expect(day18).toHaveLength(2);
+    // Newest group first: the 05:00 pair before the completed 01:00 pair.
+    expect(day18[0].members.map((m) => m.asset_id)).toEqual([id('3'), id('4')]);
+    expect(day18[1].members.every((m) => m.state === 'done')).toBe(true);
+    expect(await listGroupsForDay(asExpo(d), '2026-07-19')).toHaveLength(1);
+    expect(await listGroupsForDay(asExpo(d), '2026-07-20')).toHaveLength(0);
+  });
+
+  it('getUnreviewedDayRows counts pending per day, newest first, and drops finished days', async () => {
+    const d = await fresh();
+    await seedDays(d, [
+      P('1', '2026-07-17', 1),
+      P('2', '2026-07-17', 2),
+      P('3', '2026-07-18', 1),
+      P('4', '2026-07-19', 1),
+    ]);
+    await applyReviewDecisions(asExpo(d), [[id('4'), 'done']], AT + 1);
+    const rows = await getUnreviewedDayRows(asExpo(d));
+    expect(rows).toEqual([
+      { day: '2026-07-18', pending: 1 },
+      { day: '2026-07-17', pending: 2 },
+    ]);
+  });
+
+  it('getDaySummariesForDays returns exactly the requested days', async () => {
+    const d = await fresh();
+    await seedDays(d, [P('1', '2026-07-17', 1), P('2', '2026-07-18', 1), P('3', '2026-07-19', 1)]);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 1);
+    const map = await getDaySummariesForDays(asExpo(d), ['2026-07-17', '2026-07-19']);
+    expect([...map.keys()].sort()).toEqual(['2026-07-17', '2026-07-19']);
+    expect(map.get('2026-07-17')).toMatchObject({ tracked: 1, staged: 1, done: 0 });
+  });
+});
+
+describe('gate 5: getPhotoFacts', () => {
+  it('joins state, group membership, best, time-attached and ejection facts', async () => {
+    const d = await fresh();
+    await seedDays(d, [P0('1'), P0('2'), P0('3'), P0('4')], [['1', '2', '3']], ['3']);
+    const gid = groupIdOf(d, '1');
+    await setGroupBest(asExpo(d), gid, id('1'));
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'done']], AT + 1);
+    await makePhotoSingles(asExpo(d), [id('4')]);
+
+    const best = await getPhotoFacts(asExpo(d), id('1'));
+    expect(best).toMatchObject({
+      state: 'done',
+      group_id: gid,
+      is_best: 1,
+      time_attached: 0,
+      user_single: 0,
+    });
+    expect(best?.reviewed_at).toBe(AT + 1);
+
+    const attached = await getPhotoFacts(asExpo(d), id('3'));
+    expect(attached).toMatchObject({ time_attached: 1, group_id: gid, is_best: 0 });
+
+    const ejected = await getPhotoFacts(asExpo(d), id('4'));
+    expect(ejected).toMatchObject({ group_id: null, user_single: 1 });
+
+    expect(await getPhotoFacts(asExpo(d), id('nope'))).toBeNull();
+    expect(foreignKeyCheck(d)).toEqual([]);
+  });
+});
+
+function P0(rawId: string) {
+  return { rawId, day: '2026-07-20', takenAt: AT - 3_600_000 };
+}

@@ -37,6 +37,7 @@ import { showToast } from '../lib/toast';
 import { labelForDayKey } from '../lib/dates';
 import { formatClock } from '../lib/format';
 import { colors, touch } from '../theme';
+import { PhotoViewer } from '../components/PhotoViewer';
 
 type Props = MainTabScreenProps<'OrganizeQueue'>;
 
@@ -49,6 +50,8 @@ export function OrganizeQueueScreen(_props: Props) {
   // taps) must observe the CURRENT applying state, not a stale render.
   const busyRef = useRef(false);
   const [pickerFor, setPickerFor] = useState<string | null>(null);
+  /** In-app full-screen viewer (gate 5) — thumbnail tap. */
+  const [viewerId, setViewerId] = useState<string | null>(null);
   const [albums, setAlbums] = useState<VolumeAlbum[]>([]);
   const [newName, setNewName] = useState('');
 
@@ -208,12 +211,14 @@ export function OrganizeQueueScreen(_props: Props) {
   const renderItem = useCallback(
     ({ item }: { item: OrganizeQueueRow }) => (
       <View style={styles.row}>
-        <Image
-          source={{ uri: item.uri }}
-          style={styles.thumb}
-          contentFit="cover"
-          recyclingKey={item.photo_id}
-        />
+        <Pressable onPress={() => setViewerId(item.photo_id)}>
+          <Image
+            source={{ uri: item.uri }}
+            style={styles.thumb}
+            contentFit="cover"
+            recyclingKey={item.photo_id}
+          />
+        </Pressable>
         <View style={styles.rowBody}>
           <Text style={styles.rowTitle}>
             {item.day ? labelForDayKey(item.day) : 'Unknown day'} · {formatClock(item.taken_at)}
@@ -246,6 +251,9 @@ export function OrganizeQueueScreen(_props: Props) {
     [db, openPicker, reload, busy],
   );
 
+  const viewerIndex =
+    viewerId !== null && rows ? rows.findIndex((r) => r.photo_id === viewerId) : -1;
+
   const count = rows?.length ?? 0;
   const newPath = useMemo(() => newAlbumPath(newName), [newName]);
   return (
@@ -263,6 +271,14 @@ export function OrganizeQueueScreen(_props: Props) {
         renderItem={renderItem}
         contentContainerStyle={{ gap: 10, paddingBottom: insets.bottom + 90 }}
       />
+      {viewerIndex >= 0 && rows ? (
+        <PhotoViewer
+          items={rows.map((r) => ({ id: r.photo_id, uri: r.uri, takenAt: r.taken_at }))}
+          initialIndex={viewerIndex}
+          onClose={() => setViewerId(null)}
+          onChanged={() => void reload()}
+        />
+      ) : null}
       {count > 0 ? (
         <View style={[styles.actions, { paddingBottom: insets.bottom + 12 }]}>
           <Pressable

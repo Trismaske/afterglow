@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyPhotoState,
   computeBreakdown,
-  donePct,
+  reviewedOf,
+  reviewedPct,
   editorActions,
   remainingReviewable,
   progressRemainder,
@@ -71,7 +72,7 @@ describe('computeBreakdown', () => {
   });
 });
 
-describe('remainingReviewable / donePct', () => {
+describe('remainingReviewable / reviewedPct', () => {
   it('remaining excludes done and to_edit (both converged/handled)', () => {
     const b = computeBreakdown(10, counts({ done: 4, toEdit: 2 }));
     expect(remainingReviewable(b)).toBe(4); // 4 never-loaded
@@ -82,15 +83,21 @@ describe('remainingReviewable / donePct', () => {
     expect(remainingReviewable(b)).toBe(0);
   });
 
-  it('an empty scope is 100% done', () => {
+  it('an empty scope is 100% reviewed', () => {
     const b = computeBreakdown(0, counts({}));
-    expect(donePct(b)).toBe(100);
+    expect(reviewedPct(b)).toBe(100);
     expect(remainingReviewable(b)).toBe(0);
   });
 
-  it('rounds the done share to whole percent', () => {
+  it('reviewed counts every verdict: done + to-edit + staged', () => {
+    const b = computeBreakdown(10, counts({ done: 4, toEdit: 2, staged: 1 }));
+    expect(reviewedOf(b)).toBe(7);
+    expect(reviewedPct(b)).toBe(70);
+  });
+
+  it('rounds the reviewed share to whole percent', () => {
     const b = computeBreakdown(3, counts({ done: 1 }));
-    expect(donePct(b)).toBe(33);
+    expect(reviewedPct(b)).toBe(33);
   });
 });
 

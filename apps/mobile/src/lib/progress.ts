@@ -73,9 +73,16 @@ export function remainingReviewable(b: StateBreakdown): number {
   return Math.max(0, b.total - b.done - b.toEdit - b.staged);
 }
 
-/** Whole-percent done share; an empty scope counts as 100% (inbox zero). */
-export function donePct(b: StateBreakdown): number {
-  return b.total > 0 ? Math.round((b.done / b.total) * 100) : 100;
+/** Photos with a verdict: done + to-edit + staged (m0.8 gate 5 audit —
+ * matches the reviewed_at stamp; "done" alone under-counted days whose
+ * remaining work is edits or a pending cull confirmation). */
+export function reviewedOf(b: StateBreakdown): number {
+  return b.done + b.toEdit + b.staged;
+}
+
+/** Whole-percent reviewed share; an empty scope counts as 100%. */
+export function reviewedPct(b: StateBreakdown): number {
+  return b.total > 0 ? Math.round((reviewedOf(b) / b.total) * 100) : 100;
 }
 
 /** Grid/summary filter: 'all' or one effective per-photo state. */

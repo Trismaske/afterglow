@@ -26,15 +26,19 @@ import { resolveSources } from '../lib/sourceCatalog';
 import {
   countFavouriteQueue,
   countStagedCulls,
+  getStagedCulls,
   countToEdit,
   getCorpusStats,
-  getDaySummaries,
+  getDaySummariesForDays,
   getReviewedCountsByDay,
+  getUnreviewedDayRows,
+  type DaySummaryRow,
   getSetting,
   markEditDone,
   unstageCullDirect,
 } from '../db/store';
 import { runTrashAttempt } from '../lib/trashFlow';
+import { formatBytes } from '../lib/format';
 import { fileSize } from '../lib/hash';
 import { runEditDetection, type DetectedCopy } from '../lib/detect';
 import { getScanStatus, startContinuousScan, subscribeScanStatus } from '../scan/scanRunner';
@@ -46,13 +50,20 @@ import { colors, touch, useTheme } from '../theme';
 
 type Props = MainTabScreenProps<'Home'>;
 
-const RECENT_DAYS = 7;
+/** Gate 5 recent-days layout: 3 recent calendar days + the 2 most recent
+ * OLDER days still holding unreviewed photos + an expandable older-days
+ * indicator (capped — an all-days browse lives in Progress). */
+const RECENT_CALENDAR_DAYS = 3;
+const UNREVIEWED_DAY_ROWS = 2;
+const OLDER_DAY_CAP = 60;
 
 interface DayRow {
   day: string;
   label: string;
   /** All photos taken that day (MediaStore + trashed rows). */
   total: number;
+  /** Every verdict: done + trashed + to-edit + staged (gate 5 audit). */
+  reviewed: number;
   /** done + trashed. */
   done: number;
   toEdit: number;
@@ -79,10 +90,18 @@ export function HomeScreen({ navigation }: Props) {
     reviewed: number;
   } | null>(null);
   const [stagedCullCount, setStagedCullCount] = useState(0);
+  /** Estimated bytes the staged culls would free (gate 4 corpus stats;
+   * synchronous stat per staged file, capped — 0 hides the figure). */
+  const [reclaimableBytes, setReclaimableBytes] = useState(0);
   const [shareCount, setShareCount] = useState(0);
   const [organizeCount, setOrganizeCount] = useState(0);
   const [favouriteCount, setFavouriteCount] = useState(0);
   const [dayRows, setDayRows] = useState<DayRow[] | null>(null);
+  /** Gate 5: older days that still hold unreviewed photos. */
+  const [unreviewedDayRowsState, setUnreviewedDayRowsState] = useState<DayRow[]>([]);
+  const [olderDays, setOlderDays] = useState<string[]>([]);
+  const [olderRows, setOlderRows] = useState<DayRow[] | null>(null);
+  const buildOlderRowsRef = useRef<((days: readonly string[]) => Promise<DayRow[]>) | null>(null);
   const [detectionNotice, setDetectionNotice] = useState<string | null>(null);
   /** Bumped after detection changes states, to re-run the focus loaders. */
   const [refreshTick, setRefreshTick] = useState(0);
@@ -268,41 +287,66 @@ export function HomeScreen({ navigation }: Props) {
         setShareCount(shareQueue);
         setOrganizeCount(organizeQueue);
         setStagedCullCount(stagedCulls);
+        if (stagedCulls > 0 && stagedCulls <= 500) {
+          const staged = await getStagedCulls(db);
+          if (cancelled) return;
+          setReclaimableBytes(staged.reduce((sum, row) => sum + fileSize(row.uri), 0));
+        } else {
+          setReclaimableBytes(0);
+        }
 
         const src = permission?.granted ? await resolveSources(db).catch(() => null) : null;
         if (cancelled) return;
-        const keys = recentDayKeys(RECENT_DAYS);
-        const summaries = await getDaySummaries(db, keys[keys.length - 1], src?.roots ?? null);
-        const recentRange = {
-          startMs: rangeOfDayKey(keys[keys.length - 1]).startMs,
-          endMs: rangeOfDayKey(keys[0]).endMs,
-        };
-        const mediaByDay = permission?.granted
-          ? await countPhotosByDayInRange(
-              recentRange.startMs,
-              recentRange.endMs,
-              src?.albumIds ?? null,
-            ).catch(() => new Map<string, number>())
-          : new Map<string, number>();
-        const rows: DayRow[] = [];
-        for (const day of keys) {
-          const dbRow = summaries.get(day);
-          const msTotal = mediaByDay.get(day) ?? 0;
+        const toRow = (day: string, dbRow: DaySummaryRow | undefined, msTotal: number): DayRow => {
           // Trashed photos are gone from MediaStore, so the day's true
           // total is MediaStore + trashed rows (DB `done` includes them).
           const total = msTotal + (dbRow?.trashed ?? 0);
-          if (cancelled) return;
-          if (total === 0) continue;
-          rows.push({
+          const done = dbRow?.done ?? 0;
+          const toEdit = dbRow?.toEdit ?? 0;
+          const staged = dbRow?.staged ?? 0;
+          return {
             day,
             label: labelForDayKey(day),
             total,
-            done: dbRow?.done ?? 0,
-            toEdit: dbRow?.toEdit ?? 0,
-            staged: dbRow?.staged ?? 0,
-          });
-        }
-        if (!cancelled) setDayRows(rows);
+            reviewed: Math.min(total, done + toEdit + staged),
+            done,
+            toEdit,
+            staged,
+          };
+        };
+        const buildRows = async (days: readonly string[]): Promise<DayRow[]> => {
+          if (days.length === 0) return [];
+          const summaries = await getDaySummariesForDays(db, days, src?.roots ?? null);
+          const rows: DayRow[] = [];
+          for (const day of days) {
+            const range = rangeOfDayKey(day);
+            const msTotal = permission?.granted
+              ? await countPhotosByDayInRange(range.startMs, range.endMs, src?.albumIds ?? null)
+                  .catch(() => new Map<string, number>())
+                  .then((m) => m.get(day) ?? 0)
+              : 0;
+            const row = toRow(day, summaries.get(day), msTotal);
+            if (row.total > 0) rows.push(row);
+          }
+          return rows;
+        };
+        const recentKeys = recentDayKeys(RECENT_CALENDAR_DAYS);
+        const unreviewedDays = permission?.granted
+          ? await getUnreviewedDayRows(db, src?.roots ?? null)
+          : [];
+        const olderUnreviewed = unreviewedDays
+          .map((u) => u.day)
+          .filter((day) => !recentKeys.includes(day));
+        const [recentRows, unreviewedRows] = await Promise.all([
+          buildRows(recentKeys),
+          buildRows(olderUnreviewed.slice(0, UNREVIEWED_DAY_ROWS)),
+        ]);
+        if (cancelled) return;
+        setDayRows(recentRows);
+        setUnreviewedDayRowsState(unreviewedRows);
+        setOlderDays(olderUnreviewed.slice(UNREVIEWED_DAY_ROWS, OLDER_DAY_CAP));
+        setOlderRows(null);
+        buildOlderRowsRef.current = buildRows;
       })();
       return () => {
         cancelled = true;
@@ -311,6 +355,12 @@ export function HomeScreen({ navigation }: Props) {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [db, permission?.granted, refreshTick]),
   );
+
+  const expandOlderDays = useCallback(async () => {
+    const build = buildOlderRowsRef.current;
+    if (!build || olderDays.length === 0) return;
+    setOlderRows(await build(olderDays));
+  }, [olderDays]);
 
   const openProgress = useCallback(() => {
     navigation.navigate('Progress', {
@@ -321,6 +371,48 @@ export function HomeScreen({ navigation }: Props) {
   }, [navigation]);
 
   const queueTotal = review.queueCounts.grouped + review.queueCounts.singles;
+
+  // One card per day (gate 5 audit: the headline count is REVIEWED —
+  // every verdict — not just converged "done").
+  const renderDayRow = (row: DayRow) => {
+    const pct = row.total > 0 ? Math.round((row.reviewed / row.total) * 100) : 0;
+    const pending = Math.max(0, row.total - row.reviewed);
+    return (
+      <Pressable
+        key={row.day}
+        style={styles.dayRow}
+        onPress={() => navigation.navigate('DayProgress', { day: row.day })}
+      >
+        <View style={styles.dayRowHeader}>
+          <Text style={styles.dayRowTitle}>{row.label}</Text>
+          <Text style={styles.dayRowPct}>
+            {row.reviewed === row.total
+              ? 'reviewed'
+              : `${row.reviewed}/${row.total} reviewed · ${pct}%`}
+          </Text>
+        </View>
+        <StateProgressBar
+          total={row.total}
+          segments={[
+            { count: row.done, color: colors.keep },
+            { count: row.toEdit, color: colors.edit },
+            { count: row.staged, color: colors.cull },
+          ]}
+        />
+        {(pending > 0 || row.toEdit > 0 || row.staged > 0) && (
+          <Text style={styles.dayRowHint}>
+            {[
+              pending > 0 ? `${pending} to review` : null,
+              row.toEdit > 0 ? `${row.toEdit} to edit` : null,
+              row.staged > 0 ? `${row.staged} staged cull` : null,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </Text>
+        )}
+      </Pressable>
+    );
+  };
 
   return (
     <ScrollView
@@ -421,7 +513,8 @@ export function HomeScreen({ navigation }: Props) {
                 ? 'Photo scan hit a problem — it will retry on next launch.'
                 : corpus
                   ? `${corpus.total} photos · ${corpus.groupsFound} groups found · ` +
-                    `${corpus.total > 0 ? Math.min(100, Math.round((corpus.reviewed / corpus.total) * 100)) : 0}% reviewed`
+                    `${corpus.total > 0 ? Math.min(100, Math.round((corpus.reviewed / corpus.total) * 100)) : 0}% reviewed` +
+                    (reclaimableBytes > 0 ? ` · ~${formatBytes(reclaimableBytes)} reclaimable` : '')
                   : 'Preparing scan…'}
           </Text>
         </View>
@@ -546,41 +639,26 @@ export function HomeScreen({ navigation }: Props) {
       {permission?.granted && dayRows && dayRows.length > 0 && (
         <>
           <Text style={styles.sectionLabel}>Recent days</Text>
-          {dayRows.map((row) => {
-            const pct = row.total > 0 ? Math.round((row.done / row.total) * 100) : 0;
-            return (
-              <Pressable
-                key={row.day}
-                style={styles.dayRow}
-                onPress={() => navigation.navigate('DayProgress', { day: row.day })}
-              >
-                <View style={styles.dayRowHeader}>
-                  <Text style={styles.dayRowTitle}>{row.label}</Text>
-                  <Text style={styles.dayRowPct}>
-                    {row.done === row.total ? 'done' : `${row.done}/${row.total} · ${pct}%`}
-                  </Text>
-                </View>
-                <StateProgressBar
-                  total={row.total}
-                  segments={[
-                    { count: row.done, color: colors.keep },
-                    { count: row.toEdit, color: colors.edit },
-                    { count: row.staged, color: colors.cull },
-                  ]}
-                />
-                {(row.toEdit > 0 || row.staged > 0) && (
-                  <Text style={styles.dayRowHint}>
-                    {[
-                      row.toEdit > 0 ? `${row.toEdit} to edit` : null,
-                      row.staged > 0 ? `${row.staged} staged cull` : null,
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </Text>
-                )}
-              </Pressable>
-            );
-          })}
+          {dayRows.map(renderDayRow)}
+        </>
+      )}
+
+      {permission?.granted && (unreviewedDayRowsState.length > 0 || olderDays.length > 0) && (
+        <>
+          <Text style={styles.sectionLabel}>Still to review</Text>
+          {unreviewedDayRowsState.map(renderDayRow)}
+          {olderRows !== null ? (
+            olderRows.map(renderDayRow)
+          ) : olderDays.length > 0 ? (
+            <Pressable style={styles.olderRow} onPress={() => void expandOlderDays()}>
+              <MaterialCommunityIcons name="calendar-clock" size={20} color={colors.textDim} />
+              <Text style={styles.olderRowText}>
+                {olderDays.length} older day{olderDays.length === 1 ? '' : 's'} with photos to
+                review
+              </Text>
+              <Text style={[styles.progressChevron, { color: theme.accent }]}>›</Text>
+            </Pressable>
+          ) : null}
         </>
       )}
     </ScrollView>
@@ -614,6 +692,18 @@ const styles = StyleSheet.create({
   goalBody: { flex: 1, gap: 4 },
   streakText: { color: colors.text, fontSize: 14, fontWeight: '600' },
   scanStatus: { color: colors.textDim, fontSize: 12, marginTop: 2 },
+  olderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: colors.surface,
+    borderRadius: touch.radius,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 14,
+    minHeight: 52,
+  },
+  olderRowText: { color: colors.textDim, fontSize: 14, flex: 1 },
   sectionLabel: {
     color: colors.textDim,
     fontSize: 13,

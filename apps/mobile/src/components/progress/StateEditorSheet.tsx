@@ -1,9 +1,11 @@
 /**
- * Small bottom-sheet state editor for one photo (progress pages, m0.4).
+ * Small bottom-sheet state editor for one photo (progress pages, m0.4;
+ * m0.8 gate 5: also hosted by the standard PhotoViewer's detail panel).
  * Shows the current state and the allowed transitions per lib/progress
  * `editorActions` (audited against the store semantics — see that
- * module's docs). Photos in the ACTIVE session are read-only here: a
- * direct DB write would desync the authoritative session snapshot.
+ * module's docs). Every durable state is editable (m0.8 — there is no
+ * session snapshot to desync); unreviewed/trashed/confirmed stay
+ * read-only because review and the trash lifecycle own them.
  */
 import React, { useCallback, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';

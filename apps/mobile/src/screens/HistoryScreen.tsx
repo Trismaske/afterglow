@@ -4,7 +4,8 @@
  * share-sheet events interleaved. Ordered by activity_at with two-stream
  * keyset pagination (C#15); trashed/deleted photos drop out (restore
  * brings them back via reconciliation); tapping a photo row opens the
- * standard state editor (StateEditorSheet).
+ * standard full-screen viewer (PhotoViewer — gate 5), whose detail panel
+ * hosts the state editor.
  */
 import React, { useCallback, useRef, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -23,11 +24,9 @@ import {
 } from '../db/store';
 import { reconcileExternallyRemoved } from '../db/trashStore';
 import { checkMediaPresence } from '../lib/media';
-import { classifyPhotoState } from '../lib/progress';
 import { formatDayClock } from '../lib/format';
 import { DecisionBadge, type DecisionKind } from '../components/DecisionBadge';
-import { StateEditorSheet } from '../components/progress/StateEditorSheet';
-import type { GridPhoto } from '../components/progress/PhotoStateGrid';
+import { PhotoViewer } from '../components/PhotoViewer';
 import { colors, touch } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'History'>;
@@ -57,7 +56,7 @@ export function HistoryScreen(_props: Props) {
   const [rows, setRows] = useState<HistoryRow[] | null>(null);
   const [next, setNext] = useState<HistoryCursor | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [selected, setSelected] = useState<GridPhoto | null>(null);
+  const [viewerId, setViewerId] = useState<string | null>(null);
   // Monotonic request token: a reload invalidates every in-flight fetch
   // (an older filter's result finishing last must not win the state).
   const requestRef = useRef(0);
@@ -147,18 +146,7 @@ export function HistoryScreen(_props: Props) {
     }
     const badge = badgeOf(item);
     return (
-      <Pressable
-        style={styles.row}
-        onPress={() =>
-          setSelected({
-            id: item.asset_id,
-            uri: item.uri,
-            takenAt: item.taken_at,
-            effective: classifyPhotoState({ state: item.state, grouped: false }),
-            dbState: item.state,
-          })
-        }
-      >
+      <Pressable style={styles.row} onPress={() => setViewerId(item.asset_id)}>
         <Image source={{ uri: item.uri }} style={styles.thumb} contentFit="cover" />
         <View style={styles.rowBody}>
           <Text style={styles.rowTime}>{formatDayClock(item.activity_at)}</Text>
@@ -229,11 +217,22 @@ export function HistoryScreen(_props: Props) {
           ) : null
         }
       />
-      <StateEditorSheet
-        photo={selected}
-        onClose={() => setSelected(null)}
-        onChanged={() => void reload(filter)}
-      />
+      {viewerId !== null &&
+        (() => {
+          const photoRows = (rows ?? []).filter(
+            (r): r is Extract<HistoryRow, { kind: 'photo' }> => r.kind === 'photo',
+          );
+          const index = photoRows.findIndex((r) => r.asset_id === viewerId);
+          if (index < 0) return null;
+          return (
+            <PhotoViewer
+              items={photoRows.map((r) => ({ id: r.asset_id, uri: r.uri, takenAt: r.taken_at }))}
+              initialIndex={index}
+              onClose={() => setViewerId(null)}
+              onChanged={() => void reload(filter)}
+            />
+          );
+        })()}
     </View>
   );
 }

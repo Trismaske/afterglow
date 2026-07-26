@@ -21,6 +21,7 @@ import { BigButton } from '../components/BigButton';
 import { showToast } from '../lib/toast';
 import { colors, touch, useTheme } from '../theme';
 import { useReview } from '../review/ReviewContext';
+import { PhotoViewer } from '../components/PhotoViewer';
 
 export function FavouritesQueueScreen() {
   const db = useSQLiteContext();
@@ -30,6 +31,8 @@ export function FavouritesQueueScreen() {
   const [rows, setRows] = useState<FavouriteQueueRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyTarget, setBusyTarget] = useState<boolean | null>(null);
+  /** In-app full-screen viewer (gate 5) — thumbnail tap. */
+  const [viewerId, setViewerId] = useState<string | null>(null);
   const supported = Platform.OS === 'android' && Number(Platform.Version) >= 30;
 
   const refresh = useCallback(async () => {
@@ -106,7 +109,9 @@ export function FavouritesQueueScreen() {
         }
         renderItem={({ item }) => (
           <View style={styles.row}>
-            <Image source={{ uri: item.uri }} style={styles.thumb} contentFit="cover" />
+            <Pressable onPress={() => setViewerId(item.asset_id)}>
+              <Image source={{ uri: item.uri }} style={styles.thumb} contentFit="cover" />
+            </Pressable>
             <MaterialCommunityIcons
               name={item.favourite_target === 1 ? 'heart-plus' : 'heart-minus'}
               size={24}
@@ -123,6 +128,19 @@ export function FavouritesQueueScreen() {
           </View>
         )}
       />
+      {viewerId !== null &&
+        (() => {
+          const index = rows.findIndex((r) => r.asset_id === viewerId);
+          if (index < 0) return null;
+          return (
+            <PhotoViewer
+              items={rows.map((r) => ({ id: r.asset_id, uri: r.uri, takenAt: r.taken_at }))}
+              initialIndex={index}
+              onClose={() => setViewerId(null)}
+              onChanged={() => void refresh()}
+            />
+          );
+        })()}
       <View style={styles.actions}>
         {applyRows.length > 0 && (
           <BigButton

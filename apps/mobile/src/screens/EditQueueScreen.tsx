@@ -13,6 +13,7 @@ import { getEditableContentUri } from '../lib/media';
 import { launchEditor, launchViewer } from '../lib/edit';
 import { NO_EDITOR_MESSAGE, NO_EDITOR_TITLE } from '../lib/editActions';
 import { EditDiagnosticsSheet } from '../components/EditDiagnosticsSheet';
+import { PhotoViewer } from '../components/PhotoViewer';
 import { showToast } from '../lib/toast';
 import { labelForDayKey } from '../lib/dates';
 import { formatClock } from '../lib/format';
@@ -38,6 +39,8 @@ export function EditQueueScreen(_props: Props) {
   // Gate-0 (m0.7 item A): the editor-launch diagnostic matrix, opened from
   // the failure alert or by long-pressing Edit (proactive/emulator path).
   const [matrixAssetId, setMatrixAssetId] = useState<string | null>(null);
+  /** In-app full-screen viewer (gate 5) — thumbnail tap. */
+  const [viewerId, setViewerId] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setRows(await getToEditPhotos(db));
@@ -129,12 +132,14 @@ export function EditQueueScreen(_props: Props) {
   const renderItem = useCallback(
     ({ item }: { item: ToEditRow }) => (
       <View style={styles.row}>
-        <Image
-          source={{ uri: item.uri }}
-          style={styles.thumb}
-          contentFit="cover"
-          recyclingKey={item.asset_id}
-        />
+        <Pressable onPress={() => setViewerId(item.asset_id)}>
+          <Image
+            source={{ uri: item.uri }}
+            style={styles.thumb}
+            contentFit="cover"
+            recyclingKey={item.asset_id}
+          />
+        </Pressable>
         <View style={styles.rowBody}>
           <Text style={styles.rowTitle}>
             {item.day ? labelForDayKey(item.day) : 'Unknown day'} · {formatClock(item.taken_at)}
@@ -173,6 +178,9 @@ export function EditQueueScreen(_props: Props) {
     [busyId, openEditor, openGallery, markDone],
   );
 
+  const viewerIndex =
+    viewerId !== null && rows ? rows.findIndex((r) => r.asset_id === viewerId) : -1;
+
   return (
     <View style={[styles.root, { paddingTop: 12 }]}>
       <Text style={styles.subtitle}>
@@ -195,6 +203,14 @@ export function EditQueueScreen(_props: Props) {
           ) : null
         }
       />
+      {viewerIndex >= 0 && rows ? (
+        <PhotoViewer
+          items={rows.map((r) => ({ id: r.asset_id, uri: r.uri, takenAt: r.taken_at }))}
+          initialIndex={viewerIndex}
+          onClose={() => setViewerId(null)}
+          onChanged={() => void reload().then(refresh)}
+        />
+      ) : null}
       {matrixAssetId !== null ? (
         <EditDiagnosticsSheet assetId={matrixAssetId} onClose={() => setMatrixAssetId(null)} />
       ) : null}

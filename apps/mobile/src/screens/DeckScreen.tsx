@@ -38,6 +38,7 @@ import { completedDuringVisit, destinationAfterGroup } from '../lib/groupFlow';
 import { DecisionBadge, DECISION_GLYPHS, type DecisionKind } from '../components/DecisionBadge';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { isFavouriteSelected, shouldOfferFavouriteHandoff } from '../lib/favouriteState';
+import { PhotoViewer } from '../components/PhotoViewer';
 import { useSQLiteContext } from 'expo-sqlite';
 import { addToShareQueue, isInShareQueue, removeFromShareQueue } from '../db/shareStore';
 import { newAlbumPath, queueOrganize } from '../db/organizeStore';
@@ -52,7 +53,6 @@ type SharedProps = {
   singlesMode: boolean;
 };
 
-const UNDO_MS = 4000;
 const THUMB = 52;
 const MAX_SCALE = 8;
 
@@ -115,12 +115,13 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     toggleFavourite,
     keepAllSingles,
     version,
+    loadGroup,
+    refresh,
   } = useReview();
   const [busy, setBusy] = useState(false);
   const [pageW, setPageW] = useState(0);
-  const [undo, setUndo] = useState<{ id: string } | null>(null);
   const [comparePicker, setComparePicker] = useState(false);
-  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [viewerOpen, setViewerOpen] = useState(false);
   const listRef = useRef<FlatList<MediaItem>>(null);
 
   // m0.5: an explicit group (Groups screen tap) pins the deck to it; the
@@ -131,19 +132,45 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
       singlesMode ? null : (explicitGroupId ?? (groups[0] ? String(groups[0].groupId) : null)),
     [explicitGroupId, groups, singlesMode],
   );
-  const group: ReviewGroupRow | null = useMemo(
+  const queueGroup: ReviewGroupRow | null = useMemo(
     () => (groupId ? (groups.find((g) => String(g.groupId) === groupId) ?? null) : null),
     [groups, groupId],
   );
+  // Gate 5: an explicitly opened group ABSENT from the queue is fetched
+  // directly — completed groups reopen in browse/re-decide mode instead
+  // of bouncing back. 'missing' = the group is genuinely gone (a pair
+  // dissolved by ejection, or a stale id) — the advance effect handles it.
+  const [loadedGroup, setLoadedGroup] = useState<ReviewGroupRow | 'loading' | 'missing'>('loading');
+  useEffect(() => {
+    let cancelled = false;
+    if (singlesMode || !explicitGroupId || queueGroup) {
+      setLoadedGroup('loading');
+      return;
+    }
+    void loadGroup(Number(explicitGroupId)).then((fetched) => {
+      if (!cancelled) setLoadedGroup(fetched ?? 'missing');
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [explicitGroupId, queueGroup, loadGroup, singlesMode, version]);
+  const group: ReviewGroupRow | null =
+    queueGroup ?? (typeof loadedGroup === 'object' ? loadedGroup : null);
   // Derived deck info (the old core groupInfo shape, DB-backed): a group
   // absent from the queue but explicitly opened is COMPLETE (browse mode)
   // — the queue only lists groups with unreviewed members.
   const stateOf = useMemo(() => {
     const map = new Map<string, ReviewMemberRow['state']>();
-    for (const g of groups) for (const m of g.members) map.set(m.asset_id, m.state);
+    if (group) for (const m of group.members) map.set(m.asset_id, m.state);
     for (const m of singles) map.set(m.asset_id, m.state);
     return map;
-  }, [groups, singles]);
+  }, [group, singles]);
+  const timeAttachedOf = useMemo(() => {
+    const set = new Set<string>();
+    if (group) for (const m of group.members) if (m.time_attached === 1) set.add(m.asset_id);
+    for (const m of singles) if (m.time_attached === 1) set.add(m.asset_id);
+    return set;
+  }, [group, singles]);
   const info = useMemo(() => {
     if (!group) return null;
     const aliveIds = group.members.filter((m) => m.state === 'unreviewed').map((m) => m.asset_id);
@@ -176,6 +203,15 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     () => (group ? group.members.filter((m) => m.state === 'unreviewed').map(toItem) : []),
     [group],
   );
+  // Gate 5: culled photos STAY in the live deck badged with their verdict
+  // (reversible until the final confirmation) — kept photos still leave.
+  const liveItems: MediaItem[] = useMemo(
+    () =>
+      group
+        ? group.members.filter((m) => m.state === 'unreviewed' || m.state === 'culled').map(toItem)
+        : [],
+    [group],
+  );
   // Browse mode pages every re-decidable member (done, to_edit AND staged
   // culls — everything before the final confirmation).
   const browseItems: MediaItem[] = useMemo(() => {
@@ -184,13 +220,12 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
       .filter((m) => m.state === 'done' || m.state === 'to_edit' || m.state === 'culled')
       .map(toItem);
   }, [group, browse]);
-  // Unreviewed singles only (a decided single leaves the deck on refresh;
-  // gate 5's feed rework re-admits staged culls badged).
+  // The singles feed: unreviewed + staged culls badged (gate 5).
   const singlesItems: MediaItem[] = useMemo(
     () => (singlesMode ? singles.map(toItem) : []),
     [singles, singlesMode],
   );
-  const deckItems = singlesMode ? singlesItems : browse ? browseItems : aliveItems;
+  const deckItems = singlesMode ? singlesItems : browse ? browseItems : liveItems;
 
   // The deck cursor is screen-local everywhere (m0.8: derived model — the
   // DB has no cursor; a decision shrinks the alive deck and the cursor
@@ -292,7 +327,13 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
         savedTy.value = 0;
         runOnJS(setZoomed)(false);
       });
-    return Gesture.Simultaneous(pinch, pan, doubleTap);
+    const tap = Gesture.Tap()
+      .numberOfTaps(1)
+      .maxDuration(250)
+      .onEnd((_event, success) => {
+        if (success) runOnJS(fireStageTap)();
+      });
+    return Gesture.Simultaneous(pinch, pan, doubleTap, tap);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pagerGesture, zoomed]);
 
@@ -300,25 +341,18 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     transform: [{ translateX: tx.value }, { translateY: ty.value }, { scale: scale.value }],
   }));
 
-  const clearUndo = useCallback(() => {
-    if (undoTimer.current) clearTimeout(undoTimer.current);
-    undoTimer.current = null;
-    setUndo(null);
-  }, []);
-  useEffect(
-    () => () => {
-      if (undoTimer.current) clearTimeout(undoTimer.current);
-    },
-    [],
-  );
-  // A new group means the old cull can't return to a live deck anymore;
-  // ditto a group COMPLETING under the banner (cull of the last photo in
-  // an explicitly opened group) — core undoCull only works on live decks,
-  // browse mode's re-decide chips take over from there.
+  // Browse mode: a single tap on the stage opens the standard full-screen
+  // viewer (gate 5). Ref-dispatched so the gesture memo stays stable.
+  const stageTapRef = useRef<() => void>(() => {});
+  stageTapRef.current = () => {
+    if (!zoomed && browse && !singlesMode) setViewerOpen(true);
+  };
+  const fireStageTap = useCallback(() => stageTapRef.current(), []);
+
   useEffect(() => {
-    clearUndo();
     setComparePicker(false);
-  }, [groupId, browse, clearUndo, singlesMode]);
+    setViewerOpen(false);
+  }, [groupId, browse, singlesMode]);
   useEffect(() => {
     setBrowseCursor(0);
   }, [groupId]);
@@ -335,7 +369,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
   useEffect(() => {
     if (singlesMode) return;
     if (explicitGroupId) {
-      if (!group) {
+      if (!group && loadedGroup === 'missing') {
         // A pair DISSOLVES during this visit when "Not related" ejects
         // one member (C#6) — that is a completion: advance to the next
         // group/Singles like any other finish. Only a genuinely stale id
@@ -372,6 +406,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     groupId,
     explicitGroupId,
     group,
+    loadedGroup,
     groups,
     hasSingles,
     navigation,
@@ -380,7 +415,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     isFocused,
   ]);
 
-  const singlesPending = singlesMode ? singles.length : 0;
+  const singlesPending = singlesMode ? singles.filter((m) => m.state === 'unreviewed').length : 0;
 
   // m0.7 (#20): only advance out of Singles when completion happened
   // DURING this visit. A fully-reviewed singles pseudo-group opened from
@@ -484,23 +519,18 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     [busy],
   );
 
+  // Gate 5: the culled photo stays in the deck badged (tap Cull again to
+  // un-cull) — advance the pager past it; membership does not change, so
+  // the deckKey effect won't move the cursor for us.
   const cullCurrent = useCallback(() => {
     if (!current) return;
     const id = current.id;
+    const index = cursor;
     void run(async () => {
       await decide(id, 'cull');
-      if (undoTimer.current) clearTimeout(undoTimer.current);
-      setUndo({ id });
-      undoTimer.current = setTimeout(() => setUndo(null), UNDO_MS);
+      if (index + 1 < deckItems.length) jumpTo(index + 1);
     });
-  }, [current, run, decide]);
-
-  const undoLastCull = useCallback(() => {
-    if (!undo) return;
-    const id = undo.id;
-    clearUndo();
-    void run(() => clearDecision(id));
-  }, [undo, clearUndo, run, clearDecision]);
+  }, [current, cursor, deckItems.length, jumpTo, run, decide]);
 
   const isBest = !!current && !singlesMode && info?.bestId === current.id;
 
@@ -604,7 +634,11 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
 
   const openCompare = useCallback(
     (againstId?: string) => {
-      const candidates = singlesMode ? deckItems : aliveItems;
+      // Compare works on undecided photos only — the feed's staged culls
+      // re-decide via the chips instead.
+      const candidates = singlesMode
+        ? deckItems.filter((i) => (stateOf.get(i.id) ?? 'unreviewed') === 'unreviewed')
+        : aliveItems;
       if ((!singlesMode && !groupId) || !current || candidates.length < 2) return;
       if (againstId === undefined && candidates.length > 2) {
         // m0.5: explicit opponent choice for larger groups.
@@ -621,7 +655,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
         bId: other,
       });
     },
-    [aliveItems, current, deckItems, groupId, navigation, singlesMode],
+    [aliveItems, current, deckItems, groupId, navigation, singlesMode, stateOf],
   );
 
   const renderPage = useCallback(
@@ -674,9 +708,12 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
   };
 
   const decideSingleCurrent = async (target: RedecideTarget) => {
-    // Every listed single is unreviewed; the decided photo leaves the
-    // deck on refresh and the pager clamps to the next one.
+    // Keep/to-edit remove the photo from the feed (same-index advance);
+    // a fresh cull keeps it badged in place (gate 5) — advance past it.
+    const index = cursor;
+    const wasCulled = (stateOf.get(current.id) ?? 'unreviewed') === 'culled';
     await redecide(current.id, target);
+    if (target === 'cull' && !wasCulled && index + 1 < deckItems.length) jumpTo(index + 1);
   };
 
   return (
@@ -685,14 +722,16 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
         <Text style={styles.headerTitle}>
           {singlesMode
             ? `Singles · ${keepCount - singlesPending} of ${keepCount} reviewed`
-            : `Group ${groupIndex + 1} of ${groups.length} · ${keepCount} ${browse ? 'reviewed' : 'in deck'}`}
+            : browse
+              ? `Group · ${keepCount} reviewed`
+              : `Group ${groupIndex + 1} of ${groups.length} · ${aliveItems.length} of ${keepCount} to review`}
         </Text>
         <Text style={styles.headerHint}>
           {singlesMode
             ? 'Scroll freely · use the same decisions, compare and zoom as groups.'
             : browse
               ? 'Reviewed group — change any decision until the final delete confirmation.'
-              : "Swipe through the group · cull what you don't want · Keep rest finishes."}
+              : 'Swipe through the group · culled shots stay badged until you confirm · Keep rest finishes.'}
         </Text>
       </View>
 
@@ -748,18 +787,13 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
               {formatClockPrecise(current.timestamp, needMs[cursor] ?? false)}
             </Text>
           </View>
-          {(isBest || favourite || currentDecision) && (
+          {(isBest || favourite || currentDecision || timeAttachedOf.has(current.id)) && (
             <View style={styles.flagBadge} pointerEvents="none">
               {currentDecision && <DecisionBadge kind={currentDecision} size={24} />}
               {isBest && <DecisionBadge kind="best" size={24} accent={theme.accent} />}
               {favourite && <DecisionBadge kind="fav" size={24} />}
+              {timeAttachedOf.has(current.id) && <DecisionBadge kind="time" size={24} />}
             </View>
-          )}
-          {undo && (
-            <Pressable style={styles.undoBanner} onPress={undoLastCull} disabled={busy}>
-              <Text style={styles.undoText}>Photo staged to cull</Text>
-              <Text style={[styles.undoAction, { color: theme.accent }]}>UNDO</Text>
-            </Pressable>
           )}
         </View>
       </GestureDetector>
@@ -973,18 +1007,26 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
             </Pressable>
             <Pressable
               style={[styles.actionButton, styles.compareButton]}
-              disabled={busy || keepCount < 2}
+              disabled={busy || aliveItems.length < 2}
               onPress={() => openCompare()}
             >
               <MaterialCommunityIcons name="compare-horizontal" size={21} color={colors.textDim} />
-              <Text style={[styles.actionText, keepCount < 2 && styles.actionTextDisabled]}>
-                Compare{keepCount > 2 ? ' with…' : ''}
+              <Text style={[styles.actionText, aliveItems.length < 2 && styles.actionTextDisabled]}>
+                Compare{aliveItems.length > 2 ? ' with…' : ''}
               </Text>
             </Pressable>
             <Pressable
-              style={[styles.actionButton, styles.cullButton]}
+              style={[
+                styles.actionButton,
+                styles.cullButton,
+                currentState === 'culled' && { borderWidth: 2, borderColor: colors.cull },
+              ]}
               disabled={busy}
-              onPress={cullCurrent}
+              onPress={() =>
+                currentState === 'culled'
+                  ? void run(() => clearDecision(current.id))
+                  : cullCurrent()
+              }
             >
               <MaterialCommunityIcons name="close" size={21} color={colors.cull} />
               <Text style={styles.actionText}>Cull</Text>
@@ -1050,7 +1092,8 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
                 styles.secondaryButton,
                 isBest && { backgroundColor: theme.accentMuted, borderColor: theme.accent },
               ]}
-              disabled={busy}
+              // A staged cull is not ALIVE — un-cull it before starring.
+              disabled={busy || currentState === 'culled'}
               onPress={toggleBest}
             >
               <MaterialCommunityIcons
@@ -1071,9 +1114,9 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
           </View>
 
           <BigButton
-            label={busy ? 'Saving…' : `Keep remaining (${keepCount})`}
+            label={busy ? 'Saving…' : `Keep remaining (${aliveItems.length})`}
             color={colors.keep}
-            disabled={busy}
+            disabled={busy || aliveItems.length === 0}
             onPress={finishGroup}
           />
         </>
@@ -1130,6 +1173,15 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
           </Pressable>
         </Pressable>
       </Modal>
+
+      {viewerOpen && (
+        <PhotoViewer
+          items={deckItems.map((i) => ({ id: i.id, uri: i.uri, takenAt: i.timestamp }))}
+          initialIndex={cursor}
+          onClose={() => setViewerOpen(false)}
+          onChanged={() => void refresh()}
+        />
+      )}
 
       {/* m0.5: explicit opponent picker for the Compare tool. */}
       <Modal
@@ -1224,22 +1276,6 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   flagBadgeText: { fontSize: 13, fontWeight: '700' },
-  undoBanner: {
-    position: 'absolute',
-    bottom: 10,
-    right: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: 'rgba(0,0,0,0.75)',
-    borderColor: colors.border,
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  undoText: { color: colors.text, fontSize: 13 },
-  undoAction: { fontSize: 13, fontWeight: '800' },
   thumbStrip: { flexGrow: 0 },
   thumbStripContent: { gap: 6, paddingHorizontal: 2 },
   thumb: {

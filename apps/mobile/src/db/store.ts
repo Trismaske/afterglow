@@ -449,8 +449,39 @@ export async function listReviewGroups(
   }));
 }
 
-/** Unreviewed present singles (NULL-group assignment), newest first. */
-export async function listUnreviewedSingles(
+/**
+ * One group by id regardless of completion (browse/re-decide of a
+ * finished group — gate 5); null when the group no longer exists or has
+ * no present members.
+ */
+export async function getReviewGroup(
+  db: SQLiteDatabase,
+  groupId: number,
+): Promise<ReviewGroupRow | null> {
+  const group = await db.getFirstAsync<{ id: number; best_photo_id: string | null }>(
+    'SELECT id, best_photo_id FROM photo_groups WHERE id = ?',
+    groupId,
+  );
+  if (!group) return null;
+  const members = await db.getAllAsync<ReviewMemberRow>(
+    `SELECT p.asset_id, p.uri, p.taken_at, p.state, p.needs_edit, a.time_attached
+     FROM photo_group_assignments a
+     JOIN photos p ON p.asset_id = a.photo_id
+     WHERE a.group_id = ? AND p.is_present = 1
+     ORDER BY p.taken_at ASC, p.asset_id ASC`,
+    groupId,
+  );
+  if (members.length === 0) return null;
+  return { groupId: Number(group.id), bestPhotoId: group.best_photo_id, members };
+}
+
+/**
+ * The singles feed (gate 5): unreviewed present singles PLUS staged
+ * culls — a culled single stays in the feed badged with its verdict
+ * until the final delete confirmation, so re-deciding never needs a
+ * detour through the cull list. Newest first.
+ */
+export async function listSinglesFeed(
   db: SQLiteDatabase,
   limit: number,
 ): Promise<ReviewMemberRow[]> {
@@ -458,10 +489,69 @@ export async function listUnreviewedSingles(
     `SELECT p.asset_id, p.uri, p.taken_at, p.state, p.needs_edit, a.time_attached
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
-     WHERE a.group_id IS NULL AND p.state = 'unreviewed' AND p.is_present = 1
+     WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled') AND p.is_present = 1
      ORDER BY p.taken_at DESC, p.asset_id DESC
      LIMIT ?`,
     limit,
+  );
+}
+
+/**
+ * Every group with a present member taken on the given local day, newest
+ * first, completion state irrespective — a completed day re-shows its
+ * groups for browse/re-decide (gate 5). Members outside the day ride
+ * along (groups may span midnight; the deck always shows whole groups).
+ */
+export async function listGroupsForDay(db: SQLiteDatabase, day: string): Promise<ReviewGroupRow[]> {
+  const ids = await db.getAllAsync<{ group_id: number }>(
+    `SELECT DISTINCT a.group_id FROM photo_group_assignments a
+     JOIN photos p ON p.asset_id = a.photo_id
+     WHERE a.group_id IS NOT NULL AND p.day = ? AND p.is_present = 1`,
+    day,
+  );
+  const groups = await Promise.all(ids.map((r) => getReviewGroup(db, Number(r.group_id))));
+  return groups
+    .filter((g): g is ReviewGroupRow => g !== null)
+    .sort((a, b) => (b.members[0]?.taken_at ?? 0) - (a.members[0]?.taken_at ?? 0));
+}
+
+/** Everything the standard photo viewer's detail panel shows for one
+ * photo (gate 5); null when the photo was never tracked. */
+export interface PhotoFacts {
+  asset_id: string;
+  uri: string;
+  taken_at: number;
+  state: PhotoState;
+  needs_edit: number;
+  favourite_state: FavouriteState;
+  organize_state: string;
+  organize_applied_at: number | null;
+  reviewed_at: number | null;
+  /** Continuous group membership (null = single). */
+  group_id: number | null;
+  /** Grouped by time only — embedding missing (decision 5). */
+  time_attached: number;
+  /** User ejected it from a group ("Not related"). */
+  user_single: number;
+  /** This photo is its group's starred best. */
+  is_best: number;
+}
+
+export async function getPhotoFacts(
+  db: SQLiteDatabase,
+  assetId: string,
+): Promise<PhotoFacts | null> {
+  return db.getFirstAsync<PhotoFacts>(
+    `SELECT p.asset_id, p.uri, p.taken_at, p.state, p.needs_edit, p.favourite_state,
+            p.organize_state, p.organize_applied_at, p.reviewed_at,
+            a.group_id, COALESCE(a.time_attached, 0) AS time_attached,
+            COALESCE(a.user_single, 0) AS user_single,
+            CASE WHEN g.best_photo_id = p.asset_id THEN 1 ELSE 0 END AS is_best
+     FROM photos p
+     LEFT JOIN photo_group_assignments a ON a.photo_id = p.asset_id
+     LEFT JOIN photo_groups g ON g.id = a.group_id
+     WHERE p.asset_id = ?`,
+    assetId,
   );
 }
 
@@ -1424,6 +1514,14 @@ export interface DaySummaryRow {
   staged: number;
 }
 
+const DAY_SUMMARY_SELECT = `SELECT day,
+            COUNT(*) AS tracked,
+            SUM(CASE WHEN state IN ('done', 'trashed') THEN 1 ELSE 0 END) AS done,
+            SUM(CASE WHEN state = 'trashed' THEN 1 ELSE 0 END) AS trashed,
+            SUM(CASE WHEN state = 'to_edit' THEN 1 ELSE 0 END) AS toEdit,
+            SUM(CASE WHEN state IN ('culled', 'confirmed') THEN 1 ELSE 0 END) AS staged
+     FROM photos WHERE day IS NOT NULL`;
+
 /** Per-day rollups for every day >= sinceDay that has tracked photos. */
 export async function getDaySummaries(
   db: SQLiteDatabase,
@@ -1432,32 +1530,43 @@ export async function getDaySummaries(
 ): Promise<Map<string, DaySummaryRow>> {
   const src = sourceClause(roots);
   const rows = await db.getAllAsync<DaySummaryRow>(
-    `SELECT day,
-            COUNT(*) AS tracked,
-            SUM(CASE WHEN state IN ('done', 'trashed') THEN 1 ELSE 0 END) AS done,
-            SUM(CASE WHEN state = 'trashed' THEN 1 ELSE 0 END) AS trashed,
-            SUM(CASE WHEN state = 'to_edit' THEN 1 ELSE 0 END) AS toEdit,
-            SUM(CASE WHEN state IN ('culled', 'confirmed') THEN 1 ELSE 0 END) AS staged
-     FROM photos WHERE day IS NOT NULL AND day >= ?${src.sql}
-     GROUP BY day`,
+    `${DAY_SUMMARY_SELECT} AND day >= ?${src.sql} GROUP BY day`,
     sinceDay,
     ...src.params,
   );
   return new Map(rows.map((r) => [r.day, r]));
 }
 
-/**
- * Local days ("YYYY-MM-DD") with review activity (any first-review stamp
- * that day), newest first. Interim streak source until the gate-4 daily
- * goal defines streak days as goal-reached days.
- */
-export async function getReviewedDays(db: SQLiteDatabase): Promise<string[]> {
-  const rows = await db.getAllAsync<{ day: string }>(
-    `SELECT DISTINCT date(reviewed_at / 1000, 'unixepoch', 'localtime') AS day
-     FROM photos WHERE reviewed_at IS NOT NULL
-     ORDER BY day DESC`,
+/** Per-day rollups for an explicit day list (gate 5's unreviewed-day
+ * rows sit outside any contiguous recent window). */
+export async function getDaySummariesForDays(
+  db: SQLiteDatabase,
+  days: readonly string[],
+  roots: readonly string[] | null = null,
+): Promise<Map<string, DaySummaryRow>> {
+  if (days.length === 0) return new Map();
+  const src = sourceClause(roots);
+  const rows = await db.getAllAsync<DaySummaryRow>(
+    `${DAY_SUMMARY_SELECT} AND day IN (${days.map(() => '?').join(',')})${src.sql} GROUP BY day`,
+    ...days,
+    ...src.params,
   );
-  return rows.map((r) => r.day);
+  return new Map(rows.map((r) => [r.day, r]));
+}
+
+/** Local days that still hold unreviewed present photos, newest first,
+ * with their pending counts (Home's still-unreviewed day rows, gate 5). */
+export async function getUnreviewedDayRows(
+  db: SQLiteDatabase,
+  roots: readonly string[] | null = null,
+): Promise<{ day: string; pending: number }[]> {
+  const src = sourceClause(roots);
+  return db.getAllAsync<{ day: string; pending: number }>(
+    `SELECT day, COUNT(*) AS pending FROM photos
+     WHERE day IS NOT NULL AND state = 'unreviewed' AND is_present = 1${src.sql}
+     GROUP BY day ORDER BY day DESC`,
+    ...src.params,
+  );
 }
 
 // ------------------------------------------------ favourite queue + lifetime metrics
@@ -1465,6 +1574,7 @@ export async function getReviewedDays(db: SQLiteDatabase): Promise<string[]> {
 export interface FavouriteQueueRow {
   asset_id: string;
   uri: string;
+  taken_at: number;
   favourite_state: FavouriteState;
   favourite_target: number | null;
 }
@@ -1521,7 +1631,7 @@ export async function queueFavouriteChange(
 /** Pending favourite work survives restarts and is safe to retry. */
 export async function getFavouriteQueue(db: SQLiteDatabase): Promise<FavouriteQueueRow[]> {
   return db.getAllAsync<FavouriteQueueRow>(
-    `SELECT asset_id, uri, favourite_state, favourite_target FROM photos
+    `SELECT asset_id, uri, taken_at, favourite_state, favourite_target FROM photos
      WHERE favourite_state IN ('queued_apply', 'queued_remove', 'error')
      ORDER BY favourite_changed_at, taken_at`,
   );

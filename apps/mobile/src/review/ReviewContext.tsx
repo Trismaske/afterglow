@@ -39,7 +39,8 @@ import {
   getNeedsEditAssets,
   getStagedCulls,
   listReviewGroups,
-  listUnreviewedSingles,
+  listSinglesFeed,
+  getReviewGroup,
   makePhotoSingles,
   restoreCarriedCull,
   setGroupBest,
@@ -70,11 +71,15 @@ interface ReviewContextValue {
   version: number;
   /** Live review queue: groups with ≥ 1 unreviewed member, newest first. */
   groups: ReviewGroupRow[];
-  /** Unreviewed singles, newest first. */
+  /** Singles feed: unreviewed + staged culls (badged), newest first. */
   singles: ReviewMemberRow[];
   queueCounts: { grouped: number; singles: number };
   /** Re-read everything from the durable rows. */
   refresh: () => Promise<void>;
+  /** Fetch ONE group by id, completion irrespective (gate 5 browse of a
+   * finished group). Its members join the flag/favourite tracking so the
+   * deck's toggles work outside the queue; null = gone (dissolved). */
+  loadGroup: (groupId: number) => Promise<ReviewGroupRow | null>;
   /** A decision write failed — the row is unchanged; retry the action. */
   writeError: string | null;
   clearWriteError: () => void;
@@ -125,17 +130,21 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   const [writeError, setWriteError] = useState<string | null>(null);
   const needsEditRef = useRef<Set<string>>(new Set());
   const favouriteRef = useRef<Map<string, FavouriteStatus>>(new Map());
+  /** Members of an out-of-queue group the deck browses (gate 5): refresh
+   * keeps their flag/favourite entries alive alongside the queue's. */
+  const extraIdsRef = useRef<string[]>([]);
   const startedRef = useRef(false);
 
   const refresh = useCallback(async () => {
     const [nextGroups, nextSingles, counts] = await Promise.all([
       listReviewGroups(db, GROUP_PAGE),
-      listUnreviewedSingles(db, SINGLES_PAGE),
+      listSinglesFeed(db, SINGLES_PAGE),
       countReviewQueue(db),
     ]);
     const ids = [
       ...nextGroups.flatMap((g) => g.members.map((m) => m.asset_id)),
       ...nextSingles.map((m) => m.asset_id),
+      ...extraIdsRef.current,
     ];
     const [needsEdit, favourites] = await Promise.all([
       getNeedsEditAssets(db, ids),
@@ -148,6 +157,27 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     setQueueCounts(counts);
     setVersion((v) => v + 1);
   }, [db]);
+
+  const loadGroup = useCallback(
+    async (groupId: number): Promise<ReviewGroupRow | null> => {
+      const group = await getReviewGroup(db, groupId);
+      extraIdsRef.current = group ? group.members.map((m) => m.asset_id) : [];
+      if (group) {
+        const ids = extraIdsRef.current;
+        const [needsEdit, favourites] = await Promise.all([
+          getNeedsEditAssets(db, ids),
+          getFavouriteStates(db, ids),
+        ]);
+        for (const id of ids) {
+          if (needsEdit.has(id)) needsEditRef.current.add(id);
+          else needsEditRef.current.delete(id);
+        }
+        for (const [id, status] of favourites) favouriteRef.current.set(id, status);
+      }
+      return group;
+    },
+    [db],
+  );
 
   // Startup, once per process: crash recovery (0.7.1 hardening, rehomed
   // from session resume) → continuous scan → initial queue.
@@ -398,6 +428,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     singles,
     queueCounts,
     refresh,
+    loadGroup,
     writeError,
     clearWriteError,
     decide,

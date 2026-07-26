@@ -8,10 +8,12 @@ import type { RootStackParamList } from '../navigation';
 import {
   getDaySummaries,
   getLifetimeStats,
-  getReviewedDays,
+  getReviewedCountsByDay,
+  getSetting,
   type LifetimeStats,
 } from '../db/store';
-import { dayKey, streakStats } from '../lib/dates';
+import { dayKey, recentDayKeys } from '../lib/dates';
+import { DAILY_GOAL_KEY, goalStreaks, parseDailyGoal } from '../lib/dailyGoal';
 import { BigButton } from '../components/BigButton';
 import { colors, touch, useTheme } from '../theme';
 import { formatBytes } from '../lib/format';
@@ -38,13 +40,17 @@ export function SummaryScreen({ navigation }: Props) {
     let cancelled = false;
     (async () => {
       const todayKey = dayKey(Date.now());
-      const [days, totals, summaries] = await Promise.all([
-        getReviewedDays(db),
+      const keys = recentDayKeys(120);
+      const [reviewedByDay, rawGoal, totals, summaries] = await Promise.all([
+        getReviewedCountsByDay(db, keys[keys.length - 1] ?? todayKey),
+        getSetting(db, DAILY_GOAL_KEY),
         getLifetimeStats(db),
         getDaySummaries(db, todayKey),
       ]);
       if (cancelled) return;
-      const streaks = streakStats([todayKey, ...days], todayKey);
+      // Streak days are GOAL-REACHED days (gate 4 definition — same math
+      // as the Home ring).
+      const streaks = goalStreaks(reviewedByDay, [...keys].reverse(), parseDailyGoal(rawGoal));
       setLifetime({
         ...totals,
         currentStreak: streaks.current,
@@ -100,8 +106,8 @@ export function SummaryScreen({ navigation }: Props) {
             <LifetimeStat value={lifetime.culled} label="culled" />
             <LifetimeStat value={lifetime.editsCompleted} label="edits completed" />
             <LifetimeStat value={lifetime.favouritesApplied} label="favourites applied" />
-            <LifetimeStat value={lifetime.currentStreak} label="day current streak" />
-            <LifetimeStat value={lifetime.longestStreak} label="day longest streak" />
+            <LifetimeStat value={lifetime.currentStreak} label="goal streak (days)" />
+            <LifetimeStat value={lifetime.longestStreak} label="longest goal streak" />
           </View>
           <Text style={styles.reclaimedAllTime}>
             {formatBytes(lifetime.reclaimedBytes)} reclaimed all-time*

@@ -71,7 +71,7 @@ export function PhotoStateGrid({
   refreshKey: number;
   header: React.ReactElement;
   bottomInset: number;
-  onPhotoPress: (photo: GridPhoto) => void;
+  onPhotoPress: (photo: GridPhoto, siblings: GridPhoto[], index: number) => void;
 }) {
   const db = useSQLiteContext();
   const { accent } = useTheme();
@@ -186,8 +186,8 @@ export function PhotoStateGrid({
   }, [filter, refreshKey, scopeKey, rootsKey, albumsKey, startMs, endMs]);
 
   const renderItem = useCallback(
-    ({ item }: { item: GridPhoto }) => (
-      <Pressable style={styles.tileWrap} onPress={() => onPhotoPress(item)}>
+    ({ item, index }: { item: GridPhoto; index: number }) => (
+      <Pressable style={styles.tileWrap} onPress={() => onPhotoPress(item, items, index)}>
         <Image
           source={{ uri: item.uri }}
           style={styles.tile}
@@ -197,7 +197,7 @@ export function PhotoStateGrid({
         <View style={[styles.dot, { backgroundColor: stateMeta[item.effective].color }]} />
       </Pressable>
     ),
-    [onPhotoPress, stateMeta],
+    [onPhotoPress, items, stateMeta],
   );
 
   return (

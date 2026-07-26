@@ -13,11 +13,13 @@ import { colors } from '../theme';
  * - edit  — blue pencil (implies kept; takes display precedence over keep)
  * - best  — star in the session accent (pass `accent`; relative best-of-group)
  * - fav   — pink heart (absolute favourite, m0.6)
+ * - time  — grey clock (m0.8 gate 5: grouped by time only — the photo has
+ *           no embedding and joined its nearest neighbour's group)
  *
  * `DECISION_GLYPHS` is exported for inline icon+text rows (deck footer,
  * sheets) so labels use the same glyph names, never emoji.
  */
-export type DecisionKind = 'cull' | 'keep' | 'edit' | 'best' | 'fav';
+export type DecisionKind = 'cull' | 'keep' | 'edit' | 'best' | 'fav' | 'time';
 
 export const DECISION_GLYPHS: Record<
   DecisionKind,
@@ -28,6 +30,7 @@ export const DECISION_GLYPHS: Record<
   edit: 'pencil',
   best: 'star',
   fav: 'heart',
+  time: 'clock-outline',
 };
 
 const BADGE_COLORS: Record<DecisionKind, { fg: string; bg: string }> = {
@@ -36,6 +39,7 @@ const BADGE_COLORS: Record<DecisionKind, { fg: string; bg: string }> = {
   edit: { fg: colors.edit, bg: colors.editDim },
   best: { fg: colors.text, bg: colors.surfaceRaised }, // fg overridden by accent
   fav: { fg: colors.fav, bg: colors.favDim },
+  time: { fg: colors.textDim, bg: colors.surfaceRaised },
 };
 
 export function DecisionBadge({

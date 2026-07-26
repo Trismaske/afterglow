@@ -30,7 +30,10 @@ export function GroupsScreen({ navigation }: Props) {
 
   const stats = useMemo(() => {
     const total = queueCounts.grouped + queueCounts.singles;
-    return { pendingGrouped: queueCounts.grouped, singlesPending: singles.length, total };
+    // The feed keeps staged culls badged (gate 5) — pending counts only
+    // the photos still awaiting a verdict.
+    const singlesPending = singles.filter((m) => m.state === 'unreviewed').length;
+    return { pendingGrouped: queueCounts.grouped, singlesPending, total };
   }, [queueCounts, singles]);
 
   const nextStep = useMemo(() => {

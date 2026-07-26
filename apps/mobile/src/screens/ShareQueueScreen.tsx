@@ -39,6 +39,7 @@ import { shareMediaUris } from '../../modules/media-store-actions';
 import { getEditableContentUri } from '../lib/media';
 import { showToast } from '../lib/toast';
 import { colors, touch } from '../theme';
+import { PhotoViewer } from '../components/PhotoViewer';
 
 type Props = MainTabScreenProps<'ShareQueue'>;
 
@@ -51,6 +52,9 @@ export function ShareQueueScreen(_props: Props) {
   const [labelBatchId, setLabelBatchId] = useState<number | null>(null);
   const [labelText, setLabelText] = useState('');
   const [labelChips, setLabelChips] = useState<string[]>([]);
+  /** In-app full-screen viewer (gate 5) — long-press a thumbnail
+   * (a plain tap toggles pass selection). */
+  const [viewerId, setViewerId] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     const queue = await getShareQueue(db);
@@ -178,7 +182,11 @@ export function ShareQueueScreen(_props: Props) {
     ({ item }: { item: ShareQueueRow }) => {
       const isSelected = selected.has(item.photo_id);
       return (
-        <Pressable style={styles.cell} onPress={() => toggle(item.photo_id)}>
+        <Pressable
+          style={styles.cell}
+          onPress={() => toggle(item.photo_id)}
+          onLongPress={() => setViewerId(item.photo_id)}
+        >
           <Image
             source={{ uri: item.uri }}
             style={[styles.thumb, isSelected && styles.thumbSelected]}
@@ -203,6 +211,9 @@ export function ShareQueueScreen(_props: Props) {
     },
     [selected, toggle],
   );
+
+  const viewerIndex =
+    viewerId !== null && rows ? rows.findIndex((r) => r.photo_id === viewerId) : -1;
 
   const count = rows?.length ?? 0;
   return (
@@ -245,6 +256,14 @@ export function ShareQueueScreen(_props: Props) {
         contentContainerStyle={{ paddingBottom: insets.bottom + 140, gap: 4 }}
         columnWrapperStyle={{ gap: 4 }}
       />
+      {viewerIndex >= 0 && rows ? (
+        <PhotoViewer
+          items={rows.map((r) => ({ id: r.photo_id, uri: r.uri, takenAt: r.taken_at }))}
+          initialIndex={viewerIndex}
+          onClose={() => setViewerId(null)}
+          onChanged={() => void reload()}
+        />
+      ) : null}
       {count > 0 ? (
         <View style={[styles.actions, { paddingBottom: insets.bottom + 12 }]}>
           <Pressable

@@ -149,9 +149,17 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
       setLoadedGroup('loading');
       return;
     }
-    void loadGroup(Number(explicitGroupId)).then((fetched) => {
-      if (!cancelled) setLoadedGroup(fetched ?? 'missing');
-    });
+    void loadGroup(Number(explicitGroupId)).then(
+      (fetched) => {
+        if (!cancelled) setLoadedGroup(fetched ?? 'missing');
+      },
+      (error) => {
+        // A rejected read settles as terminal — the routing effect
+        // advances/goes back instead of stranding an empty deck.
+        console.warn('[deck] group load failed:', String(error));
+        if (!cancelled) setLoadedGroup('missing');
+      },
+    );
     return () => {
       cancelled = true;
     };
@@ -646,11 +654,14 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
   const openCompare = useCallback(
     (againstId?: string) => {
       // Compare works on undecided photos only — the feed's staged culls
-      // re-decide via the chips instead.
+      // re-decide via the chips instead, and NEITHER endpoint may be a
+      // staged cull (a compare verdict could star it — a culled best).
       const candidates = singlesMode
         ? deckItems.filter((i) => (stateOf.get(i.id) ?? 'unreviewed') === 'unreviewed')
         : aliveItems;
       if ((!singlesMode && !groupId) || !current || candidates.length < 2) return;
+      if (!candidates.some((i) => i.id === current.id)) return;
+      if (againstId !== undefined && !candidates.some((i) => i.id === againstId)) return;
       if (againstId === undefined && candidates.length > 2) {
         // m0.5: explicit opponent choice for larger groups.
         setComparePicker(true);
@@ -1017,18 +1028,32 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
             <Pressable
               style={[styles.actionButton, { backgroundColor: colors.keepDim }]}
               disabled={busy}
-              onPress={() => void run(() => decide(current.id, 'keep'))}
+              // A staged cull re-decided to Keep must land on done with
+              // the flag cleared and matches resolved (state-aware path);
+              // an unreviewed card takes the initial-decision verdict.
+              onPress={() =>
+                void run(() =>
+                  currentState === 'culled'
+                    ? redecideDecided(current.id, 'keep')
+                    : decide(current.id, 'keep'),
+                )
+              }
             >
               <MaterialCommunityIcons name={DECISION_GLYPHS.keep} size={21} color={colors.keep} />
               <Text style={styles.actionText}>Keep</Text>
             </Pressable>
             <Pressable
               style={[styles.actionButton, styles.compareButton]}
-              disabled={busy || aliveItems.length < 2}
+              disabled={busy || aliveItems.length < 2 || currentState === 'culled'}
               onPress={() => openCompare()}
             >
               <MaterialCommunityIcons name="compare-horizontal" size={21} color={colors.textDim} />
-              <Text style={[styles.actionText, aliveItems.length < 2 && styles.actionTextDisabled]}>
+              <Text
+                style={[
+                  styles.actionText,
+                  (aliveItems.length < 2 || currentState === 'culled') && styles.actionTextDisabled,
+                ]}
+              >
                 Compare{aliveItems.length > 2 ? ' with…' : ''}
               </Text>
             </Pressable>

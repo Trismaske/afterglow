@@ -143,3 +143,8 @@ Final-review round 6 fixes, same pending vetting:
 Final-review round 7 fixes, same pending vetting:
 
 55. **Best-star hygiene**: culling the starred photo clears the star in the same transaction (a compare winner's `extras.setBest` may star a replacement); the orphaned-best repair also requires the best photo to be PRESENT (an externally removed best no longer freezes its surviving group forever); Compare waits for an off-page group fetch before treating a missing pair as terminal.
+
+Final-review round 8 fixes, same pending vetting:
+
+56. **Staged culls are fully fenced out of Compare** (neither endpoint may be culled — a compare verdict could re-star a cull; the live Compare button disables on a culled current card), and the live deck's Keep on a staged cull takes the state-aware `redecideDecided` path (flag cleared, matches resolved).
+57. **The edited-copy stage-and-reserve transition clears stars too** (`prepareTrashBatch stageToEditMembers` — every transition to `culled` shares the hygiene), and rejected off-page group loads settle as terminal ('missing') in both the deck and Compare instead of stranding blank screens.

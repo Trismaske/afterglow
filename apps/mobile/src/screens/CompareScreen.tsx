@@ -86,9 +86,17 @@ export function CompareScreen({ navigation, route }: Props) {
       setLoadedGroup('loading');
       return;
     }
-    void loadGroup(numericGroupId).then((fetched) => {
-      if (!cancelled) setLoadedGroup(fetched ?? 'missing');
-    });
+    void loadGroup(numericGroupId).then(
+      (fetched) => {
+        if (!cancelled) setLoadedGroup(fetched ?? 'missing');
+      },
+      (error) => {
+        // Terminal: the missing-pair effect navigates back instead of
+        // leaving a permanently blank screen.
+        console.warn('[compare] group load failed:', String(error));
+        if (!cancelled) setLoadedGroup('missing');
+      },
+    );
     return () => {
       cancelled = true;
     };

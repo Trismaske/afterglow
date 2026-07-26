@@ -373,3 +373,35 @@ describe('restore → re-trash generations (P8#4)', () => {
     expect(await lifetimeReclaimedBytes(asExpo(d))).toBe(200);
   });
 });
+
+describe('stage-and-reserve star hygiene (final-review round 8)', () => {
+  it('staging a to_edit member to culled clears a star pointing at it', async () => {
+    const d = await fresh();
+    insertCull(d, 'a');
+    insertCull(d, 'b');
+    d.raw.prepare("UPDATE photos SET state = 'to_edit', needs_edit = 1 WHERE asset_id = 'a'").run();
+    d.raw.prepare("UPDATE photos SET state = 'unreviewed' WHERE asset_id = 'b'").run();
+    d.raw
+      .prepare("INSERT INTO grouping_runs (provenance, created_at) VALUES ('continuous', 1)")
+      .run();
+    d.raw.prepare('INSERT INTO photo_groups (run_id, best_photo_id) VALUES (1, NULL)').run();
+    d.raw
+      .prepare(
+        "INSERT INTO photo_group_assignments (photo_id, group_id, run_id) VALUES ('a', 1, 1), ('b', 1, 1)",
+      )
+      .run();
+    d.raw.prepare("UPDATE photo_groups SET best_photo_id = 'a' WHERE id = 1").run();
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'a', measuredBytes: 10 }], AT, {
+      stageToEditMembers: true,
+    });
+    expect(batch).not.toBeNull();
+    const row = d.raw.prepare('SELECT best_photo_id FROM photo_groups WHERE id = 1').get() as {
+      best_photo_id: string | null;
+    };
+    expect(row.best_photo_id).toBeNull();
+    const photo = d.raw.prepare("SELECT state FROM photos WHERE asset_id = 'a'").get() as {
+      state: string;
+    };
+    expect(photo.state).toBe('culled');
+  });
+});

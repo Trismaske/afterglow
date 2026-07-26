@@ -87,6 +87,14 @@ export async function prepareTrashBatch(
           at,
           member.photoId,
         );
+        // Every transition to 'culled' clears a star pointing at the
+        // photo (same hygiene as applyReviewDecisions): if the attempt
+        // stays ambiguous the photo remains staged, and a culled best
+        // would freeze its group.
+        await txn.runAsync(
+          'UPDATE photo_groups SET best_photo_id = NULL WHERE best_photo_id = ?',
+          member.photoId,
+        );
       }
     }
     const batch = await txn.runAsync(

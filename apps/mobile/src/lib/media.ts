@@ -84,7 +84,7 @@ export async function pagePhotosInRange(
       first: PAGE_SIZE,
       after,
       ...(albumId !== undefined ? { album: albumId } : {}),
-      createdAfter: startMs,
+      ...(startMs > 0 ? { createdAfter: startMs } : {}),
       createdBefore: endMs,
       mediaType: MediaLibrary.MediaType.photo,
       sortBy: [[MediaLibrary.SortBy.creationTime, !descending]],
@@ -120,7 +120,10 @@ export async function fetchPhotoPageDesc(
     first,
     after,
     ...(albumId !== undefined ? { album: albumId } : {}),
-    createdAfter: startMs,
+    // A 0 lower bound must be OMITTED: the legacy MediaStore query turns
+    // createdAfter into DATE_TAKEN > 0, which silently excludes undated
+    // photos — and the continuous scan is the only review ingress.
+    ...(startMs > 0 ? { createdAfter: startMs } : {}),
     createdBefore: endMs,
     mediaType: MediaLibrary.MediaType.photo,
     sortBy: [[MediaLibrary.SortBy.creationTime, false]],
@@ -151,7 +154,8 @@ export async function countPhotosInRange(
     const page = await MediaLibrary.getAssetsAsync({
       first: 1,
       ...(album !== undefined ? { album } : {}),
-      createdAfter: startMs,
+      // Same undated-photo contract as fetchPhotoPageDesc.
+      ...(startMs > 0 ? { createdAfter: startMs } : {}),
       createdBefore: endMs,
       mediaType: MediaLibrary.MediaType.photo,
     });
@@ -180,7 +184,7 @@ export async function countPhotosByDayInRange(
         first: PAGE_SIZE,
         after,
         ...(album !== undefined ? { album } : {}),
-        createdAfter: startMs,
+        ...(startMs > 0 ? { createdAfter: startMs } : {}),
         createdBefore: endMs,
         mediaType: MediaLibrary.MediaType.photo,
       });
@@ -261,7 +265,7 @@ export async function loadCandidatesCreatedBetween(
         first: Math.min(PAGE_SIZE, max - loaded),
         after,
         ...(album !== undefined ? { album } : {}),
-        createdAfter: startMs,
+        ...(startMs > 0 ? { createdAfter: startMs } : {}),
         ...(endMs !== undefined ? { createdBefore: endMs } : {}),
         mediaType: MediaLibrary.MediaType.photo,
         sortBy: [[MediaLibrary.SortBy.creationTime, false]],

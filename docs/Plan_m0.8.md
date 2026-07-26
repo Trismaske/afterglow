@@ -167,3 +167,8 @@ Final-review round 12 fixes, same pending vetting:
 
 63. **Home's scan-driven refreshes are coarsened to every 250 grouped windows + phase changes** (per-window refreshes meant thousands of redundant MediaStore counts on a 27k first scan), and the day-rows loader now refreshes on the same coarse key — the still-to-review rows no longer stay stale for the whole scan.
 64. **StateEditorSheet surfaces its own write failures** (Alert + sheet stays open) — its direct SQLite transitions bypass `ReviewContext.write`, so the provider alert could never fire for them.
+
+Final-review round 13 fixes, same pending vetting:
+
+65. **Undated photos enter the scan**: a 0 lower bound now OMITS `createdAfter` in every MediaStore query (the legacy query rendered it as `DATE_TAKEN > 0`, silently excluding photos with null/zero DATE_TAKEN from the scan — the only review ingress — and from every all-photos count).
+66. **The strictness reset immediately refreshes the rendered queue** (a decision on a stale reset group would permanently lose its whole-group boundary), and Home's edit-detection effect depends on the STABLE `review.refresh` callback instead of the whole context object (scan-driven refreshes were cancelling in-flight detection and discarding its copy prompts).

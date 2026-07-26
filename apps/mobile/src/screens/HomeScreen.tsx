@@ -75,6 +75,10 @@ export function HomeScreen({ navigation }: Props) {
   const db = useSQLiteContext();
   const theme = useTheme();
   const review = useReview();
+  // Stable across queue refreshes — the detection focus effect must not
+  // recreate (and cancel mid-run) every time a scan-driven refresh mints
+  // a new context object.
+  const reviewRefresh = review.refresh;
   const [permission, requestPermission] = MediaLibrary.usePermissions({
     granularPermissions: ['photo'],
   });
@@ -214,7 +218,7 @@ export function HomeScreen({ navigation }: Props) {
                   // The verified removal already resolved the durable
                   // match (applyRemovalCleanup, C#12); durable rows are
                   // the display truth — screens re-read on focus.
-                  await review.refresh().catch(() => {});
+                  await reviewRefresh().catch(() => {});
                 } else if (attempt.status === 'applied' || attempt.unknownIds.length > 0) {
                   // Verification inconclusive (applied dialog, or a
                   // failed attempt whose fallback release couldn't
@@ -253,14 +257,14 @@ export function HomeScreen({ navigation }: Props) {
                 // markEditDone converges the original AND resolves its
                 // live match in one transaction (C#12).
                 await markEditDone(db, head.originalAssetId);
-                await review.refresh().catch(() => {});
+                await reviewRefresh().catch(() => {});
                 next();
               })(),
           },
         ],
       );
     },
-    [db, review],
+    [db, reviewRefresh],
   );
 
   // m0.3 edit detection — app open / return to Home, throttled.

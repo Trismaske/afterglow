@@ -12,6 +12,7 @@ import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 're
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
+import { useReview } from '../review/ReviewContext';
 import Constants from 'expo-constants';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -43,6 +44,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Settings'>;
 export function SettingsScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const db = useSQLiteContext();
+  const { refresh } = useReview();
   const theme = useTheme();
   const systemAvailable = theme.systemAccent !== null;
   const [sourceLabel, setSourceLabel] = useState<string | null>(null);
@@ -98,16 +100,23 @@ export function SettingsScreen({ navigation }: Props) {
               setStrictness(step);
               void setSetting(db, GROUPING_STRICTNESS_KEY, serializeStrictness(step))
                 .then(() => resetUnreviewedGroups(db))
+                // Refresh BEFORE the rescan: the rendered queue still
+                // shows the reset groups — a decision on one of those
+                // stale members would permanently lose its whole-group
+                // boundary (the member freezes alone, companions
+                // reassign separately).
+                .then(() => refresh())
                 .then(() => {
                   void requestRescan(db);
                   showToast('Regrouping in the background');
-                });
+                })
+                .catch(() => showToast('Could not change strictness — try again'));
             },
           },
         ],
       );
     },
-    [db],
+    [db, refresh],
   );
 
   const resetConfirmations = useCallback(() => {

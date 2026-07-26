@@ -866,3 +866,34 @@ describe('absent members dissolve their groups', () => {
     expect(foreignKeyCheck(d)).toEqual([]);
   });
 });
+
+// -------------------------------------------- final-review round 5
+
+describe('strictness reset spares metadata groups', () => {
+  it('an all-unreviewed group with a starred best survives the reset', async () => {
+    const d = await fresh();
+    await seed(
+      d,
+      ['1', '2', '3', '4'],
+      [
+        ['1', '2'],
+        ['3', '4'],
+      ],
+    );
+    const starred = groupIdOf(d, '1');
+    await setGroupBest(asExpo(d), starred, id('1'));
+    await resetUnreviewedGroups(asExpo(d));
+    // The starred group keeps membership + star; the plain one reset.
+    expect(groupIdOf(d, '1')).toBe(starred);
+    expect(groupIdOf(d, '2')).toBe(starred);
+    const best = d.raw
+      .prepare('SELECT best_photo_id FROM photo_groups WHERE id = ?')
+      .get(starred) as { best_photo_id: string };
+    expect(best.best_photo_id).toBe(id('1'));
+    const plain = d.raw
+      .prepare('SELECT group_id FROM photo_group_assignments WHERE photo_id = ?')
+      .get(id('3'));
+    expect(plain).toBeUndefined();
+    expect(foreignKeyCheck(d)).toEqual([]);
+  });
+});

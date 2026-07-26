@@ -130,3 +130,7 @@ Final-review round 4 fixes, same pending vetting:
 49. **Every return to `unreviewed` resets the full edit-cycle baseline** (`to_edit_at`/`mod_time`/`content_hash`, from culled too) — stale evidence could auto-complete a later re-flag; `restoreCarriedCull` does the same.
 50. **The re-decide sheet's tap-to-clear PRESERVES pending copy matches** (`restoreCarriedCull(…, resolvePendingMatches=false)`) — returning to unreviewed answers nothing; CullList's explicit Restore still resolves (the user handled it).
 51. **Groups dissolve on lost PRESENT membership**: `repairGroupMembership` counts present members and runs inside both removal-reconciliation transactions — a pair whose member was trashed/externally removed becomes a plain single, never a 1-photo deck group. Corpus numerators likewise require `is_present = 1`; Home's still-to-review discovery fails closed on source-resolution errors.
+
+Final-review round 5 fixes, same pending vetting:
+
+52. **The strictness reset also spares metadata groups** (starred best / recorded duels — the same exclusions as the regroup boundary), and Home fails closed on MediaStore COUNT failures too: a failed corpus count keeps the last rendered stats (never an authoritative-looking "0 photos · 0%"), and a failed per-day count keeps the previous day rows instead of making days disappear.

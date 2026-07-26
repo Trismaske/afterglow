@@ -687,18 +687,26 @@ export async function getCorpusStats(
  */
 export async function resetUnreviewedGroups(db: SQLiteDatabase): Promise<void> {
   await db.withExclusiveTransactionAsync(async (txn) => {
-    // A group with ANY reviewed member is frozen WHOLE by the regroup
-    // boundary — deleting its unreviewed members here would dissolve it
-    // and lose membership/best. Reset only fully-unreviewed groups and
-    // non-ejected singles.
+    // A group with ANY reviewed member — or GROUP-LEVEL metadata (starred
+    // best, recorded duels) — is frozen WHOLE by the regroup boundary;
+    // deleting its members here would dissolve it and lose the star and
+    // orphan the duels. Reset only fully-unreviewed metadata-free groups
+    // and non-ejected singles.
     await txn.runAsync(
       `DELETE FROM photo_group_assignments
        WHERE user_single = 0
          AND photo_id IN (SELECT asset_id FROM photos WHERE state = 'unreviewed')
-         AND (group_id IS NULL OR group_id NOT IN (
-           SELECT a2.group_id FROM photo_group_assignments a2
-           JOIN photos p2 ON p2.asset_id = a2.photo_id
-           WHERE a2.group_id IS NOT NULL AND p2.state <> 'unreviewed'
+         AND (group_id IS NULL OR (
+           group_id NOT IN (
+             SELECT a2.group_id FROM photo_group_assignments a2
+             JOIN photos p2 ON p2.asset_id = a2.photo_id
+             WHERE a2.group_id IS NOT NULL AND p2.state <> 'unreviewed'
+           )
+           AND group_id NOT IN (
+             SELECT id FROM photo_groups
+             WHERE best_photo_id IS NOT NULL
+                OR EXISTS (SELECT 1 FROM duels d WHERE d.group_id = CAST(photo_groups.id AS TEXT))
+           )
          ))`,
     );
     await repairGroupMembership(txn);

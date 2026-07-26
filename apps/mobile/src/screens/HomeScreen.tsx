@@ -142,8 +142,13 @@ export function HomeScreen({ navigation }: Props) {
           getSetting(db, DAILY_GOAL_KEY),
           getReviewedCountsByDay(db, since),
           permission?.granted && src ? getCorpusStats(db, src.roots) : null,
+          // null = the MediaStore count FAILED — keep the last rendered
+          // stats rather than presenting an authoritative-looking zero.
           permission?.granted && src
-            ? countPhotosInRange(0, Date.now(), src.albumIds).catch(() => 0)
+            ? countPhotosInRange(0, Date.now(), src.albumIds).catch((error): null => {
+                console.warn('[home] corpus count failed — stats kept:', String(error));
+                return null;
+              })
             : 0,
         ]);
         if (cancelled) return;
@@ -152,7 +157,8 @@ export function HomeScreen({ navigation }: Props) {
         setReviewedToday(reviewedByDay.get(today) ?? 0);
         const keys = [...recentDayKeys(120)].reverse();
         setStreaks(goalStreaks(reviewedByDay, keys, currentGoal));
-        if (stats) setCorpus({ total, groupsFound: stats.groupsFound, reviewed: stats.reviewed });
+        if (stats && total !== null)
+          setCorpus({ total, groupsFound: stats.groupsFound, reviewed: stats.reviewed });
       })();
       return () => {
         cancelled = true;
@@ -342,6 +348,9 @@ export function HomeScreen({ navigation }: Props) {
             staged,
           };
         };
+        // A failed MediaStore count THROWS out of the loader (caught
+        // below, keeping the previous rows) — an unavailable count is not
+        // zero photos.
         const buildRows = async (days: readonly string[]): Promise<DayRow[]> => {
           if (days.length === 0) return [];
           const summaries = await getDaySummariesForDays(db, days, src?.roots ?? null);
@@ -349,32 +358,40 @@ export function HomeScreen({ navigation }: Props) {
           for (const day of days) {
             const range = rangeOfDayKey(day);
             const msTotal = permission?.granted
-              ? await countPhotosByDayInRange(range.startMs, range.endMs, src?.albumIds ?? null)
-                  .catch(() => new Map<string, number>())
-                  .then((m) => m.get(day) ?? 0)
+              ? await countPhotosByDayInRange(
+                  range.startMs,
+                  range.endMs,
+                  src?.albumIds ?? null,
+                ).then((m) => m.get(day) ?? 0)
               : 0;
             const row = toRow(day, summaries.get(day), msTotal);
             if (row.total > 0) rows.push(row);
           }
           return rows;
         };
-        const recentKeys = recentDayKeys(RECENT_CALENDAR_DAYS);
-        const unreviewedDays = permission?.granted
-          ? await getUnreviewedDayRows(db, src?.roots ?? null)
-          : [];
-        const olderUnreviewed = unreviewedDays
-          .map((u) => u.day)
-          .filter((day) => !recentKeys.includes(day));
-        const [recentRows, unreviewedRows] = await Promise.all([
-          buildRows(recentKeys),
-          buildRows(olderUnreviewed.slice(0, UNREVIEWED_DAY_ROWS)),
-        ]);
-        if (cancelled) return;
-        setDayRows(recentRows);
-        setUnreviewedDayRowsState(unreviewedRows);
-        setOlderDays(olderUnreviewed.slice(UNREVIEWED_DAY_ROWS, OLDER_DAY_CAP));
-        setOlderRows(null);
-        buildOlderRowsRef.current = buildRows;
+        try {
+          const recentKeys = recentDayKeys(RECENT_CALENDAR_DAYS);
+          const unreviewedDays = permission?.granted
+            ? await getUnreviewedDayRows(db, src?.roots ?? null)
+            : [];
+          const olderUnreviewed = unreviewedDays
+            .map((u) => u.day)
+            .filter((day) => !recentKeys.includes(day));
+          const [recentRows, unreviewedRows] = await Promise.all([
+            buildRows(recentKeys),
+            buildRows(olderUnreviewed.slice(0, UNREVIEWED_DAY_ROWS)),
+          ]);
+          if (cancelled) return;
+          setDayRows(recentRows);
+          setUnreviewedDayRowsState(unreviewedRows);
+          setOlderDays(olderUnreviewed.slice(UNREVIEWED_DAY_ROWS, OLDER_DAY_CAP));
+          setOlderRows(null);
+          buildOlderRowsRef.current = buildRows;
+        } catch (error) {
+          // Keep the previous rows — an unavailable MediaStore count must
+          // not make days disappear or show understated totals.
+          console.warn('[home] day-row refresh failed — previous rows kept:', String(error));
+        }
       })();
       return () => {
         cancelled = true;

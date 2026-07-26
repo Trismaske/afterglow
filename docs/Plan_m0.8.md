@@ -191,3 +191,8 @@ Final-review round 16 fixes, same pending vetting:
 74. **Undated photos persist `day = NULL`** — finite MediaStore day/range queries exclude them, so the DB day surfaces (day rows, summaries, day groups) must too; they stay fully reviewable via the queue and all-photos surfaces (no schema change: the column was already nullable).
 75. **Ejection validates the DISPLAYED group in the transaction** (`makePhotoSingles(…, expectedGroupId)`; a background rescan can rebuild an all-unreviewed group between render and the "Not related" tap — ejecting from the wrong group and user_single-freezing its unseen survivor now aborts whole), and the queue's newest-first ordering ignores absent members.
 76. **The source picker fails CLOSED on scope refresh**: it resolves the new scope and refreshes before navigating away; on failure it stays open with a toast (the setting is saved; the old queue must not remain actionable under the old scope).
+
+Final-review round 17 fixes, same pending vetting:
+
+77. **A settings change generation-fences the in-flight scan**: `requestRescan` bumps a generation and the running flight stops persisting at the next window boundary — groups written under superseded source/strictness settings would repopulate exactly what the change reset (a verdict on one would freeze it wrongly forever).
+78. **Both settings flows ROLL BACK on failure**: a source save that cannot resolve+refresh the new scope restores the previous setting before staying open (header/back navigation cannot be blocked, so a half-applied narrower scope must never outlive the screen); a strictness change whose reset/refresh fails restores the previous step — "not changed" stays true.

@@ -4,7 +4,7 @@
  * from MediaStore buckets (see sourceCatalog.ts); selection is recursive
  * — a chosen folder includes its subfolders, shown as "included" rows.
  */
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -47,6 +47,9 @@ export function SourcePickerScreen({ navigation }: Props) {
   const [allFolders, setAllFolders] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
+  /** The persisted setting at load — the rollback target if applying a
+   * new scope fails after it committed. */
+  const previousSettingRef = useRef<PhotoSourceSetting | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -54,6 +57,7 @@ export function SourcePickerScreen({ navigation }: Props) {
       (async () => {
         const [dirs, current] = await Promise.all([listSourceDirs(true), resolveSources(db)]);
         if (cancelled) return;
+        previousSettingRef.current = current.setting;
         const catalog: Row[] = [...dirs];
         const chosen = new Set<string>();
         if (current.setting.mode === 'all') {
@@ -111,13 +115,21 @@ export function SourcePickerScreen({ navigation }: Props) {
       invalidateSourceCatalog();
       // FAIL CLOSED before leaving: the queue reads are source-scoped and
       // must drop excluded photos NOW (the queued rescan lands later). If
-      // the new scope cannot be resolved, stay here — navigating away
-      // would leave the old queue actionable under the old scope.
+      // applying the new scope fails, ROLL BACK the committed setting —
+      // header/back navigation stays enabled, so a half-applied narrower
+      // scope must never outlive this screen.
       try {
         await resolveSources(db);
         await refresh();
       } catch {
-        showToast('Saved, but the queue could not refresh — check photo access and retry');
+        const previous = previousSettingRef.current;
+        if (previous) {
+          await setSetting(db, PHOTO_SOURCES_KEY, serializePhotoSourceSetting(previous)).catch(
+            () => {},
+          );
+          invalidateSourceCatalog();
+        }
+        showToast('Could not apply the new source — selection unchanged');
         return;
       }
       // The scan reads the source at run start: rescan over the new

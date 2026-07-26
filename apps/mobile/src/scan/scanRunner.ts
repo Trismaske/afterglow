@@ -83,6 +83,10 @@ function update(patch: Partial<ScanStatus>): void {
 
 let flight: Promise<void> | null = null;
 let rescanQueued = false;
+/** Bumped by requestRescan: a running flight captures its generation and
+ * stops persisting once superseded — groups written under old settings
+ * (source/strictness) would repopulate what the change just reset. */
+let scanGeneration = 0;
 
 /**
  * Start the continuous scan unless one is already running; resolves when
@@ -117,12 +121,18 @@ export function startContinuousScan(db: SQLiteDatabase): Promise<void> {
 export function requestRescan(db: SQLiteDatabase): Promise<void> {
   if (flight) {
     rescanQueued = true;
+    // Supersede the in-flight run: it stops writing at the next window
+    // boundary (its persisted progress stays; the queued rescan re-reads
+    // every setting when it starts).
+    scanGeneration += 1;
     return flight;
   }
   return startContinuousScan(db);
 }
 
 async function scan(db: SQLiteDatabase): Promise<void> {
+  const generation = scanGeneration;
+  const superseded = (): boolean => generation !== scanGeneration;
   status = { ...IDLE, phase: 'scanning' };
   update({});
 
@@ -174,6 +184,10 @@ async function scan(db: SQLiteDatabase): Promise<void> {
     }
   };
   for (;;) {
+    if (superseded()) {
+      console.log('[scan] superseded by a settings change — stopping for the queued rescan');
+      return;
+    }
     const photos = await pager.next(SCAN_PAGE_SIZE);
     if (photos.length === 0) break;
     for (const photo of photos) seenIds.add(photo.item.id);
@@ -185,9 +199,17 @@ async function scan(db: SQLiteDatabase): Promise<void> {
         continue;
       }
       for (const window of accumulator.feed(photo)) {
+        if (superseded()) {
+          console.log('[scan] superseded by a settings change — stopping for the queued rescan');
+          return;
+        }
         await processWindow(db, window, engine, strictness.baseThreshold);
       }
     }
+  }
+  if (superseded()) {
+    console.log('[scan] superseded by a settings change — stopping for the queued rescan');
+    return;
   }
   for (const window of accumulator.flush()) {
     await processWindow(db, window, engine, strictness.baseThreshold);

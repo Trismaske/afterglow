@@ -97,6 +97,7 @@ export function SettingsScreen({ navigation }: Props) {
           {
             text: 'Change & regroup',
             onPress: () => {
+              const previous = strictness;
               setStrictness(step);
               void setSetting(db, GROUPING_STRICTNESS_KEY, serializeStrictness(step))
                 .then(() => resetUnreviewedGroups(db))
@@ -110,13 +111,25 @@ export function SettingsScreen({ navigation }: Props) {
                   void requestRescan(db);
                   showToast('Regrouping in the background');
                 })
-                .catch(() => showToast('Could not change strictness — try again'));
+                .catch(async () => {
+                  // ROLL BACK: the preference may already be durable while
+                  // the reset/refresh failed — "not changed" must be true.
+                  if (previous) {
+                    await setSetting(
+                      db,
+                      GROUPING_STRICTNESS_KEY,
+                      serializeStrictness(previous),
+                    ).catch(() => {});
+                    setStrictness(previous);
+                  }
+                  showToast('Could not change strictness — setting restored');
+                });
             },
           },
         ],
       );
     },
-    [db, refresh],
+    [db, refresh, strictness],
   );
 
   const resetConfirmations = useCallback(() => {

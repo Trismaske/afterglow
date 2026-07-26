@@ -192,9 +192,11 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
    * never global quiescence (starvation-proof under sustained
    * scan-status requests). */
   const nextPassRef = useRef<PassBarrier | null>(null);
-  /** Held by refreshScoped for exclusivity: the chain exits at its next
-   * pass boundary and refresh() queues instead of starting a chain. */
-  const chainPauseRef = useRef(false);
+  /** COUNT of scoped calls holding exclusivity: while non-zero the
+   * chain exits at its next pass boundary and refresh() queues instead
+   * of starting a chain. Counted, not boolean — a newer scoped call's
+   * pause must survive an older slot's release. */
+  const chainPauseRef = useRef(0);
   const startedRef = useRef(false);
 
   const commitRefresh = useCallback(
@@ -320,7 +322,17 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       // one must never interleave (mutual generation supersession).
       // refresh() requests arriving meanwhile hold pass barriers and are
       // served (or rejected) by the slot below.
-      chainPauseRef.current = true;
+      chainPauseRef.current += 1;
+      let pauseHeld = true;
+      const releasePause = () => {
+        // Exactly-once: the slot's serving hand-off and its finally both
+        // release, and a double decrement would clear a NEWER scoped
+        // call's pause.
+        if (pauseHeld) {
+          pauseHeld = false;
+          chainPauseRef.current -= 1;
+        }
+      };
       while (refreshTailRef.current) {
         await refreshTailRef.current.catch(() => {});
       }
@@ -378,8 +390,11 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
             }
             return;
           }
-          chainPauseRef.current = false;
-          while (refreshAgainRef.current) {
+          releasePause();
+          // Serve coalesced passes — but yield at the next boundary if a
+          // NEWER scoped call has paused (its drain takes over the
+          // pending waiters).
+          while (refreshAgainRef.current && !chainPauseRef.current) {
             refreshAgainRef.current = false;
             const mine = nextPassRef.current ?? makePassBarrier();
             nextPassRef.current = makePassBarrier();
@@ -391,7 +406,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
             }
           }
         } finally {
-          chainPauseRef.current = false;
+          releasePause();
           refreshTailRef.current = null;
         }
       })();

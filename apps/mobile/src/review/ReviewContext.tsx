@@ -286,6 +286,12 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       while (refreshTailRef.current) {
         await refreshTailRef.current.catch(() => {});
       }
+      // RE-install after the drain: a drained chain pass that had
+      // already read the OLD persisted source can finish resolving as
+      // the latest generation and overwrite the eager install above —
+      // the strict pass would then commit the new scope while a later
+      // resolution failure fell back to the old roots.
+      lastRootsRef.current = { roots };
       const run = (async () => {
         try {
           // Retry until this strict scope verifiably commits as the

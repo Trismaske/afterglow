@@ -23,7 +23,12 @@ import { ADJACENT_MERGE_MAX_GAP_MS, groupByEmbedding, MOMENTS_GAP_MS } from '@af
 import { MODEL_SHA256 } from '../../modules/image-embedder';
 import { dayKey } from '../lib/dates';
 import { ensureEmbeddings, newEngineHealth, type EngineHealth } from '../lib/embeddings';
-import { checkMediaPresence, fetchPhotoPageDesc, type LoadedPhoto } from '../lib/media';
+import {
+  checkMediaPresence,
+  fetchPhotoPageDesc,
+  getAssetDetails,
+  type LoadedPhoto,
+} from '../lib/media';
 import { reconcileExternallyRemoved } from '../db/trashStore';
 import { createMergedDescendingPager, type PageFetcher } from '../lib/progressPager';
 import { frozenPhotos, reconcileWindowGroups } from '../lib/regroupBoundary';
@@ -38,6 +43,7 @@ import {
   getPresentAssetIds,
   getSetting,
   getStatesForAssets,
+  updatePhotoUri,
   writeContinuousGroups,
 } from '../db/store';
 
@@ -253,10 +259,23 @@ async function scan(db: SQLiteDatabase): Promise<void> {
     );
   }
   const gone: string[] = [];
+  let movedUris = 0;
   for (const id of unseen.slice(0, RECONCILE_CAP)) {
     const presence = await checkMediaPresence(id);
-    if (presence === 'trashed' || presence === 'absent') gone.push(id);
+    if (presence === 'trashed' || presence === 'absent') {
+      gone.push(id);
+    } else if (presence === 'present') {
+      // Present but NOT enumerated: the photo moved (same MediaStore id,
+      // new path — e.g. out of the selected source). Refresh its uri so
+      // source-scoped reads stop surfacing it under the stale path.
+      const details = await getAssetDetails(id);
+      if (details?.uri) {
+        await updatePhotoUri(db, id, details.uri);
+        movedUris += 1;
+      }
+    }
   }
+  if (movedUris > 0) console.log(`[scan] refreshed ${movedUris} moved photo paths`);
   if (gone.length > 0) {
     await reconcileExternallyRemoved(db, gone, Date.now());
     console.log(`[scan] reconciled ${gone.length} externally removed photos`);

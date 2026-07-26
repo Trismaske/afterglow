@@ -196,9 +196,11 @@ export async function applyReviewDecisions(
         'SELECT group_id FROM photo_group_assignments WHERE photo_id = ?',
         expected.assetId,
       );
-      const actual = row === null ? null : row.group_id === null ? null : Number(row.group_id);
-      const wanted = expected.groupId;
-      if ((row === null && wanted !== null) || (row !== null && actual !== wanted)) {
+      // A MISSING row always fails — a settings reset can delete a
+      // rendered single's assignment, and a verdict on it would freeze a
+      // photo whose assignment can never be rebuilt.
+      const actual = row === null ? undefined : row.group_id === null ? null : Number(row.group_id);
+      if (actual !== expected.groupId) {
         throw new Error('This group changed while reviewing — reopen it and try again.');
       }
     }
@@ -1068,6 +1070,18 @@ export async function getMetadataGroupIds(
     for (const row of rows) out.add(Number(row.id));
   }
   return out;
+}
+
+/** Refresh a photo's uri after it moved WITHOUT changing MediaStore id
+ * (scan reconciliation: present-but-unseen assets) — source-scoped reads
+ * key on the uri, so a stale path would surface an out-of-scope photo
+ * (often with a dead file uri) indefinitely. */
+export async function updatePhotoUri(
+  db: SQLiteDatabase,
+  assetId: string,
+  uri: string,
+): Promise<void> {
+  await db.runAsync('UPDATE photos SET uri = ? WHERE asset_id = ?', uri, assetId);
 }
 
 /** Present tracked asset ids inside the source scope — the scan's

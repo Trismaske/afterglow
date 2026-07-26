@@ -283,3 +283,7 @@ Final-review round 36 fixes, same pending vetting:
 
 107. **Every verdict carries its RENDERED assignment**: `decide` (deck, singles, Compare) validates the displayed group-or-single assignment in the transaction (`extras.requireAssignment`), and "Keep remaining (singles)" requires every target to STILL be a single — a scan reassignment between render and tap must reject, never freeze a group the user never reviewed.
 108. **Remaining edges**: needs-edit toggles require presence (a reconciled row regaining the flag would turn a post-restore Keep into to_edit; lone toggles surface); DayProgress's group list reloads on review-version changes (viewer edits refresh without leave-and-return); older-day expansion catches count failures like the day-row loader.
+
+Final-review round 37 fixes, same pending vetting:
+
+109. **Present-but-unseen assets refresh their PATH** during scan reconciliation (a photo moved without changing MediaStore id — e.g. out of the selected source — kept its stale in-scope uri, surfacing out-of-scope with a dead file path forever), and a MISSING assignment row always fails the rendered-assignment validation (a settings reset deleting a rendered single's row coerced to the same value as a real single — a verdict would freeze a photo whose assignment can never rebuild).

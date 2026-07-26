@@ -1077,28 +1077,18 @@ export async function getMetadataGroupIds(
   return out;
 }
 
-/** EXACT reclaimable bytes for the staged culls (vetted: no capped
- * estimates): the SUM of scan-recorded sizes, plus the uris of rows not
- * yet sized (pre-v14 rows until their next scan) so the caller can stat
- * just those — the set shrinks to empty after one scan. */
+/** The staged culls with their last-scanned sizes, one snapshot. The
+ * EXACT reclaimable figure stats each file LIVE (an in-place edit after
+ * the last scan would otherwise report a stale size) and falls back to
+ * the recorded size only when the stat fails — the staged set is
+ * user-bounded, so the sweep stays cheap. */
 export async function getStagedCullBytes(
   db: SQLiteDatabase,
-): Promise<{ knownBytes: number; unsizedUris: string[] }> {
-  // One snapshot: a scan sizing a row between split reads would drop it
-  // from BOTH populations, silently under-counting the "exact" total.
-  let out: { knownBytes: number; unsizedUris: string[] } = { knownBytes: 0, unsizedUris: [] };
-  await db.withExclusiveTransactionAsync(async (txn) => {
-    const known = await txn.getFirstAsync<{ total: number | null }>(
-      `SELECT SUM(size_bytes) AS total FROM photos
-       WHERE state IN ('culled', 'confirmed') AND is_present = 1 AND size_bytes IS NOT NULL`,
-    );
-    const unsized = await txn.getAllAsync<{ uri: string }>(
-      `SELECT uri FROM photos
-       WHERE state IN ('culled', 'confirmed') AND is_present = 1 AND size_bytes IS NULL`,
-    );
-    out = { knownBytes: Number(known?.total ?? 0), unsizedUris: unsized.map((r) => r.uri) };
-  });
-  return out;
+): Promise<{ uri: string; sizeBytes: number | null }[]> {
+  return db.getAllAsync<{ uri: string; sizeBytes: number | null }>(
+    `SELECT uri, size_bytes AS sizeBytes FROM photos
+     WHERE state IN ('culled', 'confirmed') AND is_present = 1`,
+  );
 }
 
 /** Alive tracked undated photos (the Unknown-day pseudo-day's

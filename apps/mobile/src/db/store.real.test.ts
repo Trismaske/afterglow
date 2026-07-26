@@ -1268,8 +1268,10 @@ describe('exact reclaimable bytes', () => {
     // One row predates v14 sizing (NULL) — it must surface for the stat
     // fallback instead of silently missing from the sum.
     d.raw.prepare('UPDATE photos SET size_bytes = NULL WHERE asset_id = ?').run(id('2'));
-    const bytes = await getStagedCullBytes(asExpo(d));
-    expect(bytes.knownBytes).toBe(1_000);
-    expect(bytes.unsizedUris).toEqual(['file:///dcim/2.jpg']);
+    const rows = await getStagedCullBytes(asExpo(d));
+    expect(rows).toHaveLength(2);
+    const byUri = new Map(rows.map((r) => [r.uri, r.sizeBytes]));
+    expect(byUri.get('file:///dcim/1.jpg')).toBe(1_000);
+    expect(byUri.get('file:///dcim/2.jpg')).toBeNull(); // stat fallback target
   });
 });

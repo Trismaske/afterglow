@@ -348,10 +348,10 @@ export function HomeScreen({ navigation }: Props) {
         if (stagedCulls > 0) {
           const staged = await getStagedCullBytes(db);
           if (cancelled) return;
-          // Unsized rows (pre-v14, until their next scan) stat here —
-          // the set shrinks to empty, keeping the figure EXACT.
+          // Stat LIVE, recorded size as the fallback: a file edited in
+          // place since its last scan must not report a stale size.
           setReclaimableBytes(
-            staged.knownBytes + staged.unsizedUris.reduce((sum, uri) => sum + fileSize(uri), 0),
+            staged.reduce((sum, row) => sum + (fileSize(row.uri) || row.sizeBytes || 0), 0),
           );
         } else {
           setReclaimableBytes(0);

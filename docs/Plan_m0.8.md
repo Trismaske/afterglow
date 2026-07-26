@@ -162,3 +162,8 @@ Final-review round 10 fixes, same pending vetting:
 Final-review round 11 fixes, same pending vetting:
 
 62. **The viewer anchor updates only on user navigation** (mount, swipe) — the round-10 render-time assignment re-derived it from the already-reordered list, defeating the fix; a photo that left the list re-anchors to the clamped position. History's viewer `onChanged` reload also gained the boundary catch.
+
+Final-review round 12 fixes, same pending vetting:
+
+63. **Home's scan-driven refreshes are coarsened to every 250 grouped windows + phase changes** (per-window refreshes meant thousands of redundant MediaStore counts on a 27k first scan), and the day-rows loader now refreshes on the same coarse key — the still-to-review rows no longer stay stale for the whole scan.
+64. **StateEditorSheet surfaces its own write failures** (Alert + sheet stays open) — its direct SQLite transitions bypass `ReviewContext.write`, so the provider alert could never fire for them.

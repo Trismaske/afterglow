@@ -117,6 +117,12 @@ export function HomeScreen({ navigation }: Props) {
 
   useEffect(() => subscribeScanStatus(setScan), []);
 
+  // Scan-driven refresh key, COARSENED: every 250 grouped windows and on
+  // phase changes. Per-window refreshes (4,913 windows on a 27k corpus)
+  // would issue thousands of redundant source resolutions, SQLite reads
+  // and MediaStore counts while Home stays focused.
+  const scanRefreshKey = `${scan.phase}:${Math.floor(scan.windowsGrouped / 250)}`;
+
   // Daily goal + streaks + live corpus stats (gate 4): refresh on focus,
   // on review mutations, and as scan windows land.
   useFocusEffect(
@@ -163,10 +169,10 @@ export function HomeScreen({ navigation }: Props) {
       return () => {
         cancelled = true;
       };
-      // review.version / scan.windowsGrouped / refreshTick are deliberate
+      // review.version / scanRefreshKey / refreshTick are deliberate
       // refresh triggers, not values the loader reads.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [db, permission?.granted, review.version, scan.windowsGrouped, refreshTick]),
+    }, [db, permission?.granted, review.version, scanRefreshKey, refreshTick]),
   );
 
   /** Keep-or-cull prompts for detected edited copies, one at a time. */
@@ -396,9 +402,12 @@ export function HomeScreen({ navigation }: Props) {
       return () => {
         cancelled = true;
       };
-      // refreshTick re-runs this after edit detection changes states.
+      // refreshTick re-runs this after edit detection changes states;
+      // scanRefreshKey re-runs it coarsely as the newest→oldest scan
+      // lands older days (and once on completion) — otherwise the
+      // still-to-review rows stay stale until a refocus.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [db, permission?.granted, refreshTick]),
+    }, [db, permission?.granted, refreshTick, scanRefreshKey]),
   );
 
   const expandOlderDays = useCallback(async () => {

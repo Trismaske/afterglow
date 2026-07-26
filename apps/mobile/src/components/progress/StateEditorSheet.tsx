@@ -8,7 +8,7 @@
  * read-only because review and the trash lifecycle own them.
  */
 import React, { useCallback, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -77,6 +77,11 @@ export function StateEditorSheet({
         }
         onChanged();
         onClose();
+      } catch (error) {
+        // This path bypasses ReviewContext.write, so ITS alert is the
+        // only surface — the decision was NOT saved; the sheet stays
+        // open for a retry.
+        Alert.alert('Could not save', error instanceof Error ? error.message : String(error));
       } finally {
         setBusy(false);
       }

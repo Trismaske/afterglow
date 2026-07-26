@@ -159,6 +159,13 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
    * scan-status refresh overlapping a decision's refresh must not
    * overwrite the queue/refs with its older reads. */
   const refreshGenRef = useRef(0);
+  /** Single-flight refresh chain (+ coalesced-rerun flag): at most ONE
+   * general refresh pass runs at a time. Concurrent passes during a scan
+   * used to supersede one another's generations perpetually — a
+   * device-observed LIVELOCK that kept the queue empty for a whole
+   * multi-thousand-photo rescan. */
+  const refreshTailRef = useRef<Promise<void> | null>(null);
+  const refreshAgainRef = useRef(false);
   const startedRef = useRef(false);
 
   const commitRefresh = useCallback(
@@ -204,39 +211,58 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     [db],
   );
 
-  const refresh = useCallback(async () => {
-    // Retry until a pass verifiably commits as the LATEST refresh —
-    // barrier callers (the settings flows) await refresh() before
-    // unlocking navigation, and a silently superseded pass could leave
-    // reset/rejected-scope groups actionable if the newer refresh fails.
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const generation = ++refreshGenRef.current;
-      // The photo-source folder filter scopes every queue read (the scan
-      // freezes out-of-source rows in place; reads must not resurface
-      // them). FAIL CLOSED on resolution errors: null means "all folders"
-      // to the store, so a transient failure must fall back to the last
-      // known roots — or skip the refresh entirely before any resolution
-      // succeeds — never silently broaden a narrowed source.
-      let roots: readonly string[] | null;
-      try {
-        roots = (await resolveSources(db)).roots ?? null;
-        // Only the LATEST refresh may move the fallback roots — an older
-        // refresh resolving a superseded broader source must not
-        // overwrite what refreshScoped just recorded.
-        if (generation === refreshGenRef.current) lastRootsRef.current = { roots };
-      } catch (error) {
-        if (!lastRootsRef.current) {
-          // Deliberate skip (cold start, nothing rendered yet).
-          console.warn('[review] source resolution failed — queue refresh skipped:', String(error));
-          return;
-        }
-        roots = lastRootsRef.current.roots;
+  /** One full refresh pass: resolve scope → snapshot read → commit. */
+  const refreshOnce = useCallback(async () => {
+    const generation = ++refreshGenRef.current;
+    // The photo-source folder filter scopes every queue read (the scan
+    // freezes out-of-source rows in place; reads must not resurface
+    // them). FAIL CLOSED on resolution errors: null means "all folders"
+    // to the store, so a transient failure must fall back to the last
+    // known roots — or skip the refresh entirely before any resolution
+    // succeeds — never silently broaden a narrowed source.
+    let roots: readonly string[] | null;
+    try {
+      roots = (await resolveSources(db)).roots ?? null;
+      // Only the LATEST refresh may move the fallback roots — an older
+      // refresh resolving a superseded broader source must not
+      // overwrite what refreshScoped just recorded.
+      if (generation === refreshGenRef.current) lastRootsRef.current = { roots };
+    } catch (error) {
+      if (!lastRootsRef.current) {
+        // Deliberate skip (cold start, nothing rendered yet).
+        console.warn('[review] source resolution failed — queue refresh skipped:', String(error));
+        return;
       }
-      await commitRefresh(await refreshWithRoots(roots, generation));
-      if (generation === refreshGenRef.current) return;
+      roots = lastRootsRef.current.roots;
     }
-    throw new Error('queue refresh kept being superseded — try again');
+    await commitRefresh(await refreshWithRoots(roots, generation));
   }, [db, refreshWithRoots, commitRefresh]);
+
+  const refresh = useCallback((): Promise<void> => {
+    // SINGLE-FLIGHT + COALESCE. Scan status ticks request refreshes every
+    // couple of seconds during an active scan; running them concurrently
+    // let each pass supersede the others' generations so NO pass ever
+    // committed (device-observed livelock: an empty queue for an entire
+    // rescan). Instead one chain runs passes back-to-back: a request
+    // arriving mid-pass sets the rerun flag and awaits the chain, which
+    // loops until no rerun is pending. Barrier semantics hold — the
+    // promise a caller receives resolves only after a pass that STARTED
+    // at/after its request has committed (or deliberately skipped).
+    refreshAgainRef.current = true;
+    if (refreshTailRef.current) return refreshTailRef.current;
+    const run = (async () => {
+      try {
+        while (refreshAgainRef.current) {
+          refreshAgainRef.current = false;
+          await refreshOnce();
+        }
+      } finally {
+        refreshTailRef.current = null;
+      }
+    })();
+    refreshTailRef.current = run;
+    return run;
+  }, [refreshOnce]);
 
   const refreshScoped = useCallback(
     async (roots: readonly string[] | null) => {
@@ -245,27 +271,51 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       // resolution falls back to the NEW scope, never the old one.
       const previousFallback = lastRootsRef.current;
       lastRootsRef.current = { roots };
-      try {
-        // Retry until this strict scope verifiably commits as the LATEST
-        // refresh — a concurrent scan-status refresh can supersede a pass
-        // mid-read, and the picker's fail-closed contract needs the new
-        // scope actually rendered before it navigates away.
-        for (let attempt = 0; attempt < 5; attempt += 1) {
-          const generation = ++refreshGenRef.current;
-          await commitRefresh(await refreshWithRoots(roots, generation));
-          if (generation === refreshGenRef.current) return;
+      // Drain the general refresh chain, then HOLD the single-flight slot
+      // for the strict pass — chain passes and this one must never
+      // interleave (mutual generation supersession). refresh() requests
+      // arriving meanwhile coalesce onto the slot and are served by one
+      // follow-up chain pass after this settles.
+      while (refreshTailRef.current) {
+        await refreshTailRef.current.catch(() => {});
+      }
+      const run = (async () => {
+        try {
+          // Retry until this strict scope verifiably commits as the
+          // LATEST refresh (belt-and-braces — with the slot held nothing
+          // else should bump the generation) — the picker's fail-closed
+          // contract needs the new scope actually rendered before it
+          // navigates away.
+          for (let attempt = 0; attempt < 5; attempt += 1) {
+            const generation = ++refreshGenRef.current;
+            await commitRefresh(await refreshWithRoots(roots, generation));
+            if (generation === refreshGenRef.current) return;
+          }
+          throw new Error('queue refresh kept being superseded — try again');
+        } catch (error) {
+          // FAILURE reverts the eager fallback; re-rendering the restored
+          // scope is the CALLER's job AFTER its setting rollback lands — a
+          // refresh fired here would resolve the still-persisted rejected
+          // source and re-commit exactly the scope being rolled back.
+          lastRootsRef.current = previousFallback;
+          throw error;
         }
-        throw new Error('queue refresh kept being superseded — try again');
-      } catch (error) {
-        // FAILURE reverts the eager fallback; re-rendering the restored
-        // scope is the CALLER's job AFTER its setting rollback lands — a
-        // refresh fired here would resolve the still-persisted rejected
-        // source and re-commit exactly the scope being rolled back.
-        lastRootsRef.current = previousFallback;
-        throw error;
+      })();
+      // Coalesced refresh() callers must not surface THIS pass's failure
+      // (the settings flow owns it) — they resolve when the slot frees.
+      refreshTailRef.current = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      try {
+        await run;
+      } finally {
+        refreshTailRef.current = null;
+        // Serve any requests that coalesced while the slot was held.
+        if (refreshAgainRef.current) void refresh().catch(() => {});
       }
     },
-    [refreshWithRoots, commitRefresh],
+    [refreshWithRoots, commitRefresh, refresh],
   );
 
   const loadGroup = useCallback(

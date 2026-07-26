@@ -142,6 +142,12 @@ export function CompareScreen({ navigation, route }: Props) {
     if (!group || singles) return null;
     return {
       aliveIds: group.members.filter((m) => m.state === 'unreviewed').map((m) => m.asset_id),
+      // LIVE-deck order (unreviewed + staged culls) — the deck header
+      // and picker number positions over it (gate 5 keeps culls in the
+      // deck), so Compare's labels must too.
+      liveIds: group.members
+        .filter((m) => m.state === 'unreviewed' || m.state === 'culled')
+        .map((m) => m.asset_id),
       memberIds: group.members.map((m) => m.asset_id),
     };
   }, [group, singles]);
@@ -152,8 +158,8 @@ export function CompareScreen({ navigation, route }: Props) {
         return index >= 0 ? String(index + 1) : '?';
       }
       if (!groupInfo) return '?';
-      const alive = groupInfo.aliveIds.indexOf(id);
-      if (alive >= 0) return String(alive + 1);
+      const live = groupInfo.liveIds.indexOf(id);
+      if (live >= 0) return String(live + 1);
       const member = groupInfo.memberIds.indexOf(id);
       return member >= 0 ? String(member + 1) : '?';
     },

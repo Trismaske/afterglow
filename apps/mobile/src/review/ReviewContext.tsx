@@ -222,9 +222,20 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
 
   const refreshScoped = useCallback(
     async (roots: readonly string[] | null) => {
-      const generation = ++refreshGenRef.current;
-      await commitRefresh(await refreshWithRoots(roots, generation));
-      if (generation === refreshGenRef.current) lastRootsRef.current = { roots };
+      // The given roots ARE the just-persisted truth — install them as
+      // the fallback up front so any concurrent refresh that fails
+      // resolution falls back to the NEW scope, never the old one.
+      lastRootsRef.current = { roots };
+      // Retry until this strict scope verifiably commits as the LATEST
+      // refresh — a concurrent scan-status refresh can supersede a pass
+      // mid-read, and the picker's fail-closed contract needs the new
+      // scope actually rendered before it navigates away.
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const generation = ++refreshGenRef.current;
+        await commitRefresh(await refreshWithRoots(roots, generation));
+        if (generation === refreshGenRef.current) return;
+      }
+      throw new Error('queue refresh kept being superseded — try again');
     },
     [refreshWithRoots, commitRefresh],
   );

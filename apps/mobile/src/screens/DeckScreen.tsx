@@ -1258,29 +1258,31 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
             <Text style={styles.pickerTitle}>Compare with…</Text>
             <Text style={styles.pickerHint}>Pick the photo to compare against {cursor + 1}.</Text>
             <View style={styles.pickerGrid}>
-              {(singlesMode
-                ? deckItems
-                    .map((item, deckIndex) => ({ item, deckIndex }))
-                    .filter(({ item }) => (stateOf.get(item.id) ?? 'unreviewed') === 'unreviewed')
-                : aliveItems.map((item, deckIndex) => ({ item, deckIndex }))
-              ).map(({ item, deckIndex }) =>
-                item.id === current.id ? null : (
-                  <Pressable key={item.id} onPress={() => openCompare(item.id)}>
-                    <Image
-                      source={{ uri: item.uri }}
-                      style={styles.pickerThumb}
-                      contentFit="cover"
-                      recyclingKey={item.id}
-                    />
-                    <View style={styles.pickerIndex}>
-                      {/* The DECK position — the header and Compare's
+              {/* BOTH modes: candidates are the deck's unreviewed items,
+                  labeled by their LIVE-deck position — the header keeps
+                  staged culls in the count, so a filtered-subset index
+                  would disagree after a cull. */}
+              {deckItems
+                .map((item, deckIndex) => ({ item, deckIndex }))
+                .filter(({ item }) => (stateOf.get(item.id) ?? 'unreviewed') === 'unreviewed')
+                .map(({ item, deckIndex }) =>
+                  item.id === current.id ? null : (
+                    <Pressable key={item.id} onPress={() => openCompare(item.id)}>
+                      <Image
+                        source={{ uri: item.uri }}
+                        style={styles.pickerThumb}
+                        contentFit="cover"
+                        recyclingKey={item.id}
+                      />
+                      <View style={styles.pickerIndex}>
+                        {/* The DECK position — the header and Compare's
                           labels use it; a filtered subset index would
                           disagree after a staged cull. */}
-                      <Text style={styles.pickerIndexText}>{deckIndex + 1}</Text>
-                    </View>
-                  </Pressable>
-                ),
-              )}
+                        <Text style={styles.pickerIndexText}>{deckIndex + 1}</Text>
+                      </View>
+                    </Pressable>
+                  ),
+                )}
             </View>
             <Pressable style={styles.pickerClose} onPress={() => setComparePicker(false)}>
               <Text style={styles.pickerCloseText}>Cancel</Text>

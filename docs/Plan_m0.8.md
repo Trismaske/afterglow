@@ -215,3 +215,7 @@ Final-review round 20 fixes, same pending vetting:
 Final-review round 21 fixes, same pending vetting:
 
 85. **Fallback roots move only with the LATEST refresh** (generation-guarded `lastRootsRef` writes — an older refresh resolving a superseded broader source could overwrite what `refreshScoped` just recorded); the singles Compare button's disabled state mirrors `openCompare`'s exact eligibility (two unreviewed candidates AND an unreviewed current), and the compare picker labels photos by their DECK position, matching the header and Compare's own labels.
+
+Final-review round 22 fixes, same pending vetting:
+
+86. **`refreshScoped` retries until it commits as the LATEST refresh** (bounded at 5, then throws into the picker's rollback) and installs the strict roots as the fallback UP FRONT — a concurrent scan-status refresh could supersede its commit and, on a transient resolution failure, fall back to the superseded broader scope. Compare labels and the picker now number GROUP candidates by live-deck position too (unreviewed + staged culls — `liveIds`), completing round 21's position fix for groups.

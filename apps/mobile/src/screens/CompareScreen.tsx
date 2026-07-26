@@ -79,24 +79,27 @@ export function CompareScreen({ navigation, route }: Props) {
   );
   // An explicitly opened group can sit outside the queue page (DayProgress,
   // a scan pushing it off) — fetch it directly, like the deck does.
-  const [loadedGroup, setLoadedGroup] = useState<ReviewGroupRow | null>(null);
+  const [loadedGroup, setLoadedGroup] = useState<ReviewGroupRow | 'loading' | 'missing'>('loading');
   useEffect(() => {
     let cancelled = false;
     if (numericGroupId === null || queueGroup) {
-      setLoadedGroup(null);
+      setLoadedGroup('loading');
       return;
     }
     void loadGroup(numericGroupId).then((fetched) => {
-      if (!cancelled) setLoadedGroup(fetched);
+      if (!cancelled) setLoadedGroup(fetched ?? 'missing');
     });
     return () => {
       cancelled = true;
     };
   }, [numericGroupId, queueGroup, loadGroup]);
-  const group = queueGroup ?? loadedGroup;
+  const group = queueGroup ?? (typeof loadedGroup === 'object' ? loadedGroup : null);
+  /** An off-page group fetch is still in flight — a missing pair is not
+   * terminal yet. */
+  const groupPending = numericGroupId !== null && !queueGroup && loadedGroup === 'loading';
   const itemLookup = useMemo(() => {
     const map = new Map<string, { id: string; timestamp: number; uri: string }>();
-    for (const g of [...groups, ...(loadedGroup ? [loadedGroup] : [])])
+    for (const g of [...groups, ...(typeof loadedGroup === 'object' ? [loadedGroup] : [])])
       for (const m of g.members)
         map.set(m.asset_id, { id: m.asset_id, timestamp: m.taken_at, uri: m.uri });
     for (const m of singleRows)
@@ -258,10 +261,11 @@ export function CompareScreen({ navigation, route }: Props) {
   }));
 
   // A photo can vanish mid-compare only via external state weirdness —
-  // fall back to the deck rather than rendering a dead screen.
+  // fall back to the deck rather than rendering a dead screen. An
+  // off-page group still loading is NOT terminal (gate 5).
   useEffect(() => {
-    if (!pair) navigation.goBack();
-  }, [pair, navigation]);
+    if (!pair && !groupPending) navigation.goBack();
+  }, [pair, groupPending, navigation]);
 
   /** Star the winner + keep both, with the m0.5 visibility toast. */
   const betterKeepBoth = useCallback(

@@ -139,3 +139,7 @@ Final-review round 6 fixes, same pending vetting:
 
 53. **Re-decisions are state-aware** (`applyRedecision`, used by deck browse and the cull-list sheet): Keep on a flagged photo lands on `done` with the flag CLEARED (the initial-decision verdict path would bounce it back to `to_edit`), To edit from `done`/`culled` starts a FRESH cycle (unconditional `to_edit_at` + baseline reset), and both targets resolve pending copy matches (C#12). Initial decisions on unreviewed photos keep the flag-honoring verdict path.
 54. **Off-page groups work everywhere**: `keepRest` fetches an explicitly opened group absent from the 100-group queue page instead of silently no-opping, and Compare loads such a group directly (same `loadGroup` mechanism as the deck).
+
+Final-review round 7 fixes, same pending vetting:
+
+55. **Best-star hygiene**: culling the starred photo clears the star in the same transaction (a compare winner's `extras.setBest` may star a replacement); the orphaned-best repair also requires the best photo to be PRESENT (an externally removed best no longer freezes its surviving group forever); Compare waits for an off-page group fetch before treating a missing pair as terminal.

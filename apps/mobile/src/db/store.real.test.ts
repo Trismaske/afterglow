@@ -957,3 +957,44 @@ describe('applyRedecision (state-aware change of mind)', () => {
     expect(stateOf(d, '1').to_edit_at).toBe(AT + 100); // in-progress cycle untouched
   });
 });
+
+// -------------------------------------------- final-review round 7
+
+describe('best-star hygiene', () => {
+  it('culling the starred photo clears the star; a compare winner may replace it', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2'], [['1', '2']]);
+    const gid = groupIdOf(d, '1');
+    await setGroupBest(asExpo(d), gid, id('2'));
+    // Compare verdict: loser 2 culled, winner 1 starred — one transaction.
+    await applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 100, {
+      setBest: { groupId: gid, assetId: id('1') },
+    });
+    const best = d.raw.prepare('SELECT best_photo_id FROM photo_groups WHERE id = ?').get(gid) as {
+      best_photo_id: string | null;
+    };
+    expect(best.best_photo_id).toBe(id('1'));
+    // A plain cull of the star (no replacement) leaves NO best.
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 200);
+    const after = d.raw.prepare('SELECT best_photo_id FROM photo_groups WHERE id = ?').get(gid) as {
+      best_photo_id: string | null;
+    };
+    expect(after.best_photo_id).toBeNull();
+  });
+
+  it('an externally removed best is orphaned even while its assignment remains', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
+    const gid = groupIdOf(d, '1');
+    await setGroupBest(asExpo(d), gid, id('1'));
+    const { reconcileExternallyRemoved } = await import('./trashStore');
+    await reconcileExternallyRemoved(asExpo(d), [id('1')], AT + 100);
+    // Two present members remain — the group survives, the star clears.
+    const best = d.raw.prepare('SELECT best_photo_id FROM photo_groups WHERE id = ?').get(gid) as {
+      best_photo_id: string | null;
+    };
+    expect(best.best_photo_id).toBeNull();
+    expect(await getReviewGroup(asExpo(d), gid)).not.toBeNull();
+    expect(foreignKeyCheck(d)).toEqual([]);
+  });
+});

@@ -254,6 +254,16 @@ export async function applyReviewDecisions(
         at,
         assetId,
       );
+      if (verdict === 'culled') {
+        // A staged cull is not ALIVE — a star pointing at it would show a
+        // cull as best and freeze the group via the metadata boundary.
+        // extras.setBest (the compare winner) applies below and may star
+        // a replacement.
+        await txn.runAsync(
+          'UPDATE photo_groups SET best_photo_id = NULL WHERE best_photo_id = ?',
+          assetId,
+        );
+      }
     }
     if (extras.setBest) {
       await txn.runAsync(
@@ -398,7 +408,9 @@ export async function repairGroupMembership(txn: SQLiteDatabase): Promise<void> 
      WHERE best_photo_id IS NOT NULL
        AND NOT EXISTS (
          SELECT 1 FROM photo_group_assignments a
+         JOIN photos p ON p.asset_id = a.photo_id
          WHERE a.group_id = photo_groups.id AND a.photo_id = photo_groups.best_photo_id
+           AND p.is_present = 1
        )`,
   );
   await txn.runAsync(

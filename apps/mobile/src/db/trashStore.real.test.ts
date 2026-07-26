@@ -66,7 +66,6 @@ describe('prepareTrashBatch', () => {
         photoId: `p${i}`,
         measuredBytes: 10,
       })),
-      null,
       AT,
     );
     expect(first!.members).toHaveLength(TRASH_BATCH_LIMIT);
@@ -77,7 +76,6 @@ describe('prepareTrashBatch', () => {
         photoId: `p${i}`,
         measuredBytes: 10,
       })),
-      null,
       AT,
     );
     expect(second!.members).toHaveLength(20);
@@ -90,12 +88,7 @@ describe('prepareTrashBatch', () => {
         "INSERT INTO photos (asset_id, uri, taken_at, day, state) VALUES ('kept1', 'c://', ?, 'd', 'done')",
       )
       .run(AT);
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'kept1', measuredBytes: 5 }],
-      null,
-      AT,
-    );
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'kept1', measuredBytes: 5 }], AT);
     expect(batch).toBeNull();
   });
 });
@@ -112,12 +105,7 @@ describe('resolveTrashBatch', () => {
     d.raw
       .prepare("INSERT INTO share_queue (photo_id, cycle_id, queued_at) VALUES ('p1', 1, ?)")
       .run(AT);
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'p1', measuredBytes: 111 }],
-      null,
-      AT,
-    );
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 111 }], AT);
     await markBatchLaunching(asExpo(d), batch!.batchId, AT + 1);
     const result = await resolveTrashBatch(asExpo(d), {
       batchId: batch!.batchId,
@@ -155,12 +143,7 @@ describe('resolveTrashBatch', () => {
         "UPDATE photos SET favourite_target = 1, organize_volume = 'external_primary', organize_path = 'Pictures/Trips/' WHERE asset_id = 'p1'",
       )
       .run();
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'p1', measuredBytes: 10 }],
-      null,
-      AT,
-    );
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 10 }], AT);
     await markBatchLaunching(asExpo(d), batch!.batchId, AT + 1);
     await resolveTrashBatch(asExpo(d), {
       batchId: batch!.batchId,
@@ -183,12 +166,7 @@ describe('resolveTrashBatch', () => {
   it('cancelled dialog releases members back to the cull queue', async () => {
     const d = await fresh();
     insertCull(d, 'p1');
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'p1', measuredBytes: 50 }],
-      null,
-      AT,
-    );
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 50 }], AT);
     const result = await resolveTrashBatch(asExpo(d), {
       batchId: batch!.batchId,
       verify: absent,
@@ -208,12 +186,7 @@ describe('resolveTrashBatch', () => {
   it('unknown verification earns no credit and stays retryable', async () => {
     const d = await fresh();
     insertCull(d, 'p1');
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'p1', measuredBytes: 50 }],
-      null,
-      AT,
-    );
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 50 }], AT);
     await markBatchLaunching(asExpo(d), batch!.batchId, AT + 1);
     const result = await resolveTrashBatch(asExpo(d), {
       batchId: batch!.batchId,
@@ -228,7 +201,6 @@ describe('resolveTrashBatch', () => {
     const retry = await prepareTrashBatch(
       asExpo(d),
       [{ photoId: 'p1', measuredBytes: 50 }],
-      null,
       AT + 3,
     );
     expect(retry!.members).toHaveLength(1);
@@ -282,13 +254,9 @@ describe('prepareTrashBatch stageToEditMembers (edited-copy cull)', () => {
          VALUES ('e1', 'content://x', ?, '2026-07-20', 'to_edit', 1)`,
       )
       .run(AT);
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'e1', measuredBytes: 42 }],
-      null,
-      AT,
-      { stageToEditMembers: true },
-    );
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'e1', measuredBytes: 42 }], AT, {
+      stageToEditMembers: true,
+    });
     expect(batch!.members).toHaveLength(1);
     const row = d.raw
       .prepare('SELECT state, needs_edit FROM photos WHERE asset_id = ?')
@@ -309,12 +277,7 @@ describe('prepareTrashBatch stageToEditMembers (edited-copy cull)', () => {
          VALUES ('e1', 'content://x', ?, '2026-07-20', 'to_edit', 1)`,
       )
       .run(AT);
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'e1', measuredBytes: 42 }],
-      null,
-      AT,
-    );
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'e1', measuredBytes: 42 }], AT);
     expect(batch).toBeNull();
   });
 });
@@ -323,7 +286,7 @@ describe('recovery after process death (P8#3)', () => {
   it('an interrupted preparing batch is released without dispatch', async () => {
     const d = await fresh();
     insertCull(d, 'p1');
-    await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 10 }], null, AT);
+    await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 10 }], AT);
     // Death here — no dispatch. Recovery releases everything.
     const recovered = await recoverTrashBatches(asExpo(d), absent, AT + 10);
     expect(recovered.staleBatches).toBe(1);
@@ -339,12 +302,7 @@ describe('recovery after process death (P8#3)', () => {
   it('an interrupted launching batch with absence is repaired but UNCREDITED', async () => {
     const d = await fresh();
     insertCull(d, 'p1');
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'p1', measuredBytes: 999 }],
-      null,
-      AT,
-    );
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 999 }], AT);
     await markBatchLaunching(asExpo(d), batch!.batchId, AT + 1);
     // Death in the crash window; on restart the URI is absent.
     const recovered = await recoverTrashBatches(asExpo(d), absent, AT + 10);
@@ -368,12 +326,7 @@ describe('recovery after process death (P8#3)', () => {
   it('an interrupted launching batch still present releases back to culled', async () => {
     const d = await fresh();
     insertCull(d, 'p1');
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'p1', measuredBytes: 10 }],
-      null,
-      AT,
-    );
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 10 }], AT);
     await markBatchLaunching(asExpo(d), batch!.batchId, AT + 1);
     await recoverTrashBatches(asExpo(d), present, AT + 10);
     const row = d.raw.prepare('SELECT state FROM photos WHERE asset_id = ?').get('p1') as {
@@ -387,12 +340,7 @@ describe('restore → re-trash generations (P8#4)', () => {
   it('a verified post-restore re-trash counts the next generation exactly once', async () => {
     const d = await fresh();
     insertCull(d, 'p1');
-    const first = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'p1', measuredBytes: 100 }],
-      null,
-      AT,
-    );
+    const first = await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 100 }], AT);
     await markBatchLaunching(asExpo(d), first!.batchId, AT + 1);
     await resolveTrashBatch(asExpo(d), {
       batchId: first!.batchId,
@@ -413,7 +361,6 @@ describe('restore → re-trash generations (P8#4)', () => {
     const second = await prepareTrashBatch(
       asExpo(d),
       [{ photoId: 'p1', measuredBytes: 100 }],
-      null,
       AT + 20,
     );
     await markBatchLaunching(asExpo(d), second!.batchId, AT + 21);

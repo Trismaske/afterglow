@@ -25,11 +25,6 @@ export function stateMetaFor(accent: string): Record<EffectiveState, StateMeta> 
       hint: 'waiting in a cull-group deck',
       color: accent,
     },
-    kept: {
-      label: 'Kept',
-      hint: 'reviewed; becomes done when the session finishes',
-      color: colors.keepDim,
-    },
     to_edit: {
       label: 'To edit',
       hint: 'keepers waiting in the edit queue',
@@ -52,7 +47,6 @@ export function stateMetaFor(accent: string): Record<EffectiveState, StateMeta> 
 export const STATE_ORDER: readonly EffectiveState[] = [
   'unreviewed',
   'in_group',
-  'kept',
   'to_edit',
   'staged',
   'done',

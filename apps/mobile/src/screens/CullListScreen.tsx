@@ -5,12 +5,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MediaItem } from '@afterglow/core';
 import type { RootStackParamList } from '../navigation';
-import { useSession } from '../session/SessionContext';
+import { useReview } from '../review/ReviewContext';
 import { useSQLiteContext } from 'expo-sqlite';
-import { getStagedCulls, restoreCarriedCull, type StagedCullRow } from '../db/store';
+import { getStagedCulls, type StagedCullRow } from '../db/store';
 import { BigButton } from '../components/BigButton';
 import { ReDecideSheet, type DecidedState } from '../components/ReDecideSheet';
-import { showToast } from '../lib/toast';
 import { colors, touch } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'CullList'>;
@@ -24,7 +23,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'CullList'>;
  */
 export function CullListScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
-  const { session, restoring, version, confirmStagedCulls, needsEdit, redecide } = useSession();
+  const { version, confirmStagedCulls } = useReview();
   // Home-card entry is queue MAINTENANCE: it returns Home afterwards and
   // must never funnel an unfinished session into the Summary/finish flow.
   const fromHome = route.params?.fromHome === true;
@@ -85,15 +84,11 @@ export function CullListScreen({ navigation, route }: Props) {
     if (busy) return;
     setBusy(true);
     try {
-      // The session context owns the durable trash lifecycle; it loops the
-      // whole global queue in bounded batches (one system dialog each) and
-      // mirrors verified outcomes into the active snapshot.
+      // The review context owns the durable trash lifecycle; it loops the
+      // whole global queue in bounded batches (one system dialog each).
       const result = await confirmStagedCulls();
       if (result.status === 'applied' && result.remaining === 0) {
-        // The session-ending flow lands on the session Summary; Home-card
-        // maintenance returns Home (also: Summary renders blank without a
-        // session).
-        if (session && !fromHome) navigation.replace('Summary');
+        if (!fromHome) navigation.replace('Summary');
         else navigation.goBack();
       } else if (result.status === 'cancelled') {
         // Earlier applied batches may hold verified moves AND
@@ -147,18 +142,11 @@ export function CullListScreen({ navigation, route }: Props) {
     } finally {
       setBusy(false);
     }
-  }, [busy, confirmStagedCulls, navigation, session, fromHome]);
+  }, [busy, confirmStagedCulls, navigation, fromHome]);
 
   const onConfirmPress = useCallback(() => {
-    // Mid-restore, confirming could trash a member the restoring snapshot
-    // still holds as culled — the reconcile would find no session and the
-    // stale snapshot would install afterwards.
-    if (restoring) {
-      showToast('Still loading your session — try again in a moment');
-      return;
-    }
     if (staged.length === 0) {
-      if (session && !fromHome) navigation.replace('Summary');
+      if (!fromHome) navigation.replace('Summary');
       else navigation.goBack();
       return;
     }
@@ -172,84 +160,14 @@ export function CullListScreen({ navigation, route }: Props) {
         { text: 'Move to trash', style: 'destructive', onPress: () => void runConfirm() },
       ],
     );
-  }, [staged.length, navigation, runConfirm, session, fromHome, restoring]);
+  }, [staged.length, navigation, runConfirm, fromHome]);
 
-  const inSession = useCallback(
-    (id: string) => {
-      if (!session) return false;
-      try {
-        session.getState(id);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    [session],
-  );
+  // Every staged row IS the durable truth; the sheet re-decides directly.
+  const currentOf = useCallback((_id: string): DecidedState => 'culled', []);
 
-  // The sheet must show the SESSION's current verdict — a durable
-  // 'culled' row can coexist with a 'kept' snapshot state (e.g. an
-  // inconclusive edited-copy cull) and the redecide chips act on the
-  // session's truth, so a hard-coded 'culled' would invert the taps.
-  const currentOf = useCallback(
-    (id: string): DecidedState => {
-      try {
-        const state = session?.getState(id);
-        if (state === 'culled') return 'culled';
-        return needsEdit(id) ? 'to_edit' : 'kept';
-      } catch {
-        return 'culled';
-      }
-    },
-    [session, needsEdit],
-  );
-
-  const restoreCarried = useCallback(
-    (item: MediaItem) => {
-      Alert.alert(
-        'Carried cull',
-        'This photo was staged in an earlier session. Restore it to unreviewed (it will be drawn again), or keep it staged?',
-        [
-          { text: 'Keep staged', style: 'cancel' },
-          {
-            text: 'Restore to unreviewed',
-            onPress: () =>
-              void restoreCarriedCull(db, item.id, Date.now())
-                .then(() => getStagedCulls(db))
-                .then(setGlobalRows),
-          },
-        ],
-      );
-    },
-    [db],
-  );
-
-  const onTilePress = useCallback(
-    (item: MediaItem) => {
-      // Mid-restore, membership is unknown: acting now could restore an
-      // ACTIVE member as carried and desync the restoring snapshot.
-      if (restoring) {
-        showToast('Still loading your session — try again in a moment');
-        return;
-      }
-      if (inSession(item.id)) {
-        void (async () => {
-          // Heal the divergence an interrupted edited-copy cull can
-          // leave (durable row culled, snapshot still kept): mirror the
-          // staging into the session BEFORE the sheet opens, so every
-          // chip acts on consistent state — Keep then truly unstages
-          // the durable row (a flag-only change would leave it culled).
-          try {
-            if (session!.getState(item.id) !== 'culled') await redecide(item.id, 'cull');
-          } catch {
-            // leave the sheet to the session's current view
-          }
-          setRedecideItem(item);
-        })();
-      } else restoreCarried(item);
-    },
-    [inSession, restoreCarried, session, redecide, restoring],
-  );
+  const onTilePress = useCallback((item: MediaItem) => {
+    setRedecideItem(item);
+  }, []);
 
   const renderItem = useCallback(
     ({ item }: { item: MediaItem }) => (
@@ -303,9 +221,7 @@ export function CullListScreen({ navigation, route }: Props) {
               : loading
                 ? 'Loading…'
                 : staged.length === 0
-                  ? session && !fromHome
-                    ? 'Finish session'
-                    : 'Done'
+                  ? 'Done'
                   : `Trash ${staged.length} photo${staged.length === 1 ? '' : 's'}`
           }
           color={staged.length === 0 ? colors.keep : colors.cull}

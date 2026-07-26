@@ -4,7 +4,8 @@ import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
-import { useSession, type GroupInfo } from '../session/SessionContext';
+import { useReview } from '../review/ReviewContext';
+import type { ReviewGroupRow } from '../db/store';
 import { BigButton } from '../components/BigButton';
 import { DecisionBadge, type DecisionKind } from '../components/DecisionBadge';
 import { colors, touch, useTheme } from '../theme';
@@ -16,106 +17,103 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Groups'>;
 const STRIP_THUMBS = 6;
 
 /**
- * Overview of the session: cull groups (thumbnail strip + count), the
- * singles bucket, and a "Continue" button for the linear default flow.
- * m0.5 ("trust the user"): every group row is tappable and opens THAT
- * group's deck — any order, singles any time (even before groups),
- * completed groups re-open in browse/re-decide mode. The entire group card,
- * including every thumbnail, has one navigation action; "End session &
- * apply" banks all decisions made so far by jumping straight to the
- * staged-cull confirmation (unreviewed photos simply stay unreviewed
- * for a later session).
+ * The review queue (m0.8: the continuous scan's groups — no sessions):
+ * cull groups (thumbnail strip + count), the singles bucket, and a
+ * "Continue" button for the linear flow. Every group row is tappable and
+ * opens THAT group's deck — any order, singles any time; decisions land
+ * durably at swipe time, so there is nothing to end or apply.
  */
 export function GroupsScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
-  const { session, label, groups, singleIds, version, needsEdit, favouriteStatus } = useSession();
+  const { groups, singles, queueCounts, version, needsEdit, favouriteStatus } = useReview();
 
   const stats = useMemo(() => {
-    if (!session) return null;
-    const s = session.summary();
-    const singlesPending = singleIds.filter((id) => session.getState(id) === 'unreviewed').length;
-    return { ...s, reviewed: s.total - s.unreviewed, singlesPending };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session, version, singleIds]);
+    const total = queueCounts.grouped + queueCounts.singles;
+    return { pendingGrouped: queueCounts.grouped, singlesPending: singles.length, total };
+  }, [queueCounts, singles]);
 
   const nextStep = useMemo(() => {
-    if (!session) return null;
-    if (session.currentGroupId()) return 'Deck' as const;
-    if (session.nextSingle()) return 'Singles' as const;
+    if (groups.length > 0) return 'Deck' as const;
+    if (singles.length > 0) return 'Singles' as const;
     return 'CullList' as const;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session, version]);
+  }, [groups, singles]);
 
   const continueLabel = useMemo(() => {
-    if (!session || !stats) return '';
     if (nextStep === 'Deck') return 'Review groups';
     if (nextStep === 'Singles') return `Review singles (${stats.singlesPending})`;
-    return stats.culled > 0 ? `Review cull list (${stats.culled})` : 'Finish up';
-  }, [session, stats, nextStep]);
+    return 'Review cull list';
+  }, [stats, nextStep]);
 
+  const stateOf = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const g of groups) for (const m of g.members) map.set(m.asset_id, m.state);
+    return map;
+  }, [groups]);
   const decisionKind = useCallback(
     (id: string): DecisionKind | null => {
-      if (!session) return null;
-      const state = session.getState(id);
+      const state = stateOf.get(id) ?? 'unreviewed';
       if (state === 'culled') return 'cull';
-      if (state === 'kept') return needsEdit(id) ? 'edit' : 'keep';
+      if (state === 'done' || state === 'to_edit') return needsEdit(id) ? 'edit' : 'keep';
       return null;
     },
-    [needsEdit, session],
+    [needsEdit, stateOf],
   );
 
   const renderGroup = useCallback(
-    ({ item: group, index }: { item: GroupInfo; index: number }) => {
-      // A group can be emptied entirely via "not related — single".
-      const first = group.items[0];
-      const displayItems = group.bestId
+    ({ item: group, index }: { item: ReviewGroupRow; index: number }) => {
+      const pending = group.members.filter((m) => m.state === 'unreviewed').length;
+      const first = group.members[0];
+      const displayItems = group.bestPhotoId
         ? [
-            ...group.items.filter((photo) => photo.id === group.bestId),
-            ...group.items.filter((photo) => photo.id !== group.bestId),
+            ...group.members.filter((m) => m.asset_id === group.bestPhotoId),
+            ...group.members.filter((m) => m.asset_id !== group.bestPhotoId),
           ]
-        : group.items;
+        : group.members;
       return (
         <Pressable
           style={styles.groupRow}
-          onPress={() => navigation.navigate('Deck', { groupId: group.id })}
+          onPress={() => navigation.navigate('Deck', { groupId: String(group.groupId) })}
         >
           <View style={styles.groupHeader}>
             <Text style={styles.groupTitle}>
-              Group {index + 1} · {group.items.length} shots
-              {first ? ` · ${formatClock(first.timestamp)}` : ''}
+              Group {index + 1} · {group.members.length} shots
+              {first ? ` · ${formatClock(first.taken_at)}` : ''}
             </Text>
-            <Text style={[styles.groupStatus, group.complete && styles.groupStatusDone]}>
-              {group.complete ? 'Reviewed · tap to revisit' : 'Pending'}
+            <Text style={[styles.groupStatus, pending === 0 && styles.groupStatusDone]}>
+              {pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`}
             </Text>
           </View>
           <View style={styles.strip}>
-            {displayItems.slice(0, STRIP_THUMBS).map((item) => {
-              const decision = decisionKind(item.id);
+            {displayItems.slice(0, STRIP_THUMBS).map((member) => {
+              const decision = decisionKind(member.asset_id);
               return (
-                <View key={item.id} style={styles.thumbWrap} pointerEvents="none">
+                <View key={member.asset_id} style={styles.thumbWrap} pointerEvents="none">
                   <Image
-                    source={{ uri: item.uri }}
+                    source={{ uri: member.uri }}
                     style={[
                       styles.thumb,
-                      item.id === group.bestId && [styles.thumbBest, { borderColor: theme.accent }],
+                      member.asset_id === group.bestPhotoId && [
+                        styles.thumbBest,
+                        { borderColor: theme.accent },
+                      ],
                     ]}
                     contentFit="cover"
-                    recyclingKey={item.id}
+                    recyclingKey={member.asset_id}
                   />
                   {decision && <DecisionBadge kind={decision} style={styles.decisionBadge} />}
-                  {item.id === group.bestId && (
+                  {member.asset_id === group.bestPhotoId && (
                     <DecisionBadge kind="best" accent={theme.accent} style={styles.bestBadge} />
                   )}
-                  {isFavouriteSelected(favouriteStatus(item.id)) && (
+                  {isFavouriteSelected(favouriteStatus(member.asset_id)) && (
                     <DecisionBadge kind="fav" style={styles.favouriteBadge} />
                   )}
                 </View>
               );
             })}
-            {group.items.length > STRIP_THUMBS && (
+            {group.members.length > STRIP_THUMBS && (
               <View style={[styles.thumb, styles.thumbMore]}>
-                <Text style={styles.thumbMoreText}>+{group.items.length - STRIP_THUMBS}</Text>
+                <Text style={styles.thumbMoreText}>+{group.members.length - STRIP_THUMBS}</Text>
               </View>
             )}
           </View>
@@ -125,30 +123,22 @@ export function GroupsScreen({ navigation }: Props) {
     [decisionKind, favouriteStatus, navigation, theme.accent],
   );
 
-  if (!session || !stats) {
-    return (
-      <View style={[styles.root, styles.center]}>
-        <Text style={styles.emptyText}>No active session.</Text>
-      </View>
-    );
-  }
-
   return (
     <View style={[styles.root, { paddingTop: insets.top + 12 }]}>
-      <Text style={styles.title}>{label}</Text>
+      <Text style={styles.title}>Review</Text>
       <Text style={styles.subtitle}>
-        {stats.reviewed} of {stats.total} reviewed · {stats.culled} staged to cull
+        {stats.total} photo{stats.total === 1 ? '' : 's'} waiting · {stats.pendingGrouped} in groups
       </Text>
       <FlatList
         data={groups}
-        keyExtractor={(g) => g.id}
+        keyExtractor={(g) => String(g.groupId)}
         renderItem={renderGroup}
         contentContainerStyle={styles.list}
         extraData={version}
         ListFooterComponent={
           <Pressable style={styles.groupRow} onPress={() => navigation.navigate('Singles')}>
             <View style={styles.groupHeader}>
-              <Text style={styles.groupTitle}>Singles · {singleIds.length} photos</Text>
+              <Text style={styles.groupTitle}>Singles · {singles.length} photos</Text>
               <Text
                 style={[styles.groupStatus, stats.singlesPending === 0 && styles.groupStatusDone]}
               >
@@ -159,21 +149,12 @@ export function GroupsScreen({ navigation }: Props) {
         }
       />
       <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
-        {nextStep && (
-          <BigButton
-            label={continueLabel}
-            color={theme.accent}
-            textColor={theme.onAccent}
-            onPress={() => navigation.navigate(nextStep)}
-          />
-        )}
-        {stats.reviewed > 0 && nextStep !== 'CullList' && (
-          <Pressable style={styles.endEarly} onPress={() => navigation.navigate('CullList')}>
-            <Text style={styles.endEarlyText}>
-              End session & apply — bank {stats.reviewed} decision{stats.reviewed === 1 ? '' : 's'}
-            </Text>
-          </Pressable>
-        )}
+        <BigButton
+          label={continueLabel}
+          color={theme.accent}
+          textColor={theme.onAccent}
+          onPress={() => navigation.navigate(nextStep)}
+        />
       </View>
     </View>
   );

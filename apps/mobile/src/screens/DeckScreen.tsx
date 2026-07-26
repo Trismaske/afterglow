@@ -29,7 +29,8 @@ import type {
 } from '@react-navigation/native-stack';
 import type { MediaItem } from '@afterglow/core';
 import type { RootStackParamList } from '../navigation';
-import { useSession, type RedecideTarget } from '../session/SessionContext';
+import { useReview, type RedecideTarget } from '../review/ReviewContext';
+import type { ReviewGroupRow, ReviewMemberRow } from '../db/store';
 import { BigButton } from '../components/BigButton';
 import { colors, touch, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded } from '../lib/format';
@@ -101,25 +102,20 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
   const theme = useTheme();
   const isFocused = useIsFocused();
   const {
-    session,
     groups,
-    singleIds,
-    deckSetCursor,
-    deckCull,
-    deckUndoCull,
+    singles,
+    decide,
+    clearDecision,
     keepRest,
     markBest,
     makeSingle,
     needsEdit,
     toggleNeedsEdit,
-    redecide,
-    decideSingle,
-    keepRemainingSingles,
     favouriteStatus,
     toggleFavourite,
-    keepOne,
+    keepAllSingles,
     version,
-  } = useSession();
+  } = useReview();
   const [busy, setBusy] = useState(false);
   const [pageW, setPageW] = useState(0);
   const [undo, setUndo] = useState<{ id: string } | null>(null);
@@ -128,24 +124,37 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
   const listRef = useRef<FlatList<MediaItem>>(null);
 
   // m0.5: an explicit group (Groups screen tap) pins the deck to it; the
-  // linear flow keeps following the first incomplete group.
+  // linear flow keeps following the first group in the queue (all queue
+  // groups have unreviewed members, so the first is the next unfinished).
   const groupId = useMemo(
-    () => (singlesMode ? null : (explicitGroupId ?? session?.currentGroupId() ?? null)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [explicitGroupId, session, singlesMode, version],
+    () =>
+      singlesMode ? null : (explicitGroupId ?? (groups[0] ? String(groups[0].groupId) : null)),
+    [explicitGroupId, groups, singlesMode],
   );
-  const info = useMemo(
-    () => {
-      if (!session || !groupId) return null;
-      try {
-        return session.groupInfo(groupId);
-      } catch {
-        return null; // stale explicit id (e.g. resumed navigation)
-      }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session, groupId, version],
+  const group: ReviewGroupRow | null = useMemo(
+    () => (groupId ? (groups.find((g) => String(g.groupId) === groupId) ?? null) : null),
+    [groups, groupId],
   );
+  // Derived deck info (the old core groupInfo shape, DB-backed): a group
+  // absent from the queue but explicitly opened is COMPLETE (browse mode)
+  // — the queue only lists groups with unreviewed members.
+  const stateOf = useMemo(() => {
+    const map = new Map<string, ReviewMemberRow['state']>();
+    for (const g of groups) for (const m of g.members) map.set(m.asset_id, m.state);
+    for (const m of singles) map.set(m.asset_id, m.state);
+    return map;
+  }, [groups, singles]);
+  const info = useMemo(() => {
+    if (!group) return null;
+    const aliveIds = group.members.filter((m) => m.state === 'unreviewed').map((m) => m.asset_id);
+    return {
+      memberIds: group.members.map((m) => m.asset_id),
+      aliveIds,
+      complete: aliveIds.length === 0,
+      bestId: group.bestPhotoId,
+      cursor: 0,
+    };
+  }, [group]);
   const browse = info?.complete ?? false;
   // `index` remembers the visited group's position so a DISSOLVED pair
   // (no longer in `groups`) can still advance from its former spot.
@@ -153,42 +162,44 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     {
       groupId: explicitGroupId ?? null,
       complete: explicitGroupId ? (info?.complete ?? null) : null,
-      index: explicitGroupId ? groups.findIndex((g) => g.id === explicitGroupId) : -1,
+      index: explicitGroupId ? groups.findIndex((g) => String(g.groupId) === explicitGroupId) : -1,
     },
   );
 
+  const toItem = (m: ReviewMemberRow): MediaItem => ({
+    id: m.asset_id,
+    timestamp: m.taken_at,
+    uri: m.uri,
+    kind: 'photo',
+  });
   const aliveItems: MediaItem[] = useMemo(
-    () => (session && info ? info.aliveIds.map((id) => session.item(id)) : []),
-    [session, info],
+    () => (group ? group.members.filter((m) => m.state === 'unreviewed').map(toItem) : []),
+    [group],
   );
-  // Browse mode pages every re-decidable member (kept AND staged culls).
+  // Browse mode pages every re-decidable member (done, to_edit AND staged
+  // culls — everything before the final confirmation).
   const browseItems: MediaItem[] = useMemo(() => {
-    if (!session || !info || !browse) return [];
-    return info.memberIds
-      .filter((id) => {
-        const s = session.getState(id);
-        return s === 'kept' || s === 'culled';
-      })
-      .map((id) => session.item(id));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session, info, browse, version]);
-  // Context singleIds already exclude durably trashed members (their
-  // state stays for stats, but dead URIs must not render).
+    if (!group || !browse) return [];
+    return group.members
+      .filter((m) => m.state === 'done' || m.state === 'to_edit' || m.state === 'culled')
+      .map(toItem);
+  }, [group, browse]);
+  // Unreviewed singles only (a decided single leaves the deck on refresh;
+  // gate 5's feed rework re-admits staged culls badged).
   const singlesItems: MediaItem[] = useMemo(
-    () => (session && singlesMode ? singleIds.map((id) => session.item(id)) : []),
-    [session, singleIds, singlesMode],
+    () => (singlesMode ? singles.map(toItem) : []),
+    [singles, singlesMode],
   );
   const deckItems = singlesMode ? singlesItems : browse ? browseItems : aliveItems;
 
+  // The deck cursor is screen-local everywhere (m0.8: derived model — the
+  // DB has no cursor; a decision shrinks the alive deck and the cursor
+  // clamps to the next photo).
   const [browseCursor, setBrowseCursor] = useState(0);
-  const cursor = singlesMode
-    ? Math.min(browseCursor, Math.max(0, deckItems.length - 1))
-    : browse
-      ? Math.min(browseCursor, Math.max(0, deckItems.length - 1))
-      : (info?.cursor ?? 0);
+  const cursor = Math.min(browseCursor, Math.max(0, deckItems.length - 1));
   const current: MediaItem | null = deckItems[cursor] ?? null;
   const groupIndex = useMemo(
-    () => (groupId ? groups.findIndex((g) => g.id === groupId) : -1),
+    () => (groupId ? groups.findIndex((g) => String(g.groupId) === groupId) : -1),
     [groups, groupId],
   );
 
@@ -320,11 +331,11 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
   // Linear flow follows the first incomplete group, then singles and the
   // cull list. Explicitly opening an ALREADY completed group still permits
   // browse/re-decide mode.
+  const hasSingles = singles.length > 0;
   useEffect(() => {
-    if (!session) return;
     if (singlesMode) return;
     if (explicitGroupId) {
-      if (!info) {
+      if (!group) {
         // A pair DISSOLVES during this visit when "Not related" ejects
         // one member (C#6) — that is a completion: advance to the next
         // group/Singles like any other finish. Only a genuinely stale id
@@ -338,9 +349,9 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
           completionRef.current.complete !== null
         ) {
           const destination = destinationAfterGroup(
-            groups,
+            groups.map((g) => ({ id: String(g.groupId), complete: false })),
             explicitGroupId,
-            session.nextSingle() !== null,
+            hasSingles,
             completionRef.current.index,
           );
           if (destination.screen === 'Deck') {
@@ -355,18 +366,21 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
       return;
     }
     if (groupId) return;
-    if (session.nextSingle()) navigation.replace('Singles');
+    if (hasSingles) navigation.replace('Singles');
     else navigation.replace('CullList');
-  }, [session, groupId, explicitGroupId, info, groups, navigation, singlesMode, busy, isFocused]);
+  }, [
+    groupId,
+    explicitGroupId,
+    group,
+    groups,
+    hasSingles,
+    navigation,
+    singlesMode,
+    busy,
+    isFocused,
+  ]);
 
-  const singlesPending = useMemo(
-    () =>
-      session && singlesMode
-        ? singleIds.filter((id) => session.getState(id) === 'unreviewed').length
-        : 0,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [session, singleIds, singlesMode, version],
-  );
+  const singlesPending = singlesMode ? singles.length : 0;
 
   // m0.7 (#20): only advance out of Singles when completion happened
   // DURING this visit. A fully-reviewed singles pseudo-group opened from
@@ -384,18 +398,18 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [singlesMode]);
   useEffect(() => {
-    if (!session || !singlesMode || singlesPending > 0 || busy || !isFocused) return;
+    if (!singlesMode || singlesPending > 0 || busy || !isFocused) return;
     if (singlesEnteredCompleteRef.current === true) return; // deliberate revisit
-    if (session.currentGroupId()) navigation.goBack();
+    if (groups.length > 0) navigation.goBack();
     else navigation.replace('CullList');
-  }, [busy, isFocused, navigation, session, singlesMode, singlesPending]);
+  }, [busy, isFocused, navigation, groups, singlesMode, singlesPending]);
 
   // A group that becomes complete during this visit advances immediately.
   // This covers Keep rest, culling/ejecting the final member, and completion
   // while returning from Compare. A group that was complete when opened is a
   // deliberate revisit and stays in browse mode.
   useEffect(() => {
-    if (!session || !explicitGroupId || !info) return;
+    if (!explicitGroupId || !info) return;
     const previous = completionRef.current;
     if (previous.groupId !== explicitGroupId) {
       completionRef.current = {
@@ -418,16 +432,16 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     if (!justCompleted) return;
 
     const destination = destinationAfterGroup(
-      groups,
+      groups.map((g) => ({ id: String(g.groupId), complete: false })),
       explicitGroupId,
-      session.nextSingle() !== null,
+      hasSingles,
     );
     if (destination.screen === 'Deck') {
       navigation.replace('Deck', { groupId: destination.groupId });
     } else {
       navigation.replace(destination.screen);
     }
-  }, [busy, explicitGroupId, groupIndex, groups, info, isFocused, navigation, session]);
+  }, [busy, explicitGroupId, groupIndex, groups, hasSingles, info, isFocused, navigation]);
 
   // Keep the pager aligned with the cursor whenever the deck's membership
   // changes (cull/undo/make-single/re-decide) or a new group starts.
@@ -443,21 +457,18 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       if (!pageW) return;
       const index = Math.round(event.nativeEvent.contentOffset.x / pageW);
-      if (index === cursor) return;
-      if (singlesMode || browse) setBrowseCursor(index);
-      else if (groupId) deckSetCursor(groupId, index);
+      if (index !== cursor) setBrowseCursor(index);
     },
-    [groupId, pageW, cursor, browse, deckSetCursor, singlesMode],
+    [pageW, cursor],
   );
 
   const jumpTo = useCallback(
     (index: number) => {
       if (!pageW) return;
-      if (singlesMode || browse) setBrowseCursor(index);
-      else if (groupId) deckSetCursor(groupId, index);
+      setBrowseCursor(index);
       listRef.current?.scrollToOffset({ offset: index * pageW, animated: true });
     },
-    [groupId, pageW, browse, deckSetCursor, singlesMode],
+    [pageW],
   );
 
   const run = useCallback(
@@ -477,19 +488,19 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     if (!current) return;
     const id = current.id;
     void run(async () => {
-      await deckCull(id);
+      await decide(id, 'cull');
       if (undoTimer.current) clearTimeout(undoTimer.current);
       setUndo({ id });
       undoTimer.current = setTimeout(() => setUndo(null), UNDO_MS);
     });
-  }, [current, run, deckCull]);
+  }, [current, run, decide]);
 
   const undoLastCull = useCallback(() => {
     if (!undo) return;
     const id = undo.id;
     clearUndo();
-    void run(() => deckUndoCull(id));
-  }, [undo, clearUndo, run, deckUndoCull]);
+    void run(() => clearDecision(id));
+  }, [undo, clearUndo, run, clearDecision]);
 
   const isBest = !!current && !singlesMode && info?.bestId === current.id;
 
@@ -570,14 +581,14 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
   );
 
   const finishGroup = useCallback(() => {
-    if (!groupId) return;
-    void run(() => keepRest(groupId));
-  }, [groupId, run, keepRest]);
+    if (!group) return;
+    void run(() => keepRest(group.groupId));
+  }, [group, run, keepRest]);
 
   const toggleBest = useCallback(() => {
-    if (!groupId || !current) return;
+    if (!group || !current) return;
     void run(async () => {
-      await markBest(groupId, isBest ? null : current.id);
+      await markBest(group.groupId, isBest ? null : current.id);
       // m0.7 item F (#10): the hand-off is WRITE-ONLY — never offered for
       // an already-favourited photo (toggleFavourite would UN-favourite
       // it), and "Not now" stays a strict no-op.
@@ -589,7 +600,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
         ]);
       }
     });
-  }, [current, favouriteStatus, groupId, isBest, markBest, run, toggleFavourite]);
+  }, [current, favouriteStatus, group, isBest, markBest, run, toggleFavourite]);
 
   const openCompare = useCallback(
     (againstId?: string) => {
@@ -628,41 +639,44 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
     [pageW],
   );
 
-  if (!session || !current || (!singlesMode && (!groupId || !info))) {
+  if (!current || (!singlesMode && (!groupId || !info))) {
     return <View style={styles.root} />;
   }
 
   const flagged = needsEdit(current.id);
   const favourite = isFavouriteSelected(favouriteStatus(current.id));
   const keepCount = deckItems.length;
-  const currentState = session.getState(current.id);
+  const currentState = stateOf.get(current.id) ?? 'unreviewed';
   const browseState: RedecideTarget =
     currentState === 'culled' ? 'cull' : flagged ? 'to_edit' : 'keep';
   const currentDecision: DecisionKind | null =
     currentState === 'culled'
       ? 'cull'
-      : currentState === 'kept'
+      : currentState === 'done' || currentState === 'to_edit'
         ? flagged
           ? 'edit'
           : 'keep'
         : null;
 
+  // Re-decide: tapping the ACTIVE verdict clears back to unreviewed.
+  const redecide = async (id: string, target: RedecideTarget) => {
+    const state = stateOf.get(id) ?? 'unreviewed';
+    const activeTarget: RedecideTarget | null =
+      state === 'culled'
+        ? 'cull'
+        : state === 'to_edit'
+          ? 'to_edit'
+          : state === 'done'
+            ? 'keep'
+            : null;
+    if (activeTarget === target) await clearDecision(id);
+    else await decide(id, target);
+  };
+
   const decideSingleCurrent = async (target: RedecideTarget) => {
-    const wasUnreviewed = currentState === 'unreviewed';
-    if (wasUnreviewed) await decideSingle(current.id, target);
-    else await redecide(current.id, target);
-    // m0.7 (#5): after deciding in the singles deck, advance to the next
-    // still-undecided photo (wrapping forward from the current position).
-    if (singlesMode && wasUnreviewed && session) {
-      const items = deckItems;
-      for (let step = 1; step < items.length; step++) {
-        const index = (cursor + step) % items.length;
-        if (session.getState(items[index].id) === 'unreviewed') {
-          jumpTo(index);
-          break;
-        }
-      }
-    }
+    // Every listed single is unreviewed; the decided photo leaves the
+    // deck on refresh and the pager clamps to the next one.
+    await redecide(current.id, target);
   };
 
   return (
@@ -757,11 +771,11 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
         contentContainerStyle={styles.thumbStripContent}
       >
         {deckItems.map((item, index) => {
-          const itemState = session.getState(item.id);
+          const itemState = stateOf.get(item.id) ?? 'unreviewed';
           const itemDecision: DecisionKind | null =
             itemState === 'culled'
               ? 'cull'
-              : itemState === 'kept'
+              : itemState === 'done' || itemState === 'to_edit'
                 ? needsEdit(item.id)
                   ? 'edit'
                   : 'keep'
@@ -942,7 +956,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
               label={busy ? 'Saving…' : `Keep remaining (${singlesPending})`}
               color={colors.keep}
               disabled={busy}
-              onPress={() => void run(keepRemainingSingles)}
+              onPress={() => void run(keepAllSingles)}
             />
           )}
         </>
@@ -952,7 +966,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode }: SharedProps) {
             <Pressable
               style={[styles.actionButton, { backgroundColor: colors.keepDim }]}
               disabled={busy}
-              onPress={() => void run(() => keepOne(current.id))}
+              onPress={() => void run(() => decide(current.id, 'keep'))}
             >
               <MaterialCommunityIcons name={DECISION_GLYPHS.keep} size={21} color={colors.keep} />
               <Text style={styles.actionText}>Keep</Text>

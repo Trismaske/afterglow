@@ -64,7 +64,6 @@ export interface PrepareTrashBatchOptions {
 export async function prepareTrashBatch(
   db: SQLiteDatabase,
   members: readonly TrashMemberInput[],
-  launchedFromSessionId: number | null,
   at: number,
   options: PrepareTrashBatchOptions = {},
 ): Promise<PreparedTrashBatch | null> {
@@ -88,9 +87,7 @@ export async function prepareTrashBatch(
       }
     }
     const batch = await txn.runAsync(
-      `INSERT INTO trash_batches (state, launched_from_session_id, created_at)
-       VALUES ('preparing', ?, ?)`,
-      launchedFromSessionId,
+      `INSERT INTO trash_batches (state, created_at) VALUES ('preparing', ?)`,
       at,
     );
     const batchId = Number(batch.lastInsertRowId);
@@ -202,7 +199,7 @@ async function applyRemovalCleanup(
  * reclaimed-bytes credit (nothing was measured or verified through the
  * lifecycle) and NO culled_at marker (the user made no Afterglow cull
  * decision, so the lifetime culled count is untouched). A photo later
- * restored from system trash re-enters via the session-draw restore
+ * restored from system trash re-enters via the scan/reconciliation restore
  * reconciliation as usual.
  */
 export async function reconcileExternallyRemoved(
@@ -307,20 +304,6 @@ export async function resolveTrashBatch(
     // must end with it (N#5) so a later requeue starts a fresh cycle.
     await closeShareCycleIfQueueEmpty(txn, input.at);
 
-    if (creditedBytes > 0) {
-      // The launching session's aggregate credits ATOMICALLY with the
-      // terminal outcomes — recovery skips terminal batches, so a credit
-      // written separately could be lost to a crash in the gap. (Lifetime
-      // stats derive from the verified member rows regardless; a batch
-      // launched without a session credits no aggregate.)
-      await txn.runAsync(
-        `UPDATE sessions SET reclaimed_bytes = reclaimed_bytes + ?
-         WHERE id = (SELECT launched_from_session_id FROM trash_batches WHERE id = ?)`,
-        creditedBytes,
-        input.batchId,
-      );
-    }
-
     const values = Object.values(outcomes);
     const batchState: ResolveResult['batchState'] =
       input.dialog === 'cancelled'
@@ -354,7 +337,7 @@ export interface TrashRecoveryResult {
   /** Interrupted batches found (released or resolved). */
   staleBatches: number;
   /** Photos verified gone during recovery — the caller must reconcile
-   * these into any resumed session snapshot, or the stale 'culled' state
+   * these into the durable rows the screens read, or the stale 'culled' state
    * would be resurrected on restore. */
   trashedIds: string[];
 }
@@ -408,7 +391,7 @@ export async function lifetimeReclaimedBytes(db: SQLiteDatabase): Promise<number
   return verified?.total ?? 0;
 }
 
-/** Restore support (P8#4): when the session loader sees a 'trashed'-state
+/** Restore support (P8#4): when a scan/loader sees a 'trashed'-state
  * photo in a MediaStore page (proof of a Gallery restore), this increments
  * the generation exactly once so a later verified re-trash counts again.
  * The edit-cycle columns reset too: a restored photo starts over, and a

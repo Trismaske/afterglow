@@ -9,10 +9,11 @@
  *                        └─▶ kept ──┬─▶ to_edit ─▶ done
  *                                   └─(session finish)─▶ done
  *
- * 'kept' + needs_edit = 1 is stored as 'to_edit' — the CASE expressions
- * below keep that invariant no matter which path writes the state.
- * 'confirmed' is deliberately never persisted (m0.1 decision: SQLite keeps
- * 'culled' until the system trash request succeeds).
+ * m0.8: a keep writes 'done' at swipe time (no kept state); 'done' +
+ * needs_edit = 1 is stored as 'to_edit' — the CASE expressions below keep
+ * that invariant no matter which path writes the state. 'confirmed' is
+ * deliberately never persisted (m0.1 decision: SQLite keeps 'culled'
+ * until the system trash request succeeds).
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
 import type { DuelRecord, PhotoState } from '@afterglow/core';
@@ -105,217 +106,6 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
   return out;
 }
 
-export interface SessionRow {
-  id: number;
-  label: string;
-  range_start: number;
-  range_end: number;
-  snapshot: string;
-  reclaimed_bytes: number;
-  created_at: number;
-  completed_at: number | null;
-}
-
-/** The most recent unfinished session, if any (one active at a time). */
-export async function getActiveSession(db: SQLiteDatabase): Promise<SessionRow | null> {
-  return db.getFirstAsync<SessionRow>(
-    'SELECT * FROM sessions WHERE completed_at IS NULL ORDER BY created_at DESC LIMIT 1',
-  );
-}
-
-/** Mark every unfinished session as ended (used when starting fresh). */
-export async function abandonActiveSessions(db: SQLiteDatabase, at: number): Promise<void> {
-  await db.runAsync('UPDATE sessions SET completed_at = ? WHERE completed_at IS NULL', at);
-}
-
-/**
- * Read-only: the active session's kept ids from its persisted snapshot
- * (empty when no session or the snapshot is unparseable — bracket-era
- * rows are already the durable truth). The session loader counts these
- * as handled so a new draw excludes them WITHOUT mutating anything
- * (m0.5: "starting a new session never discards decisions") — they bank
- * to done only inside the atomic replacement transaction
- * (replaceActiveSession), so an aborted start leaves the old session
- * fully intact. Staged culls deliberately stay 'culled' in the durable
- * global cull queue either way.
- */
-export async function getActiveSessionKeptIds(db: SQLiteDatabase): Promise<string[]> {
-  const row = await getActiveSession(db);
-  if (!row) return [];
-  try {
-    const snap = JSON.parse(row.snapshot) as { states?: Record<string, string> };
-    if (typeof snap !== 'object' || snap === null || typeof snap.states !== 'object') return [];
-    return Object.entries(snap.states ?? {})
-      .filter(([, state]) => state === 'kept')
-      .map(([id]) => id);
-  } catch {
-    return [];
-  }
-}
-
-export interface NewSessionInput {
-  label: string;
-  rangeStart: number;
-  rangeEnd: number;
-  snapshot: string;
-  photos: readonly (LoadedPhoto & { groupId: string | null; day: string })[];
-  createdAt: number;
-}
-
-/**
- * Shared body for createSession / replaceActiveSession: insert the session
- * row, upsert photo rows (carry policy, P4#1: an existing staged cull KEEPS
- * `culled` — nothing is ever reset by a draw), write the durable grouping
- * run/groups/assignments (membership is durable from creation, item C),
- * then repair intersected leftovers from earlier runs (N#1: a group left
- * with < 2 members dissolves; a best whose assignment moved is cleared).
- */
-async function insertSessionWithPhotos(
-  txn: SQLiteDatabase,
-  input: NewSessionInput,
-): Promise<number> {
-  const result = await txn.runAsync(
-    `INSERT INTO sessions (label, range_start, range_end, snapshot, created_at)
-     VALUES (?, ?, ?, ?, ?)`,
-    input.label,
-    input.rangeStart,
-    input.rangeEnd,
-    input.snapshot,
-    input.createdAt,
-  );
-  const sessionId = Number(result.lastInsertRowId);
-  for (const photo of input.photos) {
-    await txn.runAsync(
-      `INSERT INTO photos (asset_id, uri, taken_at, state, group_id, session_day,
-                           mod_time, day, needs_edit, volume_name, raw_id, activity_at)
-       VALUES (?, ?, ?, 'unreviewed', ?, ?, ?, ?, 0, ?, ?, ?)
-       ON CONFLICT(asset_id) DO UPDATE SET
-         uri = excluded.uri,
-         state = CASE WHEN photos.state = 'culled' THEN 'culled' ELSE 'unreviewed' END,
-         group_id = excluded.group_id,
-         session_day = excluded.session_day,
-         mod_time = excluded.mod_time,
-         day = excluded.day,
-         needs_edit = CASE WHEN photos.state = 'culled' THEN photos.needs_edit ELSE 0 END,
-         volume_name = excluded.volume_name,
-         raw_id = excluded.raw_id,
-         -- A scan-created row (activity_at NULL) becomes review-tracked the
-         -- moment a session draws it — else edited-copy detection could
-         -- claim an active-session photo as an unnoticed copy.
-         activity_at = COALESCE(photos.activity_at, excluded.activity_at)`,
-      photo.item.id,
-      photo.item.uri,
-      photo.item.timestamp,
-      photo.groupId,
-      input.label,
-      photo.modTime,
-      photo.day,
-      photo.volumeName,
-      photo.rawId,
-      input.createdAt,
-    );
-  }
-
-  // Durable grouping (item C): one run per session; legacy string cluster
-  // ids become photo_groups rows; every drawn photo gets exactly one
-  // assignment (group or NULL single). INSERT OR REPLACE moves a redrawn
-  // photo's assignment to this run.
-  const runResult = await txn.runAsync(
-    `INSERT INTO grouping_runs (session_id, provenance, created_at, scope)
-     VALUES (?, 'session', ?, ?)`,
-    sessionId,
-    input.createdAt,
-    input.label,
-  );
-  const runId = Number(runResult.lastInsertRowId);
-  const groupIds = new Map<string, number>();
-  for (const photo of input.photos) {
-    if (photo.groupId === null || groupIds.has(photo.groupId)) continue;
-    const groupResult = await txn.runAsync(
-      'INSERT INTO photo_groups (run_id, best_photo_id) VALUES (?, NULL)',
-      runId,
-    );
-    groupIds.set(photo.groupId, Number(groupResult.lastInsertRowId));
-  }
-  for (const photo of input.photos) {
-    // Preserve the durable user-ejection marker across redraws: a session
-    // may redraw an ejected photo, but it must stay single and marked so
-    // the scan keeps honoring the ejection (m0.8; sessions die at gate 3).
-    await txn.runAsync(
-      `INSERT INTO photo_group_assignments (photo_id, run_id, group_id, time_attached)
-       VALUES (?, ?, ?, 0)
-       ON CONFLICT(photo_id) DO UPDATE SET
-         run_id = excluded.run_id,
-         group_id = CASE WHEN photo_group_assignments.user_single = 1
-                         THEN NULL ELSE excluded.group_id END,
-         time_attached = 0`,
-      photo.item.id,
-      runId,
-      photo.groupId === null ? null : (groupIds.get(photo.groupId) ?? null),
-    );
-  }
-
-  // Repair intersected leftovers from earlier runs (N#1) — shared with
-  // single ejections; also re-syncs survivors' legacy photos.group_id.
-  await repairGroupMembership(txn);
-  return sessionId;
-}
-
-/** Create a session and upsert its photo rows. Returns the session id. */
-export async function createSession(db: SQLiteDatabase, input: NewSessionInput): Promise<number> {
-  let sessionId = -1;
-  await db.withExclusiveTransactionAsync(async (txn) => {
-    sessionId = await insertSessionWithPhotos(txn, input);
-  });
-  return sessionId;
-}
-
-/**
- * Atomic session replacement (N#2, P4#1, item H): bank the old session's
- * keepers, abandon it, and create the new session — one exclusive
- * transaction. Staged culls are CARRIED: their rows are not touched (the
- * durable global cull queue owns them), so replacement is silent — nothing
- * is ever lost. A failure anywhere rolls the whole replacement back and
- * the old session stays active and resumable.
- */
-export async function replaceActiveSession(
-  db: SQLiteDatabase,
-  input: NewSessionInput,
-  at: number,
-): Promise<number> {
-  let sessionId = -1;
-  await db.withExclusiveTransactionAsync(async (txn) => {
-    const active = await txn.getFirstAsync<SessionRow>(
-      'SELECT * FROM sessions WHERE completed_at IS NULL ORDER BY created_at DESC LIMIT 1',
-    );
-    if (active) {
-      // Bank keepers exactly like session completion (kept → done;
-      // to_edit rows already remapped). Snapshot-driven so a session that
-      // was never resumed after a restart still banks correctly.
-      try {
-        const snap = JSON.parse(active.snapshot) as { states?: Record<string, string> };
-        const keptIds = Object.entries(snap.states ?? {})
-          .filter(([, state]) => state === 'kept')
-          .map(([id]) => id);
-        for (const ids of chunk(keptIds, IN_CHUNK)) {
-          const placeholders = ids.map(() => '?').join(',');
-          await txn.runAsync(
-            `UPDATE photos SET state = 'done', activity_at = ?
-             WHERE state = 'kept' AND asset_id IN (${placeholders})`,
-            at,
-            ...ids,
-          );
-        }
-      } catch {
-        // Unparseable snapshot: per-photo rows are already the durable truth.
-      }
-      await txn.runAsync('UPDATE sessions SET completed_at = ? WHERE id = ?', at, active.id);
-    }
-    sessionId = await insertSessionWithPhotos(txn, input);
-  });
-  return sessionId;
-}
-
 /** Staged, present culls in the durable global queue (Home card badge —
  * the queue must stay reachable with no active session, P4#1). */
 export async function countStagedCulls(db: SQLiteDatabase): Promise<number> {
@@ -341,39 +131,52 @@ export async function getStagedCulls(db: SQLiteDatabase): Promise<StagedCullRow[
   );
 }
 
+/** A direct review verdict (m0.8 — the DB-backed deck writes photos
+ * directly; decision 2: keeps write done at swipe, no kept state). */
+export type ReviewVerdict = 'done' | 'culled' | 'to_edit' | 'unreviewed';
+
 /**
- * Persist one review decision atomically: the new session snapshot, the
- * photo states that changed, and (for duels) the duel record.
+ * Persist review decisions atomically — verdicts, needs-edit flips,
+ * favourite intents, compare records, ejections, and copy-match
+ * resolutions in ONE transaction (the m0.7 edit-cycle hardening carried
+ * over sessionless):
  *
- * Core only knows 'kept'; the CASE maps kept + needs_edit → 'to_edit' so
- * the edit flag survives every state write (duel keeps, bracket completion,
- * un-culling). A row entering to_edit records `to_edit_at` (first entry
- * wins) — the scan window for m0.3 edited-copy detection.
+ * - 'done'   → state done (or to_edit when the needs-edit flag is up);
+ *              reviewed_at stamps once (first review wins, survives
+ *              re-decides so lifetime stats never undercount).
+ * - 'to_edit'→ state to_edit + needs_edit, to_edit_at first-entry stamp
+ *              (the m0.3 detection cycle key); reviewed_at stamps too —
+ *              flagging IS the review moment (markEditDone later flips
+ *              to done without re-stamping).
+ * - 'culled' → staged cull; reviewed_at + culled_at stamp once.
+ * - 'unreviewed' → verdict cleared (re-decide/undo/Restore); leaving a
+ *              completed edit ALSO resets the edit-cycle columns so a
+ *              later re-flag starts a fresh detection cycle instead of
+ *              consuming the old baseline/hash.
  */
-export async function persistDecision(
+export async function applyReviewDecisions(
   db: SQLiteDatabase,
-  sessionId: number,
-  snapshot: string,
-  changedStates: readonly [assetId: string, state: PhotoState][],
+  changes: readonly [assetId: string, verdict: ReviewVerdict][],
   at: number,
   extras: PersistDecisionExtras = {},
 ): Promise<void> {
   await db.withExclusiveTransactionAsync(async (txn) => {
-    await txn.runAsync('UPDATE sessions SET snapshot = ? WHERE id = ?', snapshot, sessionId);
     for (const change of extras.needsEditChanges ?? []) {
       const flag = change.needsEdit ? 1 : 0;
       await txn.runAsync(
         `UPDATE photos
          SET needs_edit = ?,
              state = CASE
-               WHEN ? = 1 AND state = 'kept' THEN 'to_edit'
-               WHEN ? = 0 AND state = 'to_edit' THEN 'kept'
+               WHEN ? = 1 AND state = 'done' THEN 'to_edit'
+               WHEN ? = 0 AND state = 'to_edit' THEN 'done'
                ELSE state
              END,
              to_edit_at = CASE
-               WHEN ? = 1 AND state = 'kept' AND to_edit_at IS NULL THEN ?
+               WHEN ? = 1 AND state = 'done' THEN ?
                ELSE to_edit_at
              END,
+             mod_time = CASE WHEN ? = 1 AND state = 'done' THEN NULL ELSE mod_time END,
+             content_hash = CASE WHEN ? = 1 AND state = 'done' THEN NULL ELSE content_hash END,
              activity_at = ?
          WHERE asset_id = ?`,
         flag,
@@ -381,37 +184,29 @@ export async function persistDecision(
         flag,
         flag,
         at,
+        flag,
+        flag,
         at,
         change.assetId,
       );
-      if (change.needsEdit) {
-        // Re-flagging an already-completed edit re-queues it for a fresh
-        // detection cycle — same transition as markDoneToEdit, so the
-        // edit queue and detection see the photo again (a 'done' row
-        // with needs_edit = 1 is visible to neither).
-        await txn.runAsync(
-          `UPDATE photos
-           SET state = 'to_edit', needs_edit = 1, to_edit_at = ?,
-               mod_time = NULL, content_hash = NULL,
-               activity_at = ?
-           WHERE asset_id = ? AND state = 'done'`,
-          at,
-          at,
-          change.assetId,
-        );
-      }
     }
-    for (const [assetId, state] of changedStates) {
-      // Reopening a COMPLETED photo (explicit verdict clear: done →
-      // unreviewed) also resets its edit-cycle columns — a later re-flag
-      // must start a fresh detection cycle, not consume the old edit's
-      // baseline/hash. (All CASEs read the pre-update row state.)
+    for (const [assetId, verdict] of changes) {
       await txn.runAsync(
         `UPDATE photos
-         SET state = CASE WHEN ? = 'kept' AND needs_edit = 1 THEN 'to_edit' ELSE ? END,
+         SET state = CASE
+               WHEN ? = 'done' AND needs_edit = 1 THEN 'to_edit'
+               WHEN ? = 'to_edit' THEN 'to_edit'
+               ELSE ?
+             END,
+             needs_edit = CASE
+               WHEN ? = 'to_edit' THEN 1
+               WHEN ? = 'unreviewed' THEN 0
+               ELSE needs_edit
+             END,
              to_edit_at = CASE
-               WHEN ? = 'kept' AND needs_edit = 1 AND to_edit_at IS NULL THEN ?
-               WHEN ? = 'unreviewed' AND state = 'done' THEN NULL
+               WHEN ? IN ('to_edit', 'done') AND (needs_edit = 1 OR ? = 'to_edit')
+                    AND to_edit_at IS NULL THEN ?
+               WHEN ? = 'unreviewed' AND state IN ('done', 'to_edit') THEN NULL
                ELSE to_edit_at
              END,
              mod_time = CASE
@@ -423,7 +218,7 @@ export async function persistDecision(
                ELSE content_hash
              END,
              reviewed_at = CASE
-               WHEN ? IN ('kept', 'culled') THEN COALESCE(reviewed_at, ?)
+               WHEN ? IN ('done', 'culled', 'to_edit') THEN COALESCE(reviewed_at, ?)
                ELSE reviewed_at
              END,
              culled_at = CASE
@@ -432,16 +227,20 @@ export async function persistDecision(
              END,
              activity_at = ?
          WHERE asset_id = ?`,
-        state,
-        state,
-        state,
+        verdict,
+        verdict,
+        verdict,
+        verdict,
+        verdict,
+        verdict,
+        verdict,
         at,
-        state,
-        state,
-        state,
-        state,
+        verdict,
+        verdict,
+        verdict,
+        verdict,
         at,
-        state,
+        verdict,
         at,
         at,
         assetId,
@@ -449,9 +248,8 @@ export async function persistDecision(
     }
     if (extras.duel) {
       await txn.runAsync(
-        `INSERT INTO duels (session_id, group_id, winner_id, loser_id, kept_both, at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        sessionId,
+        `INSERT INTO duels (group_id, winner_id, loser_id, kept_both, at)
+         VALUES (?, ?, ?, ?, ?)`,
         extras.duel.groupId,
         extras.duel.winnerId,
         extras.duel.loserId,
@@ -485,10 +283,10 @@ export async function persistDecision(
 }
 
 /**
- * Set/clear the "this keeper needs editing" flag. If the photo has already
- * converged to kept/to_edit, its state is remapped immediately; otherwise
- * the flag applies when the state next becomes 'kept' (see persistDecision).
- * Entering to_edit records `to_edit_at` (first entry wins).
+ * Set/clear the "this keeper needs editing" flag (m0.8: kept is gone —
+ * the flag flips a done photo to to_edit and back). Entering to_edit
+ * records `to_edit_at` (first entry wins) and resets the detection
+ * baseline for a fresh cycle.
  */
 export async function setNeedsEdit(
   db: SQLiteDatabase,
@@ -501,14 +299,16 @@ export async function setNeedsEdit(
     `UPDATE photos
      SET needs_edit = ?,
          state = CASE
-           WHEN ? = 1 AND state = 'kept' THEN 'to_edit'
-           WHEN ? = 0 AND state = 'to_edit' THEN 'kept'
+           WHEN ? = 1 AND state = 'done' THEN 'to_edit'
+           WHEN ? = 0 AND state = 'to_edit' THEN 'done'
            ELSE state
          END,
          to_edit_at = CASE
-           WHEN ? = 1 AND state = 'kept' AND to_edit_at IS NULL THEN ?
+           WHEN ? = 1 AND state = 'done' THEN ?
            ELSE to_edit_at
          END,
+         mod_time = CASE WHEN ? = 1 AND state = 'done' THEN NULL ELSE mod_time END,
+         content_hash = CASE WHEN ? = 1 AND state = 'done' THEN NULL ELSE content_hash END,
          activity_at = ?
      WHERE asset_id = ?`,
     flag,
@@ -516,28 +316,21 @@ export async function setNeedsEdit(
     flag,
     flag,
     at,
+    flag,
+    flag,
     at,
     assetId,
   );
 }
 
 /**
- * "Not related — review as single" (m0.4, completed m0.7): the given
- * photos left their cull group — the ejected photo plus the survivor when
- * the group dissolved (core makeSingle reports both). Updates BOTH
- * membership representations: photos.group_id (day-progress accounting)
- * and photo_group_assignments (the durable truth), then runs the shared
- * repairs. In the app this rides the persistence queue as a
- * PersistDecisionExtras field (madeSingles) so a failed write retries
- * with the snapshot instead of being lost; the standalone export serves
- * tests and non-session callers.
+ * "Not related — review as single" (m0.4, completed m0.7; m0.8: durable
+ * user-ejection): the given photos left their cull group — the ejected
+ * photo plus the survivor when the group dissolved. Marks user_single so
+ * no scan ever regroups them, then runs the shared repairs.
  */
 async function applyPhotoSingles(txn: SQLiteDatabase, assetIds: readonly string[]): Promise<void> {
   const placeholders = assetIds.map(() => '?').join(',');
-  await txn.runAsync(
-    `UPDATE photos SET group_id = NULL WHERE asset_id IN (${placeholders})`,
-    ...assetIds,
-  );
   await txn.runAsync(
     `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0, user_single = 1
      WHERE photo_id IN (${placeholders})`,
@@ -549,10 +342,8 @@ async function applyPhotoSingles(txn: SQLiteDatabase, assetIds: readonly string[
 /**
  * Shared membership repairs (N#1, applied by session draws and single
  * ejections alike): a group under 2 members dissolves; an orphaned best
- * clears; empty groups are deleted; and the legacy photos.group_id column
- * is re-synced to NULL wherever the durable assignment says single — the
- * progress/grid queries classify grouping from photos.group_id, so a
- * dissolved survivor must clear there too.
+ * clears; empty groups are deleted. photo_group_assignments is the ONE
+ * membership truth (m0.8: the legacy photos.group_id column is gone).
  */
 async function repairGroupMembership(txn: SQLiteDatabase): Promise<void> {
   await txn.runAsync(
@@ -574,14 +365,6 @@ async function repairGroupMembership(txn: SQLiteDatabase): Promise<void> {
     `DELETE FROM photo_groups
      WHERE (SELECT COUNT(*) FROM photo_group_assignments a WHERE a.group_id = photo_groups.id) = 0`,
   );
-  await txn.runAsync(
-    `UPDATE photos SET group_id = NULL
-     WHERE group_id IS NOT NULL
-       AND EXISTS (
-         SELECT 1 FROM photo_group_assignments a
-         WHERE a.photo_id = photos.asset_id AND a.group_id IS NULL
-       )`,
-  );
 }
 
 export async function makePhotoSingles(
@@ -590,6 +373,165 @@ export async function makePhotoSingles(
 ): Promise<void> {
   if (assetIds.length === 0) return;
   await db.withExclusiveTransactionAsync((txn) => applyPhotoSingles(txn, assetIds));
+}
+
+// --------------------------------------------- m0.8 DB-backed review reads
+
+/** One member of a review group (durable truth join). */
+export interface ReviewMemberRow {
+  asset_id: string;
+  uri: string;
+  taken_at: number;
+  state: PhotoState;
+  needs_edit: number;
+  time_attached: number;
+}
+
+/** One reviewable cull group from the continuous grouping run. */
+export interface ReviewGroupRow {
+  groupId: number;
+  bestPhotoId: string | null;
+  /** Chronological members, all states (the deck badges non-unreviewed). */
+  members: ReviewMemberRow[];
+}
+
+/**
+ * The review queue: groups that still hold at least one unreviewed,
+ * present member, newest group first (continuous scan fills newest-first,
+ * so review starts with the most recent shots). `limit` bounds the page.
+ */
+export async function listReviewGroups(
+  db: SQLiteDatabase,
+  limit: number,
+): Promise<ReviewGroupRow[]> {
+  const groups = await db.getAllAsync<{ id: number; best_photo_id: string | null; newest: number }>(
+    `SELECT g.id, g.best_photo_id,
+            (SELECT MAX(p.taken_at) FROM photo_group_assignments a
+              JOIN photos p ON p.asset_id = a.photo_id
+              WHERE a.group_id = g.id) AS newest
+     FROM photo_groups g
+     WHERE EXISTS (
+       SELECT 1 FROM photo_group_assignments a
+       JOIN photos p ON p.asset_id = a.photo_id
+       WHERE a.group_id = g.id AND p.state = 'unreviewed' AND p.is_present = 1
+     )
+     ORDER BY newest DESC
+     LIMIT ?`,
+    limit,
+  );
+  if (groups.length === 0) return [];
+  const members = await db.getAllAsync<ReviewMemberRow & { group_id: number }>(
+    `SELECT a.group_id, p.asset_id, p.uri, p.taken_at, p.state, p.needs_edit, a.time_attached
+     FROM photo_group_assignments a
+     JOIN photos p ON p.asset_id = a.photo_id
+     WHERE a.group_id IN (${groups.map(() => '?').join(',')}) AND p.is_present = 1
+     ORDER BY p.taken_at ASC, p.asset_id ASC`,
+    ...groups.map((g) => g.id),
+  );
+  const byGroup = new Map<number, ReviewMemberRow[]>();
+  for (const m of members) {
+    const bucket = byGroup.get(Number(m.group_id));
+    const row: ReviewMemberRow = {
+      asset_id: m.asset_id,
+      uri: m.uri,
+      taken_at: m.taken_at,
+      state: m.state,
+      needs_edit: m.needs_edit,
+      time_attached: m.time_attached,
+    };
+    if (bucket) bucket.push(row);
+    else byGroup.set(Number(m.group_id), [row]);
+  }
+  return groups.map((g) => ({
+    groupId: Number(g.id),
+    bestPhotoId: g.best_photo_id,
+    members: byGroup.get(Number(g.id)) ?? [],
+  }));
+}
+
+/** Unreviewed present singles (NULL-group assignment), newest first. */
+export async function listUnreviewedSingles(
+  db: SQLiteDatabase,
+  limit: number,
+): Promise<ReviewMemberRow[]> {
+  return db.getAllAsync<ReviewMemberRow>(
+    `SELECT p.asset_id, p.uri, p.taken_at, p.state, p.needs_edit, a.time_attached
+     FROM photo_group_assignments a
+     JOIN photos p ON p.asset_id = a.photo_id
+     WHERE a.group_id IS NULL AND p.state = 'unreviewed' AND p.is_present = 1
+     ORDER BY p.taken_at DESC, p.asset_id DESC
+     LIMIT ?`,
+    limit,
+  );
+}
+
+/** Star/unstar a group's best (NULL clears; FK enforces membership). */
+export async function setGroupBest(
+  db: SQLiteDatabase,
+  groupId: number,
+  bestPhotoId: string | null,
+): Promise<void> {
+  await db.runAsync('UPDATE photo_groups SET best_photo_id = ? WHERE id = ?', bestPhotoId, groupId);
+}
+
+/** Home CTA counts: unreviewed present photos in groups / as singles. */
+export async function countReviewQueue(
+  db: SQLiteDatabase,
+): Promise<{ grouped: number; singles: number }> {
+  const row = await db.getFirstAsync<{ grouped: number; singles: number }>(
+    `SELECT
+       SUM(CASE WHEN a.group_id IS NOT NULL THEN 1 ELSE 0 END) AS grouped,
+       SUM(CASE WHEN a.group_id IS NULL THEN 1 ELSE 0 END) AS singles
+     FROM photo_group_assignments a
+     JOIN photos p ON p.asset_id = a.photo_id
+     WHERE p.state = 'unreviewed' AND p.is_present = 1`,
+  );
+  return { grouped: row?.grouped ?? 0, singles: row?.singles ?? 0 };
+}
+
+/** Reviewed-photo counts per local day (first-review stamps; the daily
+ * goal and streaks read these — decision 4). */
+export async function getReviewedCountsByDay(
+  db: SQLiteDatabase,
+  sinceDay: string,
+): Promise<Map<string, number>> {
+  const rows = await db.getAllAsync<{ day: string; n: number }>(
+    `SELECT date(reviewed_at / 1000, 'unixepoch', 'localtime') AS day, COUNT(*) AS n
+     FROM photos WHERE reviewed_at IS NOT NULL
+     GROUP BY day HAVING day >= ?`,
+    sinceDay,
+  );
+  return new Map(rows.map((r) => [r.day, r.n]));
+}
+
+/** Home corpus stats: groups found + reviewed rows (decision: live stats). */
+export async function getCorpusStats(
+  db: SQLiteDatabase,
+): Promise<{ groupsFound: number; reviewed: number }> {
+  const row = await db.getFirstAsync<{ groups: number; reviewed: number }>(
+    `SELECT
+       (SELECT COUNT(*) FROM photo_groups) AS groups,
+       (SELECT COUNT(*) FROM photos WHERE reviewed_at IS NOT NULL) AS reviewed`,
+  );
+  return { groupsFound: row?.groups ?? 0, reviewed: row?.reviewed ?? 0 };
+}
+
+/**
+ * Decision 5's explicit opt-in "regroup everything not yet done": drop
+ * the assignments of photos that are unreviewed AND not user-ejected —
+ * the next scan rebuilds them under the new grouping settings. Reviewed
+ * groups and user singles stay untouched (the regroup boundary would
+ * freeze them anyway; deleting their assignments would lose membership).
+ */
+export async function resetUnreviewedGroups(db: SQLiteDatabase): Promise<void> {
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    await txn.runAsync(
+      `DELETE FROM photo_group_assignments
+       WHERE user_single = 0
+         AND photo_id IN (SELECT asset_id FROM photos WHERE state = 'unreviewed')`,
+    );
+    await repairGroupMembership(txn);
+  });
 }
 
 /** One photo row the continuous scan upserts (m0.8 gate 2). */
@@ -627,8 +569,7 @@ async function ensureContinuousRun(txn: SQLiteDatabase, at: number): Promise<num
   );
   if (existing) return Number(existing.id);
   const result = await txn.runAsync(
-    `INSERT INTO grouping_runs (session_id, provenance, created_at, scope)
-     VALUES (NULL, 'continuous', ?, NULL)`,
+    `INSERT INTO grouping_runs (provenance, created_at) VALUES ('continuous', ?)`,
     at,
   );
   return Number(result.lastInsertRowId);
@@ -643,9 +584,6 @@ async function ensureContinuousRun(txn: SQLiteDatabase, at: number): Promise<num
  * `groups` nor `singles` were frozen by the regroup boundary
  * (reconcileWindowGroups) and keep their existing assignments.
  *
- * The legacy photos.group_id column is deliberately not written —
- * continuous groups have no session cluster ids; the day-progress
- * accounting that reads it retires with sessions at gate 3.
  */
 export async function writeContinuousGroups(
   db: SQLiteDatabase,
@@ -833,25 +771,6 @@ export async function markEditDone(
     );
   });
   return applied;
-}
-
-/**
- * Converge a finished session's keepers: every given photo still 'kept'
- * becomes 'done' ('to_edit' rows are left for the edit queue).
- */
-export async function markKeptDone(
-  db: SQLiteDatabase,
-  assetIds: readonly string[],
-  at: number = Date.now(),
-): Promise<void> {
-  for (const ids of chunk(assetIds, IN_CHUNK)) {
-    const placeholders = ids.map(() => '?').join(',');
-    await db.runAsync(
-      `UPDATE photos SET state = 'done', activity_at = ? WHERE state = 'kept' AND asset_id IN (${placeholders})`,
-      at,
-      ...ids,
-    );
-  }
 }
 
 /**
@@ -1160,7 +1079,7 @@ export async function getHistoryPage(
 ): Promise<HistoryPage> {
   const filterSql =
     filter === 'kept'
-      ? "AND state IN ('kept', 'done') AND needs_edit = 0"
+      ? "AND state = 'done' AND needs_edit = 0"
       : filter === 'culled'
         ? "AND state = 'culled'"
         : filter === 'to_edit'
@@ -1283,36 +1202,6 @@ export async function countToEdit(db: SQLiteDatabase): Promise<number> {
 }
 
 /**
- * Kept rows in scope belonging to the given id set (the active session's
- * pending-bank keepers) — the ONLY kept rows a new draw excludes. Kept
- * rows from an abandoned/discarded session are deliberately
- * re-reviewable (m0.3.1) and must stay in remaining counts.
- */
-export async function countKeptInScopeAmong(
-  db: SQLiteDatabase,
-  scope: PhotoScope,
-  roots: readonly string[] | null | undefined,
-  ids: readonly string[],
-): Promise<number> {
-  if (ids.length === 0) return 0;
-  const where = scopeClause(scope);
-  const src = sourceClause(roots);
-  let total = 0;
-  for (const chunkIds of chunk(ids, IN_CHUNK)) {
-    const placeholders = chunkIds.map(() => '?').join(',');
-    const row = await db.getFirstAsync<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM photos
-       WHERE state = 'kept' AND ${where.sql}${src.sql} AND asset_id IN (${placeholders})`,
-      ...where.params,
-      ...src.params,
-      ...chunkIds,
-    );
-    total += row?.n ?? 0;
-  }
-  return total;
-}
-
-/**
  * Per-state DB counts for one scope, split by cull-group membership
  * (StateCounts lives in lib/progress.ts — pure, shared with the
  * breakdown math). Replaces m0.2's getDayStateCounts and m0.3.1's
@@ -1328,7 +1217,10 @@ export async function getStateCountsInScope(
   const where = scopeClause(scope);
   const src = sourceClause(roots);
   const rows = await db.getAllAsync<{ state: PhotoState; grouped: number; n: number }>(
-    `SELECT state, (group_id IS NOT NULL) AS grouped, COUNT(*) AS n
+    `SELECT state,
+            EXISTS (SELECT 1 FROM photo_group_assignments a
+                    WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped,
+            COUNT(*) AS n
      FROM photos WHERE ${where.sql}${src.sql} GROUP BY state, grouped`,
     ...where.params,
     ...src.params,
@@ -1336,7 +1228,6 @@ export async function getStateCountsInScope(
   const counts: StateCounts = {
     unreviewedGrouped: 0,
     unreviewedSingle: 0,
-    kept: 0,
     toEdit: 0,
     staged: 0,
     trashed: 0,
@@ -1349,9 +1240,6 @@ export async function getStateCountsInScope(
       case 'unreviewed':
         if (row.grouped) counts.unreviewedGrouped += row.n;
         else counts.unreviewedSingle += row.n;
-        break;
-      case 'kept':
-        counts.kept += row.n;
         break;
       case 'to_edit':
         counts.toEdit += row.n;
@@ -1380,7 +1268,9 @@ export async function getStateRowsForAssets(
   for (const ids of chunk(assetIds, IN_CHUNK)) {
     const placeholders = ids.map(() => '?').join(',');
     const rows = await db.getAllAsync<{ asset_id: string; state: PhotoState; grouped: number }>(
-      `SELECT asset_id, state, (group_id IS NOT NULL) AS grouped
+      `SELECT asset_id, state,
+              EXISTS (SELECT 1 FROM photo_group_assignments a
+                      WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped
        FROM photos WHERE asset_id IN (${placeholders})`,
       ...ids,
     );
@@ -1399,9 +1289,10 @@ export interface GridPhotoRow {
 }
 
 /** SQL predicate per DB-backed grid filter (see getGridPhotosByFilter). */
-const GRID_FILTER_SQL: Record<'in_group' | 'kept' | 'to_edit' | 'staged' | 'done', string> = {
-  in_group: "state = 'unreviewed' AND group_id IS NOT NULL",
-  kept: "state = 'kept'",
+const GRID_FILTER_SQL: Record<'in_group' | 'to_edit' | 'staged' | 'done', string> = {
+  in_group:
+    "state = 'unreviewed' AND EXISTS (SELECT 1 FROM photo_group_assignments a " +
+    'WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL)',
   to_edit: "state = 'to_edit'",
   staged: "state IN ('culled', 'confirmed')",
   // 'trashed' rows also count as done in the summaries, but their files
@@ -1465,15 +1356,6 @@ export async function markDoneToEdit(
 }
 
 /**
- * State editor: un-cull a staged photo OUTSIDE any live session (rows
- * left 'culled' by an abandoned session). Same outcome as the in-session
- * cull-list unstage: back to 'kept', or 'to_edit' when the needs-edit
- * flag is set (m0.2 #8). NEVER call this for a photo in the active
- * session — that must go through the session (the snapshot would still
- * delete it at confirm otherwise); the editor UI enforces this by
- * making active-session photos read-only.
- */
-/**
  * Cull-list "Restore to unreviewed" for a CARRIED cull (staged in an
  * earlier session, absent from the active one): back to the review pool.
  * Like every other un-staging path, the restore resolves any pending
@@ -1513,7 +1395,7 @@ export async function unstageCullDirect(
   await db.withExclusiveTransactionAsync(async (txn) => {
     await txn.runAsync(
       `UPDATE photos
-       SET state = CASE WHEN needs_edit = 1 THEN 'to_edit' ELSE 'kept' END,
+       SET state = CASE WHEN needs_edit = 1 THEN 'to_edit' ELSE 'done' END,
            to_edit_at = CASE
              WHEN needs_edit = 1 AND to_edit_at IS NULL THEN ?
              ELSE to_edit_at
@@ -1564,27 +1446,15 @@ export async function getDaySummaries(
   return new Map(rows.map((r) => [r.day, r]));
 }
 
-/** Mark the session finished (the user pressed Finish — feeds the streak). */
-export async function completeSession(
-  db: SQLiteDatabase,
-  sessionId: number,
-  at: number,
-): Promise<void> {
-  await db.runAsync(
-    'UPDATE sessions SET completed_at = ?, finished = 1 WHERE id = ?',
-    at,
-    sessionId,
-  );
-}
-
 /**
- * Local days ("YYYY-MM-DD") with at least one *finished* session, newest
- * first — abandoned sessions don't count. Feeds the review streak.
+ * Local days ("YYYY-MM-DD") with review activity (any first-review stamp
+ * that day), newest first. Interim streak source until the gate-4 daily
+ * goal defines streak days as goal-reached days.
  */
-export async function getFinishedSessionDays(db: SQLiteDatabase): Promise<string[]> {
+export async function getReviewedDays(db: SQLiteDatabase): Promise<string[]> {
   const rows = await db.getAllAsync<{ day: string }>(
-    `SELECT DISTINCT date(completed_at / 1000, 'unixepoch', 'localtime') AS day
-     FROM sessions WHERE finished = 1 AND completed_at IS NOT NULL
+    `SELECT DISTINCT date(reviewed_at / 1000, 'unixepoch', 'localtime') AS day
+     FROM photos WHERE reviewed_at IS NOT NULL
      ORDER BY day DESC`,
   );
   return rows.map((r) => r.day);
@@ -1735,9 +1605,7 @@ export async function markFavouriteBatchError(
  * - reviewed/culled/edit/favourite count unique tracked photos that have
  *   ever reached the event (timestamps are first-event markers);
  * - reclaimed bytes come from the authoritative verified trash-member
- *   rows (trashStore.lifetimeReclaimedBytes) — batches launched without
- *   an active session count too; sessions.reclaimed_bytes is only the
- *   per-session display stat.
+ *   rows (trashStore.lifetimeReclaimedBytes).
  */
 export interface LifetimeStats {
   reviewed: number;

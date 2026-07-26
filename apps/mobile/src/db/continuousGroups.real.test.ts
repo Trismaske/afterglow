@@ -64,12 +64,11 @@ describe('writeContinuousGroups', () => {
       AT,
     );
 
-    const runs = await db.getAllAsync<{ id: number; provenance: string; session_id: null }>(
-      'SELECT id, provenance, session_id FROM grouping_runs',
+    const runs = await db.getAllAsync<{ id: number; provenance: string }>(
+      'SELECT id, provenance FROM grouping_runs',
     );
     expect(runs).toHaveLength(1);
     expect(runs[0].provenance).toBe('continuous');
-    expect(runs[0].session_id).toBeNull();
 
     const assignments = await getGroupAssignments(db, [id('1'), id('2'), id('3')]);
     expect(assignments.get(id('1'))).toEqual(assignments.get(id('2')));
@@ -395,86 +394,6 @@ describe('writeContinuousGroups', () => {
     expect(rows[0].group_id).not.toBeNull();
     expect(rows[0].group_id).toEqual(rows[1].group_id);
     expect(rows[2]).toEqual({ photo_id: id('3'), group_id: null, user_single: 1 });
-  });
-
-  it('a session redraw preserves the user-ejection marker and singleness', async () => {
-    const d = await fresh();
-    const db = asExpo(d);
-    const { createSession, makePhotoSingles } = await import('./store');
-    await writeContinuousGroups(
-      db,
-      {
-        photos: [upsert('1'), upsert('2')],
-        groups: [{ members: [id('1'), id('2')], timeAttached: [] }],
-        singles: [],
-      },
-      AT,
-    );
-    await makePhotoSingles(db, [id('1')]);
-
-    // Interim m0.7 session draw includes the ejected photo in a group.
-    const loaded = (rawId: string) => ({
-      item: {
-        id: id(rawId),
-        timestamp: AT - 3_600_000,
-        uri: `file:///dcim/${rawId}.jpg`,
-        kind: 'photo' as const,
-      },
-      rawId,
-      volumeName: 'external_primary',
-      filename: `${rawId}.jpg`,
-      modTime: AT - 3_600_000,
-      width: 4000,
-      height: 3000,
-      groupId: 'g1',
-      day: '2027-01-15',
-    });
-    await createSession(db, {
-      label: 'redraw',
-      rangeStart: 0,
-      rangeEnd: AT,
-      snapshot: '{}',
-      createdAt: AT + 10,
-      photos: [loaded('1'), loaded('2')],
-    });
-    const row = await db.getFirstAsync<{ group_id: number | null; user_single: number }>(
-      'SELECT group_id, user_single FROM photo_group_assignments WHERE photo_id = ?',
-      id('1'),
-    );
-    expect(row).toEqual({ group_id: null, user_single: 1 });
-  });
-
-  it('a session draw makes a scan-created row detection-tracked', async () => {
-    const d = await fresh();
-    const db = asExpo(d);
-    const { createSession, getDetectionTrackedAssets } = await import('./store');
-    await writeContinuousGroups(db, { photos: [upsert('1')], groups: [], singles: [id('1')] }, AT);
-    expect((await getDetectionTrackedAssets(db, [id('1')])).has(id('1'))).toBe(false);
-    const loaded = {
-      item: {
-        id: id('1'),
-        timestamp: AT - 3_600_000,
-        uri: 'file:///dcim/1.jpg',
-        kind: 'photo' as const,
-      },
-      rawId: '1',
-      volumeName: 'external_primary',
-      filename: '1.jpg',
-      modTime: AT - 3_600_000,
-      width: 4000,
-      height: 3000,
-      groupId: null,
-      day: '2027-01-15',
-    };
-    await createSession(db, {
-      label: 'draw',
-      rangeStart: 0,
-      rangeEnd: AT,
-      snapshot: '{}',
-      createdAt: AT + 10,
-      photos: [loaded],
-    });
-    expect((await getDetectionTrackedAssets(db, [id('1')])).has(id('1'))).toBe(true);
   });
 
   it('copy matching aborts when the guarded upsert lost its race', async () => {

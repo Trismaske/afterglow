@@ -13,23 +13,24 @@
  * SQLite is the source of truth for photo state. Canonical identity is
  * volume-qualified (`<volume>/<raw id>`; P4#2) — the identity columns are
  * nullable until the ingestion-boundary change flips `asset_id` to the
- * canonical key and tightens them. `photos.group_id` is deprecated: the
+ * canonical key and tightens them. Group membership truth lives in the
  * durable grouping relations (grouping_runs / photo_groups /
- * photo_group_assignments) become the membership truth in gate 2.
+ * photo_group_assignments).
  *
  * Foreign keys are declared AND enforced (`PRAGMA foreign_keys = ON` on
  * every open; C#3). Schema-level invariants: one current group assignment
- * per photo (assignments PK), one grouping run per session (partial
- * unique), one active session (partial unique), one live trash
- * reservation per photo (reservations PK), and at most one absence-
- * terminal trash outcome per (photo, generation) (partial unique; P8#4).
+ * per photo (assignments PK), one continuous grouping run (partial
+ * unique), one live trash reservation per photo (reservations PK), and
+ * at most one absence-terminal trash outcome per (photo, generation)
+ * (partial unique; P8#4). m0.8 gate 3: sessions are gone — photos.state
+ * plus the grouping tables ARE the review model.
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
 
 export const DATABASE_NAME = 'afterglow.db';
 
 /** Bump on ANY schema change before v1 — the open path resets mismatches. */
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 export const BASELINE_DDL = `
   CREATE TABLE photos (
@@ -37,9 +38,7 @@ export const BASELINE_DDL = `
     uri                  TEXT NOT NULL,
     taken_at             INTEGER NOT NULL,
     state                TEXT NOT NULL DEFAULT 'unreviewed'
-      CHECK (state IN ('unreviewed', 'kept', 'to_edit', 'done', 'culled', 'trashed')),
-    group_id             TEXT,
-    session_day          TEXT,
+      CHECK (state IN ('unreviewed', 'to_edit', 'done', 'culled', 'trashed')),
     mod_time             INTEGER,
     content_hash         TEXT,
     day                  TEXT,
@@ -84,31 +83,16 @@ export const BASELINE_DDL = `
   CREATE INDEX idx_photos_organize ON photos(organize_state)
     WHERE organize_state <> 'none';
 
+  -- Compare history (m0.1+, mined by later features; m0.8: sessions are
+  -- gone — a duel belongs to its group).
   CREATE TABLE duels (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id INTEGER NOT NULL,
     group_id   TEXT NOT NULL,
     winner_id  TEXT NOT NULL,
     loser_id   TEXT NOT NULL,
     kept_both  INTEGER NOT NULL,
     at         INTEGER NOT NULL
   );
-  CREATE INDEX idx_duels_session ON duels(session_id);
-
-  CREATE TABLE sessions (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    label           TEXT NOT NULL,
-    range_start     INTEGER NOT NULL,
-    range_end       INTEGER NOT NULL,
-    snapshot        TEXT NOT NULL,
-    reclaimed_bytes INTEGER NOT NULL DEFAULT 0,
-    created_at      INTEGER NOT NULL,
-    completed_at    INTEGER,
-    finished        INTEGER NOT NULL DEFAULT 0
-  );
-  -- One active session, enforced in the schema (C#3).
-  CREATE UNIQUE INDEX idx_sessions_one_active ON sessions((1))
-    WHERE completed_at IS NULL;
 
   CREATE TABLE settings (
     key   TEXT PRIMARY KEY,
@@ -139,18 +123,13 @@ export const BASELINE_DDL = `
     vec      BLOB NOT NULL
   );
 
-  -- Durable grouping: runs / groups / assignments (N#1, C#3).
-  -- m0.8 gate 2: 'continuous' provenance — the single scan-owned run the
-  -- continuous pipeline writes into (sessions retire at gate 3).
+  -- Durable grouping: the single scan-owned continuous run + groups +
+  -- one current assignment per photo (m0.8 gate 3: sessions are gone).
   CREATE TABLE grouping_runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id  INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
-    provenance  TEXT NOT NULL DEFAULT 'session' CHECK (provenance IN ('session', 'continuous')),
-    created_at  INTEGER NOT NULL,
-    scope       TEXT
+    provenance  TEXT NOT NULL DEFAULT 'continuous' CHECK (provenance IN ('continuous')),
+    created_at  INTEGER NOT NULL
   );
-  CREATE UNIQUE INDEX idx_grouping_runs_one_per_session
-    ON grouping_runs(session_id) WHERE session_id IS NOT NULL;
   CREATE UNIQUE INDEX idx_grouping_runs_one_continuous
     ON grouping_runs((1)) WHERE provenance = 'continuous';
 
@@ -231,7 +210,6 @@ export const BASELINE_DDL = `
     id                       INTEGER PRIMARY KEY AUTOINCREMENT,
     state                    TEXT NOT NULL CHECK (state IN
       ('preparing', 'launching', 'verified', 'verified_partial', 'cancelled', 'error')),
-    launched_from_session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
     created_at               INTEGER NOT NULL,
     dispatched_at            INTEGER,
     verified_at              INTEGER

@@ -14,7 +14,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { RootStackParamList } from '../navigation';
+import type { MainTabScreenProps } from '../navigation';
 import {
   commitOrganizeOutcomes,
   getOrganizeQueue,
@@ -32,18 +32,17 @@ import {
   type VolumeAlbum,
 } from '../../modules/media-store-actions';
 import { getEditableContentUri, PRIMARY_VOLUME } from '../lib/media';
-import { useSession } from '../session/SessionContext';
+
 import { showToast } from '../lib/toast';
 import { labelForDayKey } from '../lib/dates';
 import { formatClock } from '../lib/format';
 import { colors, touch } from '../theme';
 
-type Props = NativeStackScreenProps<RootStackParamList, 'OrganizeQueue'>;
+type Props = MainTabScreenProps<'OrganizeQueue'>;
 
 export function OrganizeQueueScreen(_props: Props) {
   const insets = useSafeAreaInsets();
   const db = useSQLiteContext();
-  const { reconcileMovedUris, restoring } = useSession();
   const [rows, setRows] = useState<OrganizeQueueRow[] | null>(null);
   const [busy, setBusy] = useState(false);
   // Synchronous apply lock: async continuations (picker load, intent
@@ -97,13 +96,6 @@ export function OrganizeQueueScreen(_props: Props) {
   );
 
   const applyAll = useCallback(async () => {
-    // Mid-restore, a move committing between resume's photos.uri read and
-    // the snapshot install would make reconcileMovedUris a no-op and the
-    // session would render the dead pre-move path.
-    if (restoring) {
-      showToast('Still loading your session — try again in a moment');
-      return;
-    }
     if (busy || busyRef.current || !rows || rows.length === 0) return;
     setBusy(true);
     busyRef.current = true;
@@ -159,12 +151,6 @@ export function OrganizeQueueScreen(_props: Props) {
               })),
               Date.now(),
             );
-            // Mirror each committed batch into the live snapshot RIGHT
-            // AWAY — a later batch failing must not leave dead pre-move
-            // paths in the session until a restart.
-            await reconcileMovedUris(
-              repaired.map((p) => ({ photoId: p.member.photo_id, uri: `file://${p.info!.data}` })),
-            );
             moved += repaired.length;
           }
           const repairedIds = new Set(repaired.map((p) => p.member.photo_id));
@@ -199,11 +185,6 @@ export function OrganizeQueueScreen(_props: Props) {
             relativePath: m.organize_path,
           }));
           await commitOrganizeOutcomes(db, outcomes, Date.now());
-          await reconcileMovedUris(
-            outcomes
-              .filter((o) => (o.status === 'moved' || o.status === 'already') && o.newData)
-              .map((o) => ({ photoId: o.photoId, uri: `file://${o.newData}` })),
-          );
           moved += outcomes.filter((o) => o.status === 'moved' || o.status === 'already').length;
           failed += outcomes.filter(
             (o) => o.status === 'error' || o.status === 'unsupported',
@@ -222,7 +203,7 @@ export function OrganizeQueueScreen(_props: Props) {
       setBusy(false);
       busyRef.current = false;
     }
-  }, [busy, db, rows, reload, reconcileMovedUris, restoring]);
+  }, [busy, db, rows, reload]);
 
   const renderItem = useCallback(
     ({ item }: { item: OrganizeQueueRow }) => (

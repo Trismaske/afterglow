@@ -6,9 +6,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { RootStackParamList } from '../navigation';
+import type { MainTabScreenProps } from '../navigation';
 import { getToEditPhotos, markEditDone, type ToEditRow } from '../db/store';
-import { useSession } from '../session/SessionContext';
+import { useReview } from '../review/ReviewContext';
 import { getEditableContentUri } from '../lib/media';
 import { launchEditor, launchViewer } from '../lib/edit';
 import { NO_EDITOR_MESSAGE, NO_EDITOR_TITLE } from '../lib/editActions';
@@ -18,7 +18,7 @@ import { labelForDayKey } from '../lib/dates';
 import { formatClock } from '../lib/format';
 import { colors, touch } from '../theme';
 
-type Props = NativeStackScreenProps<RootStackParamList, 'EditQueue'>;
+type Props = MainTabScreenProps<'EditQueue'>;
 
 /**
  * The to-edit queue (PLAN.md: Android has no virtual gallery albums, so
@@ -32,7 +32,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'EditQueue'>;
 export function EditQueueScreen(_props: Props) {
   const insets = useSafeAreaInsets();
   const db = useSQLiteContext();
-  const { flushPersistence, reconcileEditsDone } = useSession();
+  const { refresh } = useReview();
   const [rows, setRows] = useState<ToEditRow[] | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   // Gate-0 (m0.7 item A): the editor-launch diagnostic matrix, opened from
@@ -52,17 +52,11 @@ export function EditQueueScreen(_props: Props) {
 
   const markDone = useCallback(
     async (assetId: string) => {
-      // Land every queued session write first: an older needs-edit intent
-      // executing AFTER the completion would re-queue the done row.
-      await flushPersistence();
       await markEditDone(db, assetId);
-      // The photo may belong to the unfinished session — clear its live
-      // To-Edit flag, or the stale active verdict could later clear it
-      // back to unreviewed and overwrite the durable done.
-      reconcileEditsDone([assetId]);
+      await refresh();
       await reload();
     },
-    [db, reload, flushPersistence, reconcileEditsDone],
+    [db, reload, refresh],
   );
 
   const askMarkDone = useCallback(
@@ -153,7 +147,7 @@ export function EditQueueScreen(_props: Props) {
             >
               <MaterialCommunityIcons name="pencil" size={18} color={colors.edit} />
               <Text style={styles.rowButtonText}>
-                {busyId === item.asset_id ? 'Opening…' : 'Edit'}
+                {busyId === item.asset_id ? 'Opening…' : 'Edit here'}
               </Text>
             </Pressable>
             <Pressable
@@ -162,7 +156,7 @@ export function EditQueueScreen(_props: Props) {
               onPress={() => void openGallery(item)}
             >
               <MaterialCommunityIcons name="image-outline" size={18} color={colors.text} />
-              <Text style={styles.rowButtonText}>Gallery</Text>
+              <Text style={styles.rowButtonText}>View only</Text>
             </Pressable>
             <Pressable
               style={[styles.rowButton, styles.doneButton]}
@@ -186,7 +180,7 @@ export function EditQueueScreen(_props: Props) {
           ? 'Loading…'
           : rows.length === 0
             ? 'Nothing waiting to be edited.'
-            : `${rows.length} photo${rows.length === 1 ? '' : 's'} waiting · edits open in your editor of choice`}
+            : `${rows.length} photo${rows.length === 1 ? '' : 's'} waiting · “Edit here” opens an editor that can save over the original; “View only” opens the photo read-only (use its own edit button to pick an editor)`}
       </Text>
       <FlatList
         data={rows ?? []}

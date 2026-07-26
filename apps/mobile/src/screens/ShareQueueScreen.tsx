@@ -21,7 +21,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { RootStackParamList } from '../navigation';
+import type { MainTabScreenProps } from '../navigation';
 import {
   clearShareQueue,
   countNeverShared,
@@ -40,7 +40,7 @@ import { getEditableContentUri } from '../lib/media';
 import { showToast } from '../lib/toast';
 import { colors, touch } from '../theme';
 
-type Props = NativeStackScreenProps<RootStackParamList, 'ShareQueue'>;
+type Props = MainTabScreenProps<'ShareQueue'>;
 
 export function ShareQueueScreen(_props: Props) {
   const insets = useSafeAreaInsets();

@@ -20,7 +20,6 @@ import {
 import { getStateCountsInScope, type PhotoScope } from '../../db/store';
 import { countPhotosInRange } from '../../lib/media';
 import { resolveSources } from '../../lib/sourceCatalog';
-import { useSession } from '../../session/SessionContext';
 import { StateProgressBar } from '../StateProgressBar';
 import { colors, touch, useTheme } from '../../theme';
 import { stateMetaFor, STATE_ORDER } from './stateMeta';
@@ -38,8 +37,6 @@ function countOf(b: StateBreakdown, state: EffectiveState): number {
       return b.unreviewed;
     case 'in_group':
       return b.inGroups;
-    case 'kept':
-      return b.kept;
     case 'to_edit':
       return b.toEdit;
     case 'staged':
@@ -69,7 +66,6 @@ export function ProgressView({
   const db = useSQLiteContext();
   const { accent } = useTheme();
   const stateMeta = useMemo(() => stateMetaFor(accent), [accent]);
-  const sessionCtx = useSession();
   const [src, setSrc] = useState<ResolvedSrc | null>(null);
   const [data, setData] = useState<{ breakdown: StateBreakdown; trashed: number } | null>(null);
   const [filter, setFilter] = useState<ProgressFilter>('all');
@@ -102,24 +98,6 @@ export function ProgressView({
     }, [db, scopeKey, startMs, endMs, refreshTick]),
   );
 
-  /** Direct DB edits would desync the live session snapshot — read-only.
-   * Mid-restore, membership is unknown, so everything reads as active. */
-  const isInActiveSession = useCallback(
-    (id: string): boolean => {
-      const session = sessionCtx.session;
-      if (!session) return sessionCtx.restoring;
-      try {
-        session.getState(id);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    // version ties this to session mutations.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sessionCtx.session, sessionCtx.version, sessionCtx.restoring],
-  );
-
   const toggleFilter = useCallback((state: EffectiveState) => {
     setFilter((current) => (current === state ? 'all' : state));
   }, []);
@@ -148,7 +126,6 @@ export function ProgressView({
             { count: b.done, color: colors.keep },
             { count: b.toEdit, color: colors.edit },
             { count: b.staged, color: colors.cull },
-            { count: b.kept, color: colors.keepDim },
             { count: b.inGroups, color: accent },
             // unreviewed = the empty track
           ]}
@@ -216,12 +193,7 @@ export function ProgressView({
         bottomInset={insets.bottom}
         onPhotoPress={setSelected}
       />
-      <StateEditorSheet
-        photo={selected}
-        inActiveSession={selected ? isInActiveSession(selected.id) : false}
-        onClose={() => setSelected(null)}
-        onChanged={onChanged}
-      />
+      <StateEditorSheet photo={selected} onClose={() => setSelected(null)} onChanged={onChanged} />
     </>
   );
 }

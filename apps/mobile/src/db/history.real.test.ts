@@ -53,7 +53,7 @@ function insert(
 describe('getHistoryPage', () => {
   it('orders by activity_at desc, drops absent photos, excludes unreviewed', async () => {
     const d = await fresh();
-    insert(d, 'newest', 'kept', AT + 300);
+    insert(d, 'newest', 'done', AT + 300);
     insert(d, 'older', 'culled', AT + 100);
     insert(d, 'gone', 'done', AT + 200, { is_present: 0 });
     insert(d, 'fresh', 'unreviewed', AT + 400);
@@ -67,7 +67,7 @@ describe('getHistoryPage', () => {
 
   it('keyset-paginates without skipping or duplicating', async () => {
     const d = await fresh();
-    for (let i = 0; i < 95; i++) insert(d, `p${String(i).padStart(3, '0')}`, 'kept', AT + i);
+    for (let i = 0; i < 95; i++) insert(d, `p${String(i).padStart(3, '0')}`, 'done', AT + i);
     const first = await getHistoryPage(asExpo(d), 'all', null);
     expect(first.rows).toHaveLength(40);
     expect(first.next).not.toBeNull();
@@ -129,7 +129,7 @@ describe('getHistoryPage', () => {
 
   it('paginates share events past the first page (Shared filter)', async () => {
     const d = await fresh();
-    insert(d, 'p1', 'kept', AT);
+    insert(d, 'p1', 'done', AT);
     d.raw.prepare('INSERT INTO share_cycles (started_at) VALUES (?)').run(AT);
     const stmt = d.raw.prepare(
       "INSERT INTO share_batches (cycle_id, attempted_at, opened_at, label, state) VALUES (1, ?, ?, ?, 'sheet_opened')",
@@ -155,7 +155,7 @@ describe('getHistoryPage', () => {
   it('merges both streams by timestamp on every page (All filter)', async () => {
     const d = await fresh();
     // 50 photos at even timestamps, 50 shares interleaved at odd ones.
-    for (let i = 0; i < 50; i++) insert(d, `p${String(i).padStart(2, '0')}`, 'kept', AT + i * 2);
+    for (let i = 0; i < 50; i++) insert(d, `p${String(i).padStart(2, '0')}`, 'done', AT + i * 2);
     d.raw.prepare('INSERT INTO share_cycles (started_at) VALUES (?)').run(AT);
     const stmt = d.raw.prepare(
       "INSERT INTO share_batches (cycle_id, attempted_at, opened_at, label, state) VALUES (1, ?, ?, ?, 'sheet_opened')",
@@ -179,7 +179,7 @@ describe('getHistoryPage', () => {
 
   it('interleaves sheet_opened share events with labels; errors never appear', async () => {
     const d = await fresh();
-    insert(d, 'p1', 'kept', AT + 10);
+    insert(d, 'p1', 'done', AT + 10);
     d.raw.prepare('INSERT INTO share_cycles (started_at) VALUES (?)').run(AT);
     d.raw
       .prepare(

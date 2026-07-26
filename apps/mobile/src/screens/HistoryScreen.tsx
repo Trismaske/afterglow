@@ -4,8 +4,7 @@
  * share-sheet events interleaved. Ordered by activity_at with two-stream
  * keyset pagination (C#15); trashed/deleted photos drop out (restore
  * brings them back via reconciliation); tapping a photo row opens the
- * standard state editor (StateEditorSheet — active-session photos are
- * read-only there and managed from the session screens).
+ * standard state editor (StateEditorSheet).
  */
 import React, { useCallback, useRef, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -26,7 +25,6 @@ import { reconcileExternallyRemoved } from '../db/trashStore';
 import { checkMediaPresence } from '../lib/media';
 import { classifyPhotoState } from '../lib/progress';
 import { formatDayClock } from '../lib/format';
-import { useSession } from '../session/SessionContext';
 import { DecisionBadge, type DecisionKind } from '../components/DecisionBadge';
 import { StateEditorSheet } from '../components/progress/StateEditorSheet';
 import type { GridPhoto } from '../components/progress/PhotoStateGrid';
@@ -47,14 +45,14 @@ const FILTERS: { key: HistoryFilter; label: string }[] = [
 function badgeOf(row: Extract<HistoryRow, { kind: 'photo' }>): DecisionKind | null {
   if (row.state === 'culled') return 'cull';
   if (row.state === 'to_edit') return 'edit';
-  if (row.state === 'kept' || row.state === 'done') return 'keep';
+  if (row.state === 'done') return 'keep';
   return null;
 }
 
 export function HistoryScreen(_props: Props) {
   const insets = useSafeAreaInsets();
   const db = useSQLiteContext();
-  const { session, restoring, reconcileTrashed } = useSession();
+
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [rows, setRows] = useState<HistoryRow[] | null>(null);
   const [next, setNext] = useState<HistoryCursor | null>(null);
@@ -72,11 +70,6 @@ export function HistoryScreen(_props: Props) {
   // nothing.
   const reconcilePage = useCallback(
     async (pageRows: HistoryRow[]): Promise<HistoryRow[]> => {
-      // Mid-restore, the durable write could land between resumeSession's
-      // reads and its snapshot install, where reconcileTrashed no-ops (no
-      // session yet) and the stale pre-removal snapshot installs anyway.
-      // Skip — the next page load or focus reconciles.
-      if (restoring) return pageRows;
       const gone = new Set<string>();
       for (const row of pageRows) {
         if (row.kind !== 'photo') continue;
@@ -85,27 +78,9 @@ export function HistoryScreen(_props: Props) {
       }
       if (gone.size === 0) return pageRows;
       await reconcileExternallyRemoved(db, [...gone], Date.now());
-      // A removed photo may belong to the unfinished active session —
-      // the live snapshot must converge too (no-op for non-members).
-      await reconcileTrashed([...gone]);
       return pageRows.filter((row) => row.kind !== 'photo' || !gone.has(row.asset_id));
     },
-    [db, reconcileTrashed, restoring],
-  );
-
-  const inActiveSession = useCallback(
-    (id: string) => {
-      // Mid-restore, membership is unknown — treat as active (read-only)
-      // rather than let a direct edit desync the restoring snapshot.
-      if (!session) return restoring;
-      try {
-        session.getState(id);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    [session, restoring],
+    [db],
   );
 
   const reload = useCallback(
@@ -256,7 +231,6 @@ export function HistoryScreen(_props: Props) {
       />
       <StateEditorSheet
         photo={selected}
-        inActiveSession={selected ? inActiveSession(selected.id) : false}
         onClose={() => setSelected(null)}
         onChanged={() => void reload(filter)}
       />

@@ -12,13 +12,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
 import { editorActions, type EditorAction } from '../../lib/progress';
-import {
-  markDoneToEdit,
-  markEditDone,
-  markKeptDone,
-  setNeedsEdit,
-  unstageCullDirect,
-} from '../../db/store';
+import { markDoneToEdit, markEditDone, unstageCullDirect } from '../../db/store';
 import { dayKey, labelForDayKey } from '../../lib/dates';
 import { formatClockSeconds } from '../../lib/format';
 import { colors, touch, useTheme } from '../../theme';
@@ -37,29 +31,24 @@ const ACTION_ICON = {
   unstage_cull: 'undo',
 } as const;
 
-function readOnlyHint(photo: GridPhoto, inActiveSession: boolean): string {
-  if (inActiveSession) {
-    return 'Part of the active review session — manage it from the session screens.';
-  }
+function readOnlyHint(photo: GridPhoto): string {
   switch (photo.dbState) {
     case 'trashed':
       return 'Moved to the system trash — your gallery controls how long it remains recoverable.';
     case 'confirmed':
       return 'Deletion in progress.';
     default:
-      return 'Not reviewed yet — a review session decides keep or cull.';
+      return 'Not reviewed yet — decide it in review.';
   }
 }
 
 export function StateEditorSheet({
   photo,
-  inActiveSession,
   onClose,
   onChanged,
 }: {
   /** Null hides the sheet. */
   photo: GridPhoto | null;
-  inActiveSession: boolean;
   onClose: () => void;
   /** A transition was written — reload counts and the grid. */
   onChanged: () => void;
@@ -77,11 +66,9 @@ export function StateEditorSheet({
         // Every store call is state-guarded (`AND state = '…'`), so a
         // stale sheet acting on an already-changed row is a no-op.
         if (action === 'mark_done') {
-          if (photo.dbState === 'kept') await markKeptDone(db, [photo.id]);
-          else await markEditDone(db, photo.id);
+          await markEditDone(db, photo.id);
         } else if (action === 'queue_edit') {
-          if (photo.dbState === 'kept') await setNeedsEdit(db, photo.id, true, Date.now());
-          else await markDoneToEdit(db, photo.id, Date.now());
+          await markDoneToEdit(db, photo.id, Date.now());
         } else {
           // An explicit restore decision — it settles the copy prompt.
           await unstageCullDirect(db, photo.id, Date.now(), true);
@@ -97,7 +84,7 @@ export function StateEditorSheet({
 
   if (!photo) return null;
   const meta = stateMetaFor(accent)[photo.effective];
-  const actions = editorActions(photo.dbState, inActiveSession);
+  const actions = editorActions(photo.dbState);
 
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
@@ -124,7 +111,7 @@ export function StateEditorSheet({
           </View>
 
           {actions.length === 0 ? (
-            <Text style={styles.readOnly}>{readOnlyHint(photo, inActiveSession)}</Text>
+            <Text style={styles.readOnly}>{readOnlyHint(photo)}</Text>
           ) : (
             actions.map((action) => (
               <Pressable

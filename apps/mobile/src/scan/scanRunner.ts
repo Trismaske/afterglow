@@ -28,10 +28,12 @@ import { createMergedDescendingPager, type PageFetcher } from '../lib/progressPa
 import { frozenPhotos, reconcileWindowGroups } from '../lib/regroupBoundary';
 import { createWindowAccumulator } from '../lib/scanWindows';
 import { resolveSources } from '../lib/sourceCatalog';
+import { GROUPING_STRICTNESS_KEY, parseStrictness } from '../lib/groupingPrefs';
 import { ensureEmbeddingModel } from '../db/embeddingStore';
 import {
   getGroupAssignments,
   getGroupMembers,
+  getSetting,
   getStatesForAssets,
   writeContinuousGroups,
 } from '../db/store';
@@ -103,12 +105,13 @@ export function startContinuousScan(db: SQLiteDatabase): Promise<void> {
 }
 
 /**
- * The configured photo source changed: run a fresh scan over the new
- * selection. An in-flight run finishes against its old buckets first
- * (interrupting it would waste its persisted progress for nothing — the
- * queued rescan re-reads the setting when it starts).
+ * A scan-relevant setting changed (photo source, grouping strictness):
+ * run a fresh scan over the new configuration. An in-flight run finishes
+ * against its old settings first (interrupting it would waste its
+ * persisted progress for nothing — the queued rescan re-reads every
+ * setting when it starts).
  */
-export function rescanAfterSourceChange(db: SQLiteDatabase): Promise<void> {
+export function requestRescan(db: SQLiteDatabase): Promise<void> {
   if (flight) {
     rescanQueued = true;
     return flight;
@@ -138,6 +141,10 @@ async function scan(db: SQLiteDatabase): Promise<void> {
   );
   const pager = createMergedDescendingPager(fetchers, (photo) => photo.item.timestamp);
 
+  // Grouping strictness (gate 4): the ONE user control over the engine —
+  // read once per run; a change mid-run applies from the next scan.
+  const strictness = parseStrictness(await getSetting(db, GROUPING_STRICTNESS_KEY));
+
   const accumulator = createWindowAccumulator(ADJACENT_MERGE_MAX_GAP_MS);
   const engine = newEngineHealth();
   for (;;) {
@@ -146,12 +153,12 @@ async function scan(db: SQLiteDatabase): Promise<void> {
     update({ scanned: status.scanned + photos.length });
     for (const photo of photos) {
       for (const window of accumulator.feed(photo)) {
-        await processWindow(db, window, engine);
+        await processWindow(db, window, engine, strictness.baseThreshold);
       }
     }
   }
   for (const window of accumulator.flush()) {
-    await processWindow(db, window, engine);
+    await processWindow(db, window, engine, strictness.baseThreshold);
   }
   // Backstop for tiny corpora that never reached the consecutive-error
   // threshold: a scan with engine errors and literally zero successes must
@@ -176,6 +183,7 @@ async function processWindow(
   db: SQLiteDatabase,
   window: LoadedPhoto[],
   engine: EngineHealth,
+  baseThreshold: number,
 ): Promise<void> {
   const ids = window.map((p) => p.item.id);
 
@@ -209,6 +217,7 @@ async function processWindow(
     window.map((p) => p.item),
     (id) => vectors.get(id) ?? null,
     withHashes ? (id) => hashes.get(id) ?? null : undefined,
+    { baseThreshold },
   );
 
   // Regroup boundary (decision 5): freeze photos whose current group has

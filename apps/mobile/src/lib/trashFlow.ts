@@ -2,7 +2,7 @@
  * One durable trash attempt (m0.7 item H): prepare/reserve → launching →
  * system consent dialog → tri-state verify → outcomes + C#7 cleanup, over
  * an explicit member list. The impure orchestration shared by the
- * cull-list confirm loop (SessionContext.confirmStagedCulls) and the
+ * cull-list confirm loop (review/ReviewContext.confirmStagedCulls) and the
  * edited-copy "Cull original" affordance (Home) — every removal path runs
  * the same crash-safe lifecycle. 'skipped' means nothing could be
  * reserved (a live attempt already holds every given photo).
@@ -34,12 +34,11 @@ export interface TrashAttemptResult {
 export async function runTrashAttempt(
   db: SQLiteDatabase,
   members: readonly TrashMemberInput[],
-  launchedFromSessionId: number | null,
   options: PrepareTrashBatchOptions = {},
 ): Promise<TrashAttemptResult> {
   let batch;
   try {
-    batch = await prepareTrashBatch(db, members, launchedFromSessionId, Date.now(), options);
+    batch = await prepareTrashBatch(db, members, Date.now(), options);
   } catch (error) {
     // Nothing was reserved — a transient preparation failure is an
     // ordinary 'failed' result, never a rejection (callers alert and

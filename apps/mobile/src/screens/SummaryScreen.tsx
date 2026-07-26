@@ -5,8 +5,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
-import { useSession } from '../session/SessionContext';
-import { getFinishedSessionDays, getLifetimeStats, type LifetimeStats } from '../db/store';
+import {
+  getDaySummaries,
+  getLifetimeStats,
+  getReviewedDays,
+  type LifetimeStats,
+} from '../db/store';
 import { dayKey, streakStats } from '../lib/dates';
 import { BigButton } from '../components/BigButton';
 import { colors, touch, useTheme } from '../theme';
@@ -14,30 +18,44 @@ import { formatBytes } from '../lib/format';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Summary'>;
 
-/** End-of-session summary: the "done for today" moment. */
+/** Daily summary: the "done for today" moment (m0.8: day-based —
+ * decisions complete as you swipe; the gate-4 daily goal builds on it). */
 export function SummaryScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const db = useSQLiteContext();
-  const { session, label, reclaimedBytes, editFlagCount, finishSession, version } = useSession();
-  const [finishing, setFinishing] = useState(false);
   const [lifetime, setLifetime] = useState<
     (LifetimeStats & { currentStreak: number; longestStreak: number }) | null
   >(null);
+  const [today, setToday] = useState<{
+    reviewed: number;
+    done: number;
+    staged: number;
+    trashed: number;
+  } | null>(null);
 
-  // Streak + all-time reclaimed (m0.3 polish). This session isn't finished
-  // yet while the summary shows, so today counts as part of the streak.
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [days, totals] = await Promise.all([getFinishedSessionDays(db), getLifetimeStats(db)]);
+      const todayKey = dayKey(Date.now());
+      const [days, totals, summaries] = await Promise.all([
+        getReviewedDays(db),
+        getLifetimeStats(db),
+        getDaySummaries(db, todayKey),
+      ]);
       if (cancelled) return;
-      const today = dayKey(Date.now());
-      const streaks = streakStats([today, ...days], today);
+      const streaks = streakStats([todayKey, ...days], todayKey);
       setLifetime({
         ...totals,
         currentStreak: streaks.current,
         longestStreak: streaks.longest,
+      });
+      const day = summaries.get(todayKey);
+      setToday({
+        reviewed: (day?.done ?? 0) + (day?.toEdit ?? 0) + (day?.staged ?? 0),
+        done: day?.done ?? 0,
+        staged: day?.staged ?? 0,
+        trashed: day?.trashed ?? 0,
       });
     })();
     return () => {
@@ -45,29 +63,10 @@ export function SummaryScreen({ navigation }: Props) {
     };
   }, [db]);
 
-  const stats = useMemo(() => {
-    if (!session) return null;
-    const s = session.summary();
-    return {
-      total: s.total,
-      reviewed: s.total - s.unreviewed,
-      kept: s.kept,
-      trashed: s.trashed,
-      staged: s.culled,
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session, version]);
-
-  const done = useCallback(async () => {
-    if (finishing) return;
-    setFinishing(true);
-    try {
-      await finishSession();
-      navigation.popToTop();
-    } finally {
-      setFinishing(false);
-    }
-  }, [finishing, finishSession, navigation]);
+  const stats = today;
+  const done = useCallback(() => {
+    navigation.popToTop();
+  }, [navigation]);
 
   if (!stats) {
     return <View style={styles.root} />;
@@ -82,17 +81,14 @@ export function SummaryScreen({ navigation }: Props) {
         <MaterialCommunityIcons name="weather-sunset" size={30} color={theme.accent} />
         <Text style={styles.title}>Done for today</Text>
       </View>
-      <Text style={styles.subtitle}>{label}</Text>
+      <Text style={styles.subtitle}>{dayKey(Date.now())}</Text>
 
       <View style={styles.grid}>
-        <Stat value={String(stats.reviewed)} label="photos reviewed" />
-        <Stat value={String(stats.kept)} label="keepers" />
+        <Stat value={String(stats.reviewed)} label="reviewed today" />
+        <Stat value={String(stats.done)} label="keepers" />
+        <Stat value={String(stats.staged)} label="staged to cull" />
         <Stat value={String(stats.trashed)} label="culled to trash" />
-        <Stat value={formatBytes(reclaimedBytes)} label="storage reclaimed*" />
       </View>
-      <Text style={styles.footnote}>
-        *approximate — measured before the batch went to the system trash.
-      </Text>
       {lifetime && (
         <View style={styles.lifetimeCard}>
           <View style={styles.lifetimeTitleRow}>
@@ -112,25 +108,18 @@ export function SummaryScreen({ navigation }: Props) {
           </Text>
         </View>
       )}
-      {editFlagCount > 0 && (
-        <Text style={styles.editNote}>
-          {editFlagCount} keeper{editFlagCount === 1 ? '' : 's'} added to the edit queue — find them
-          on the Home screen.
-        </Text>
-      )}
       {stats.staged > 0 && (
         <Text style={styles.warning}>
-          {stats.staged} photo{stats.staged === 1 ? '' : 's'} still staged (delete was skipped).
-          They stay staged if you resume this session.
+          {stats.staged} photo{stats.staged === 1 ? '' : 's'} still staged (delete was skipped) —
+          they stay in the cull list until you confirm.
         </Text>
       )}
 
       <BigButton
-        label={finishing ? 'Wrapping up…' : 'Finish'}
+        label="Done"
         color={theme.accent}
         textColor={theme.onAccent}
-        disabled={finishing}
-        onPress={() => void done()}
+        onPress={done}
         style={styles.finishButton}
       />
     </ScrollView>

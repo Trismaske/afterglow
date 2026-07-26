@@ -12,7 +12,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
-import { useSession } from '../session/SessionContext';
+import { useReview } from '../review/ReviewContext';
 import { getSetting, setSetting } from '../db/store';
 import {
   COMPARE_AUTO_CULL_KEY,
@@ -59,17 +59,32 @@ export function CompareScreen({ navigation, route }: Props) {
   const db = useSQLiteContext();
   const { groupId, aId, bId, singles = false } = route.params;
   const {
-    session,
+    groups,
+    singles: singleRows,
     recordCompare,
     compareCull,
     markBest,
     needsEdit,
     toggleNeedsEdit,
-    decideSingle,
-    redecide,
+    decide,
     favouriteStatus,
     toggleFavourite,
-  } = useSession();
+  } = useReview();
+  const numericGroupId = groupId ? Number(groupId) : null;
+  const group = useMemo(
+    () =>
+      numericGroupId !== null ? (groups.find((g) => g.groupId === numericGroupId) ?? null) : null,
+    [groups, numericGroupId],
+  );
+  const itemLookup = useMemo(() => {
+    const map = new Map<string, { id: string; timestamp: number; uri: string }>();
+    for (const g of groups)
+      for (const m of g.members)
+        map.set(m.asset_id, { id: m.asset_id, timestamp: m.taken_at, uri: m.uri });
+    for (const m of singleRows)
+      map.set(m.asset_id, { id: m.asset_id, timestamp: m.taken_at, uri: m.uri });
+    return map;
+  }, [groups, singleRows]);
   const [busy, setBusy] = useState(false);
   const [showB, setShowB] = useState(false);
   const [autoCull, setAutoCull] = useState(false);
@@ -87,28 +102,24 @@ export function CompareScreen({ navigation, route }: Props) {
   }, [db]);
 
   const pair = useMemo(() => {
-    if (!session) return null;
-    try {
-      return { a: session.item(aId), b: session.item(bId) };
-    } catch {
-      return null;
-    }
-  }, [session, aId, bId]);
+    const a = itemLookup.get(aId);
+    const b = itemLookup.get(bId);
+    return a && b ? { a, b } : null;
+  }, [itemLookup, aId, bId]);
 
   // m0.5: group positions as labels (1-based over the deck's alive order,
   // frozen at mount — membership can't change while this screen is up).
   const groupInfo = useMemo(() => {
-    if (!session || !groupId || singles) return null;
-    try {
-      return session.groupInfo(groupId);
-    } catch {
-      return null;
-    }
-  }, [session, groupId, singles]);
+    if (!group || singles) return null;
+    return {
+      aliveIds: group.members.filter((m) => m.state === 'unreviewed').map((m) => m.asset_id),
+      memberIds: group.members.map((m) => m.asset_id),
+    };
+  }, [group, singles]);
   const posOf = useCallback(
     (id: string): string => {
-      if (singles && session) {
-        const index = session.toJSON().singleIds.indexOf(id);
+      if (singles) {
+        const index = singleRows.findIndex((m) => m.asset_id === id);
         return index >= 0 ? String(index + 1) : '?';
       }
       if (!groupInfo) return '?';
@@ -117,7 +128,7 @@ export function CompareScreen({ navigation, route }: Props) {
       const member = groupInfo.memberIds.indexOf(id);
       return member >= 0 ? String(member + 1) : '?';
     },
-    [groupInfo, session, singles],
+    [groupInfo, singleRows, singles],
   );
   const aliveCount = groupInfo?.aliveIds.length ?? 0;
 
@@ -237,36 +248,33 @@ export function CompareScreen({ navigation, route }: Props) {
   /** Star the winner + keep both, with the m0.5 visibility toast. */
   const betterKeepBoth = useCallback(
     async (winnerId: string, loserId: string) => {
-      if (!groupId) return;
-      await markBest(groupId, winnerId);
-      await recordCompare(winnerId, loserId);
+      if (numericGroupId === null) return;
+      await recordCompare(numericGroupId, winnerId, loserId);
       showToast(`Photo ${posOf(winnerId)} starred best of group — compare recorded`);
       navigation.goBack();
     },
-    [groupId, markBest, recordCompare, posOf, navigation],
+    [numericGroupId, recordCompare, posOf, navigation],
   );
 
   /** Star the winner + stage the two-photo-group loser. */
   const betterCullLoser = useCallback(
     async (winnerId: string, loserId: string) => {
-      if (!groupId) return;
-      await markBest(groupId, winnerId);
-      await compareCull(loserId, winnerId);
+      if (numericGroupId === null) return;
+      await markBest(numericGroupId, winnerId);
+      await compareCull(numericGroupId, loserId, winnerId);
       showToast(`Photo ${posOf(winnerId)} kept — photo ${posOf(loserId)} staged to cull`);
       navigation.goBack();
     },
-    [groupId, markBest, compareCull, posOf, navigation],
+    [numericGroupId, markBest, compareCull, posOf, navigation],
   );
 
   const decideBetter = useCallback(
     async (winnerId: string, loserId: string) => {
       if (busy) return;
-      if (singles && session) {
+      if (singles) {
         setBusy(true);
         try {
-          const state = session.getState(winnerId);
-          if (state === 'unreviewed') await decideSingle(winnerId, 'keep');
-          else if (state !== 'kept' || needsEdit(winnerId)) await redecide(winnerId, 'keep');
+          await decide(winnerId, 'keep');
           navigation.goBack();
         } finally {
           setBusy(false);
@@ -296,19 +304,7 @@ export function CompareScreen({ navigation, route }: Props) {
         setBusy(false);
       }
     },
-    [
-      aliveCount,
-      autoCull,
-      betterCullLoser,
-      betterKeepBoth,
-      busy,
-      decideSingle,
-      navigation,
-      needsEdit,
-      redecide,
-      session,
-      singles,
-    ],
+    [aliveCount, autoCull, betterCullLoser, betterKeepBoth, busy, decide, navigation, singles],
   );
 
   const resolveCullOffer = useCallback(
@@ -341,22 +337,20 @@ export function CompareScreen({ navigation, route }: Props) {
       if (busy) return;
       setBusy(true);
       try {
-        if (singles && session) {
-          const state = session.getState(loserId);
-          if (state === 'unreviewed') await decideSingle(loserId, 'cull');
-          else if (state !== 'culled') await redecide(loserId, 'cull');
-        } else {
-          await compareCull(loserId, winnerId);
+        if (singles) {
+          await decide(loserId, 'cull');
+        } else if (numericGroupId !== null) {
+          await compareCull(numericGroupId, loserId, winnerId);
         }
         navigation.goBack();
       } finally {
         setBusy(false);
       }
     },
-    [busy, compareCull, decideSingle, navigation, redecide, session, singles],
+    [busy, compareCull, decide, navigation, numericGroupId, singles],
   );
 
-  if (!session || !pair) {
+  if (!pair) {
     return <View style={styles.root} />;
   }
 

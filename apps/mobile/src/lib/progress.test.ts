@@ -24,7 +24,6 @@ function counts(partial: Partial<StateCounts>): StateCounts {
   const base: StateCounts = {
     unreviewedGrouped: 0,
     unreviewedSingle: 0,
-    kept: 0,
     toEdit: 0,
     staged: 0,
     trashed: 0,
@@ -36,7 +35,6 @@ function counts(partial: Partial<StateCounts>): StateCounts {
     merged.tracked =
       merged.unreviewedGrouped +
       merged.unreviewedSingle +
-      merged.kept +
       merged.toEdit +
       merged.staged +
       merged.trashed +
@@ -75,8 +73,8 @@ describe('computeBreakdown', () => {
 
 describe('remainingReviewable / donePct', () => {
   it('remaining excludes done and to_edit (both converged/handled)', () => {
-    const b = computeBreakdown(10, counts({ done: 4, toEdit: 2, kept: 1 }));
-    expect(remainingReviewable(b)).toBe(4); // 1 kept + 3 never-loaded
+    const b = computeBreakdown(10, counts({ done: 4, toEdit: 2 }));
+    expect(remainingReviewable(b)).toBe(4); // 4 never-loaded
   });
 
   it('remaining excludes staged culls — carried, never re-drawn (P4#1)', () => {
@@ -107,7 +105,6 @@ describe('classifyPhotoState', () => {
   });
 
   it('maps each stored state to its effective bucket', () => {
-    expect(classifyPhotoState({ state: 'kept', grouped: true })).toBe('kept');
     expect(classifyPhotoState({ state: 'to_edit', grouped: false })).toBe('to_edit');
     expect(classifyPhotoState({ state: 'culled', grouped: true })).toBe('staged');
     expect(classifyPhotoState({ state: 'confirmed', grouped: false })).toBe('staged');
@@ -117,32 +114,22 @@ describe('classifyPhotoState', () => {
 });
 
 describe('editorActions', () => {
-  it('kept can go to done or the edit queue', () => {
-    expect(editorActions('kept', false)).toEqual(['mark_done', 'queue_edit']);
-  });
-
   it('to_edit can only converge to done', () => {
-    expect(editorActions('to_edit', false)).toEqual(['mark_done']);
+    expect(editorActions('to_edit')).toEqual(['mark_done']);
   });
 
   it('done can be sent back to the edit queue', () => {
-    expect(editorActions('done', false)).toEqual(['queue_edit']);
+    expect(editorActions('done')).toEqual(['queue_edit']);
   });
 
   it('a staged cull can be un-culled', () => {
-    expect(editorActions('culled', false)).toEqual(['unstage_cull']);
+    expect(editorActions('culled')).toEqual(['unstage_cull']);
   });
 
   it('unreviewed, untracked, trashed and confirmed are read-only', () => {
-    expect(editorActions('unreviewed', false)).toEqual([]);
-    expect(editorActions(null, false)).toEqual([]);
-    expect(editorActions('trashed', false)).toEqual([]);
-    expect(editorActions('confirmed', false)).toEqual([]);
-  });
-
-  it('anything in the active session is read-only', () => {
-    expect(editorActions('kept', true)).toEqual([]);
-    expect(editorActions('culled', true)).toEqual([]);
-    expect(editorActions('to_edit', true)).toEqual([]);
+    expect(editorActions('unreviewed')).toEqual([]);
+    expect(editorActions(null)).toEqual([]);
+    expect(editorActions('trashed')).toEqual([]);
+    expect(editorActions('confirmed')).toEqual([]);
   });
 });

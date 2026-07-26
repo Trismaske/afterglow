@@ -39,7 +39,7 @@ function insertPhoto(d: TestDb, assetId: string): void {
 }
 
 describe('fresh baseline', () => {
-  it('creates the full v8 schema at SCHEMA_VERSION with clean FKs', async () => {
+  it('creates the full baseline schema at SCHEMA_VERSION with clean FKs', async () => {
     const d = await fresh();
     expect(userVersion(d)).toBe(SCHEMA_VERSION);
     const tables = d.raw
@@ -49,7 +49,6 @@ describe('fresh baseline', () => {
     for (const t of [
       'photos',
       'duels',
-      'sessions',
       'settings',
       'photo_hashes',
       'grouping_runs',
@@ -133,29 +132,6 @@ describe('schema invariants', () => {
     ).toThrow(/UNIQUE|PRIMARY/);
   });
 
-  it('allows exactly one active session', async () => {
-    const d = await fresh();
-    d.raw
-      .prepare(
-        "INSERT INTO sessions (label, range_start, range_end, snapshot, created_at) VALUES ('a', 0, 1, '{}', ?)",
-      )
-      .run(AT);
-    expect(() =>
-      d.raw
-        .prepare(
-          "INSERT INTO sessions (label, range_start, range_end, snapshot, created_at) VALUES ('b', 0, 1, '{}', ?)",
-        )
-        .run(AT),
-    ).toThrow(/UNIQUE/);
-    // Completing the first allows the next.
-    d.raw.prepare('UPDATE sessions SET completed_at = ? WHERE completed_at IS NULL').run(AT);
-    d.raw
-      .prepare(
-        "INSERT INTO sessions (label, range_start, range_end, snapshot, created_at) VALUES ('b', 0, 1, '{}', ?)",
-      )
-      .run(AT);
-  });
-
   it('permits one absence-terminal trash outcome per generation, retries and re-trash allowed', async () => {
     const d = await fresh();
     insertPhoto(d, 'p9');
@@ -175,11 +151,16 @@ describe('schema invariants', () => {
     d.raw.prepare("INSERT INTO trash_batch_members VALUES (3, 'p9', 1, 10, 'trashed')").run();
   });
 
-  it('enforces one grouping assignment per photo and group-belongs-to-run', async () => {
+  it('enforces one grouping assignment per photo and ONE continuous run', async () => {
     const d = await fresh();
     insertPhoto(d, 'p1');
-    d.raw.prepare('INSERT INTO grouping_runs (session_id, created_at) VALUES (NULL, ?)').run(AT);
-    d.raw.prepare('INSERT INTO grouping_runs (session_id, created_at) VALUES (NULL, ?)').run(AT);
+    d.raw
+      .prepare("INSERT INTO grouping_runs (provenance, created_at) VALUES ('continuous', ?)")
+      .run(AT);
+    // The schema allows exactly one scan-owned run (m0.8: sessions gone).
+    expect(() =>
+      d.raw.prepare('INSERT INTO grouping_runs (created_at) VALUES (?)').run(AT),
+    ).toThrow(/UNIQUE/);
     d.raw.prepare('INSERT INTO photo_groups (run_id) VALUES (1)').run();
     d.raw
       .prepare(
@@ -194,21 +175,14 @@ describe('schema invariants', () => {
         )
         .run(),
     ).toThrow(/UNIQUE|PRIMARY/);
-    // An assignment pointing at a group from a DIFFERENT run: impossible.
-    insertPhoto(d, 'p2');
-    expect(() =>
-      d.raw
-        .prepare(
-          "INSERT INTO photo_group_assignments (photo_id, run_id, group_id) VALUES ('p2', 2, 1)",
-        )
-        .run(),
-    ).toThrow(/FOREIGN KEY/);
   });
 
   it('best-of-group must be an assigned member (deferred composite FK)', async () => {
     const d = await fresh();
     insertPhoto(d, 'p1');
-    d.raw.prepare('INSERT INTO grouping_runs (session_id, created_at) VALUES (NULL, ?)').run(AT);
+    d.raw
+      .prepare("INSERT INTO grouping_runs (provenance, created_at) VALUES ('continuous', ?)")
+      .run(AT);
     d.raw.exec('BEGIN');
     d.raw.prepare('INSERT INTO photo_groups (run_id, best_photo_id) VALUES (1, ?)').run('p1');
     d.raw

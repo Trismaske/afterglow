@@ -16,47 +16,35 @@ import { useSQLiteContext } from 'expo-sqlite';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import * as MediaLibrary from 'expo-media-library';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { RootStackParamList } from '../navigation';
+import type { MainTabScreenProps } from '../navigation';
 import { countShareQueue } from '../db/shareStore';
 import { countOrganizeQueue } from '../db/organizeStore';
-import { customRange, labelForDayKey, recentDayKeys, rangeOfDayKey } from '../lib/dates';
-import { allTimeUnlocked, remainingToReview, rollingRange } from '../lib/scopes';
-import {
-  addCustomScope,
-  enabledScopes,
-  newCustomScopeId,
-  parseScopeConfig,
-  REVIEW_SCOPES_KEY,
-  serializeScopeConfig,
-  storedScopeRange,
-  type ScopeConfig,
-} from '../lib/scopeStore';
+import { dayKey, labelForDayKey, recentDayKeys, rangeOfDayKey } from '../lib/dates';
+import { DAILY_GOAL_KEY, goalProgress, goalStreaks, parseDailyGoal } from '../lib/dailyGoal';
 import { countPhotosByDayInRange, countPhotosInRange } from '../lib/media';
 import { resolveSources } from '../lib/sourceCatalog';
-import { getSessionPrefs, loadReviewablePhotos, pendingBankIdsFor } from '../lib/reviewLoader';
-import { DEFAULT_SESSION_PREFS, type SessionPrefs } from '../lib/sessionPrefs';
 import {
   countFavouriteQueue,
-  countKeptInScopeAmong,
   countStagedCulls,
   countToEdit,
+  getCorpusStats,
   getDaySummaries,
+  getReviewedCountsByDay,
   getSetting,
-  getStateCountsInScope,
   markEditDone,
-  setSetting,
   unstageCullDirect,
 } from '../db/store';
 import { runTrashAttempt } from '../lib/trashFlow';
 import { fileSize } from '../lib/hash';
 import { runEditDetection, type DetectedCopy } from '../lib/detect';
-import { startContinuousScan } from '../scan/scanRunner';
-import { useSession } from '../session/SessionContext';
+import { getScanStatus, startContinuousScan, subscribeScanStatus } from '../scan/scanRunner';
+import { GoalRing } from '../components/GoalRing';
+import { useReview } from '../review/ReviewContext';
 import { BigButton } from '../components/BigButton';
 import { StateProgressBar } from '../components/StateProgressBar';
 import { colors, touch, useTheme } from '../theme';
 
-type Props = NativeStackScreenProps<RootStackParamList, 'Home'>;
+type Props = MainTabScreenProps<'Home'>;
 
 const RECENT_DAYS = 7;
 
@@ -71,46 +59,25 @@ interface DayRow {
   staged: number;
 }
 
-/** Cheap scope counts (m0.3.1) — no asset lists, just totals. */
-interface ScopeCounts {
-  /** MediaStore total minus already-handled rows, clamped at 0. */
-  remaining: number;
-  /** DB rows in range already converged (to_edit/done, still in MediaStore). */
-  handled: number;
-  /** Fully done for the headline: done + trashed rows (m0.4). */
-  doneTotal: number;
-  /** The scope's true total: MediaStore + trashed rows (they left MediaStore). */
-  grandTotal: number;
-}
-
 export function HomeScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const db = useSQLiteContext();
   const theme = useTheme();
-  const sessionCtx = useSession();
+  const review = useReview();
   const [permission, requestPermission] = MediaLibrary.usePermissions({
     granularPermissions: ['photo'],
   });
 
-  /** Selected scope id from the store-backed config; 'custom' = picker chip. */
-  const [scope, setScope] = useState<string>('day1');
-  const [scopeConfig, setScopeConfig] = useState<ScopeConfig | null>(null);
-  const [sessionPrefs, setSessionPrefs] = useState<SessionPrefs>(DEFAULT_SESSION_PREFS);
-  const [customFrom, setCustomFrom] = useState<Date>(new Date());
-  const [customTo, setCustomTo] = useState<Date>(new Date());
-  const [customName, setCustomName] = useState('');
-  const [pickerFor, setPickerFor] = useState<'from' | 'to' | null>(null);
-  const [countsLoading, setCountsLoading] = useState(false);
-  const [counts, setCounts] = useState<ScopeCounts | null>(null);
-  /** null = not yet checked; the All-time chip stays disabled until true. */
-  const [allTimeReady, setAllTimeReady] = useState<boolean | null>(null);
-  const [hasResumable, setHasResumable] = useState(false);
-  /** The focus-time resume attempt settled — edit detection may run. */
-  const [resumeAttempted, setResumeAttempted] = useState(false);
-  const [starting, setStarting] = useState(false);
-  /** Perceptual-hash progress while a session is being built (m0.4). */
-  const [analyzing, setAnalyzing] = useState<{ done: number; total: number } | null>(null);
   const [editCount, setEditCount] = useState(0);
+  const [scan, setScan] = useState(getScanStatus());
+  const [goal, setGoal] = useState(50);
+  const [reviewedToday, setReviewedToday] = useState(0);
+  const [streaks, setStreaks] = useState({ current: 0, longest: 0 });
+  const [corpus, setCorpus] = useState<{
+    total: number;
+    groupsFound: number;
+    reviewed: number;
+  } | null>(null);
   const [stagedCullCount, setStagedCullCount] = useState(0);
   const [shareCount, setShareCount] = useState(0);
   const [organizeCount, setOrganizeCount] = useState(0);
@@ -121,19 +88,6 @@ export function HomeScreen({ navigation }: Props) {
   const [refreshTick, setRefreshTick] = useState(0);
   const lastDetectionRef = useRef(0);
 
-  /**
-   * The selected scope's range, computed at call time: rolling windows
-   * end at "now" (not calendar-aligned — see scopes.ts); named custom
-   * scopes are fixed ranges (scopeStore.ts).
-   */
-  const rangeFor = useCallback(
-    (id: string) => {
-      const def = id === 'custom' ? undefined : scopeConfig?.scopes.find((s) => s.id === id);
-      return def ? storedScopeRange(def, Date.now()) : customRange(customFrom, customTo);
-    },
-    [customFrom, customTo, scopeConfig],
-  );
-
   // m0.8 gate 2: kick the continuous scan once media permission is in.
   // Fire-and-forget — the runner is single-flight, per-photo persistent,
   // and reports through its own status store (gate 4 puts it on Home).
@@ -142,49 +96,38 @@ export function HomeScreen({ navigation }: Props) {
     void startContinuousScan(db);
   }, [db, permission?.granted]);
 
-  // Store-backed scope chips + session prefs (m0.5), refreshed on focus
-  // (Settings may have changed either). An invalid selection (scope
-  // disabled/deleted meanwhile) falls back to the first enabled chip.
+  useEffect(() => subscribeScanStatus(setScan), []);
+
+  // Daily goal + streaks + live corpus stats (gate 4): refresh on focus,
+  // on review mutations, and as scan windows land.
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
-      (async () => {
-        const [rawScopes, prefs] = await Promise.all([
-          getSetting(db, REVIEW_SCOPES_KEY),
-          getSessionPrefs(db),
+      void (async () => {
+        const today = dayKey(Date.now());
+        const since = recentDayKeys(120)[119] ?? today;
+        const [rawGoal, reviewedByDay, stats, total] = await Promise.all([
+          getSetting(db, DAILY_GOAL_KEY),
+          getReviewedCountsByDay(db, since),
+          getCorpusStats(db),
+          permission?.granted ? countPhotosInRange(0, Date.now()).catch(() => 0) : 0,
         ]);
         if (cancelled) return;
-        const config = parseScopeConfig(rawScopes);
-        setScopeConfig(config);
-        setSessionPrefs(prefs);
-        setScope((current) => {
-          if (current === 'custom') return current;
-          const stillThere = enabledScopes(config).some((s) => s.id === current);
-          return stillThere ? current : (enabledScopes(config)[0]?.id ?? 'custom');
-        });
+        const currentGoal = parseDailyGoal(rawGoal);
+        setGoal(currentGoal);
+        setReviewedToday(reviewedByDay.get(today) ?? 0);
+        const keys = [...recentDayKeys(120)].reverse();
+        setStreaks(goalStreaks(reviewedByDay, keys, currentGoal));
+        setCorpus({ total, groupsFound: stats.groupsFound, reviewed: stats.reviewed });
       })();
       return () => {
         cancelled = true;
       };
-    }, [db]),
+      // review.version / scan.windowsGrouped / refreshTick are deliberate
+      // refresh triggers, not values the loader reads.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [db, permission?.granted, review.version, scan.windowsGrouped, refreshTick]),
   );
-
-  /** Persist a named scope from the current custom range (m0.5). */
-  const saveCustomScope = useCallback(() => {
-    if (!scopeConfig || customName.trim() === '') return;
-    const range = customRange(customFrom, customTo);
-    const id = newCustomScopeId(Date.now());
-    const next = addCustomScope(scopeConfig, {
-      id,
-      label: customName.trim(),
-      startMs: range.startMs,
-      endMs: range.endMs,
-    });
-    setScopeConfig(next);
-    setCustomName('');
-    setScope(id);
-    void setSetting(db, REVIEW_SCOPES_KEY, serializeScopeConfig(next));
-  }, [scopeConfig, customName, customFrom, customTo, db]);
 
   /** Keep-or-cull prompts for detected edited copies, one at a time. */
   const promptForCopies = useCallback(
@@ -219,32 +162,19 @@ export function HomeScreen({ navigation }: Props) {
                 const attempt = await runTrashAttempt(
                   db,
                   [{ photoId: head.originalAssetId, measuredBytes: fileSize(photo?.uri ?? '') }],
-                  null,
                   { stageToEditMembers: true },
                 );
                 if (attempt.trashedIds.includes(head.originalAssetId)) {
                   // The verified removal already resolved the durable
-                  // match (applyRemovalCleanup, C#12); if the original
-                  // belongs to the unfinished session, the live snapshot
-                  // converges too (a kept member leaves its deck; a
-                  // later re-decision cannot resurrect it).
-                  await sessionCtx.reconcileTrashed(attempt.trashedIds);
+                  // match (applyRemovalCleanup, C#12); durable rows are
+                  // the display truth — screens re-read on focus.
+                  await review.refresh().catch(() => {});
                 } else if (attempt.status === 'applied' || attempt.unknownIds.length > 0) {
                   // Verification inconclusive (applied dialog, or a
                   // failed attempt whose fallback release couldn't
                   // verify) — the photo MAY be in system trash, so it
                   // conservatively stays staged in the durable cull list
                   // (the vetted fallback); the next confirm re-verifies.
-                  // When the original belongs to the live session, the
-                  // snapshot mirrors the staging (kept → culled) so the
-                  // deck and cull list agree.
-                  try {
-                    if (sessionCtx.session?.getState(head.originalAssetId) === 'kept') {
-                      await sessionCtx.redecide(head.originalAssetId, 'cull');
-                    }
-                  } catch {
-                    // not a session member
-                  }
                   Alert.alert(
                     'Could not verify the move',
                     'The photo stays staged in the cull list until the move can be verified.',
@@ -275,81 +205,28 @@ export function HomeScreen({ navigation }: Props) {
             onPress: () =>
               void (async () => {
                 // markEditDone converges the original AND resolves its
-                // live match in one transaction (C#12). Flush first so no
-                // older queued needs-edit intent lands after and re-queues
-                // the completed row.
-                await sessionCtx.flushPersistence();
+                // live match in one transaction (C#12).
                 await markEditDone(db, head.originalAssetId);
-                // The original may belong to the unfinished session —
-                // clear the LIVE edit flag too, or Groups/Summary keep
-                // counting it and its stale to_edit verdict could later
-                // overwrite the durable done.
-                sessionCtx.reconcileEditsDone([head.originalAssetId]);
+                await review.refresh().catch(() => {});
                 next();
               })(),
           },
         ],
       );
     },
-    [db, sessionCtx],
+    [db, review],
   );
 
-  // Is there a persisted session to resume? (session may not be loaded
-  // yet). Deps are the VERSION VALUE only — depending on context/callback
-  // identities would re-run this on the restoring/hasResumable renders a
-  // resume itself produces, spinning repeated resume attempts.
+  // m0.3 edit detection — app open / return to Home, throttled.
   useFocusEffect(
     useCallback(() => {
-      let cancelled = false;
-      (async () => {
-        if (sessionCtx.session) {
-          setHasResumable(true);
-          setResumeAttempted(true);
-          return;
-        }
-        setResumeAttempted(false); // a (re)attempt is starting — hold detection
-        // Also runs the once-per-process interrupted-trash recovery
-        // before restoring any snapshot (P8#3).
-        const resumed = await sessionCtx.resumeSession();
-        if (cancelled) return;
-        setHasResumable(resumed);
-        setResumeAttempted(true);
-      })();
-      return () => {
-        cancelled = true;
-      };
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [sessionCtx.version]),
-  );
-
-  // m0.3 edit detection — app open / return to Home, throttled. Gated on
-  // resumeAttempted: it must not run while resumeSession is between its
-  // durable reads and installing the session (a mark-done landing there
-  // could be overwritten by the stale needs-edit set), and a successful
-  // resume flips it via a fresh render, so this closure's sessionCtx has
-  // the loaded session before any copy prompt can act through it.
-  useFocusEffect(
-    useCallback(() => {
-      // restoring stays true across RETRYABLE resume failures — detection
-      // must also wait for an authoritative outcome, or an edited-copy
-      // prompt could stage/trash a photo whose membership is unknown.
-      if (!resumeAttempted || sessionCtx.restoring || !permission?.granted) return;
+      if (!permission?.granted) return;
       const now = Date.now();
       if (now - lastDetectionRef.current < 60_000) return;
       lastDetectionRef.current = now;
       let cancelled = false;
       (async () => {
-        // Land every queued session write before detection marks
-        // anything done — an older needs-edit intent executing after a
-        // completion would re-queue the done row.
-        await sessionCtx.flushPersistence();
-        // Reconcile incrementally (right after each durable mark-done
-        // commit): a later detection failure or an effect re-run must
-        // not strand a stale live To-Edit flag. Notices are cosmetic,
-        // so they need no cancellation guard.
-        const result = await runEditDetection(db, (id) =>
-          sessionCtx.reconcileEditsDone([id]),
-        ).catch(() => null);
+        const result = await runEditDetection(db).catch(() => null);
         if (!result) return;
         if (result.autoDoneIds.length > 0) {
           setDetectionNotice(
@@ -369,7 +246,7 @@ export function HomeScreen({ navigation }: Props) {
       return () => {
         cancelled = true;
       };
-    }, [resumeAttempted, db, permission?.granted, promptForCopies, sessionCtx]),
+    }, [db, permission?.granted, promptForCopies]),
   );
 
   // Edit-queue badge + recent-days progress, refreshed on focus. Both
@@ -435,180 +312,15 @@ export function HomeScreen({ navigation }: Props) {
     }, [db, permission?.granted, refreshTick]),
   );
 
-  // Cheap scope counts + the All-time gate, on focus and scope change.
-  // No asset lists are loaded here — MediaStore totalCount queries plus
-  // one DB aggregate per range (m0.3.1); the exact reviewable set is
-  // paged in only when a session starts.
-  useFocusEffect(
-    useCallback(() => {
-      if (!permission?.granted || scopeConfig === null) return;
-      let cancelled = false;
-      setCountsLoading(true);
-      (async () => {
-        try {
-          const src = await resolveSources(db);
-          if (cancelled) return;
-
-          const range = rangeFor(scope);
-          const [msCount, sc] = await Promise.all([
-            countPhotosInRange(range.startMs, range.endMs, src.albumIds),
-            getStateCountsInScope(db, { startMs: range.startMs, endMs: range.endMs }, src.roots),
-          ]);
-          // "Handled" = rows a new draw will NOT present: to_edit + done
-          // (converged, still in MediaStore; trashed rows left it —
-          // m0.3.1 accounting), staged culls (CARRIED in the durable
-          // global cull queue, never re-drawn) and the ACTIVE session's
-          // pending-bank keepers only — kept rows from an
-          // abandoned/discarded session are deliberately re-reviewable
-          // (m0.3.1) and stay in the count. Without the carried terms, a
-          // scope holding only carried decisions shows a positive count
-          // whose Start review is a permanent no-op.
-          const pendingBank = [...(await pendingBankIdsFor(sessionCtx.session, db))];
-          const keptPending = await countKeptInScopeAmong(
-            db,
-            { startMs: range.startMs, endMs: range.endMs },
-            src.roots,
-            pendingBank,
-          );
-          const handled = sc.toEdit + sc.done + sc.staged + keptPending;
-
-          // All-time gate: ranges nest, so a clear last-year means only
-          // the older backlog is left — that's when All time unlocks.
-          const year = rollingRange('year1', Date.now());
-          const [msYear, scYear, keptPendingYear] = await Promise.all([
-            countPhotosInRange(year.startMs, year.endMs, src.albumIds),
-            getStateCountsInScope(db, { startMs: year.startMs, endMs: year.endMs }, src.roots),
-            countKeptInScopeAmong(
-              db,
-              { startMs: year.startMs, endMs: year.endMs },
-              src.roots,
-              pendingBank,
-            ),
-          ]);
-          if (cancelled) return;
-          const unlocked = allTimeUnlocked(
-            remainingToReview(
-              msYear,
-              scYear.toEdit + scYear.done + scYear.staged + keptPendingYear,
-            ),
-          );
-          setAllTimeReady(unlocked);
-          if (scope === 'all' && !unlocked) {
-            // New photos re-locked the gate while it was selected.
-            setScope('year1');
-            return; // effect re-runs with the new scope
-          }
-          setCounts({
-            remaining: remainingToReview(msCount, handled),
-            handled: Math.min(handled, msCount),
-            doneTotal: sc.done + sc.trashed,
-            grandTotal: msCount + sc.trashed,
-          });
-        } catch {
-          if (!cancelled) setCounts({ remaining: 0, handled: 0, doneTotal: 0, grandTotal: 0 });
-        } finally {
-          if (!cancelled) setCountsLoading(false);
-        }
-      })();
-      return () => {
-        cancelled = true;
-      };
-      // refreshTick re-runs this after edit detection changes states.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [db, permission?.granted, scope, scopeConfig, rangeFor, refreshTick]),
-  );
-
-  const onPickerChange = useCallback(
-    (event: DateTimePickerEvent, date?: Date) => {
-      const which = pickerFor;
-      setPickerFor(null);
-      if (event.type !== 'set' || !date || !which) return;
-      if (which === 'from') setCustomFrom(date);
-      else setCustomTo(date);
-    },
-    [pickerFor],
-  );
-
-  const startReview = useCallback(async () => {
-    if (!counts || counts.remaining === 0 || starting) return;
-    const begin = async () => {
-      setStarting(true);
-      try {
-        // Every queued decision write must land BEFORE the loader reads
-        // photo rows — a staged cull from moments ago would otherwise be
-        // re-drawn from its stale 'unreviewed' row.
-        await sessionCtx.flushPersistence();
-        // m0.5/m0.7: the loader treats the active session's keepers as
-        // handled WITHOUT mutating them — banking to done happens only
-        // inside the atomic replacement (replaceActiveSession), so an
-        // aborted start (empty load, hash failure) leaves the old
-        // session and its snapshot fully consistent. The in-memory
-        // session is the source when present (ahead of queued writes).
-        const pendingBank = await pendingBankIdsFor(sessionCtx.session, db);
-        // Recompute the range and load the actual photos now — paged,
-        // state-filtered, capped per the Sessions settings
-        // (reviewLoader.ts) so huge scopes can't blow up memory.
-        const range = rangeFor(scope);
-        const src = await resolveSources(db);
-        const prefs = await getSessionPrefs(db);
-        const { reviewable } = await loadReviewablePhotos(
-          db,
-          range.startMs,
-          range.endMs,
-          src.albumIds,
-          prefs,
-          pendingBank,
-        );
-        if (reviewable.length === 0) {
-          setRefreshTick((t) => t + 1); // counts were stale — refresh them
-          return;
-        }
-        await sessionCtx.startSession(
-          range.label,
-          range.startMs,
-          range.endMs,
-          reviewable,
-          (done, total) => setAnalyzing({ done, total }),
-        );
-        navigation.navigate('Groups');
-      } catch (error) {
-        // e.g. startup recovery hasn't succeeded yet — nothing was
-        // replaced; retry is safe.
-        Alert.alert(
-          'Could not start the session',
-          error instanceof Error ? error.message : String(error),
-        );
-      } finally {
-        setStarting(false);
-        setAnalyzing(null);
-      }
-    };
-    // m0.7 item H (#1): replacement is SILENT — the carry policy means
-    // nothing is ever lost (keepers bank, staged culls stay in the durable
-    // global cull queue, and re-drawn photos keep their verdicts). The
-    // unfinished-session card's "Resume review" button remains the
-    // continue path, so no confirmation stands between the user and a
-    // fresh session.
-    await begin();
-  }, [counts, starting, sessionCtx, scope, rangeFor, db, navigation]);
-
   const openProgress = useCallback(() => {
-    // Compute the rolling range at tap time — same convention as reviews.
-    const range = rangeFor(scope);
     navigation.navigate('Progress', {
-      label: range.label,
-      startMs: range.startMs,
-      endMs: range.endMs,
+      label: 'All photos',
+      startMs: 0,
+      endMs: Date.now(),
     });
-  }, [navigation, rangeFor, scope]);
+  }, [navigation]);
 
-  const scopeLabel = rangeFor(scope).label;
-  const capApplies = counts !== null && counts.remaining > sessionPrefs.cap;
-  const drawWord = sessionPrefs.order === 'oldest' ? 'oldest' : 'newest';
-  const donePctValue =
-    counts && counts.grandTotal > 0
-      ? Math.round((counts.doneTotal / counts.grandTotal) * 100)
-      : null;
+  const queueTotal = review.queueCounts.grouped + review.queueCounts.singles;
 
   return (
     <ScrollView
@@ -619,18 +331,27 @@ export function HomeScreen({ navigation }: Props) {
       ]}
     >
       <View style={styles.titleRow}>
-        <Text style={styles.title}>Afterglow Companion</Text>
-        <Pressable
-          style={styles.gearButton}
-          hitSlop={8}
-          accessibilityLabel="Settings"
-          onPress={() => navigation.navigate('Settings')}
-        >
-          {/* m0.6: Material gear — the m0.5 emoji read as out of place. */}
-          <MaterialCommunityIcons name="cog-outline" size={24} color={colors.textDim} />
-        </Pressable>
+        <Text style={styles.title}>Afterglow</Text>
+        <View style={styles.titleActions}>
+          <Pressable
+            style={styles.gearButton}
+            hitSlop={8}
+            accessibilityLabel="History"
+            onPress={() => navigation.navigate('History')}
+          >
+            <MaterialCommunityIcons name="history" size={24} color={colors.textDim} />
+          </Pressable>
+          <Pressable
+            style={styles.gearButton}
+            hitSlop={8}
+            accessibilityLabel="Settings"
+            onPress={() => navigation.navigate('Settings')}
+          >
+            {/* m0.6: Material gear — the m0.5 emoji read as out of place. */}
+            <MaterialCommunityIcons name="cog-outline" size={24} color={colors.textDim} />
+          </Pressable>
+        </View>
       </View>
-      <Text style={styles.subtitle}>Clear your photos down to the keepers.</Text>
 
       {detectionNotice && (
         <Pressable style={styles.notice} onPress={() => setDetectionNotice(null)}>
@@ -658,25 +379,58 @@ export function HomeScreen({ navigation }: Props) {
         </View>
       )}
 
-      {hasResumable && sessionCtx.session && (
+      {permission?.granted && (
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Unfinished session — {sessionCtx.label}</Text>
-          <Text style={styles.cardText}>
-            {(() => {
-              const s = sessionCtx.session.summary();
-              return `${s.total - s.unreviewed} of ${s.total} photos reviewed`;
-            })()}
-          </Text>
+          <View style={styles.goalRow}>
+            <GoalRing
+              size={132}
+              strokeWidth={12}
+              progress={goalProgress(reviewedToday, goal)}
+              color={reviewedToday >= goal ? colors.keep : theme.accent}
+              centerTitle={`${reviewedToday}`}
+              centerSubtitle={`of ${goal} today`}
+            />
+            <View style={styles.goalBody}>
+              <Text style={styles.cardTitle}>
+                {reviewedToday >= goal ? 'Daily goal reached 🎉' : 'Daily goal'}
+              </Text>
+              <Text style={styles.cardText}>
+                {queueTotal === 0
+                  ? 'Everything reviewed — new photos join the queue as they are found.'
+                  : `${queueTotal} photo${queueTotal === 1 ? '' : 's'} waiting · ` +
+                    `${review.queueCounts.grouped} in groups · ${review.queueCounts.singles} singles`}
+              </Text>
+              {streaks.current > 0 && (
+                <Text style={styles.streakText}>
+                  🔥 {streaks.current}-day streak
+                  {streaks.longest > streaks.current ? ` · longest ${streaks.longest}` : ''}
+                </Text>
+              )}
+            </View>
+          </View>
           <BigButton
-            label="Resume review"
-            color={theme.accent}
-            textColor={theme.onAccent}
+            label={queueTotal === 0 ? 'All reviewed' : 'Continue reviewing'}
+            color={colors.keep}
+            disabled={queueTotal === 0}
             onPress={() => navigation.navigate('Groups')}
           />
+          <Text style={styles.scanStatus}>
+            {scan.phase === 'scanning'
+              ? `Scanning photos… ${scan.scanned} seen · ${scan.embedded} analyzed · ${scan.windowsGrouped} groups formed`
+              : scan.phase === 'error'
+                ? 'Photo scan hit a problem — it will retry on next launch.'
+                : corpus
+                  ? `${corpus.total} photos · ${corpus.groupsFound} groups found · ` +
+                    `${corpus.total > 0 ? Math.min(100, Math.round((corpus.reviewed / corpus.total) * 100)) : 0}% reviewed`
+                  : 'Preparing scan…'}
+          </Text>
         </View>
       )}
 
-      <Pressable style={styles.editQueueRow} onPress={() => navigation.navigate('EditQueue')}>
+      <Pressable
+        style={styles.editQueueRow}
+        onPress={() => navigation.navigate('Main', { screen: 'EditQueue' })}
+      >
         <MaterialCommunityIcons name="pencil" size={22} color={colors.edit} />
         <View style={styles.editQueueBody}>
           <Text style={styles.editQueueTitle}>Edit queue</Text>
@@ -696,7 +450,7 @@ export function HomeScreen({ navigation }: Props) {
       {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
         <Pressable
           style={styles.editQueueRow}
-          onPress={() => navigation.navigate('FavouritesQueue')}
+          onPress={() => navigation.navigate('Main', { screen: 'FavouritesQueue' })}
         >
           <MaterialCommunityIcons name="heart" size={22} color={colors.fav} />
           <View style={styles.editQueueBody}>
@@ -715,7 +469,10 @@ export function HomeScreen({ navigation }: Props) {
         </Pressable>
       )}
 
-      <Pressable style={styles.editQueueRow} onPress={() => navigation.navigate('ShareQueue')}>
+      <Pressable
+        style={styles.editQueueRow}
+        onPress={() => navigation.navigate('Main', { screen: 'ShareQueue' })}
+      >
         <MaterialCommunityIcons name="share-variant" size={22} color={colors.edit} />
         <View style={styles.editQueueBody}>
           <Text style={styles.editQueueTitle}>Share queue</Text>
@@ -733,7 +490,10 @@ export function HomeScreen({ navigation }: Props) {
       </Pressable>
 
       {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
-        <Pressable style={styles.editQueueRow} onPress={() => navigation.navigate('OrganizeQueue')}>
+        <Pressable
+          style={styles.editQueueRow}
+          onPress={() => navigation.navigate('Main', { screen: 'OrganizeQueue' })}
+        >
           <MaterialCommunityIcons name="folder-move" size={22} color={colors.textDim} />
           <View style={styles.editQueueBody}>
             <Text style={styles.editQueueTitle}>Organize queue</Text>
@@ -772,169 +532,15 @@ export function HomeScreen({ navigation }: Props) {
         </Pressable>
       )}
 
-      <Pressable style={styles.editQueueRow} onPress={() => navigation.navigate('History')}>
-        <MaterialCommunityIcons name="history" size={22} color={colors.textDim} />
-        <View style={styles.editQueueBody}>
-          <Text style={styles.editQueueTitle}>History</Text>
-          <Text style={styles.editQueueHint}>Past decisions on photos still present</Text>
-        </View>
-      </Pressable>
-
-      <Text style={styles.sectionLabel}>Review scope</Text>
-      <View style={styles.scopeWrap}>
-        {[
-          ...(scopeConfig ? enabledScopes(scopeConfig) : []),
-          { id: 'custom', label: 'Custom', kind: 'picker' as const },
-        ].map((def) => {
-          const disabled = def.id === 'all' && allTimeReady !== true;
-          const active = scope === def.id;
-          return (
-            <Pressable
-              key={def.id}
-              disabled={disabled}
-              onPress={() => setScope(def.id)}
-              style={[
-                styles.scopeChip,
-                active && { backgroundColor: theme.accent, borderColor: theme.accent },
-                disabled && styles.scopeChipDisabled,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.scopeChipText,
-                  active && { color: theme.onAccent },
-                  disabled && styles.scopeChipTextDisabled,
-                ]}
-              >
-                {def.label}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
-      {/* Only while the gated chip is actually on screen (and Last year is
-          around to be finished) — a disabled scope shouldn't advertise. */}
-      {permission?.granted &&
-        allTimeReady === false &&
-        scopeConfig &&
-        ['all', 'year1'].every((id) => enabledScopes(scopeConfig).some((s) => s.id === id)) && (
-          <Text style={styles.gateHint}>
-            All time unlocks when nothing is left to review in the last year — finish the last year
-            first.
-          </Text>
-        )}
-
-      {scope === 'custom' && (
-        <>
-          <View style={styles.customRow}>
-            <Pressable style={styles.dateField} onPress={() => setPickerFor('from')}>
-              <Text style={styles.dateFieldLabel}>From</Text>
-              <Text style={styles.dateFieldValue}>{customFrom.toLocaleDateString()}</Text>
-            </Pressable>
-            <Pressable style={styles.dateField} onPress={() => setPickerFor('to')}>
-              <Text style={styles.dateFieldLabel}>To</Text>
-              <Text style={styles.dateFieldValue}>{customTo.toLocaleDateString()}</Text>
-            </Pressable>
-          </View>
-          {/* m0.5: name the range to keep it as a scope chip ("Japan"). */}
-          <View style={styles.customRow}>
-            <TextInput
-              style={styles.nameField}
-              placeholder="Name this range to keep it (e.g. Japan)"
-              placeholderTextColor={colors.textDim}
-              value={customName}
-              onChangeText={setCustomName}
-              maxLength={40}
-            />
-            <Pressable
-              style={[
-                styles.saveScopeButton,
-                customName.trim() !== '' && {
-                  backgroundColor: theme.accent,
-                  borderColor: theme.accent,
-                },
-              ]}
-              disabled={customName.trim() === ''}
-              onPress={saveCustomScope}
-            >
-              <Text
-                style={[
-                  styles.saveScopeText,
-                  customName.trim() !== '' && { color: theme.onAccent },
-                ]}
-              >
-                Save scope
-              </Text>
-            </Pressable>
-          </View>
-        </>
-      )}
-
-      {pickerFor && (
-        <DateTimePicker
-          value={pickerFor === 'from' ? customFrom : customTo}
-          mode="date"
-          onChange={onPickerChange}
-        />
-      )}
-
-      {permission?.granted && counts && counts.grandTotal > 0 && donePctValue !== null && (
-        <Text style={styles.headline}>
-          {counts.doneTotal} of {counts.grandTotal} done · {donePctValue}%
-        </Text>
-      )}
-
       {permission?.granted && (
         <Pressable style={styles.progressRow} onPress={openProgress}>
           <Text style={styles.progressIcon}>◔</Text>
           <View style={styles.progressBody}>
             <Text style={styles.progressTitle}>Progress</Text>
-            <Text style={styles.progressHint}>
-              {counts === null || countsLoading
-                ? `${scopeLabel} · counting…`
-                : counts.grandTotal === 0
-                  ? `${scopeLabel} · no photos yet`
-                  : `${scopeLabel} · ${donePctValue}% done`}
-            </Text>
+            <Text style={styles.progressHint}>All photos · state browsing</Text>
           </View>
           <Text style={[styles.progressChevron, { color: theme.accent }]}>›</Text>
         </Pressable>
-      )}
-
-      {permission?.granted && (
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>{scopeLabel}</Text>
-          {countsLoading && <Text style={styles.cardText}>Counting photos…</Text>}
-          {!countsLoading && counts && (
-            <Text style={styles.cardText}>
-              {counts.remaining === 0
-                ? counts.handled > 0
-                  ? `All ${counts.handled} photos in this range are already handled`
-                  : 'No photos in this range.'
-                : `${counts.remaining} to review` +
-                  (counts.handled > 0 ? ` · ${counts.handled} already handled` : '') +
-                  (capApplies
-                    ? ` · sessions take the ${drawWord} ${sessionPrefs.cap} at a time`
-                    : '')}
-            </Text>
-          )}
-          <BigButton
-            label={
-              starting
-                ? analyzing
-                  ? `Analyzing photos… ${analyzing.done}/${analyzing.total}`
-                  : 'Loading photos…'
-                : !counts || counts.remaining === 0
-                  ? 'Start culling'
-                  : capApplies
-                    ? `Start culling · ${drawWord} ${sessionPrefs.cap} of ${counts.remaining}`
-                    : `Start culling · ${counts.remaining} to review`
-            }
-            color={colors.keep}
-            disabled={countsLoading || starting || !counts || counts.remaining === 0}
-            onPress={() => void startReview()}
-          />
-        </View>
       )}
 
       {permission?.granted && dayRows && dayRows.length > 0 && (
@@ -991,6 +597,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   title: { color: colors.text, fontSize: 28, fontWeight: '800', flexShrink: 1 },
+  titleActions: { flexDirection: 'row', gap: 8 },
   gearButton: {
     width: 44,
     height: 44,
@@ -1003,6 +610,10 @@ const styles = StyleSheet.create({
   },
   gearIcon: { color: colors.textDim, fontSize: 22 },
   subtitle: { color: colors.textDim, fontSize: 16, marginBottom: 8 },
+  goalRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  goalBody: { flex: 1, gap: 4 },
+  streakText: { color: colors.text, fontSize: 14, fontWeight: '600' },
+  scanStatus: { color: colors.textDim, fontSize: 12, marginTop: 2 },
   sectionLabel: {
     color: colors.textDim,
     fontSize: 13,

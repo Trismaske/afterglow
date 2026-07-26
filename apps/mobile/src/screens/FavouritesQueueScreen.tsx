@@ -20,13 +20,13 @@ import { applyFavouriteBatch, FAVOURITE_BATCH_LIMIT } from '../lib/favourites';
 import { BigButton } from '../components/BigButton';
 import { showToast } from '../lib/toast';
 import { colors, touch, useTheme } from '../theme';
-import { useSession } from '../session/SessionContext';
+import { useReview } from '../review/ReviewContext';
 
 export function FavouritesQueueScreen() {
   const db = useSQLiteContext();
   const insets = useSafeAreaInsets();
   const theme = useTheme();
-  const { refreshFavouriteStates, restoring } = useSession();
+  const { refreshFavouriteStates } = useReview();
   const [rows, setRows] = useState<FavouriteQueueRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyTarget, setBusyTarget] = useState<boolean | null>(null);
@@ -50,13 +50,6 @@ export function FavouritesQueueScreen() {
 
   const runBatch = useCallback(
     async (target: boolean) => {
-      // Mid-restore, a batch committing between resume's favourite-state
-      // read and the install would leave the session's live favourites
-      // stale (refreshFavouriteStates needs a loaded session).
-      if (restoring) {
-        showToast('Still loading your session — try again in a moment');
-        return;
-      }
       if (busyTarget !== null) return;
       const all = (target ? applyRows : removeRows).map((row) => row.asset_id);
       if (all.length === 0) return;
@@ -93,7 +86,7 @@ export function FavouritesQueueScreen() {
         setBusyTarget(null);
       }
     },
-    [applyRows, busyTarget, db, refresh, refreshFavouriteStates, removeRows, restoring],
+    [applyRows, busyTarget, db, refresh, refreshFavouriteStates, removeRows],
   );
 
   return (

@@ -40,7 +40,7 @@ export interface GridPhoto {
 }
 
 const BATCH = 48;
-const DB_FILTERS = ['in_group', 'kept', 'to_edit', 'staged', 'done'] as const;
+const DB_FILTERS = ['in_group', 'to_edit', 'staged', 'done'] as const;
 type DbFilter = (typeof DB_FILTERS)[number];
 
 function isDbFilter(filter: ProgressFilter): filter is DbFilter {

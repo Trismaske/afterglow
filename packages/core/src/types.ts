@@ -34,20 +34,18 @@ export interface Cluster {
 }
 
 /**
- * Mobile review states (Companion state machine, PLAN.md):
+ * Mobile review states (state machine, PLAN.md). From m0.8 a keep writes
+ * `done` directly at swipe time — there is no interim kept state; every
+ * verdict stays revisable until the final cull confirmation:
  *
  * ```
- * unreviewed ──duel/single review──┬─▶ culled ─▶ confirmed ─▶ trashed
- *                                  └─▶ kept ──┬─▶ to_edit ─▶ done
- *                                             └───────────▶ done
+ * unreviewed ──group/single review──┬─▶ culled ─▶ confirmed ─▶ trashed
+ *                                   ├─▶ to_edit ─▶ done
+ *                                   └─▶ done
  * ```
- *
- * `to_edit` and `done` are declared now so m0.2 can adopt them without a
- * core type change; m0.1 only produces the first five.
  */
 export const PHOTO_STATES = [
   'unreviewed',
-  'kept',
   'culled',
   'confirmed',
   'trashed',
@@ -55,6 +53,17 @@ export const PHOTO_STATES = [
   'done',
 ] as const;
 export type PhotoState = (typeof PHOTO_STATES)[number];
+
+/** One compare outcome (m0.1+ duel history — mined by later features).
+ * `keptBoth` false means the loser was culled. */
+export interface DuelRecord {
+  groupId: string;
+  winnerId: string;
+  loserId: string;
+  keptBoth: boolean;
+  /** Injected decision time, ms since epoch. */
+  at: number;
+}
 
 /**
  * Desktop flag-to-queue types (keys D/E/M/R/N/T while the slideshow runs).

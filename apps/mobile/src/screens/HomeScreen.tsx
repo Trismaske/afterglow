@@ -45,7 +45,7 @@ import {
 } from '../db/store';
 import { runTrashAttempt } from '../lib/trashFlow';
 import { formatBytes } from '../lib/format';
-import { fileSize } from '../lib/hash';
+import { fileSize, fileSizeOrNull } from '../lib/hash';
 import { runEditDetection, type DetectedCopy } from '../lib/detect';
 import { getScanStatus, startContinuousScan, subscribeScanStatus } from '../scan/scanRunner';
 import { GoalRing } from '../components/GoalRing';
@@ -348,10 +348,11 @@ export function HomeScreen({ navigation }: Props) {
         if (stagedCulls > 0) {
           const staged = await getStagedCullBytes(db);
           if (cancelled) return;
-          // Stat LIVE, recorded size as the fallback: a file edited in
-          // place since its last scan must not report a stale size.
+          // Stat LIVE, recorded size ONLY on stat failure: a file edited
+          // in place since its last scan must not report a stale size,
+          // and a genuine zero-byte file is a real (zero) value.
           setReclaimableBytes(
-            staged.reduce((sum, row) => sum + (fileSize(row.uri) || row.sizeBytes || 0), 0),
+            staged.reduce((sum, row) => sum + (fileSizeOrNull(row.uri) ?? row.sizeBytes ?? 0), 0),
           );
         } else {
           setReclaimableBytes(0);

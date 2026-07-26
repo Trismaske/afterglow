@@ -138,7 +138,8 @@ async function scan(db: SQLiteDatabase): Promise<void> {
   const buckets: (string | undefined)[] = sources.albumIds ?? [undefined];
   const fetchers: PageFetcher<LoadedPhoto, string>[] = buckets.map(
     (albumId) => async (cursor, count) => {
-      const page = await fetchPhotoPageDesc(0, Date.now(), albumId, cursor, count);
+      // Open-ended: undated photos (no DATE_TAKEN) must enter the scan.
+      const page = await fetchPhotoPageDesc(0, Number.POSITIVE_INFINITY, albumId, cursor, count);
       return { items: page.photos, nextCursor: page.hasNext ? (page.endCursor ?? null) : null };
     },
   );
@@ -151,12 +152,23 @@ async function scan(db: SQLiteDatabase): Promise<void> {
   const accumulator = createWindowAccumulator(ADJACENT_MERGE_MAX_GAP_MS);
   const engine = newEngineHealth();
   const seenIds = new Set<string>();
+  // MediaStore orders the stream by DATE_TAKEN — undated photos land at
+  // the END with mtime-fallback timestamps that would violate the
+  // accumulator's descending contract. They get their own ordered pass
+  // (grouping among themselves by effective time; a merge into the dated
+  // stream would require buffering the whole corpus).
+  const undated: LoadedPhoto[] = [];
+  const UNDATED_CAP = 5_000;
   for (;;) {
     const photos = await pager.next(SCAN_PAGE_SIZE);
     if (photos.length === 0) break;
     for (const photo of photos) seenIds.add(photo.item.id);
     update({ scanned: status.scanned + photos.length });
     for (const photo of photos) {
+      if (photo.undated) {
+        if (undated.length < UNDATED_CAP) undated.push(photo);
+        continue;
+      }
       for (const window of accumulator.feed(photo)) {
         await processWindow(db, window, engine, strictness.baseThreshold);
       }
@@ -164,6 +176,21 @@ async function scan(db: SQLiteDatabase): Promise<void> {
   }
   for (const window of accumulator.flush()) {
     await processWindow(db, window, engine, strictness.baseThreshold);
+  }
+  if (undated.length > 0) {
+    if (undated.length >= UNDATED_CAP) {
+      // Loud, once: beyond the cap the remainder waits for later scans.
+      console.warn(`[scan] undated-photo cap reached (${UNDATED_CAP}) — remainder next run`);
+    }
+    const tail = createWindowAccumulator(ADJACENT_MERGE_MAX_GAP_MS);
+    for (const photo of [...undated].sort((a, b) => b.item.timestamp - a.item.timestamp)) {
+      for (const window of tail.feed(photo)) {
+        await processWindow(db, window, engine, strictness.baseThreshold);
+      }
+    }
+    for (const window of tail.flush()) {
+      await processWindow(db, window, engine, strictness.baseThreshold);
+    }
   }
   // Backstop for tiny corpora that never reached the consecutive-error
   // threshold: a scan with engine errors and literally zero successes must

@@ -13,6 +13,7 @@ function photo(id: string, timestamp: number): LoadedPhoto {
     modTime: timestamp,
     width: 4000,
     height: 3000,
+    undated: false,
   };
 }
 

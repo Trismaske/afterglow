@@ -172,3 +172,9 @@ Final-review round 13 fixes, same pending vetting:
 
 65. **Undated photos enter the scan**: a 0 lower bound now OMITS `createdAfter` in every MediaStore query (the legacy query rendered it as `DATE_TAKEN > 0`, silently excluding photos with null/zero DATE_TAKEN from the scan — the only review ingress — and from every all-photos count).
 66. **The strictness reset immediately refreshes the rendered queue** (a decision on a stale reset group would permanently lose its whole-group boundary), and Home's edit-detection effect depends on the STABLE `review.refresh` callback instead of the whole context object (scan-driven refreshes were cancelling in-flight detection and discarding its copy prompts).
+
+Final-review round 14 fixes, same pending vetting:
+
+67. **Open-ended MediaStore queries omit BOTH date bounds** (`endMs = Infinity` is the explicit contract; a finite `createdBefore` renders as `DATE_TAKEN < x` — FALSE for SQL NULL — so round 13's lower-bound fix alone still excluded null-dated photos). The scan, Home's corpus count, and Progress "All photos" are open-ended; day/range scopes stay DATE_TAKEN-bounded by design (a dateless photo belongs to no specific day; its DB `day` uses the mtime fallback).
+68. **Undated photos scan in their own ordered pass**: MediaStore sorts them at the END of the DATE_TAKEN stream while their effective timestamps are mtime-recent, violating the accumulator's descending contract — they group among themselves by effective time (capped 5,000/run, loudly; merging into the dated stream would require buffering the whole corpus).
+69. **Queue refreshes carry a generation token** — only the latest refresh commits; an older scan-status refresh finishing after a decision's refresh could resurrect pre-decision groups and stale flag/favourite maps.

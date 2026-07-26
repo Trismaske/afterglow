@@ -155,7 +155,7 @@ export function HomeScreen({ navigation }: Props) {
           // null = the MediaStore count FAILED — keep the last rendered
           // stats rather than presenting an authoritative-looking zero.
           permission?.granted && src
-            ? countPhotosInRange(0, Date.now(), src.albumIds).catch((error): null => {
+            ? countPhotosInRange(0, Number.POSITIVE_INFINITY, src.albumIds).catch((error): null => {
                 console.warn('[home] corpus count failed — stats kept:', String(error));
                 return null;
               })
@@ -424,7 +424,8 @@ export function HomeScreen({ navigation }: Props) {
     navigation.navigate('Progress', {
       label: 'All photos',
       startMs: 0,
-      endMs: Date.now(),
+      // Open-ended: undated photos count too (media.ts bound contract).
+      endMs: Number.POSITIVE_INFINITY,
     });
   }, [navigation]);
 

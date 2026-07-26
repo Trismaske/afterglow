@@ -142,9 +142,14 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   const extraIdsRef = useRef<string[]>([]);
   /** Last successfully resolved source roots (fail-closed fallback). */
   const lastRootsRef = useRef<{ roots: readonly string[] | null } | null>(null);
+  /** Monotonic refresh token: only the LATEST refresh may commit — a
+   * scan-status refresh overlapping a decision's refresh must not
+   * overwrite the queue/refs with its older reads. */
+  const refreshGenRef = useRef(0);
   const startedRef = useRef(false);
 
   const refresh = useCallback(async () => {
+    const generation = ++refreshGenRef.current;
     // The photo-source folder filter scopes every queue read (the scan
     // freezes out-of-source rows in place; reads must not resurface them).
     // FAIL CLOSED on resolution errors: null means "all folders" to the
@@ -176,6 +181,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       getNeedsEditAssets(db, ids),
       getFavouriteStates(db, ids),
     ]);
+    if (generation !== refreshGenRef.current) return; // superseded mid-read
     needsEditRef.current = needsEdit;
     favouriteRef.current = favourites;
     setGroups(nextGroups);

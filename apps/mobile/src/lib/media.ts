@@ -39,6 +39,10 @@ export interface LoadedPhoto {
   modTime: number;
   width: number;
   height: number;
+  /** MediaStore has no DATE_TAKEN for it — `item.timestamp` is the
+   * modification-time fallback, and MediaStore sorted it at the end of
+   * a DATE_TAKEN-descending stream (the scan handles these separately). */
+  undated: boolean;
 }
 
 const PAGE_SIZE = 200;
@@ -58,6 +62,7 @@ function toLoadedPhoto(asset: MediaLibrary.Asset): LoadedPhoto {
     volumeName: PRIMARY_VOLUME,
     filename: asset.filename,
     modTime: asset.modificationTime,
+    undated: !asset.creationTime,
     width: asset.width,
     height: asset.height,
   };
@@ -85,7 +90,7 @@ export async function pagePhotosInRange(
       after,
       ...(albumId !== undefined ? { album: albumId } : {}),
       ...(startMs > 0 ? { createdAfter: startMs } : {}),
-      createdBefore: endMs,
+      ...(Number.isFinite(endMs) ? { createdBefore: endMs } : {}),
       mediaType: MediaLibrary.MediaType.photo,
       sortBy: [[MediaLibrary.SortBy.creationTime, !descending]],
     });
@@ -124,7 +129,10 @@ export async function fetchPhotoPageDesc(
     // createdAfter into DATE_TAKEN > 0, which silently excludes undated
     // photos — and the continuous scan is the only review ingress.
     ...(startMs > 0 ? { createdAfter: startMs } : {}),
-    createdBefore: endMs,
+    // A finite upper bound renders as DATE_TAKEN < endMs — FALSE for SQL
+    // NULL, so open-ended callers pass Infinity and get NO bounds (undated
+    // photos must enter the scan and the all-photos counts).
+    ...(Number.isFinite(endMs) ? { createdBefore: endMs } : {}),
     mediaType: MediaLibrary.MediaType.photo,
     sortBy: [[MediaLibrary.SortBy.creationTime, false]],
   });
@@ -156,7 +164,7 @@ export async function countPhotosInRange(
       ...(album !== undefined ? { album } : {}),
       // Same undated-photo contract as fetchPhotoPageDesc.
       ...(startMs > 0 ? { createdAfter: startMs } : {}),
-      createdBefore: endMs,
+      ...(Number.isFinite(endMs) ? { createdBefore: endMs } : {}),
       mediaType: MediaLibrary.MediaType.photo,
     });
     total += page.totalCount;
@@ -185,7 +193,7 @@ export async function countPhotosByDayInRange(
         after,
         ...(album !== undefined ? { album } : {}),
         ...(startMs > 0 ? { createdAfter: startMs } : {}),
-        createdBefore: endMs,
+        ...(Number.isFinite(endMs) ? { createdBefore: endMs } : {}),
         mediaType: MediaLibrary.MediaType.photo,
       });
       for (const asset of page.assets) {

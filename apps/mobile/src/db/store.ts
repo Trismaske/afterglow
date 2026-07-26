@@ -66,7 +66,15 @@ export type PhotoScope = { day: string } | { startMs: number; endMs: number };
 function scopeClause(scope: PhotoScope): { sql: string; params: (string | number)[] } {
   return 'day' in scope
     ? { sql: 'day = ?', params: [scope.day] }
-    : { sql: 'taken_at BETWEEN ? AND ?', params: [scope.startMs, scope.endMs] };
+    : {
+        sql: 'taken_at BETWEEN ? AND ?',
+        // An open-ended range arrives as Infinity (undated-photo
+        // contract in lib/media.ts) — clamp for the SQL binding.
+        params: [
+          scope.startMs,
+          Number.isFinite(scope.endMs) ? scope.endMs : Number.MAX_SAFE_INTEGER,
+        ],
+      };
 }
 
 /**

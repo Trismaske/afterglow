@@ -43,7 +43,24 @@ PLAN.md (roadmap / trigger-based backlog) once decided.
    When backports publish: `npm audit fix`, commit the lockfile, and
    revert the workflow to `high`.
 
-5. **Documentation standards for shipped releases** (Tristan, 2026-07-23).
+5. **Phone → mirror sync replacement** (Tristan, 2026-07-27).
+   `M:\Backups\Phones` (MelsPhone, NicksPhone) was fed by Resilio Sync and
+   **has been dead since 2022-12-04** — newest file is 3.5 years old, with
+   26 orphaned `.!sync` partials; nobody noticed. Contents today: 5,967
+   HEIC, 7,758 JPG, 2,914 MOV, 312 MP4. Needs its own investigation:
+   pick a replacement for the two iPhones (Tristan's Android already
+   auto-uploads via pCloud). Requirements: automatic/background (no manual
+   ritual), **HEIC originals preserved** (several paths silently convert
+   to JPEG — iCloud for Windows' non-originals mode, share-sheet
+   transfers), videos included, lands on mirror, and **fails loudly** —
+   the silent 3.5-year outage is the lesson, so whatever replaces it needs
+   a freshness check somebody actually sees. Candidates to evaluate:
+   iCloud for Windows with "download originals", pCloud's iOS app (already
+   in the family stack), a direct-to-SMB transfer app (PhotoSync-style),
+   or a self-hosted receiver (Immich) on the Windows machine. Syncthing is
+   likely out — no dependable background iOS client.
+
+6. **Documentation standards for shipped releases** (Tristan, 2026-07-23).
    Should there be a per-release document recording what actually shipped
    (a `docs/Release_*.md` or a curated CHANGELOG)? Unclear whether it adds
    value or just duplicates the GitHub Releases page, which already

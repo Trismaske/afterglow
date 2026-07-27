@@ -205,7 +205,8 @@ Desktop consumes first; mobile later (exact dupes and date-fix make sense there 
   | 2011–2022 | **NEF era** (~37k NEF), XMP-heavy 2019–2021 (5.8k/10.4k/7.6k XMPs) |
   | 2023–2026 | **CR3 era** (mom's Canon switch: 14.4k CR3 and growing) + Tristan's ARW trickle (77–201/yr); `.acr` AI-mask sidecars start 2025 |
 
-  Totals: ~59k RAW, ~160k JPG, ~40k XMP, **zero `.pp3` on mirror** (Tristan's 239 RT edits live only on lenny's onesie drive), zero HEIC, modest video (≤153 MP4/yr).
+  Totals: ~59k RAW, ~160k JPG, ~40k XMP, **zero `.pp3` on mirror** (Tristan's 239 RT edits live only on lenny's onesie drive), no HEIC *in this tree*, modest video (≤153 MP4/yr).
+  ⚠️ **This audit covered `Photos/Years` only.** `M:\Backups\Phones` is a separate tree holding the phone backups — **5,967 HEIC**, 7,758 JPG, 2,914 MOV, 312 MP4 (MelsPhone 3,706 HEIC / 7,168 JPG with **1,486 same-basename HEIC+JPG pairs**; NicksPhone 2,261 HEIC / 590 JPG, no overlap) — so HEIC is a real requirement, not a hypothetical, and redundant JPEG exports exist at scale. Its Resilio Sync feed died 2022-12-04 (newest file; 26 orphaned `.!sync` partials) — replacement tracked in `docs/TODO.md`.
   **~2,100 stale JPGs** (older than their XMP — showing outdated edits today), concentrated in 2020 (867), 2017 (538), and steady ~100+/yr elsewhere: the plugin's refresh backlog, now quantified.
   v0.6 consequences: CR3 support is non-negotiable (the current-camera format); the RT tier serves lenny's library only for now; the JPG-only eras make the slideshow immediately useful across the whole archive.
 - **O4 — Doc corrections when v0.6 planning starts:** PLAN.md's RAW-strategy row and "Lightroom reality" section need rewriting to the O1 outcome (remove the preview-cache tier and the "darktable can best-effort import basic `crs:` settings" claim — the latter is empirically false for darktable-cli); fold this doc into `docs/Plan_v0.6.md`.

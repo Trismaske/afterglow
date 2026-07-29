@@ -165,6 +165,13 @@ SHA-256 by computing it from a download you've verified against their SHA-1.
 | Windows testers see SmartScreen warning | Expected for unsigned builds: "More info → Run anyway" |
 | Desktop HEIC files don't display | Unsupported on desktop for now (documented in README) |
 
+### Windows screensaver diagnostics (learned on the deployment machine)
+
+- The OS-launched screensaver process is named **`Afterglow.scr`**, not `Afterglow` — and several same-named processes at once are **one** Electron instance (main + GPU + renderer + utility), not stuck copies.
+- Remote GDI screen captures of the running saver can be **black while the monitor shows photos** — fullscreen output promoted to a hardware overlay plane. Neither is a defect.
+- If the screensaver stops auto-starting after long uptime (even stock savers won't fire; registration/timeout all healthy), it's the known Windows 10 stuck-idle-trigger condition — **a reboot restores it** (verified 2026-07-26).
+- Interactive-desktop work over SSH (GUI launches, screenshots) needs a `schtasks /it` scheduled task; run anything non-trivial as a pushed `.ps1` file, ASCII-only, and never name a variable `$args`.
+
 ## Windows / macOS
 
 The setup script is Linux-only. Elsewhere, install manually and match the

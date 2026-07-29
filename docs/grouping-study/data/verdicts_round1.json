@@ -1,0 +1,322 @@
+{
+ "0": {
+  "v": "ok",
+  "note": ""
+ },
+ "1": {
+  "v": "ambiguous",
+  "note": "leaning join"
+ },
+ "2": {
+  "v": "ok",
+  "note": ""
+ },
+ "3": {
+  "v": "ok",
+  "note": ""
+ },
+ "4": {
+  "v": "ok",
+  "note": ""
+ },
+ "5": {
+  "v": "ok",
+  "note": ""
+ },
+ "6": {
+  "v": "ok",
+  "note": ""
+ },
+ "7": {
+  "v": "ok",
+  "note": ""
+ },
+ "8": {
+  "v": "ok",
+  "note": ""
+ },
+ "9": {
+  "v": "ok",
+  "note": ""
+ },
+ "10": {
+  "v": "ok",
+  "note": ""
+ },
+ "11": {
+  "v": "ok",
+  "note": "Okay if it didn't join, similar enough if it does"
+ },
+ "12": {
+  "v": "ok",
+  "note": ""
+ },
+ "13": {
+  "v": "ok",
+  "note": ""
+ },
+ "14": {
+  "v": "ok",
+  "note": ""
+ },
+ "15": {
+  "v": "ok",
+  "note": ""
+ },
+ "16": {
+  "v": "split",
+  "note": "20260509_144248.jpg shouldn't join"
+ },
+ "17": {
+  "v": "ok",
+  "note": ""
+ },
+ "18": {
+  "v": "ok",
+  "note": ""
+ },
+ "19": {
+  "v": "join",
+  "note": "different enough that its okay if it didn't join, would make sense. It  was taken mistakenly as well, so seeing the red photo in singles would make it easy to delete, but even better if it was in the group"
+ },
+ "20": {
+  "v": "ok",
+  "note": ""
+ },
+ "21": {
+  "v": "ok",
+  "note": ""
+ },
+ "22": {
+  "v": "join",
+  "note": "Would be great if it did join, that would be epic! but again, different enough that i could see why it wouldnt"
+ },
+ "23": {
+  "v": "ambiguous",
+  "note": "leaning join"
+ },
+ "24": {
+  "v": "ambiguous",
+  "note": "leaning join"
+ },
+ "25": {
+  "v": "ok",
+  "note": ""
+ },
+ "26": {
+  "v": "ambiguous",
+  "note": "leaning join"
+ },
+ "27": {
+  "v": "ok",
+  "note": ""
+ },
+ "28": {
+  "v": "ambiguous",
+  "note": "leaning not join"
+ },
+ "29": {
+  "v": "ambiguous",
+  "note": "leaning not join"
+ },
+ "30": {
+  "v": "ok",
+  "note": ""
+ },
+ "31": {
+  "v": "ambiguous",
+  "note": "leaning join"
+ },
+ "32": {
+  "v": "ok",
+  "note": ""
+ },
+ "33": {
+  "v": "join",
+  "note": ""
+ },
+ "34": {
+  "v": "join",
+  "note": ""
+ },
+ "35": {
+  "v": "ok",
+  "note": ""
+ },
+ "36": {
+  "v": "ok",
+  "note": ""
+ },
+ "37": {
+  "v": "ok",
+  "note": ""
+ },
+ "38": {
+  "v": "ambiguous",
+  "note": "leaning not join"
+ },
+ "39": {
+  "v": "ok",
+  "note": ""
+ },
+ "40": {
+  "v": "split",
+  "note": "20260509_164335.jpg and 20260509_164335.jpg should be in thier own group"
+ },
+ "41": {
+  "v": "ok",
+  "note": ""
+ },
+ "42": {
+  "v": "ok",
+  "note": ""
+ },
+ "43": {
+  "v": "ok",
+  "note": ""
+ },
+ "44": {
+  "v": "ok",
+  "note": ""
+ },
+ "45": {
+  "v": "ok",
+  "note": ""
+ },
+ "46": {
+  "v": "ok",
+  "note": ""
+ },
+ "47": {
+  "v": "ok",
+  "note": ""
+ },
+ "48": {
+  "v": "ok",
+  "note": ""
+ },
+ "49": {
+  "v": "ok",
+  "note": ""
+ },
+ "50": {
+  "v": "ok",
+  "note": ""
+ },
+ "51": {
+  "v": "ok",
+  "note": ""
+ },
+ "52": {
+  "v": "ok",
+  "note": ""
+ },
+ "53": {
+  "v": "ok",
+  "note": ""
+ },
+ "54": {
+  "v": "ok",
+  "note": ""
+ },
+ "55": {
+  "v": "ok",
+  "note": ""
+ },
+ "56": {
+  "v": "ok",
+  "note": ""
+ },
+ "57": {
+  "v": "ok",
+  "note": ""
+ },
+ "58": {
+  "v": "ok",
+  "note": ""
+ },
+ "59": {
+  "v": "ambiguous",
+  "note": ""
+ },
+ "60": {
+  "v": "ok",
+  "note": ""
+ },
+ "61": {
+  "v": "ok",
+  "note": ""
+ },
+ "62": {
+  "v": "ok",
+  "note": ""
+ },
+ "63": {
+  "v": "split",
+  "note": ""
+ },
+ "64": {
+  "v": "ok",
+  "note": ""
+ },
+ "65": {
+  "v": "ok",
+  "note": ""
+ },
+ "66": {
+  "v": "ok",
+  "note": ""
+ },
+ "67": {
+  "v": "ok",
+  "note": ""
+ },
+ "68": {
+  "v": "ok",
+  "note": ""
+ },
+ "69": {
+  "v": "ok",
+  "note": ""
+ },
+ "70": {
+  "v": "ok",
+  "note": ""
+ },
+ "71": {
+  "v": "ok",
+  "note": ""
+ },
+ "72": {
+  "v": "ok",
+  "note": ""
+ },
+ "73": {
+  "v": "ok",
+  "note": ""
+ },
+ "74": {
+  "v": "ok",
+  "note": ""
+ },
+ "75": {
+  "v": "ok",
+  "note": ""
+ },
+ "76": {
+  "v": "ok",
+  "note": ""
+ },
+ "77": {
+  "v": "ok",
+  "note": ""
+ },
+ "78": {
+  "v": "ok",
+  "note": ""
+ },
+ "79": {
+  "v": "ok",
+  "note": ""
+ }
+}

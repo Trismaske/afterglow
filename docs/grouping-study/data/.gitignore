@@ -1,0 +1,8 @@
+*
+!.gitignore
+!*-manifest.json
+!verdicts_*.json
+!round1-labels.json
+!round2-labels.json
+!round3-labels.json
+!round4-labels.json

@@ -7,7 +7,7 @@
 Two apps, one shared brain:
 
 1. **Afterglow Desktop** — a fullscreen ambient photo display ("screensaver") for a media PC or desktop, that shows your *edited* photos and videos with intelligent ordering, and quietly doubles as a photo-organization capture tool: see a photo that needs attention, flag it with one keypress, deal with it later.
-2. **Afterglow Companion** — an Android app that drives every phone photo to a reviewed end-state: it groups shots taken in quick succession, walks you through each group two photos at a time (cull one, or keep both and pick the better), stages deletions for one confirmed batch, and tracks which keepers still need editing.
+2. **Afterglow on Android** ("Afterglow Companion" until the m0.8 rename) — an app that drives every phone photo to a reviewed end-state: it groups shots taken in quick succession, walks you through each group two photos at a time (cull one, or keep both and pick the better), stages deletions for one confirmed batch, and tracks which keepers still need editing.
 
 They are separate apps with separate release trains, but the intelligence — time-based clustering, ordering strategies, the flag/culling session model — lives in one shared TypeScript package both consume.
 
@@ -20,7 +20,7 @@ They are separate apps with separate release trains, but the intelligence — ti
 | Mobile stack | **React Native (Expo), Android first.** iOS later. |
 | App split | Two apps sharing a core package. Desktop = screensaver + organizer modes in one app. |
 | RAW strategy | Keep it — it's the differentiator. Per-image routing to the editor that owns the edits (sidecar + namespace sniffing): **darktable XMPs via `darktable-cli`**, **RawTherapee pp3s via `rawtherapee-cli`**, **Lightroom via the Afterglow companion plugin** driving the machine's own LR Classic (no headless Adobe path exists — verified). Unedited/unrenderable RAWs show the embedded camera preview, honestly labeled, behind a setting. JPEG-only libraries work fine regardless. |
-| Mobile app name | **Afterglow Companion.** |
+| App naming & convergence | **Both apps are "Afterglow"** (mobile renames from "Afterglow Companion" in m0.8 — display name only; the Android application id stays `com.afterglow.companion` so testers don't end up with two installs). One product, two surfaces: organize/queue UI-UX patterns converge as desktop organizer (v0.7+) and mobile mature, with shared vocabulary throughout. |
 | Mobile workflow | State machine converging on `done` (see below); swipe-deck group review (replaced the m0.1–m0.3 duel bracket in m0.4; the bracket stays in core for desktop reuse); stored compare/duel history instead of full ranking; completed groups advance directly to the next unfinished group; to-edit queue lives in-app with `ACTION_EDIT` launch. |
 | Distribution | GitHub Releases, CI-built installers per tag. Auto-update later. |
 
@@ -71,25 +71,27 @@ Reading Lightroom's preview cache (`Previews.lrdata`) is deliberately not a tier
 - Idle/screensaver integration, per platform, in priority order: Windows `.scr` wrapper or Task Scheduler idle trigger → Linux (systemd/X11 idle hooks) → macOS (no `.saver` possible from Electron; use hot-corner + launcher guidance).
 - CI: lint, tests, tagged releases building Windows NSIS/portable, Linux AppImage/deb, macOS dmg.
 
-### Afterglow Companion (Android)
+### Afterglow (Android)
 
 **The state machine.** Photos have no state by default. Every photo eventually converges to `done` — the app's goal is inbox zero for the camera roll, achievable day by day:
 
 ```
 (no state) ──in a cull group──▶ group review ─┬─▶ culled ─▶ confirmed ─▶ trashed
-                                              └─▶ kept ──┬─▶ to-edit ─▶ done
-(no state) ──not in a group──▶ single review ─┴──────────┴─▶ done
+                                              ├─▶ to-edit ─▶ done
+(no state) ──not in a group──▶ single review ─┴─▶ done
 ```
 
-- **Cull groups:** similarity-first (dHash connected components across the session draw) — time proximity relaxes the similarity bar but never excludes, so the same scene shot across days still groups; strictness is a preset-chips + fine-tune-slider setting, with legacy time-only grouping available as a separate toggle. Groups persist, so completed days re-show them. 1-photo groups are singles.
+(From m0.8 a keep writes `done` directly — there is no interim `kept` state; every verdict stays revisable until the final cull confirmation.)
+
+- **Cull groups — purpose (Tristan, 2026-07-24):** a group is a **de-duplication aid** — visually similar photos that could substitute for each other, from which a human keeps the best. Visual similarity decides membership; time proximity may narrow candidates but never adds members (temporally close, dissimilar photos must NOT group). Byte-identical duplicates are the floor. Boundary calls err **inclusive** — ejecting a wrongly-grouped photo is one tap, while singles can never be promoted into a group (by design), so a false inclusion costs a swipe but a false exclusion costs a navigation loop. This is a different concept from desktop *moments*, even where machinery is shared — and the same grouping engine is intended for desktop organizer culling (v0.7+), so investment here pays twice. The algorithm (m0.8, `docs/Plan_m0.8.md`): on-device image embeddings (MediaPipe MobileNetV3-large) with a 3-min burst gate, centroid linkage, and adjacent-burst merges ≤15 min — validated against a committed suite of human-judged pairs; dHash survives only as a time-gated exact/near-duplicate annotation. Groups persist, so completed days re-show them. 1-photo groups are singles.
 - **Group review — swipe deck:** each group is a swipeable deck — cull (with undo), keep the rest, flag to-edit, star a best, or eject an unrelated photo to the singles bucket. Groups can be entered in any order, singles first is fine, and every decision is reversible until the final cull confirmation. Completing a group advances directly to the next unfinished group; deliberately reopening an already-completed group remains in browse/re-decide mode.
 - **Compare:** any two group members go full-screen A/B — tap to flip (better than side-by-side on a phone), synchronized pinch-zoom for sharpness/eyes checks, labels keep the photos' group numbers. "X is better" stars the best-of-group; in a two-photo group it offers to cull the loser. Every verdict is stored cheaply as compare history — no extra comparisons — so later features can mine it.
-- **Cull list:** a durable global queue — staged culls survive session replacement and re-drawn photos surface with their prior verdict. Reviewable, then one final confirmation → batch move into the **system trash** (recovery duration is gallery-managed; one system dialog per bounded batch) on Android 11+; below API 30, permanent delete behind unmissable warnings (m0.8 — no system trash exists there).
+- **Cull list:** a durable global queue — staged culls persist, badged with their verdict wherever they resurface, until the final confirmation. Reviewable, then one final confirmation → batch move into the **system trash** (recovery duration is gallery-managed; one system dialog per bounded batch) on Android 11+; below API 30, permanent delete behind unmissable warnings (m0.8 — no system trash exists there).
 - **Single review:** photos outside any group get a swipe pass — cull / to-edit / done.
 - **The queue family** — every queue is a durable, reviewable in-app list: **to-edit** (per-photo — Edit button fires `ACTION_EDIT` into the user's editor; manual "mark done" always available), **favourite** (applied in one batch via `MediaStore.createFavoriteRequest`, surfaces as the gallery's heart), **organize** (applied in one batch — move to a chosen album via `createWriteRequest` + `RELATIVE_PATH`), **share** (a persistent working set shared in multiple sharesheet passes over chosen subsets).
 - **History:** a re-decidable, filterable current-state feed of photos still present, plus share-sheet events.
 - **Edit detection on app open:** two heuristics, because Android editors differ. Samsung Gallery (and similar) edit **in place** — same file, changed content — detected via MediaStore generation/`date_modified`/hash change → auto-mark `done`. Other editors (Google Photos, Snapseed) save a **copy** — detected via sibling-name/timestamp sniffing → copy marked `done`, app asks whether to keep or cull the original.
-- **Sessions & progress:** review sessions drawn from a chosen scope — rolling ranges (last day/week/month/…) or custom named ranges ("Japan — Jan 31 to Mar 6") — capped per session (settings: size, group-boundary softness, oldest/newest first) and bankable at any point via "End session & apply"; summary (reviewed / culled / storage reclaimed), streaks, per-day and global progress browsing.
+- **Continuous scan & progress (m0.8, replaces sessions):** on app open a chunked scan pages the configured folder newest→oldest, hashing and grouping incrementally — the deck fills as results land and is enterable within seconds. A presentational daily goal (default 50) drives the progress ring, celebrations, and streaks (streak day = goal reached); Home shows live corpus stats (total, groups found, % reviewed, reclaimable estimate) plus per-day and global progress browsing.
 - Later: iOS (deferred post-1.0 until there are iOS users/testers).
 
 ### Shared core — `@afterglow/core`
@@ -97,7 +99,7 @@ Reading Lightroom's preview cache (`Previews.lrdata`) is deliberately not a tier
 Pure TypeScript, no filesystem or platform APIs — both apps feed it `MediaItem[]` (id, timestamp, path/uri, kind) through their own adapters:
 - Gap-based time clustering (moments/sessions) with configurable gap, cap, sampling.
 - Playlist/mix engine and retrospective selectors.
-- Flag-queue and culling-session state models (flag types, staged actions, undo, serialization).
+- Flag-queue state model (flag types, staged actions, undo, serialization). The culling/deck session models retire in m0.8 — mobile review state becomes DB-backed; desktop organizer (v0.7) brings its own compare model.
 
 ---
 
@@ -158,14 +160,18 @@ Linux idle hooks (systemd/X11); macOS hot-corner + launcher guidance (no `.saver
 - **m0.6** — feedback + feature-completion release: decision indicators everywhere with re-tap-to-clear, group cards reopen the group, singles unified into the deck as a pseudo-group, completed groups advance immediately, favourites queue (♥, batched `createFavoriteRequest` native module), lifetime stats + streaks, progress-bar fix, startup/analysis perf pass, Material icon language, editor-launch diagnostics (fix itself carried to m0.7 — see below).
 - **m0.7** — feedback release: editor launch fixed at the root (request MediaStore write access first, then `ACTION_EDIT`; two-button edit queue — ✎ Edit + read-only Gallery); similarity-first grouping v2 (time proximity only ever helps, never excludes; groups always ≥ 2 photos; legacy time-only toggle); durable SQLite group membership; deck relayout (Keep / Compare / Cull + queue row Edit · Favourite · Organize · Share); **share queue** with multi-pass sharing (overlapping subsets across repeated sharesheet passes, pass badges + labels, honest `sheet_opened` state); **organize queue** (verified `RELATIVE_PATH` moves to primary-volume albums); **Favourite queue** rename + atomic batches; silent lossless session replacement with the **durable global cull list** (kept, edit, and staged-cull decisions all survive); crash-safe trash-attempt lifecycle (verified per-photo outcomes, at-most-once reclaimed-bytes credit); **History** feed; canonical volume-qualified photo ids; fresh-baseline schema policy (destructive DB reset between 0.x versions; migrations return at v1).
 
-**m0.8 — Navigation redesign + videos + deck/viewer rework (next)**
-- **Home navigation redesign** (tester, on 0.7.0): bottom navigation bar with tabs **Home · Edit · Favourite · Share · Organize** (count-badged); Cull list and History are reached from Home — History either at the bottom of Home or as an icon next to settings (leaning: settings-adjacent icon). Home keeps session start + scope above the fold with no scrolling; the bar stays off the deck and other full-screen review surfaces.
-- **Deck/viewer rework** (deferred from m0.7; one core cursor/display change): culled photos stay badged in the live deck instead of disappearing; one standard full-screen viewer for deck browse, progress, history and queues (also the home for per-photo decision detail — e.g. explaining a superseded organized fact that m0.7.1 only marks with a pending icon); completed days re-show their groups in browse/re-decide mode; quota-driven candidate window (in-range staged culls re-enter draws badged with their prior verdict; also closes similarity components the time-gap-based session cap currently splits — the m0.7 loader caps on time boundaries only); recent days = 3 recent + 2 unreviewed + older-days indicator; day-count audit against pinned formulas with kept/done merged into "reviewed".
+**m0.8 — Sessions removed: continuous scan, embedding groups, navigation redesign (next; plan: `docs/Plan_m0.8.md`)**
+All decisions human-vetted 2026-07-24; feasibility + grouping quality study complete (four judged rounds + validation, 698-pair frozen label set, on-device benchmarks on both test phones).
+- **Sessions disappear**: continuous newest→oldest scan feeds the durable tables; DB-backed deck cursor (core `DeckSession`/`CullSession` deleted); `kept` state removed (keep writes `done`; re-decide works on `done`); scopes dropped; presentational daily goal (default 50) with goal-reached streaks; live corpus stats on Home. Continuous grouping also closes the similarity components the m0.7 time-gap session cap used to split.
+- **Embedding groups**: MediaPipe MobileNetV3-large (`modules/image-embedder`) + burst gate/centroid linkage/adjacent merge per the cull-groups purpose above; committed human-judged regression suite pins grouping quality in CI.
+- **Home navigation redesign + tester copy round** (`docs/Feedback_m0.8.md`): bottom tabs **Home · Edit · Favourite · Share · Organize** (count-badged); Home centers scan status + daily goal + continue-reviewing; the bar stays off full-screen review surfaces. App renames to **"Afterglow"** (display name only) with a mobile/desktop terminology audit; tagline removed; review-not-cull copy; self-explanatory edit-queue buttons.
+- **Deck/viewer rework** (deferred from m0.7): culled photos stay badged in the live deck; one standard full-screen viewer for deck browse, progress, history and queues (also the home for per-photo decision detail — e.g. explaining a superseded organized fact that m0.7.1 only marks with a pending icon); completed days re-show groups in browse/re-decide mode; staged culls re-enter badged with their prior verdict; recent days = 3 recent + 2 unreviewed + older-days indicator; day-count audit with kept/done merged into "reviewed".
+
+**m0.9 — Videos + legacy Android (moved from m0.8)**
 - **Videos enter review** (singles-first: playback, keep/cull/queues; grouping later if warranted).
 - **Android ≤ 10 culling via permanent delete** behind unmissable warnings (no system trash below API 30; ships with matching trash-invariant doc updates).
-- Dormant shared-core debt: mix-engine weight contract, legacy `CullSession` hardening, retrospective selector validation.
 
-**After m0.8**: hardening and tester-driven fixes to 1.0 — including the planned **one-time signing break to a real release keystore** (testers reinstall; a data export/import path is considered first so review history survives) and merging `initial` → `main` as the pre-1.0 era closes. **iOS evaluation is deferred post-1.0 until further notice** (no iOS users or testers today).
+**After m0.9**: hardening and tester-driven fixes to 1.0 — including the planned **one-time identity break** bundling everything that forces a reinstall into a single tester disruption: real release keystore, **application id aligned to the "Afterglow" name** (drops `com.afterglow.companion`), and **versionCode reset to 1** (fresh installs have no downgrade check; note: if Play Store distribution ever happens, Play tracks the highest versionCode per id — moot since the id is new). A data export/import path is considered first so review history survives. Then merging `initial` → `main` as the pre-1.0 era closes. **iOS evaluation is deferred post-1.0 until further notice** (no iOS users or testers today).
 
 ---
 

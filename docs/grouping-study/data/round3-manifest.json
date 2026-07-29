@@ -1,0 +1,249 @@
+[
+ {
+  "type": "adjmerge",
+  "weakest": 0.6741049289703369,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220717_131617.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220717_132258.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220717_132259.jpg"
+  ],
+  "excluded": null
+ },
+ {
+  "type": "adjmerge",
+  "weakest": 0.8405613899230957,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220701_181303.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220701_181308.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220701_181311.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220701_181317.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220701_181456.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220701_181505.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220701_181521.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220701_181911.jpg"
+  ],
+  "excluded": null
+ },
+ {
+  "type": "adjmerge",
+  "weakest": 0.8445886969566345,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220911_162039.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220911_162055.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220911_162517.jpg"
+  ],
+  "excluded": null
+ },
+ {
+  "type": "adjmerge",
+  "weakest": 0.8566794991493225,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20250428_203513.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20250428_204108.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20250428_204114.jpg"
+  ],
+  "excluded": null
+ },
+ {
+  "type": "group",
+  "weakest": 0.3540366590023041,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20211126_103412.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20211126_103419.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20211126_103425.jpg"
+  ],
+  "excluded": null
+ },
+ {
+  "type": "excluded",
+  "weakest": 0.3865925669670105,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220911_162039.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220911_162055.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220911_162045.jpg"
+  ],
+  "excluded": "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220911_162045.jpg"
+ },
+ {
+  "type": "excluded",
+  "weakest": 0.40578171610832214,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220717_132258.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220717_132259.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220717_132251.jpg"
+  ],
+  "excluded": "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20220717_132251.jpg"
+ },
+ {
+  "type": "excluded",
+  "weakest": 0.4236851930618286,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20201126_124838.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20201126_124843.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20201126_124848.jpg"
+  ],
+  "excluded": "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20201126_124848.jpg"
+ },
+ {
+  "type": "excluded",
+  "weakest": 0.42687076330184937,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230726_113818.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230726_113946.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230726_113950.jpg"
+  ],
+  "excluded": "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230726_113950.jpg"
+ },
+ {
+  "type": "group",
+  "weakest": 0.42834749817848206,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20240314_065614.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20240314_065620.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20240314_065623.jpg"
+  ],
+  "excluded": null
+ },
+ {
+  "type": "excluded",
+  "weakest": 0.44212090969085693,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20210815_134856.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20210815_134859.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20210815_134848.jpg"
+  ],
+  "excluded": "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20210815_134848.jpg"
+ },
+ {
+  "type": "excluded",
+  "weakest": 0.46144136786460876,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20201230_161800.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20201230_161825.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20201230_161754.jpg"
+  ],
+  "excluded": "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20201230_161754.jpg"
+ },
+ {
+  "type": "excluded",
+  "weakest": 0.4867941737174988,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230518_200626.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230518_200631.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230518_200639.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230518_200640.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230518_200644.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230518_200658.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230518_200703.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230518_200706.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230518_200610.jpg"
+  ],
+  "excluded": "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230518_200610.jpg"
+ },
+ {
+  "type": "excluded",
+  "weakest": 0.4944605231285095,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230708_144217.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230708_144224.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230708_144148.jpg"
+  ],
+  "excluded": "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230708_144148.jpg"
+ },
+ {
+  "type": "group",
+  "weakest": 0.5078460574150085,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230729_014049.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230729_014054.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230729_014059.jpg"
+  ],
+  "excluded": null
+ },
+ {
+  "type": "excluded",
+  "weakest": 0.5176626443862915,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20241011_102228.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20241011_102236.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20241011_102240.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20241011_102231.jpg"
+  ],
+  "excluded": "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20241011_102231.jpg"
+ },
+ {
+  "type": "group",
+  "weakest": 0.5263620615005493,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230518_200919.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230518_200939.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230518_200940.jpg"
+  ],
+  "excluded": null
+ },
+ {
+  "type": "group",
+  "weakest": 0.5455064177513123,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20201208_212301.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20201208_212306.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20201208_212307.jpg"
+  ],
+  "excluded": null
+ },
+ {
+  "type": "group",
+  "weakest": 0.5464717745780945,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20241011_102228.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20241011_102236.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20241011_102240.jpg"
+  ],
+  "excluded": null
+ },
+ {
+  "type": "group",
+  "weakest": 0.5703875422477722,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230504_220109.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230504_220113.jpg"
+  ],
+  "excluded": null
+ },
+ {
+  "type": "group",
+  "weakest": 0.5719089508056641,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20201230_161800.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20201230_161825.jpg"
+  ],
+  "excluded": null
+ },
+ {
+  "type": "group",
+  "weakest": 0.5719184875488281,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20201126_124838.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20201126_124843.jpg"
+  ],
+  "excluded": null
+ },
+ {
+  "type": "group",
+  "weakest": 0.5858633518218994,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230726_113818.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20230726_113946.jpg"
+  ],
+  "excluded": null
+ },
+ {
+  "type": "group",
+  "weakest": 0.5947586894035339,
+  "members": [
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20210311_122008.jpg",
+   "/home/tristan/Repos/afterglow_nosesh/docs/grouping-study/data/photos/DCIM/Camera/20210311_122012.jpg"
+  ],
+  "excluded": null
+ }
+]

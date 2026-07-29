@@ -1,0 +1,290 @@
+{
+ "0": {
+  "v": "retire",
+  "note": ""
+ },
+ "1": {
+  "v": "link",
+  "note": ""
+ },
+ "2": {
+  "v": "link",
+  "note": ""
+ },
+ "3": {
+  "v": "link",
+  "note": ""
+ },
+ "4": {
+  "v": "retire",
+  "note": ""
+ },
+ "5": {
+  "v": "link",
+  "note": ""
+ },
+ "6": {
+  "v": "apart",
+  "note": ""
+ },
+ "7": {
+  "v": "apart",
+  "note": ""
+ },
+ "8": {
+  "v": "retire",
+  "note": ""
+ },
+ "9": {
+  "v": "link",
+  "note": ""
+ },
+ "10": {
+  "v": "link",
+  "note": ""
+ },
+ "11": {
+  "v": "link",
+  "note": ""
+ },
+ "12": {
+  "v": "link",
+  "note": ""
+ },
+ "13": {
+  "v": "link",
+  "note": ""
+ },
+ "14": {
+  "v": "retire",
+  "note": ""
+ },
+ "15": {
+  "v": "retire",
+  "note": ""
+ },
+ "16": {
+  "v": "link",
+  "note": ""
+ },
+ "17": {
+  "v": "link",
+  "note": ""
+ },
+ "18": {
+  "v": "link",
+  "note": ""
+ },
+ "19": {
+  "v": "link",
+  "note": ""
+ },
+ "20": {
+  "v": "link",
+  "note": ""
+ },
+ "21": {
+  "v": "link",
+  "note": ""
+ },
+ "22": {
+  "v": "apart",
+  "note": ""
+ },
+ "23": {
+  "v": "link",
+  "note": ""
+ },
+ "24": {
+  "v": "retire",
+  "note": ""
+ },
+ "25": {
+  "v": "link",
+  "note": ""
+ },
+ "26": {
+  "v": "retire",
+  "note": ""
+ },
+ "27": {
+  "v": "link",
+  "note": ""
+ },
+ "28": {
+  "v": "link",
+  "note": ""
+ },
+ "29": {
+  "v": "link",
+  "note": ""
+ },
+ "30": {
+  "v": "link",
+  "note": ""
+ },
+ "31": {
+  "v": "link",
+  "note": ""
+ },
+ "32": {
+  "v": "link",
+  "note": ""
+ },
+ "33": {
+  "v": "link",
+  "note": ""
+ },
+ "34": {
+  "v": "link",
+  "note": ""
+ },
+ "35": {
+  "v": "link",
+  "note": ""
+ },
+ "36": {
+  "v": "link",
+  "note": ""
+ },
+ "37": {
+  "v": "link",
+  "note": ""
+ },
+ "38": {
+  "v": "link",
+  "note": ""
+ },
+ "39": {
+  "v": "link",
+  "note": ""
+ },
+ "40": {
+  "v": "link",
+  "note": ""
+ },
+ "41": {
+  "v": "link",
+  "note": ""
+ },
+ "42": {
+  "v": "link",
+  "note": ""
+ },
+ "43": {
+  "v": "apart",
+  "note": ""
+ },
+ "44": {
+  "v": "apart",
+  "note": ""
+ },
+ "45": {
+  "v": "link",
+  "note": ""
+ },
+ "46": {
+  "v": "link",
+  "note": ""
+ },
+ "47": {
+  "v": "link",
+  "note": ""
+ },
+ "48": {
+  "v": "apart",
+  "note": ""
+ },
+ "49": {
+  "v": "link",
+  "note": ""
+ },
+ "50": {
+  "v": "apart",
+  "note": ""
+ },
+ "51": {
+  "v": "apart",
+  "note": ""
+ },
+ "52": {
+  "v": "apart",
+  "note": ""
+ },
+ "53": {
+  "v": "apart",
+  "note": ""
+ },
+ "54": {
+  "v": "apart",
+  "note": ""
+ },
+ "55": {
+  "v": "apart",
+  "note": ""
+ },
+ "56": {
+  "v": "link",
+  "note": ""
+ },
+ "57": {
+  "v": "apart",
+  "note": ""
+ },
+ "58": {
+  "v": "apart",
+  "note": ""
+ },
+ "59": {
+  "v": "apart",
+  "note": ""
+ },
+ "60": {
+  "v": "apart",
+  "note": ""
+ },
+ "61": {
+  "v": "apart",
+  "note": ""
+ },
+ "62": {
+  "v": "link",
+  "note": ""
+ },
+ "63": {
+  "v": "ok",
+  "note": ""
+ },
+ "64": {
+  "v": "ok",
+  "note": ""
+ },
+ "65": {
+  "v": "wrong",
+  "note": "20260509_125522.jpg should be excluded. 20260509_125321.jpg, 20260509_125327.jpg and 20260509_125337.jpg are correctly grouped. 20260509_123905.jpg should also stay excluded."
+ },
+ "66": {
+  "v": "ok",
+  "note": ""
+ },
+ "67": {
+  "v": "ok",
+  "note": "Can also be one group, very close, either is great"
+ },
+ "68": {
+  "v": "wrong",
+  "note": "all as one group is good"
+ },
+ "69": {
+  "v": "ok",
+  "note": ""
+ },
+ "70": {
+  "v": "ok",
+  "note": "20250428_204114.jpg is a zoomed in version of the other 2, so fine if it joins, but the separation is best"
+ },
+ "71": {
+  "v": "ok",
+  "note": ""
+ }
+}

@@ -1,0 +1,5 @@
+# Pinned runtime for embed.py / freeze_labels.py — labels-v1 vectors were
+# produced with exactly these versions; freeze_labels.py validates them.
+mediapipe==0.10.35
+pillow==12.3.0
+numpy==2.5.1

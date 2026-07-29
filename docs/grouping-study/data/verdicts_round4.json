@@ -1,0 +1,282 @@
+{
+ "0": {
+  "v": "split",
+  "note": "the 2 bursts should not merge"
+ },
+ "1": {
+  "v": "split",
+  "note": ""
+ },
+ "2": {
+  "v": "split",
+  "note": "the 2 bursts should not merge"
+ },
+ "3": {
+  "v": "split",
+  "note": "the 2 bursts should not merge"
+ },
+ "4": {
+  "v": "split",
+  "note": "the 2 bursts should not merge"
+ },
+ "5": {
+  "v": "ok",
+  "note": ""
+ },
+ "6": {
+  "v": "ok",
+  "note": "20250428_203513.jpg and 20250428_204108.jpg should be grouped, 20250428_204114.jpg should not be part of the group"
+ },
+ "7": {
+  "v": "split",
+  "note": "20260509_094052.jpg and 20260509_094057.jpg should be in one group, and the rest in another group"
+ },
+ "8": {
+  "v": "ambiguous",
+  "note": "20260509_093931.jpg should be single. 20260509_094208.jpg, 20260509_094226.jpg in a group. 20260509_094343.jpg, 20260509_094417.jpg in a group. 20260509_094443.jpg single. 20260509_094451.jpg, 20260509_094533.jpg and maybe 20260509_094540.jpg in a group. These are similar in some ways, different in others, so very ambiguous."
+ },
+ "9": {
+  "v": "ok",
+  "note": ""
+ },
+ "10": {
+  "v": "ok",
+  "note": ""
+ },
+ "11": {
+  "v": "ok",
+  "note": ""
+ },
+ "12": {
+  "v": "split",
+  "note": "20260603_165830.jpg should be single"
+ },
+ "13": {
+  "v": "ok",
+  "note": ""
+ },
+ "14": {
+  "v": "ok",
+  "note": ""
+ },
+ "15": {
+  "v": "ok",
+  "note": ""
+ },
+ "16": {
+  "v": "ok",
+  "note": ""
+ },
+ "17": {
+  "v": "ok",
+  "note": ""
+ },
+ "18": {
+  "v": "ambiguous",
+  "note": "similar enough to group, but best case would be 20260603_164322.jpg, 20260603_165258.jpg and20260603_165530.jpg either all as singles or in a group, and the rest in thier own group."
+ },
+ "19": {
+  "v": "ok",
+  "note": ""
+ },
+ "20": {
+  "v": "ok",
+  "note": ""
+ },
+ "21": {
+  "v": "ok",
+  "note": ""
+ },
+ "22": {
+  "v": "ok",
+  "note": ""
+ },
+ "23": {
+  "v": "ok",
+  "note": ""
+ },
+ "24": {
+  "v": "ok",
+  "note": ""
+ },
+ "25": {
+  "v": "ambiguous",
+  "note": "Close enough, could be singles, or maybe 20260511_150447.jpg excluded, but all as a group is fine as well."
+ },
+ "26": {
+  "v": "ok",
+  "note": ""
+ },
+ "27": {
+  "v": "ok",
+  "note": ""
+ },
+ "28": {
+  "v": "ambiguous",
+  "note": "leaning join"
+ },
+ "29": {
+  "v": "ok",
+  "note": ""
+ },
+ "30": {
+  "v": "split",
+  "note": "20260511_131627.jpg and 20260511_131642.jpg in thier own group. 20260511_131657.jpg and 20260511_131707.jpg in thier own group."
+ },
+ "31": {
+  "v": "ok",
+  "note": ""
+ },
+ "32": {
+  "v": "ok",
+  "note": ""
+ },
+ "33": {
+  "v": "ok",
+  "note": ""
+ },
+ "34": {
+  "v": "ok",
+  "note": ""
+ },
+ "35": {
+  "v": "ok",
+  "note": ""
+ },
+ "36": {
+  "v": "ok",
+  "note": ""
+ },
+ "37": {
+  "v": "ok",
+  "note": ""
+ },
+ "38": {
+  "v": "join",
+  "note": "Would be nice for it to join, but different enough that I would understand if it does not. Maybe some kind of dynamic grouping can be done, because these are seconds apart, it brings the similarity threshold down to about this level so they would join, but only if the temporal difference is very low, like seconds, and the similarity must still be reasonable. Are we doing that already?"
+ },
+ "39": {
+  "v": "ok",
+  "note": ""
+ },
+ "40": {
+  "v": "ok",
+  "note": ""
+ },
+ "41": {
+  "v": "ambiguous",
+  "note": "leaning join"
+ },
+ "42": {
+  "v": "ok",
+  "note": ""
+ },
+ "43": {
+  "v": "ok",
+  "note": ""
+ },
+ "44": {
+  "v": "split",
+  "note": "leaning to 20260509_125522.jpg being split out. If 20260509_125522.jpg was excluded, I would say its correct."
+ },
+ "45": {
+  "v": "ambiguous",
+  "note": "no preference here"
+ },
+ "46": {
+  "v": "ok",
+  "note": ""
+ },
+ "47": {
+  "v": "ok",
+  "note": ""
+ },
+ "48": {
+  "v": "ok",
+  "note": ""
+ },
+ "49": {
+  "v": "ok",
+  "note": ""
+ },
+ "50": {
+  "v": "ambiguous",
+  "note": "no preference, maybe leaning join"
+ },
+ "51": {
+  "v": "join",
+  "note": ""
+ },
+ "52": {
+  "v": "ok",
+  "note": ""
+ },
+ "53": {
+  "v": "ambiguous",
+  "note": ""
+ },
+ "54": {
+  "v": "ok",
+  "note": ""
+ },
+ "55": {
+  "v": "join",
+  "note": ""
+ },
+ "56": {
+  "v": "ambiguous",
+  "note": "leaning join"
+ },
+ "57": {
+  "v": "ok",
+  "note": ""
+ },
+ "58": {
+  "v": "ok",
+  "note": ""
+ },
+ "59": {
+  "v": "ok",
+  "note": ""
+ },
+ "60": {
+  "v": "ok",
+  "note": ""
+ },
+ "61": {
+  "v": "ok",
+  "note": ""
+ },
+ "62": {
+  "v": "ok",
+  "note": ""
+ },
+ "63": {
+  "v": "ok",
+  "note": ""
+ },
+ "64": {
+  "v": "ok",
+  "note": ""
+ },
+ "65": {
+  "v": "ok",
+  "note": ""
+ },
+ "66": {
+  "v": "ok",
+  "note": ""
+ },
+ "67": {
+  "v": "ok",
+  "note": ""
+ },
+ "68": {
+  "v": "ok",
+  "note": ""
+ },
+ "69": {
+  "v": "ok",
+  "note": ""
+ }
+}

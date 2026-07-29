@@ -2,7 +2,7 @@
  * One durable trash attempt (m0.7 item H): prepare/reserve → launching →
  * system consent dialog → tri-state verify → outcomes + C#7 cleanup, over
  * an explicit member list. The impure orchestration shared by the
- * cull-list confirm loop (SessionContext.confirmStagedCulls) and the
+ * cull-list confirm loop (review/ReviewContext.confirmStagedCulls) and the
  * edited-copy "Cull original" affordance (Home) — every removal path runs
  * the same crash-safe lifecycle. 'skipped' means nothing could be
  * reserved (a live attempt already holds every given photo).
@@ -29,17 +29,19 @@ export interface TrashAttemptResult {
   unknownIds: string[];
   /** Verified bytes credited by this attempt (at-most-once, P8#3). */
   creditedBytes: number;
+  /** Best stars the stage-and-reserve transition cleared (edited-copy
+   * culls) — a DEFINITIVE non-application restores them. */
+  clearedStars: { groupId: number; photoId: string }[];
 }
 
 export async function runTrashAttempt(
   db: SQLiteDatabase,
   members: readonly TrashMemberInput[],
-  launchedFromSessionId: number | null,
   options: PrepareTrashBatchOptions = {},
 ): Promise<TrashAttemptResult> {
   let batch;
   try {
-    batch = await prepareTrashBatch(db, members, launchedFromSessionId, Date.now(), options);
+    batch = await prepareTrashBatch(db, members, Date.now(), options);
   } catch (error) {
     // Nothing was reserved — a transient preparation failure is an
     // ordinary 'failed' result, never a rejection (callers alert and
@@ -51,6 +53,7 @@ export async function runTrashAttempt(
       trashedIds: [],
       unknownIds: [],
       creditedBytes: 0,
+      clearedStars: [],
     };
   }
   if (!batch) {
@@ -60,6 +63,7 @@ export async function runTrashAttempt(
       trashedIds: [],
       unknownIds: [],
       creditedBytes: 0,
+      clearedStars: [],
     };
   }
   const ids = batch.members.map((m) => m.photoId);
@@ -106,6 +110,7 @@ export async function runTrashAttempt(
       ),
       unknownIds: ids.filter((id) => resolved.outcomes[id] === 'unknown'),
       creditedBytes: resolved.creditedBytes,
+      clearedStars: batch.clearedStars,
     };
   } catch (error) {
     // The batch was durably prepared but a later step rejected (transient
@@ -137,6 +142,7 @@ export async function runTrashAttempt(
         ),
         unknownIds: ids.filter((id) => recovered.outcomes[id] === 'unknown'),
         creditedBytes: recovered.creditedBytes,
+        clearedStars: batch.clearedStars,
       };
     } catch {
       // Release failed too — next launch's recovery handles the batch;
@@ -148,6 +154,7 @@ export async function runTrashAttempt(
         trashedIds: [],
         unknownIds: ids,
         creditedBytes: 0,
+        clearedStars: batch.clearedStars,
       };
     }
   }

@@ -4,8 +4,16 @@
  * from MediaStore buckets (see sourceCatalog.ts); selection is recursive
  * — a chosen folder includes its subfolders, shown as "included" rows.
  */
-import React, { useCallback, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -24,7 +32,10 @@ import {
   serializePhotoSourceSetting,
   type PhotoSourceSetting,
 } from '../lib/sources';
-import { setSetting } from '../db/store';
+import { applyGroupingSettingChange } from '../db/store';
+import { requestRescan, supersedeScan } from '../scan/scanRunner';
+import { useReview } from '../review/ReviewContext';
+import { showToast } from '../lib/toast';
 import { BigButton } from '../components/BigButton';
 import { colors, touch, useTheme } from '../theme';
 
@@ -39,17 +50,52 @@ export function SourcePickerScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const db = useSQLiteContext();
+  const { refresh, refreshScoped } = useReview();
   const [rows, setRows] = useState<Row[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadTick, setLoadTick] = useState(0);
   const [allFolders, setAllFolders] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+
+  // While the apply/rollback transaction chain runs, EVERY exit is
+  // blocked (header back, hardware back, gestures): leaving mid-apply
+  // would let the cached old-scope queue take decisions that freeze
+  // stale membership before the strict refresh lands.
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (event) => {
+      if (savingRef.current) event.preventDefault();
+    });
+    return unsubscribe;
+  }, [navigation]);
+  /** The persisted state at load — the rollback target if applying a new
+   * scope fails after it committed. `unset` preserves the DYNAMIC default
+   * (rolling back to a resolved snapshot would freeze it). */
+  const previousSettingRef = useRef<
+    { kind: 'set'; setting: PhotoSourceSetting } | { kind: 'unset' } | null
+  >(null);
 
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
       (async () => {
-        const [dirs, current] = await Promise.all([listSourceDirs(true), resolveSources(db)]);
+        setLoadFailed(false);
+        let dirs: SourceDir[];
+        let current: Awaited<ReturnType<typeof resolveSources>>;
+        try {
+          [dirs, current] = await Promise.all([listSourceDirs(true), resolveSources(db)]);
+        } catch (error) {
+          // A transient unreadable album fails the catalog (fail-closed
+          // contract) — surface a retry instead of a stuck loader.
+          console.warn('[sources] catalog unavailable:', String(error));
+          if (!cancelled) setLoadFailed(true);
+          return;
+        }
         if (cancelled) return;
+        previousSettingRef.current = current.isDefault
+          ? { kind: 'unset' }
+          : { kind: 'set', setting: current.setting };
         const catalog: Row[] = [...dirs];
         const chosen = new Set<string>();
         if (current.setting.mode === 'all') {
@@ -74,7 +120,9 @@ export function SourcePickerScreen({ navigation }: Props) {
       return () => {
         cancelled = true;
       };
-    }, [db]),
+      // loadTick re-runs this on Retry.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [db, loadTick]),
   );
 
   const toggleAll = useCallback(() => {
@@ -99,22 +147,121 @@ export function SourcePickerScreen({ navigation }: Props) {
   const save = useCallback(async () => {
     if (!valid || saving) return;
     setSaving(true);
+    savingRef.current = true;
     try {
       const setting: PhotoSourceSetting = allFolders
         ? { mode: 'all' }
         : { mode: 'dirs', dirs: [...selected].sort((a, b) => a.localeCompare(b)) };
-      await setSetting(db, PHOTO_SOURCES_KEY, serializePhotoSourceSetting(setting));
+      // Supersede the in-flight scan FIRST: an old-source window
+      // completing during the apply below could repopulate a group with
+      // newly excluded photos and have the scoped refresh render it.
+      supersedeScan();
+      // Setting + unfrozen-assignment reset commit ATOMICALLY — a process
+      // death between them would leave the next launch rendering old
+      // assignments under the new scope.
+      try {
+        await applyGroupingSettingChange(
+          db,
+          PHOTO_SOURCES_KEY,
+          serializePhotoSourceSetting(setting),
+        );
+      } catch {
+        // Nothing committed — but supersedeScan already fenced the active
+        // run, so restart scanning under the (unchanged) durable setting.
+        void requestRescan(db);
+        showToast('Could not save the photo source — try again');
+        return;
+      }
       invalidateSourceCatalog();
+      // FAIL CLOSED before leaving: the queue reads are source-scoped and
+      // must drop excluded photos NOW (the queued rescan lands later). If
+      // applying the new scope fails, ROLL BACK the committed setting —
+      // header/back navigation stays enabled, so a half-applied narrower
+      // scope must never outlive this screen.
+      try {
+        const resolved = await resolveSources(db);
+        // STRICT: read under the just-resolved roots — the general
+        // refresh's fail-open fallback could silently keep the old scope.
+        await refreshScoped(resolved.roots ?? null);
+      } catch {
+        // A FAILED rollback must say so — the new source is then durable
+        // while the rendered queue may still show the old scope. An
+        // unset previous state rolls back to UNSET (the dynamic default
+        // must stay dynamic). The queue re-renders only AFTER the
+        // rollback landed — a refresh before it would resolve and paint
+        // the rejected source.
+        const previous = previousSettingRef.current;
+        let restored = false;
+        if (previous) {
+          restored = await applyGroupingSettingChange(
+            db,
+            PHOTO_SOURCES_KEY,
+            previous.kind === 'unset' ? null : serializePhotoSourceSetting(previous.setting),
+          ).then(
+            () => true,
+            () => false,
+          );
+          invalidateSourceCatalog();
+        }
+        // Rebuild under whatever setting is durable now — the superseded
+        // scan was stopped above either way.
+        void requestRescan(db);
+        if (!restored) {
+          // The NEW source stays durable: install and render IT (the
+          // failed refreshScoped reverted the fallback to the previous
+          // scope, which no longer matches anything persisted).
+          try {
+            const durable = await resolveSources(db);
+            await refreshScoped(durable.roots ?? null);
+          } catch {
+            // The harsh midway toast below already directs a reopen.
+          }
+        }
+        // Re-rendering the restored scope is PART of the rollback: a
+        // competing refresh may have painted the rejected scope, and a
+        // swallowed failure here would leave the queue disagreeing with
+        // the restored setting while back navigation stays enabled.
+        const rerendered = restored
+          ? await refresh().then(
+              () => true,
+              () => false,
+            )
+          : false;
+        showToast(
+          restored && rerendered
+            ? 'Could not apply the new source — selection unchanged'
+            : restored
+              ? 'Source restored, but the queue could not refresh — reopen this screen to retry'
+              : 'Source change failed midway — reopen this screen to verify your selection',
+        );
+        return;
+      }
+      // The scan reads the source at run start: rescan over the new
+      // selection (an in-flight run finishes its old buckets first).
+      void requestRescan(db);
+      // Release the exit guard BEFORE leaving — beforeRemove would
+      // otherwise cancel our own successful goBack.
+      savingRef.current = false;
+      setSaving(false);
       navigation.goBack();
     } finally {
       setSaving(false);
+      savingRef.current = false;
     }
-  }, [valid, saving, allFolders, selected, db, navigation]);
+  }, [valid, saving, allFolders, selected, db, navigation, refresh, refreshScoped]);
 
   const roots = useMemo(() => [...selected], [selected]);
 
   return (
     <View style={styles.root}>
+      <Modal visible={saving} transparent animationType="fade">
+        {/* Full-screen touch shield while the source apply/rollback chain
+            runs — paired with the beforeRemove navigation block. */}
+        <View style={styles.applyingOverlay}>
+          <ActivityIndicator size="large" color={theme.accent} />
+          <Text style={styles.applyingText}>Applying photo source…</Text>
+        </View>
+      </Modal>
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={[styles.content, { paddingBottom: 16 }]}
@@ -138,7 +285,17 @@ export function SourcePickerScreen({ navigation }: Props) {
           </View>
         </Pressable>
 
-        {rows === null && <Text style={styles.loading}>Listing photo folders…</Text>}
+        {rows === null && !loadFailed && <Text style={styles.loading}>Listing photo folders…</Text>}
+        {loadFailed && (
+          <View style={styles.loadFailed}>
+            <Text style={styles.loading}>
+              Could not read the photo folders — an album was unreadable.
+            </Text>
+            <Pressable style={styles.retryButton} onPress={() => setLoadTick((t) => t + 1)}>
+              <Text style={[styles.retryText, { color: theme.accent }]}>Retry</Text>
+            </Pressable>
+          </View>
+        )}
         {rows !== null && rows.length === 0 && (
           <Text style={styles.loading}>No photo folders found.</Text>
         )}
@@ -189,6 +346,17 @@ export function SourcePickerScreen({ navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
+  loadFailed: { gap: 10, alignItems: 'flex-start' },
+  retryButton: { minHeight: 44, justifyContent: 'center' },
+  retryText: { fontSize: 15, fontWeight: '700' },
+  applyingOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 14,
+  },
+  applyingText: { color: colors.text, fontSize: 15, fontWeight: '600' },
   root: { flex: 1, backgroundColor: colors.background },
   scroll: { flex: 1 },
   content: { padding: 16, gap: 10 },

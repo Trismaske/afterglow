@@ -88,6 +88,47 @@ export function filenamesRelated(originalFilename: string, candidateFilename: st
 /** Editors that clone DATE_TAKEN land within this window of the original. */
 export const CREATION_TOLERANCE_MS = 2000;
 
+/** One creation-time window to scan for sibling copies, and how many of
+ * the queued photos' windows collapsed into it. */
+export interface SiblingWindow {
+  startMs: number;
+  endMs: number;
+  /** Queued photos whose own window this one absorbed (>= 1). */
+  merged: number;
+}
+
+/**
+ * Collapse each queued photo's ±`toleranceMs` creation-time window into
+ * the fewest overlapping scans (m0.8.1 — a burst of flagged photos used
+ * to re-scan almost the same range once per photo).
+ *
+ * `merged` exists so the caller can scale its row cap with it. The
+ * per-window cap was sized for ONE photo's window; applying that same cap
+ * to a merged window would quietly scan a fraction of what the unmerged
+ * code did, and MediaStore returns newest first, so the photos that lose
+ * their siblings are the oldest in the burst. A performance change must
+ * not narrow coverage.
+ */
+export function mergeSiblingWindows(
+  takenAts: readonly number[],
+  toleranceMs: number = CREATION_TOLERANCE_MS,
+): SiblingWindow[] {
+  const sorted = [...takenAts].sort((a, b) => a - b);
+  const merged: SiblingWindow[] = [];
+  for (const takenAt of sorted) {
+    const startMs = takenAt - toleranceMs;
+    const endMs = takenAt + toleranceMs;
+    const last = merged[merged.length - 1];
+    if (last && startMs <= last.endMs) {
+      last.endMs = Math.max(last.endMs, endMs);
+      last.merged += 1;
+    } else {
+      merged.push({ startMs, endMs, merged: 1 });
+    }
+  }
+  return merged;
+}
+
 export interface OriginalForMatch {
   assetId: string;
   filename: string;

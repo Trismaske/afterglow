@@ -1,121 +1,204 @@
 /**
- * Organize queue (m0.7 item E — "move to a different album"). Queue rows
- * carry durable validated targets; Apply obtains one createWriteRequest
- * consent per bounded batch, moves via verified RELATIVE_PATH updates, and
- * commits outcomes + post-move repair in one SQLite transaction
- * (organizeStore.ts). The album picker is the native volume-aware catalog
- * (C#2) filtered to primary storage, plus "New album" → Pictures/<name>.
+ * Organize queue (m0.7 item E; redesigned m0.8.2, F6/F7 — share-parity).
+ * The deck queues photos with NO target (its Organize chip is a toggle);
+ * THIS screen assigns albums in batches over a selectable thumbnail grid
+ * — the same selection language as the share queue: tap toggles,
+ * long-press opens the viewer, nothing selected means "everyone".
+ * "Choose album" runs the picker ONCE for the whole selection
+ * (setOrganizeTargets); cells wear their album as a small amber tag
+ * ("No album" until assigned; error rows badge red and retry on the next
+ * move). "Move" applies TARGETED rows only — one createWriteRequest
+ * consent per album per bounded batch, verified RELATIVE_PATH moves, and
+ * one SQLite transaction per batch commits outcomes + post-move repair
+ * (organizeStore.ts); untargeted rows are structurally unmovable and are
+ * said out loud, never silently skipped.
  */
-import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { Image } from 'expo-image';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
-import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { RootStackParamList } from '../navigation';
+import type { MainTabScreenProps } from '../navigation';
 import {
   commitOrganizeOutcomes,
   getOrganizeQueue,
-  newAlbumPath,
   ORGANIZE_BATCH_LIMIT,
-  queueOrganize,
+  setOrganizeTargets,
   unqueueOrganize,
   type OrganizeQueueRow,
 } from '../db/organizeStore';
 import {
-  listImageAlbums,
   moveMediaToRelativePath,
   queryMediaRelativePaths,
   requestMediaWriteAccess,
-  type VolumeAlbum,
 } from '../../modules/media-store-actions';
 import { getEditableContentUri, PRIMARY_VOLUME } from '../lib/media';
-import { useSession } from '../session/SessionContext';
 import { showToast } from '../lib/toast';
-import { labelForDayKey } from '../lib/dates';
-import { formatClock } from '../lib/format';
-import { colors, touch } from '../theme';
+import { colors, touch, useTheme } from '../theme';
+import { AlbumPicker } from '../components/AlbumPicker';
+import { Chip, QueueGridCell } from '../components/QueueGrid';
+import { QueueViewer } from '../components/QueueViewer';
+import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
+import { useReview } from '../review/ReviewContext';
+import { requestRescan } from '../scan/scanRunner';
 
-type Props = NativeStackScreenProps<RootStackParamList, 'OrganizeQueue'>;
+type Props = MainTabScreenProps<'OrganizeQueue'>;
+
+/** The album a target path reads as, for the cell tag: its last segment. */
+function albumLabel(path: string): string {
+  const segments = path.replace(/\/+$/, '').split('/');
+  return segments[segments.length - 1] || path;
+}
+
+/** The rejection surface for this screen's queue writes (CompareScreen's
+ * surfaceQueueWriteError family): every mutation here can reject after
+ * the tap — including a SQLite commit failing AFTER native moves
+ * succeeded — and an unhandled rejection would mean no error, no reload,
+ * stale metadata. The caller reloads alongside, so retryable rows stay
+ * visible and the screen reflects the durable rows as they stand. */
+function surfaceQueueWriteError(detail: string, error: unknown): void {
+  Alert.alert(
+    'Change not saved',
+    `${detail}\n\n${error instanceof Error ? error.message : String(error)}`,
+  );
+}
 
 export function OrganizeQueueScreen(_props: Props) {
   const insets = useSafeAreaInsets();
+  const theme = useTheme();
   const db = useSQLiteContext();
-  const { reconcileMovedUris, restoring } = useSession();
-  const [rows, setRows] = useState<OrganizeQueueRow[] | null>(null);
-  const [busy, setBusy] = useState(false);
-  // Synchronous apply lock: async continuations (picker load, intent
-  // taps) must observe the CURRENT applying state, not a stale render.
-  const busyRef = useRef(false);
-  const [pickerFor, setPickerFor] = useState<string | null>(null);
-  const [albums, setAlbums] = useState<VolumeAlbum[]>([]);
-  const [newName, setNewName] = useState('');
-
+  const { refresh: refreshReview, refreshQueuedFor } = useReview();
+  const {
+    rows,
+    failed,
+    reload: reloadRows,
+  } = useQueueRows<OrganizeQueueRow>(useCallback(() => getOrganizeQueue(db), [db]));
+  /** Every mutation here also moves the organize BADGE on review
+   * surfaces (deck, Groups) — the provider's membership map is their
+   * source. */
   const reload = useCallback(async () => {
-    setRows(await getOrganizeQueue(db));
-  }, [db]);
+    await reloadRows();
+    await refreshQueuedFor().catch(() => {});
+  }, [reloadRows, refreshQueuedFor]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  // Synchronous apply lock: async continuations (picker choice) must
+  // observe the CURRENT applying state, not a stale render.
+  const busyRef = useRef(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  /** In-app full-screen viewer (gate 5) — long-press a thumbnail. */
+  const [viewerId, setViewerId] = useState<string | null>(null);
 
-  useFocusEffect(
-    useCallback(() => {
-      void reload();
-    }, [reload]),
+  // Selection follows the queue: ids that left it (moved away, removed
+  // elsewhere) must not linger invisibly selected.
+  useEffect(() => {
+    if (rows === null) return;
+    setSelected((old) => new Set([...old].filter((id) => rows.some((r) => r.photo_id === id))));
+  }, [rows]);
+
+  const selectionMode = selected.size > 0;
+  /** Who "Choose album" / "Remove" acts on: the selection, else everyone
+   * (the share queue's convention). */
+  const targetIds = useMemo(
+    () => (selectionMode ? [...selected] : (rows ?? []).map((r) => r.photo_id)),
+    [selectionMode, selected, rows],
   );
+  const targeted = useMemo(() => (rows ?? []).filter((r) => r.organize_path !== null), [rows]);
+  const untargetedCount = (rows?.length ?? 0) - targeted.length;
 
-  const openPicker = useCallback(async (photoId: string) => {
-    if (busyRef.current) return;
-    // Fail-closed (C#8): a catalog error never widens choices — the picker
-    // simply shows what the native query proved, primary volume only.
-    const catalog = await listImageAlbums();
-    // Apply may have started while the catalog loaded — opening the
-    // picker now could change a durable target mid-batch.
-    if (busyRef.current) return;
-    setAlbums(
-      catalog
-        .filter((a) => a.volumeName === PRIMARY_VOLUME)
-        .sort((a, b) => b.photoCount - a.photoCount),
-    );
-    setNewName('');
-    setPickerFor(photoId);
+  const toggle = useCallback((id: string) => {
+    setSelected((old) => {
+      const next = new Set(old);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }, []);
 
-  const chooseTarget = useCallback(
+  const selectUntargeted = useCallback(() => {
+    setSelected(
+      new Set((rows ?? []).filter((r) => r.organize_path === null).map((r) => r.photo_id)),
+    );
+  }, [rows]);
+
+  const chooseAlbum = useCallback(
     async (relativePath: string) => {
-      if (!pickerFor || busyRef.current) return;
-      const error = await queueOrganize(
-        db,
-        pickerFor,
-        { volumeName: PRIMARY_VOLUME, relativePath },
-        Date.now(),
-      );
-      if (error) Alert.alert('Cannot use that album', error);
-      setPickerFor(null);
-      await reload();
+      if (busyRef.current || targetIds.length === 0) return;
+      try {
+        const error = await setOrganizeTargets(
+          db,
+          targetIds,
+          { volumeName: PRIMARY_VOLUME, relativePath },
+          Date.now(),
+        );
+        setPickerOpen(false);
+        if (error) {
+          Alert.alert('Cannot use that album', error);
+          return;
+        }
+        setSelected(new Set());
+        await reload();
+      } catch (error) {
+        setPickerOpen(false);
+        surfaceQueueWriteError(
+          'Afterglow could not finish saving that album assignment. The tags below show what actually stands — please retry.',
+          error,
+        );
+        // The alert already carries the failure; a second rejection here
+        // has nothing further to say (the focus effect re-reads anyway).
+        await reload().catch(() => {});
+      }
     },
-    [db, pickerFor, reload],
+    [db, targetIds, reload],
   );
 
-  const applyAll = useCallback(async () => {
-    // Mid-restore, a move committing between resume's photos.uri read and
-    // the snapshot install would make reconcileMovedUris a no-op and the
-    // session would render the dead pre-move path.
-    if (restoring) {
-      showToast('Still loading your session — try again in a moment');
-      return;
+  /** Remove from the queue: the selection, else EVERYONE — the same
+   * no-selection-means-everyone convention Choose album follows, with
+   * the blast radius said in the chip's copy ("Remove all N"). */
+  const removeQueued = useCallback(async () => {
+    try {
+      for (const id of targetIds) await unqueueOrganize(db, id, Date.now());
+      setSelected(new Set());
+      await reload();
+    } catch (error) {
+      surfaceQueueWriteError(
+        'Afterglow could not finish removing those photos from the queue. The grid below shows what actually stands — please retry.',
+        error,
+      );
+      await reload().catch(() => {});
     }
-    if (busy || busyRef.current || !rows || rows.length === 0) return;
+  }, [db, targetIds, reload]);
+
+  const applyAll = useCallback(async () => {
+    if (busy || busyRef.current) return;
     setBusy(true);
     busyRef.current = true;
     try {
       // Revalidate the DURABLE intents at apply time — the rendered rows
-      // may predate a just-tapped Remove/Change whose write is still
-      // landing (same-connection FIFO makes this read see it).
-      const freshRows = await getOrganizeQueue(db);
-      if (freshRows.length === 0) return;
+      // may predate a just-tapped assignment/removal whose write is still
+      // landing (same-connection FIFO makes this read see it). Only
+      // TARGETED rows can move; the rest are reported, not skipped
+      // silently.
+      const freshQueue = await getOrganizeQueue(db);
+      const freshRows = freshQueue.filter(
+        (row): row is OrganizeQueueRow & { organize_path: string; organize_volume: string } =>
+          row.organize_path !== null && row.organize_volume !== null,
+      );
+      // Untargeted rows are REPORTED from the same fresh read the apply
+      // uses — the rendered count can predate an assignment still
+      // landing, and a report from a different snapshot than the apply
+      // would mislabel what actually stayed.
+      const freshUntargeted = freshQueue.length - freshRows.length;
+      if (freshRows.length === 0) {
+        // The button was enabled off rendered rows the durable intents no
+        // longer back — say so rather than returning silently.
+        showToast('Nothing to move — no queued photo has an album yet');
+        await reload();
+        return;
+      }
       // Group queued photos by target path; apply per target in bounded
       // batches (each batch = one consent + one verified move set).
-      const byTarget = new Map<string, OrganizeQueueRow[]>();
+      const byTarget = new Map<string, (typeof freshRows)[number][]>();
       for (const row of freshRows) {
         const list = byTarget.get(row.organize_path) ?? [];
         list.push(row);
@@ -159,12 +242,6 @@ export function OrganizeQueueScreen(_props: Props) {
               })),
               Date.now(),
             );
-            // Mirror each committed batch into the live snapshot RIGHT
-            // AWAY — a later batch failing must not leave dead pre-move
-            // paths in the session until a restart.
-            await reconcileMovedUris(
-              repaired.map((p) => ({ photoId: p.member.photo_id, uri: `file://${p.info!.data}` })),
-            );
             moved += repaired.length;
           }
           const repairedIds = new Set(repaired.map((p) => p.member.photo_id));
@@ -199,190 +276,217 @@ export function OrganizeQueueScreen(_props: Props) {
             relativePath: m.organize_path,
           }));
           await commitOrganizeOutcomes(db, outcomes, Date.now());
-          await reconcileMovedUris(
-            outcomes
-              .filter((o) => (o.status === 'moved' || o.status === 'already') && o.newData)
-              .map((o) => ({ photoId: o.photoId, uri: `file://${o.newData}` })),
-          );
           moved += outcomes.filter((o) => o.status === 'moved' || o.status === 'already').length;
           failed += outcomes.filter(
             (o) => o.status === 'error' || o.status === 'unsupported',
           ).length;
         }
       }
+      const skipped = freshUntargeted > 0 ? ` · ${freshUntargeted} without an album stayed` : '';
       showToast(
         declined
           ? `Moved ${moved} — the rest stay queued`
           : failed === 0
-            ? `Moved ${moved} photo${moved === 1 ? '' : 's'}`
-            : `Moved ${moved}, ${failed} failed (kept queued)`,
+            ? `Moved ${moved} photo${moved === 1 ? '' : 's'}${skipped}`
+            : `Moved ${moved}, ${failed} failed (kept queued)${skipped}`,
       );
       await reload();
+      if (moved > 0) {
+        // Moves changed photos.uri (and possibly their source folder):
+        // the cached review queue would keep dead pre-move URIs — and a
+        // rescan re-derives windows under the fresh paths.
+        await refreshReview().catch(() => {});
+        void requestRescan(db);
+      }
+    } catch (error) {
+      // A native move can succeed and its SQLite commit still fail —
+      // without this surface that was an unhandled rejection: no error,
+      // no reload, stale tags. Everything still queued is retryable, and
+      // an already-moved photo is repaired (read-only precheck →
+      // 'already') on the next Move.
+      surfaceQueueWriteError(
+        'Afterglow could not finish recording the move. Some photos may already have moved — everything still queued below is picked up again on the next Move.',
+        error,
+      );
+      await reload().catch(() => {});
     } finally {
       setBusy(false);
       busyRef.current = false;
     }
-  }, [busy, db, rows, reload, reconcileMovedUris, restoring]);
+  }, [busy, db, reload, refreshReview]);
 
   const renderItem = useCallback(
     ({ item }: { item: OrganizeQueueRow }) => (
-      <View style={styles.row}>
-        <Image
-          source={{ uri: item.uri }}
-          style={styles.thumb}
-          contentFit="cover"
-          recyclingKey={item.photo_id}
-        />
-        <View style={styles.rowBody}>
-          <Text style={styles.rowTitle}>
-            {item.day ? labelForDayKey(item.day) : 'Unknown day'} · {formatClock(item.taken_at)}
+      <QueueGridCell
+        id={item.photo_id}
+        uri={item.uri}
+        selected={selected.has(item.photo_id)}
+        accent={theme.accent}
+        onPress={() => toggle(item.photo_id)}
+        onLongPress={() => setViewerId(item.photo_id)}
+      >
+        <View style={[styles.targetTag, item.organize_path === null && styles.targetTagEmpty]}>
+          <MaterialCommunityIcons
+            name={item.organize_path === null ? 'folder-question-outline' : 'folder-move'}
+            size={11}
+            color={item.organize_path === null ? colors.textDim : colors.organize}
+          />
+          <Text style={styles.targetTagText} numberOfLines={1}>
+            {item.organize_path === null ? 'No album' : albumLabel(item.organize_path)}
           </Text>
-          <Text style={styles.rowTarget} numberOfLines={1}>
-            → {item.organize_path}
-          </Text>
-          <View style={styles.rowActions}>
-            {/* Intents FREEZE while a batch applies: a mid-apply change
-                would move to the old target while commit records the new
-                columns as applied (or clears a removed row). */}
-            <Pressable
-              style={styles.smallButton}
-              disabled={busy}
-              onPress={() => void openPicker(item.photo_id)}
-            >
-              <Text style={styles.smallButtonText}>Change album</Text>
-            </Pressable>
-            <Pressable
-              style={styles.smallButton}
-              disabled={busy}
-              onPress={() => void unqueueOrganize(db, item.photo_id, Date.now()).then(reload)}
-            >
-              <Text style={styles.smallButtonText}>Remove</Text>
-            </Pressable>
-          </View>
         </View>
-      </View>
+        {item.state === 'error' ? (
+          <MaterialCommunityIcons
+            name="alert-circle"
+            size={16}
+            color={colors.cull}
+            style={styles.errorBadge}
+          />
+        ) : null}
+      </QueueGridCell>
     ),
-    [db, openPicker, reload, busy],
+    [selected, theme.accent, toggle],
   );
 
   const count = rows?.length ?? 0;
-  const newPath = useMemo(() => newAlbumPath(newName), [newName]);
+  const errorCount = (rows ?? []).filter((r) => r.state === 'error').length;
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, { paddingTop: insets.top + 12 }]}>
+      <Text style={styles.heading}>Organize queue</Text>
       <Text style={styles.subtitle}>
         {rows === null
-          ? 'Loading…'
+          ? // codex r9: an initial reload failure would have said
+            // "Loading…" forever — the empty-state line says what happened.
+            failed
+            ? QUEUE_REFRESH_FAILED
+            : 'Loading…'
           : count === 0
-            ? 'Queue photos with Organize during review to move them into albums.'
-            : `${count} photo${count === 1 ? '' : 's'} queued · one confirm per batch moves them`}
+            ? 'Queue photos with Organize during review, then assign albums here.'
+            : selectionMode
+              ? `${selected.size} selected · choose their album, or remove them`
+              : `${count} queued${untargetedCount > 0 ? ` · ${untargetedCount} need an album` : ''}${errorCount > 0 ? ` · ${errorCount} failed, retried on the next move` : ''}`}
       </Text>
+      {count > 0 ? (
+        <View style={styles.chips}>
+          <Chip
+            label="Select all"
+            onPress={() => setSelected(new Set((rows ?? []).map((r) => r.photo_id)))}
+          />
+          <Chip label="None" onPress={() => setSelected(new Set())} />
+          {untargetedCount > 0 ? <Chip label="No album" onPress={selectUntargeted} /> : null}
+          <Chip
+            label={selectionMode ? 'Remove' : `Remove all ${count}`}
+            onPress={() => void removeQueued()}
+          />
+        </View>
+      ) : null}
+      {failed && rows !== null ? (
+        // codex r9: the reload kept the last rows on a failed read — the
+        // grid may be stale, and it has to say so.
+        <Text style={styles.refreshFailed}>{QUEUE_REFRESH_FAILED}</Text>
+      ) : null}
       <FlatList
         data={rows ?? []}
+        numColumns={4}
         keyExtractor={(r) => r.photo_id}
         renderItem={renderItem}
-        contentContainerStyle={{ gap: 10, paddingBottom: insets.bottom + 90 }}
+        contentContainerStyle={{ paddingBottom: 150, gap: 4 }}
+        columnWrapperStyle={{ gap: 4 }}
+      />
+      <QueueViewer
+        rows={rows}
+        viewerId={viewerId}
+        toItem={(r) => ({ id: r.photo_id, uri: r.uri, takenAt: r.taken_at })}
+        onClose={() => setViewerId(null)}
+        onChanged={() => void reload().catch(() => {})}
       />
       {count > 0 ? (
-        <View style={[styles.actions, { paddingBottom: insets.bottom + 12 }]}>
+        <View style={styles.actions}>
           <Pressable
-            style={[styles.applyButton, busy && styles.disabled]}
+            style={[styles.assignButton, busy && styles.disabled]}
             disabled={busy}
+            onPress={() => setPickerOpen(true)}
+          >
+            <MaterialCommunityIcons name="folder-image" size={20} color={colors.text} />
+            <Text style={styles.assignText}>
+              {selectionMode
+                ? `Choose album for ${selected.size}`
+                : `Choose album for all ${count}`}
+            </Text>
+          </Pressable>
+          <Pressable
+            style={[styles.applyButton, (busy || targeted.length === 0) && styles.disabled]}
+            disabled={busy || targeted.length === 0}
             onPress={() => void applyAll()}
           >
             <MaterialCommunityIcons name="folder-move" size={20} color={colors.text} />
-            <Text style={styles.applyText}>{busy ? 'Moving…' : `Move ${count} to albums`}</Text>
+            <Text style={styles.applyText}>
+              {busy ? 'Moving…' : `Move ${targeted.length} to albums`}
+            </Text>
           </Pressable>
         </View>
       ) : null}
-      <Modal
-        visible={pickerFor !== null}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setPickerFor(null)}
-      >
-        <View style={styles.pickerBackdrop}>
-          <View style={styles.pickerSheet}>
-            <Text style={styles.pickerTitle}>Move to album</Text>
-            <FlatList
-              data={albums}
-              keyExtractor={(a) => `${a.volumeName}:${a.bucketId}`}
-              style={{ flexGrow: 0, maxHeight: 320 }}
-              renderItem={({ item }) => (
-                <Pressable
-                  style={styles.albumRow}
-                  onPress={() => void chooseTarget(item.relativePath)}
-                >
-                  <MaterialCommunityIcons name="folder-image" size={20} color={colors.textDim} />
-                  <Text style={styles.albumName}>{item.displayName}</Text>
-                  <Text style={styles.albumCount}>{item.photoCount}</Text>
-                </Pressable>
-              )}
-              ListEmptyComponent={
-                <Text style={styles.albumEmpty}>
-                  No albums found on primary storage — create one below.
-                </Text>
-              }
-            />
-            <View style={styles.newRow}>
-              <TextInput
-                style={styles.newInput}
-                placeholder="New album name"
-                placeholderTextColor={colors.textDim}
-                value={newName}
-                onChangeText={setNewName}
-              />
-              <Pressable
-                style={[styles.smallButton, !newPath && styles.disabled]}
-                disabled={!newPath}
-                onPress={() => newPath && void chooseTarget(newPath)}
-              >
-                <Text style={styles.smallButtonText}>Create</Text>
-              </Pressable>
-            </View>
-            <Pressable style={styles.smallButton} onPress={() => setPickerFor(null)}>
-              <Text style={styles.smallButtonText}>Cancel</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
+      <AlbumPicker
+        visible={pickerOpen}
+        onChoose={(path) => void chooseAlbum(path)}
+        onClose={() => setPickerOpen(false)}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 16, paddingTop: 12 },
+  heading: { color: colors.text, fontSize: 24, fontWeight: '800', marginBottom: 2 },
+  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 12 },
   subtitle: { color: colors.textDim, fontSize: 14, marginBottom: 10 },
-  row: {
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
+  // codex r9: quiet stale-rows notice — dim like every read-failure line.
+  refreshFailed: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginBottom: 8 },
+  // The cell's album tag: the organize hue marks an assigned target
+  // (rule 2 — the hue identifies the kind); "No album" stays neutral.
+  targetTag: {
+    position: 'absolute',
+    left: 4,
+    right: 4,
+    bottom: 4,
     flexDirection: 'row',
-    backgroundColor: colors.surface,
-    borderRadius: touch.radius,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: 10,
-    gap: 12,
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: colors.organizeDim,
+    borderRadius: 6,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
   },
-  thumb: { width: 72, height: 72, borderRadius: 10, backgroundColor: colors.surfaceRaised },
-  rowBody: { flex: 1, gap: 4 },
-  rowTitle: { color: colors.text, fontSize: 14, fontWeight: '600' },
-  rowTarget: { color: colors.textDim, fontSize: 13 },
-  rowActions: { flexDirection: 'row', gap: 8, marginTop: 2 },
-  smallButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 10,
-    backgroundColor: colors.surfaceRaised,
+  targetTagEmpty: { backgroundColor: colors.surfaceRaised },
+  targetTagText: { color: colors.text, fontSize: 10, fontWeight: '600', flexShrink: 1 },
+  errorBadge: { position: 'absolute', top: 4, right: 4 },
+  actions: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    bottom: 12,
+    gap: 8,
+  },
+  assignButton: {
+    minHeight: 44,
+    borderRadius: touch.radius,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
     alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
   },
-  smallButtonText: { color: colors.text, fontSize: 13, fontWeight: '600' },
-  actions: { position: 'absolute', left: 16, right: 16, bottom: 0 },
+  assignText: { color: colors.text, fontSize: 14, fontWeight: '700' },
   applyButton: {
     minHeight: 52,
     borderRadius: touch.radius,
-    backgroundColor: colors.editDim,
+    // The organize action's own hue, matching the deck's Organize
+    // control (rule 2).
+    backgroundColor: colors.organizeDim,
     borderWidth: 1,
-    borderColor: colors.edit,
+    borderColor: colors.organize,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
@@ -390,37 +494,4 @@ const styles = StyleSheet.create({
   },
   applyText: { color: colors.text, fontSize: 16, fontWeight: '700' },
   disabled: { opacity: 0.5 },
-  pickerBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
-  pickerSheet: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: touch.radius,
-    borderTopRightRadius: touch.radius,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: 16,
-    gap: 10,
-  },
-  pickerTitle: { color: colors.text, fontSize: 17, fontWeight: '700' },
-  albumRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-  },
-  albumName: { color: colors.text, fontSize: 15, flex: 1 },
-  albumCount: { color: colors.textDim, fontSize: 13 },
-  albumEmpty: { color: colors.textDim, fontSize: 14, paddingVertical: 12 },
-  newRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
-  newInput: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 10,
-    color: colors.text,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 15,
-  },
 });

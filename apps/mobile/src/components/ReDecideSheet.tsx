@@ -1,17 +1,20 @@
 /**
  * Re-decide sheet (m0.5 reversible decisions): tap a DECIDED photo
- * anywhere it is visible in-session (group strips, completed-group
- * browse, cull list) and change its verdict — keep / to edit / cull —
- * until the final cull confirmation. Wraps SessionContext.redecide
- * (core unstageCull/cullKept + the app-side needs-edit flag); the modal
- * chrome follows the m0.4 StateEditorSheet.
+ * anywhere it is visible — group strips, completed-group browse, the
+ * cull list — and change your mind, until the final cull confirmation.
+ * Wraps ReviewContext.redecideStaged; the chrome follows StateEditorSheet.
+ *
+ * The three chips are a PRESENTATION of two layers (docs/STATE_MODEL.md),
+ * not three verdicts: "To edit" means kept with an edit queued, which is
+ * why picking it and picking "Keep" both land on the verdict `kept` and
+ * differ only in what happens to the edit.
  */
 import React, { useCallback, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { MediaItem } from '@afterglow/core';
-import { useSession, type RedecideTarget } from '../session/SessionContext';
+import { useReview, type RedecideTarget } from '../review/ReviewContext';
 import { formatClockSeconds } from '../lib/format';
 import { colors, touch, useTheme } from '../theme';
 import { DecisionBadge } from './DecisionBadge';
@@ -49,7 +52,7 @@ export function ReDecideSheet({
 }) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
-  const { redecide } = useSession();
+  const { redecideStaged } = useReview();
   const [busy, setBusy] = useState(false);
 
   const pick = useCallback(
@@ -57,13 +60,15 @@ export function ReDecideSheet({
       if (!item || busy) return;
       setBusy(true);
       try {
-        await redecide(item.id, target);
+        await redecideStaged(item.id, target);
         onClose();
+      } catch {
+        // surfaced by the provider alert; the sheet stays open
       } finally {
         setBusy(false);
       }
     },
-    [item, busy, redecide, onClose],
+    [item, busy, redecideStaged, onClose],
   );
 
   if (!item) return null;

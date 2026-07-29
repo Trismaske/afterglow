@@ -32,9 +32,30 @@ interface NativeApi {
   requestWriteAccess(uris: string[]): Promise<{ status: MediaStoreActionStatus }>;
   shareUris(uris: string[]): Promise<{ result: 'dispatched' | 'error'; message: string }>;
   listImageAlbums(): Promise<VolumeAlbum[]>;
+  mediaGenerations(): Promise<Record<string, number>>;
+  mediaChangedSince(volume: string, since: number): Promise<NativeChangedRow[]>;
   queryRelativePaths(uris: string[]): Promise<RelativePathInfo[]>;
   moveToRelativePath(uris: string[], relativePath: string): Promise<MoveResult[]>;
 }
+
+/** One row MediaStore reports as added or modified since a generation.
+ * `isTrashed` is the reason this exists: on Android 11+ a user deleting
+ * a photo in their gallery TRASHES it, leaving the row in place with the
+ * flag set — a modification the delta pass can see, not an absence it
+ * has to infer. */
+export interface ChangedMediaRow {
+  volumeName: string;
+  rawId: string;
+  /** DATE_TAKEN in ms, or null for an undated photo. */
+  dateTakenMs: number | null;
+  /** DATE_MODIFIED in SECONDS (MediaStore's unit), or null. */
+  dateModifiedSec: number | null;
+  isTrashed: boolean;
+  generationAdded: number;
+  generationModified: number;
+}
+
+type NativeChangedRow = ChangedMediaRow;
 
 /** One (volume, bucket) album entry — volume identity preserved (C#2). */
 export interface VolumeAlbum {
@@ -138,6 +159,50 @@ export async function requestMediaWriteAccess(
 }
 
 /** The volume-aware album catalog (C#2). Empty on non-Android. */
+/** Per-volume MediaStore generations (API 30+; {} = unavailable),
+ * keyed "<volume>|<MediaStore version>". An unchanged generation is an
+ * OS guarantee the volume's library did not change — the continuous
+ * scan's skip evidence — but ONLY within one MediaStore version:
+ * generations reset when the provider database is rebuilt, so the
+ * version rides in the key and a rebuild mismatches every stored key
+ * (no version-aware logic needed downstream; split on the first '|'
+ * for the raw volume name).
+ *
+ * ALL VOLUMES OR NONE (m0.8.2): the native side THROWS if any enumerated
+ * volume is unreadable, because a partial map is indistinguishable from
+ * a complete one once fingerprinted, and would let a consistently
+ * failing volume skip the scan forever. Callers catch and treat it as
+ * "cannot prove unchanged". */
+export async function getMediaGenerations(): Promise<Record<string, number>> {
+  if (!available()) return {};
+  return native!.mediaGenerations();
+}
+
+/**
+ * Rows added or modified on `volume` since `since` — the delta scan's
+ * change discovery (m0.8.2 phase 1: computed and logged only).
+ *
+ * Includes TRASHED rows deliberately. Everything else in the app queries
+ * MediaStore's default view, which hides them; here they are the most
+ * valuable rows in the result, because a trash is how a deletion becomes
+ * visible at all.
+ *
+ * Throws rather than returning a partial set — same rule as the two
+ * calls above. Callers treat a throw as "no delta available" and fall
+ * back to a full pass.
+ */
+export async function getMediaChangedSince(
+  volume: string,
+  since: number,
+): Promise<ChangedMediaRow[]> {
+  if (!available()) return [];
+  return native!.mediaChangedSince(volume, since);
+}
+
+/** The volume-aware album catalog. ALL VOLUMES OR NONE, same rule and
+ * same reason: a partial catalog hides folders the user selected on the
+ * dropped volume, and can make the default-source probe conclude
+ * DCIM/Camera is absent and broaden to every folder. */
 export async function listImageAlbums(): Promise<VolumeAlbum[]> {
   if (!diagnosticsAvailable()) return [];
   return native!.listImageAlbums();

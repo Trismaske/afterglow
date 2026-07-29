@@ -4,8 +4,8 @@
  * share-sheet events interleaved. Ordered by activity_at with two-stream
  * keyset pagination (C#15); trashed/deleted photos drop out (restore
  * brings them back via reconciliation); tapping a photo row opens the
- * standard state editor (StateEditorSheet — active-session photos are
- * read-only there and managed from the session screens).
+ * standard full-screen viewer (PhotoViewer — gate 5), whose detail panel
+ * hosts the state editor.
  */
 import React, { useCallback, useRef, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -23,14 +23,14 @@ import {
   type HistoryRow,
 } from '../db/store';
 import { reconcileExternallyRemoved } from '../db/trashStore';
+import { mapWithConcurrency } from '../lib/concurrency';
 import { checkMediaPresence } from '../lib/media';
-import { classifyPhotoState } from '../lib/progress';
 import { formatDayClock } from '../lib/format';
-import { useSession } from '../session/SessionContext';
-import { DecisionBadge, type DecisionKind } from '../components/DecisionBadge';
-import { StateEditorSheet } from '../components/progress/StateEditorSheet';
-import type { GridPhoto } from '../components/progress/PhotoStateGrid';
-import { colors, touch } from '../theme';
+import { DecisionBadge } from '../components/DecisionBadge';
+import { photoBadges, type BadgeWeight, type PhotoBadge } from '../lib/photoBadges';
+import { PhotoViewer } from '../components/PhotoViewer';
+import { useReview } from '../review/ReviewContext';
+import { colors, touch, useTheme } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'History'>;
 
@@ -44,22 +44,51 @@ const FILTERS: { key: HistoryFilter; label: string }[] = [
   { key: 'shared', label: 'Sheet opened' },
 ];
 
-function badgeOf(row: Extract<HistoryRow, { kind: 'photo' }>): DecisionKind | null {
-  if (row.state === 'culled') return 'cull';
-  if (row.state === 'to_edit') return 'edit';
-  if (row.state === 'kept' || row.state === 'done') return 'keep';
-  return null;
+/** Every badge the row wears, through the shared weighted vocabulary
+ * (lib/photoBadges.ts): verdict first, then all four actions in the one
+ * order, each loud while it WAITS and quiet once merely CARRIED
+ * (STATE_MODEL rule 6) — the same badges the grid and deck draw. Live
+ * wins over carried per kind, so a superseding queued action renders
+ * loud over its earlier applied one; a staged cull's live actions demote
+ * to quiet, because they are off every to-do list (livePhotoClause). */
+function badgesOf(row: Extract<HistoryRow, { kind: 'photo' }>): PhotoBadge[] {
+  const suspended = row.state === 'culled' || row.state === 'trashed';
+  const weigh = (live: number, carried: boolean): BadgeWeight | null =>
+    live === 1 ? (suspended ? 'carried' : 'live') : carried ? 'carried' : null;
+  return photoBadges({
+    state: row.state,
+    edit: weigh(row.needs_edit, row.edit_applied === 1),
+    // A queued REMOVAL wears the heart-off badge (grilling Q5); when
+    // suspended it demotes to the carried heart — the gallery favourite
+    // still stands while the switch-off waits.
+    favourite:
+      row.favourite_removing === 1
+        ? suspended
+          ? 'carried'
+          : 'removing'
+        : weigh(row.favourite_live, row.favourite_carried === 1),
+    organize: weigh(row.organize_pending, row.organize_applied_at != null),
+    share: weigh(row.share_live, row.share_applied === 1),
+  });
 }
 
 export function HistoryScreen(_props: Props) {
   const insets = useSafeAreaInsets();
+  const theme = useTheme();
   const db = useSQLiteContext();
-  const { session, restoring, reconcileTrashed } = useSession();
+  const { refresh: refreshReview } = useReview();
+
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [rows, setRows] = useState<HistoryRow[] | null>(null);
   const [next, setNext] = useState<HistoryCursor | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [selected, setSelected] = useState<GridPhoto | null>(null);
+  // codex r9: a rejected read no longer escapes as an unhandled
+  // rejection or flattens into "empty"/"complete". Whatever rows are on
+  // screen stay (rows null → the empty-state area says the read failed;
+  // rows present → a quiet footer says the feed may be truncated), and
+  // the next successful read clears it.
+  const [failed, setFailed] = useState(false);
+  const [viewerId, setViewerId] = useState<string | null>(null);
   // Monotonic request token: a reload invalidates every in-flight fetch
   // (an older filter's result finishing last must not win the state).
   const requestRef = useRef(0);
@@ -72,50 +101,40 @@ export function HistoryScreen(_props: Props) {
   // nothing.
   const reconcilePage = useCallback(
     async (pageRows: HistoryRow[]): Promise<HistoryRow[]> => {
-      // Mid-restore, the durable write could land between resumeSession's
-      // reads and its snapshot install, where reconcileTrashed no-ops (no
-      // session yet) and the stale pre-removal snapshot installs anyway.
-      // Skip — the next page load or focus reconciles.
-      if (restoring) return pageRows;
-      const gone = new Set<string>();
-      for (const row of pageRows) {
-        if (row.kind !== 'photo') continue;
-        const presence = await checkMediaPresence(row.asset_id);
-        if (presence === 'trashed' || presence === 'absent') gone.add(row.asset_id);
-      }
+      // BOUNDED CONCURRENCY (m0.8.1): checkMediaPresence is two native
+      // calls, and a 40-row page ran them 80× in series — the page's
+      // dominant cost on every focus and every "load more".
+      const photoIds = pageRows.filter((row) => row.kind === 'photo').map((row) => row.asset_id);
+      const presences = await mapWithConcurrency(photoIds, 6, (id) => checkMediaPresence(id));
+      const gone = new Set<string>(
+        photoIds.filter((_, i) => presences[i] === 'trashed' || presences[i] === 'absent'),
+      );
       if (gone.size === 0) return pageRows;
       await reconcileExternallyRemoved(db, [...gone], Date.now());
-      // A removed photo may belong to the unfinished active session —
-      // the live snapshot must converge too (no-op for non-members).
-      await reconcileTrashed([...gone]);
+      // The removal may have dissolved a cached group or moved its
+      // survivor to singles — the review queue must observe it.
+      void refreshReview().catch(() => {});
       return pageRows.filter((row) => row.kind !== 'photo' || !gone.has(row.asset_id));
     },
-    [db, reconcileTrashed, restoring],
-  );
-
-  const inActiveSession = useCallback(
-    (id: string) => {
-      // Mid-restore, membership is unknown — treat as active (read-only)
-      // rather than let a direct edit desync the restoring snapshot.
-      if (!session) return restoring;
-      try {
-        session.getState(id);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    [session, restoring],
+    [db, refreshReview],
   );
 
   const reload = useCallback(
     async (which: HistoryFilter) => {
       const token = ++requestRef.current;
-      const page = await getHistoryPage(db, which, null);
-      const rowsNow = await reconcilePage(page.rows);
-      if (requestRef.current !== token) return; // superseded by a newer reload
-      setRows(rowsNow);
-      setNext(page.next);
+      try {
+        const page = await getHistoryPage(db, which, null);
+        const rowsNow = await reconcilePage(page.rows);
+        if (requestRef.current !== token) return; // superseded by a newer reload
+        setRows(rowsNow);
+        setNext(page.next);
+        setFailed(false);
+      } catch {
+        // codex r9: an initial rejection left the screen blank forever
+        // with an unhandled rejection; a focus-refresh rejection kept a
+        // stale feed silently. Mark it and keep what is shown.
+        if (requestRef.current === token) setFailed(true);
+      }
     },
     [db, reconcilePage],
   );
@@ -140,6 +159,12 @@ export function HistoryScreen(_props: Props) {
       if (requestRef.current !== token) return;
       setRows((old) => [...(old ?? []), ...rowsNow]);
       setNext(page.next);
+      setFailed(false);
+    } catch {
+      // codex r9: a later page's rejection silently truncated the feed.
+      // `next` deliberately stays set — the feed is NOT complete — and
+      // the footer below says so; a later scroll or reopen retries.
+      if (requestRef.current === token) setFailed(true);
     } finally {
       setLoadingMore(false);
     }
@@ -166,46 +191,20 @@ export function HistoryScreen(_props: Props) {
             </Text>
             <Text style={styles.rowTime}>{formatDayClock(item.opened_at)}</Text>
           </View>
-          <MaterialCommunityIcons name="share-variant" size={20} color={colors.edit} />
+          <MaterialCommunityIcons name="share-variant" size={20} color={colors.share} />
         </View>
       );
     }
-    const badge = badgeOf(item);
+    const badges = badgesOf(item);
     return (
-      <Pressable
-        style={styles.row}
-        onPress={() =>
-          setSelected({
-            id: item.asset_id,
-            uri: item.uri,
-            takenAt: item.taken_at,
-            effective: classifyPhotoState({ state: item.state, grouped: false }),
-            dbState: item.state,
-          })
-        }
-      >
+      <Pressable style={styles.row} onPress={() => setViewerId(item.asset_id)}>
         <Image source={{ uri: item.uri }} style={styles.thumb} contentFit="cover" />
         <View style={styles.rowBody}>
           <Text style={styles.rowTime}>{formatDayClock(item.activity_at)}</Text>
           <View style={styles.badges}>
-            {badge && <DecisionBadge kind={badge} size={20} />}
-            {(item.favourite_state === 'applied' || item.favourite_state === 'queued_apply') && (
-              <DecisionBadge kind="fav" size={20} />
-            )}
-            {item.organize_applied_at != null && (
-              // folder-clock: organized once, but a NEWER move intent is
-              // pending/erroring — the shown fact is superseded until it
-              // applies (history keeps the event either way).
-              <MaterialCommunityIcons
-                name={
-                  item.organize_state === 'queued' || item.organize_state === 'error'
-                    ? 'folder-clock'
-                    : 'folder-move'
-                }
-                size={18}
-                color={colors.textDim}
-              />
-            )}
+            {badges.map((badge) => (
+              <DecisionBadge key={badge.kind} kind={badge.kind} size={20} weight={badge.weight} />
+            ))}
           </View>
         </View>
       </Pressable>
@@ -218,9 +217,15 @@ export function HistoryScreen(_props: Props) {
         {FILTERS.map((f) => (
           <Pressable
             key={f.key}
-            style={[styles.chip, filter === f.key && styles.chipActive]}
+            style={[
+              styles.chip,
+              filter === f.key && [styles.chipActive, { borderColor: theme.accent }],
+            ]}
             onPress={() => {
               setRows(null);
+              // codex r9: a fresh fetch starts — do not show the old
+              // failure line over its loading state.
+              setFailed(false);
               if (f.key === filter) {
                 // Same filter tapped again: the focus effect keys on
                 // `filter` and will NOT re-run — reload explicitly.
@@ -247,19 +252,45 @@ export function HistoryScreen(_props: Props) {
         onEndReachedThreshold={0.4}
         contentContainerStyle={{ gap: 8, paddingBottom: insets.bottom + 16 }}
         ListEmptyComponent={
-          rows !== null ? (
+          failed ? (
+            // codex r9: the initial read failed — say so with the
+            // empty-state styling instead of a blank screen.
+            <Text style={styles.empty}>
+              Could not read your history just now — pull back and reopen to try again.
+            </Text>
+          ) : rows !== null ? (
             <Text style={styles.empty}>
               Decisions land here as you review — photos deleted outside Afterglow drop out.
             </Text>
           ) : null
         }
+        ListFooterComponent={
+          failed && rows !== null && rows.length > 0 ? (
+            // codex r9: a truncated feed must SAY it is truncated (the
+            // PhotoStateGrid footer's copy family) — and the cursor stays
+            // set, so the feed is never marked complete by a failure.
+            <Text style={styles.empty}>
+              Could not read more of your history just now — pull back and reopen to try again.
+            </Text>
+          ) : null
+        }
       />
-      <StateEditorSheet
-        photo={selected}
-        inActiveSession={selected ? inActiveSession(selected.id) : false}
-        onClose={() => setSelected(null)}
-        onChanged={() => void reload(filter)}
-      />
+      {viewerId !== null &&
+        (() => {
+          const photoRows = (rows ?? []).filter(
+            (r): r is Extract<HistoryRow, { kind: 'photo' }> => r.kind === 'photo',
+          );
+          const index = photoRows.findIndex((r) => r.asset_id === viewerId);
+          if (index < 0) return null;
+          return (
+            <PhotoViewer
+              items={photoRows.map((r) => ({ id: r.asset_id, uri: r.uri, takenAt: r.taken_at }))}
+              initialIndex={index}
+              onClose={() => setViewerId(null)}
+              onChanged={() => void reload(filter).catch(() => {})}
+            />
+          );
+        })()}
     </View>
   );
 }
@@ -271,11 +302,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 11,
     paddingVertical: 6,
     borderRadius: 15,
-    backgroundColor: colors.surfaceRaised,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
   },
-  chipActive: { backgroundColor: colors.editDim, borderColor: colors.edit },
+  // Rule 4: selection is an ACCENT OUTLINE over a neutral lift, never a
+  // fill — a filled chip in edit-blue said "this filter is an edit".
+  // Same shape the Progress chips use.
+  chipActive: { backgroundColor: colors.surfaceRaised },
   chipText: { color: colors.textDim, fontSize: 13, fontWeight: '600' },
   chipTextActive: { color: colors.text },
   row: {
@@ -294,7 +328,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceRaised,
     borderRadius: touch.radius,
     borderWidth: 1,
-    borderColor: colors.edit,
+    // A share EVENT wears share's hue (rule 2) — it was edit-blue.
+    borderColor: colors.share,
     padding: 10,
     gap: 12,
   },

@@ -34,27 +34,40 @@ export interface Cluster {
 }
 
 /**
- * Mobile review states (Companion state machine, PLAN.md):
+ * A photo's VERDICT — layer 1 of the three-layer state model
+ * (docs/STATE_MODEL.md). One per photo, mutually exclusive:
  *
  * ```
- * unreviewed ──duel/single review──┬─▶ culled ─▶ confirmed ─▶ trashed
- *                                  └─▶ kept ──┬─▶ to_edit ─▶ done
- *                                             └───────────▶ done
+ * unreviewed ──review──┬─▶ culled ─▶ trashed   (staged, then executed)
+ *                      └─▶ kept
  * ```
  *
- * `to_edit` and `done` are declared now so m0.2 can adopt them without a
- * core type change; m0.1 only produces the first five.
+ * m0.8.2 shrank this list from six to four. `to_edit` left because a
+ * photo flagged for editing is simply KEPT with a pending edit — an
+ * action, not a verdict — and `done` was renamed `kept` so the verb on
+ * the button and the value in the column are finally the same word.
+ * `confirmed` left because nothing ever wrote it.
+ *
+ * Pending actions (edit, favourite, organize, share) and annotations
+ * (grouped, time-attached, best) are separate layers and never appear
+ * here.
  */
-export const PHOTO_STATES = [
-  'unreviewed',
-  'kept',
-  'culled',
-  'confirmed',
-  'trashed',
-  'to_edit',
-  'done',
-] as const;
+export const PHOTO_STATES = ['unreviewed', 'kept', 'culled', 'trashed'] as const;
 export type PhotoState = (typeof PHOTO_STATES)[number];
+
+/** One compare outcome (m0.1+ duel history — mined by later features).
+ * `keptBoth` carries the DIALOG outcome: true = Keep both, false = the
+ * loser was culled, null = a verdict-free TRIAGE duel (3+ alive — star
+ * and history only). Stats' "kept both %" reads over non-null rows, or
+ * every burst triage would count as a keep-both decision (m0.8.2). */
+export interface DuelRecord {
+  groupId: string;
+  winnerId: string;
+  loserId: string;
+  keptBoth: boolean | null;
+  /** Injected decision time, ms since epoch. */
+  at: number;
+}
 
 /**
  * Desktop flag-to-queue types (keys D/E/M/R/N/T while the slideshow runs).

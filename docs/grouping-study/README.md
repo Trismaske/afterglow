@@ -7,7 +7,7 @@ lives in git (deleted docs `Sessions_m0.8.md` / `Grouping_study_m0.8.md`).
 ## What is committed vs local
 
 **Committed:** the scripts below, plus the frozen CI fixtures:
-`labels-v1.json` (698 adjudicated hard pairs + 96 soft + 7 retired; the
+`labels-v1.json` (698 adjudicated hard pairs + 81 soft + 7 retired; the
 product of four judged rounds and a validation round, all Tristan-verdicted)
 and `embeddings-labeled-v1.json` (vectors for the 428 labeled photos,
 base64 float32, model SHA-256 embedded). v1 is immutable — new judged
@@ -31,6 +31,8 @@ App.tsx per its header), photos via `adb pull`, embeddings via `embed.py`.
 | `eval_compare.py name=npz ...` | multi-model AUC/threshold-sweep comparison on all labels |
 | `analyze.mjs` | dHash-era corpus analyses (histogram, config sweep) — kept for reference |
 | `sheet2.py <npz> <out.html>` | generate a judged round: proposed groups, cross-burst merges, borderline exclusions; skips already-judged sets |
+| `fit_curve.mjs` | Gate-1 fit/re-pin harness: replays the built core engine over the frozen fixtures, fits the time-decay threshold curve, sweeps merge params, prints kept/violations/largest per variant |
+| `score_device.mjs <jsonl>` | Gate-2 recalibration scorer: engine replay + drift stats for DEVICE-computed labeled-photo vectors vs the fixture baseline (captures in `data/*-vectors-cap1024.jsonl`, gitignored) |
 
 ## Running a judged round
 

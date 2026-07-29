@@ -16,6 +16,7 @@ import {
   resolveTrashBatch,
   TRASH_BATCH_LIMIT,
 } from './trashStore';
+import { encodeOrganizeTarget } from './actions';
 import { openTestDb, type TestDb } from './testDb';
 
 const open: TestDb[] = [];
@@ -37,19 +38,42 @@ async function fresh(): Promise<TestDb> {
   return d;
 }
 
-function insertCull(d: TestDb, id: string, extras: Partial<Record<string, unknown>> = {}): void {
+function insertPhoto(d: TestDb, id: string, state: string): void {
   d.raw
     .prepare(
-      `INSERT INTO photos (asset_id, uri, taken_at, day, state, favourite_state, organize_state, needs_edit)
-       VALUES (?, 'content://x', ?, '2026-07-20', 'culled', ?, ?, ?)`,
+      `INSERT INTO photos (asset_id, uri, taken_at, day, state)
+       VALUES (?, 'content://x', ?, '2026-07-20', ?)`,
     )
-    .run(
-      id,
-      AT,
-      (extras.favourite_state as string) ?? 'none',
-      (extras.organize_state as string) ?? 'none',
-      (extras.needs_edit as number) ?? 0,
-    );
+    .run(id, AT, state);
+}
+
+function insertCull(d: TestDb, id: string): void {
+  insertPhoto(d, id, 'culled');
+}
+
+/** Attach a pending action (v18). */
+function attach(
+  d: TestDb,
+  photoId: string,
+  kind: 'edit' | 'favourite' | 'organize' | 'share',
+  state: 'queued' | 'applied' | 'error',
+  target: string | null = null,
+  resolvedAt: number | null = null,
+): void {
+  d.raw
+    .prepare(
+      `INSERT INTO photo_actions (photo_id, kind, state, target, applied_target, queued_at, resolved_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(photoId, kind, state, target, resolvedAt === null ? null : target, AT, resolvedAt);
+}
+
+/** Every action row still attached to a photo, kind -> state. */
+function actionsOf(d: TestDb, photoId: string): Record<string, string> {
+  const rows = d.raw
+    .prepare('SELECT kind, state, target FROM photo_actions WHERE photo_id = ?')
+    .all(photoId) as { kind: string; state: string; target: string | null }[];
+  return Object.fromEntries(rows.map((r) => [r.kind, r.state]));
 }
 
 const absent = async () => 'absent' as const;
@@ -66,7 +90,6 @@ describe('prepareTrashBatch', () => {
         photoId: `p${i}`,
         measuredBytes: 10,
       })),
-      null,
       AT,
     );
     expect(first!.members).toHaveLength(TRASH_BATCH_LIMIT);
@@ -77,7 +100,6 @@ describe('prepareTrashBatch', () => {
         photoId: `p${i}`,
         measuredBytes: 10,
       })),
-      null,
       AT,
     );
     expect(second!.members).toHaveLength(20);
@@ -85,17 +107,8 @@ describe('prepareTrashBatch', () => {
 
   it('only stages culled photos and returns null when nothing is eligible', async () => {
     const d = await fresh();
-    d.raw
-      .prepare(
-        "INSERT INTO photos (asset_id, uri, taken_at, day, state) VALUES ('kept1', 'c://', ?, 'd', 'done')",
-      )
-      .run(AT);
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'kept1', measuredBytes: 5 }],
-      null,
-      AT,
-    );
+    insertPhoto(d, 'kept1', 'kept');
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'kept1', measuredBytes: 5 }], AT);
     expect(batch).toBeNull();
   });
 });
@@ -103,21 +116,13 @@ describe('prepareTrashBatch', () => {
 describe('resolveTrashBatch', () => {
   it('applied + absent → trashed with credit and the C#7 cleanup', async () => {
     const d = await fresh();
-    insertCull(d, 'p1', {
-      favourite_state: 'queued_apply',
-      organize_state: 'queued',
-      needs_edit: 1,
-    });
+    insertCull(d, 'p1');
+    attach(d, 'p1', 'edit', 'queued');
+    attach(d, 'p1', 'favourite', 'queued', '1');
+    attach(d, 'p1', 'organize', 'queued', encodeOrganizeTarget('external_primary', 'Pictures/A/'));
+    attach(d, 'p1', 'share', 'queued');
     d.raw.prepare('INSERT INTO share_cycles (started_at) VALUES (?)').run(AT);
-    d.raw
-      .prepare("INSERT INTO share_queue (photo_id, cycle_id, queued_at) VALUES ('p1', 1, ?)")
-      .run(AT);
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'p1', measuredBytes: 111 }],
-      null,
-      AT,
-    );
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 111 }], AT);
     await markBatchLaunching(asExpo(d), batch!.batchId, AT + 1);
     const result = await resolveTrashBatch(asExpo(d), {
       batchId: batch!.batchId,
@@ -129,17 +134,13 @@ describe('resolveTrashBatch', () => {
     expect(result.creditedBytes).toBe(111);
     expect(result.batchState).toBe('verified');
     const row = d.raw
-      .prepare(
-        'SELECT state, is_present, needs_edit, favourite_state, organize_state FROM photos WHERE asset_id = ?',
-      )
+      .prepare('SELECT state, is_present FROM photos WHERE asset_id = ?')
       .get('p1') as Record<string, unknown>;
     expect(row.state).toBe('trashed');
     expect(row.is_present).toBe(0);
-    expect(row.needs_edit).toBe(0);
-    expect(row.favourite_state).toBe('none');
-    expect(row.organize_state).toBe('none');
-    const share = d.raw.prepare('SELECT COUNT(*) AS n FROM share_queue').get() as { n: number };
-    expect(share.n).toBe(0);
+    // Every outstanding action left; none of them ever completed, so
+    // nothing remains to remember (C#7).
+    expect(actionsOf(d, 'p1')).toEqual({});
     const reservations = d.raw.prepare('SELECT COUNT(*) AS n FROM trash_reservations').get() as {
       n: number;
     };
@@ -149,18 +150,19 @@ describe('resolveTrashBatch', () => {
 
   it('C#7 cleanup also cancels error-state intents so a restore cannot resurrect them', async () => {
     const d = await fresh();
-    insertCull(d, 'p1', { favourite_state: 'error', organize_state: 'error' });
-    d.raw
-      .prepare(
-        "UPDATE photos SET favourite_target = 1, organize_volume = 'external_primary', organize_path = 'Pictures/Trips/' WHERE asset_id = 'p1'",
-      )
-      .run();
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'p1', measuredBytes: 10 }],
-      null,
-      AT,
+    insertCull(d, 'p1');
+    attach(d, 'p1', 'favourite', 'error', '1');
+    attach(
+      d,
+      'p1',
+      'organize',
+      'error',
+      encodeOrganizeTarget('external_primary', 'Pictures/Trips/'),
     );
+    // A favourite that ALREADY applied once, now re-queued and failing:
+    // its permanent record must survive what its live intent does not.
+    attach(d, 'p1', 'share', 'error', null, AT - 1000);
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 10 }], AT);
     await markBatchLaunching(asExpo(d), batch!.batchId, AT + 1);
     await resolveTrashBatch(asExpo(d), {
       batchId: batch!.batchId,
@@ -168,27 +170,22 @@ describe('resolveTrashBatch', () => {
       dialog: 'applied',
       at: AT + 2,
     });
-    const row = d.raw
+    // The two intents that never completed are gone entirely; the one
+    // that did keeps its proof, demoted out of the queue with no target.
+    expect(actionsOf(d, 'p1')).toEqual({ share: 'applied' });
+    const share = d.raw
       .prepare(
-        'SELECT favourite_state, favourite_target, organize_state, organize_volume, organize_path FROM photos WHERE asset_id = ?',
+        "SELECT target, resolved_at FROM photo_actions WHERE photo_id = 'p1' AND kind = 'share'",
       )
-      .get('p1') as Record<string, unknown>;
-    expect(row.favourite_state).toBe('none');
-    expect(row.favourite_target).toBeNull();
-    expect(row.organize_state).toBe('none');
-    expect(row.organize_volume).toBeNull();
-    expect(row.organize_path).toBeNull();
+      .get() as { target: string | null; resolved_at: number | null };
+    expect(share.target).toBeNull();
+    expect(share.resolved_at).toBe(AT - 1000);
   });
 
   it('cancelled dialog releases members back to the cull queue', async () => {
     const d = await fresh();
     insertCull(d, 'p1');
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'p1', measuredBytes: 50 }],
-      null,
-      AT,
-    );
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 50 }], AT);
     const result = await resolveTrashBatch(asExpo(d), {
       batchId: batch!.batchId,
       verify: absent,
@@ -208,12 +205,7 @@ describe('resolveTrashBatch', () => {
   it('unknown verification earns no credit and stays retryable', async () => {
     const d = await fresh();
     insertCull(d, 'p1');
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'p1', measuredBytes: 50 }],
-      null,
-      AT,
-    );
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 50 }], AT);
     await markBatchLaunching(asExpo(d), batch!.batchId, AT + 1);
     const result = await resolveTrashBatch(asExpo(d), {
       batchId: batch!.batchId,
@@ -228,7 +220,6 @@ describe('resolveTrashBatch', () => {
     const retry = await prepareTrashBatch(
       asExpo(d),
       [{ photoId: 'p1', measuredBytes: 50 }],
-      null,
       AT + 3,
     );
     expect(retry!.members).toHaveLength(1);
@@ -238,33 +229,23 @@ describe('resolveTrashBatch', () => {
 describe('reconcileExternallyRemoved', () => {
   it('converges externally-removed photos like a verified trash outcome, without credit', async () => {
     const d = await fresh();
-    d.raw
-      .prepare(
-        `INSERT INTO photos (asset_id, uri, taken_at, day, state, needs_edit, favourite_state, organize_state)
-         VALUES ('p1', 'content://x', ?, '2026-07-20', 'done', 1, 'queued_apply', 'error')`,
-      )
-      .run(AT);
+    insertPhoto(d, 'p1', 'kept');
+    attach(d, 'p1', 'edit', 'queued');
+    attach(d, 'p1', 'favourite', 'queued', '1');
+    attach(d, 'p1', 'organize', 'error', encodeOrganizeTarget('external_primary', 'Pictures/A/'));
+    attach(d, 'p1', 'share', 'queued');
     d.raw.prepare('INSERT INTO share_cycles (started_at) VALUES (?)').run(AT);
-    d.raw
-      .prepare("INSERT INTO share_queue (photo_id, cycle_id, queued_at) VALUES ('p1', 1, ?)")
-      .run(AT);
     await reconcileExternallyRemoved(asExpo(d), ['p1'], AT + 10);
     const row = d.raw
-      .prepare(
-        'SELECT state, is_present, needs_edit, favourite_state, organize_state, culled_at FROM photos WHERE asset_id = ?',
-      )
+      .prepare('SELECT state, is_present, culled_at FROM photos WHERE asset_id = ?')
       .get('p1') as Record<string, unknown>;
     expect(row.state).toBe('trashed');
     // No Afterglow cull decision was made — the lifetime culled count
     // (culled_at markers) must not inflate.
     expect(row.culled_at).toBeNull();
     expect(row.is_present).toBe(0);
-    expect(row.needs_edit).toBe(0);
-    expect(row.favourite_state).toBe('none');
-    expect(row.organize_state).toBe('none');
+    expect(actionsOf(d, 'p1')).toEqual({});
     // The share queue emptied, so its cycle ends; and no credit accrues.
-    const share = d.raw.prepare('SELECT COUNT(*) AS n FROM share_queue').get() as { n: number };
-    expect(share.n).toBe(0);
     const openCycles = d.raw
       .prepare('SELECT COUNT(*) AS n FROM share_cycles WHERE ended_at IS NULL')
       .get() as { n: number };
@@ -274,48 +255,94 @@ describe('reconcileExternallyRemoved', () => {
 });
 
 describe('prepareTrashBatch stageToEditMembers (edited-copy cull)', () => {
-  it('stages a to_edit photo and reserves it in one transaction', async () => {
+  it('stages an edit-queue member and reserves it in one transaction', async () => {
     const d = await fresh();
-    d.raw
-      .prepare(
-        `INSERT INTO photos (asset_id, uri, taken_at, day, state, needs_edit)
-         VALUES ('e1', 'content://x', ?, '2026-07-20', 'to_edit', 1)`,
-      )
-      .run(AT);
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'e1', measuredBytes: 42 }],
-      null,
-      AT,
-      { stageToEditMembers: true },
-    );
+    insertPhoto(d, 'e1', 'kept');
+    attach(d, 'e1', 'edit', 'queued');
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'e1', measuredBytes: 42 }], AT, {
+      stageToEditMembers: true,
+    });
     expect(batch!.members).toHaveLength(1);
-    const row = d.raw
-      .prepare('SELECT state, needs_edit FROM photos WHERE asset_id = ?')
-      .get('e1') as Record<string, unknown>;
-    // Staged AND reserved atomically; needs_edit survives so a
-    // non-trashed outcome reverts to to_edit via unstageCullDirect.
+    const row = d.raw.prepare('SELECT state FROM photos WHERE asset_id = ?').get('e1') as {
+      state: string;
+    };
+    // Staged AND reserved atomically, and the edit RESOLVED in the same
+    // transaction: the editor already wrote the copy, so the edit is
+    // done however the original ends up. A non-trashed outcome still
+    // reverts the verdict, and the permanent resolved_at then survives
+    // the removal cleanup — an edit you really did counts exactly once,
+    // whichever way the copy prompt is answered.
     expect(row.state).toBe('culled');
-    expect(row.needs_edit).toBe(1);
+    expect(actionsOf(d, 'e1')).toEqual({ edit: 'applied' });
+    const resolved = d.raw
+      .prepare("SELECT resolved_at FROM photo_actions WHERE photo_id = 'e1' AND kind = 'edit'")
+      .get() as { resolved_at: number };
+    expect(resolved.resolved_at).toBe(AT);
     const reserved = d.raw.prepare('SELECT photo_id FROM trash_reservations').all();
     expect(reserved).toEqual([{ photo_id: 'e1' }]);
   });
 
-  it('without the option a to_edit member is skipped as before', async () => {
+  it('staging an UNREVIEWED edit-queue member stamps it like any verdict', async () => {
+    // The edited-copy prompt can cull a photo that was never reviewed
+    // (flagging to edit does not decide). The staged cull is a VERDICT,
+    // so reviewed_at first-stamps and decided_at stamps with it — or the
+    // photo stays invisible to every decided_at/reviewed_at consumer
+    // (daily goal, lifetime stats, forecast base rates) while its state
+    // says culled.
     const d = await fresh();
-    d.raw
-      .prepare(
-        `INSERT INTO photos (asset_id, uri, taken_at, day, state, needs_edit)
-         VALUES ('e1', 'content://x', ?, '2026-07-20', 'to_edit', 1)`,
-      )
-      .run(AT);
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'e1', measuredBytes: 42 }],
-      null,
-      AT,
-    );
+    insertPhoto(d, 'e1', 'unreviewed');
+    attach(d, 'e1', 'edit', 'queued');
+    await prepareTrashBatch(asExpo(d), [{ photoId: 'e1', measuredBytes: 42 }], AT, {
+      stageToEditMembers: true,
+    });
+    const row = d.raw
+      .prepare('SELECT state, reviewed_at, decided_at FROM photos WHERE asset_id = ?')
+      .get('e1') as { state: string; reviewed_at: number | null; decided_at: number | null };
+    expect(row).toEqual({ state: 'culled', reviewed_at: AT, decided_at: AT });
+  });
+
+  it('without the option an undecided edit-queue member is skipped', async () => {
+    const d = await fresh();
+    insertPhoto(d, 'e1', 'kept');
+    attach(d, 'e1', 'edit', 'queued');
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'e1', measuredBytes: 42 }], AT);
     expect(batch).toBeNull();
+  });
+
+  it('the completed edit survives the verified removal', async () => {
+    // applyRemovalCleanup DELETES an unresolved action and demotes a
+    // resolved one, so resolving at stage time is what keeps the record.
+    const d = await fresh();
+    insertPhoto(d, 'e1', 'kept');
+    attach(d, 'e1', 'edit', 'queued');
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'e1', measuredBytes: 42 }], AT, {
+      stageToEditMembers: true,
+    });
+    await markBatchLaunching(asExpo(d), batch!.batchId, AT + 1);
+    await resolveTrashBatch(asExpo(d), {
+      batchId: batch!.batchId,
+      verify: absent,
+      dialog: 'applied',
+      at: AT + 2,
+    });
+    expect(
+      (d.raw.prepare("SELECT state FROM photos WHERE asset_id = 'e1'").get() as { state: string })
+        .state,
+    ).toBe('trashed');
+    expect(actionsOf(d, 'e1')).toEqual({ edit: 'applied' });
+  });
+
+  it('a stale prompt whose original left the edit queue stages nothing', async () => {
+    const d = await fresh();
+    insertPhoto(d, 'e1', 'kept'); // the edit was completed and unqueued
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'e1', measuredBytes: 42 }], AT, {
+      stageToEditMembers: true,
+    });
+    expect(batch).toBeNull();
+    expect(
+      (d.raw.prepare('SELECT state FROM photos WHERE asset_id = ?').get('e1') as { state: string })
+        .state,
+    ).toBe('kept');
   });
 });
 
@@ -323,7 +350,7 @@ describe('recovery after process death (P8#3)', () => {
   it('an interrupted preparing batch is released without dispatch', async () => {
     const d = await fresh();
     insertCull(d, 'p1');
-    await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 10 }], null, AT);
+    await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 10 }], AT);
     // Death here — no dispatch. Recovery releases everything.
     const recovered = await recoverTrashBatches(asExpo(d), absent, AT + 10);
     expect(recovered.staleBatches).toBe(1);
@@ -339,12 +366,7 @@ describe('recovery after process death (P8#3)', () => {
   it('an interrupted launching batch with absence is repaired but UNCREDITED', async () => {
     const d = await fresh();
     insertCull(d, 'p1');
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'p1', measuredBytes: 999 }],
-      null,
-      AT,
-    );
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 999 }], AT);
     await markBatchLaunching(asExpo(d), batch!.batchId, AT + 1);
     // Death in the crash window; on restart the URI is absent.
     const recovered = await recoverTrashBatches(asExpo(d), absent, AT + 10);
@@ -368,12 +390,7 @@ describe('recovery after process death (P8#3)', () => {
   it('an interrupted launching batch still present releases back to culled', async () => {
     const d = await fresh();
     insertCull(d, 'p1');
-    const batch = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'p1', measuredBytes: 10 }],
-      null,
-      AT,
-    );
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 10 }], AT);
     await markBatchLaunching(asExpo(d), batch!.batchId, AT + 1);
     await recoverTrashBatches(asExpo(d), present, AT + 10);
     const row = d.raw.prepare('SELECT state FROM photos WHERE asset_id = ?').get('p1') as {
@@ -387,12 +404,7 @@ describe('restore → re-trash generations (P8#4)', () => {
   it('a verified post-restore re-trash counts the next generation exactly once', async () => {
     const d = await fresh();
     insertCull(d, 'p1');
-    const first = await prepareTrashBatch(
-      asExpo(d),
-      [{ photoId: 'p1', measuredBytes: 100 }],
-      null,
-      AT,
-    );
+    const first = await prepareTrashBatch(asExpo(d), [{ photoId: 'p1', measuredBytes: 100 }], AT);
     await markBatchLaunching(asExpo(d), first!.batchId, AT + 1);
     await resolveTrashBatch(asExpo(d), {
       batchId: first!.batchId,
@@ -413,7 +425,6 @@ describe('restore → re-trash generations (P8#4)', () => {
     const second = await prepareTrashBatch(
       asExpo(d),
       [{ photoId: 'p1', measuredBytes: 100 }],
-      null,
       AT + 20,
     );
     await markBatchLaunching(asExpo(d), second!.batchId, AT + 21);
@@ -424,5 +435,36 @@ describe('restore → re-trash generations (P8#4)', () => {
       at: AT + 22,
     });
     expect(await lifetimeReclaimedBytes(asExpo(d))).toBe(200);
+  });
+});
+
+describe('stage-and-reserve star hygiene (final-review round 8)', () => {
+  it('staging an edit-queue member to culled clears a star pointing at it', async () => {
+    const d = await fresh();
+    insertPhoto(d, 'a', 'kept');
+    attach(d, 'a', 'edit', 'queued');
+    insertPhoto(d, 'b', 'unreviewed');
+    d.raw
+      .prepare("INSERT INTO grouping_runs (provenance, created_at) VALUES ('continuous', 1)")
+      .run();
+    d.raw.prepare('INSERT INTO photo_groups (run_id, best_photo_id) VALUES (1, NULL)').run();
+    d.raw
+      .prepare(
+        "INSERT INTO photo_group_assignments (photo_id, group_id, run_id) VALUES ('a', 1, 1), ('b', 1, 1)",
+      )
+      .run();
+    d.raw.prepare("UPDATE photo_groups SET best_photo_id = 'a' WHERE id = 1").run();
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'a', measuredBytes: 10 }], AT, {
+      stageToEditMembers: true,
+    });
+    expect(batch).not.toBeNull();
+    const row = d.raw.prepare('SELECT best_photo_id FROM photo_groups WHERE id = 1').get() as {
+      best_photo_id: string | null;
+    };
+    expect(row.best_photo_id).toBeNull();
+    const photo = d.raw.prepare("SELECT state FROM photos WHERE asset_id = 'a'").get() as {
+      state: string;
+    };
+    expect(photo.state).toBe('culled');
   });
 });

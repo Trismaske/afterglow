@@ -1,179 +1,159 @@
 import React, { useCallback, useMemo } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Image } from 'expo-image';
+import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import type { PhotoState } from '@afterglow/core';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
-import { useSession, type GroupInfo } from '../session/SessionContext';
+import { useReview } from '../review/ReviewContext';
 import { BigButton } from '../components/BigButton';
-import { DecisionBadge, type DecisionKind } from '../components/DecisionBadge';
-import { colors, touch, useTheme } from '../theme';
+import { UnitCard } from '../components/UnitCard';
+import { BadgeCluster } from '../components/DecisionBadge';
+import { colors, useTheme } from '../theme';
 import { formatClock } from '../lib/format';
-import { isFavouriteSelected } from '../lib/favouriteState';
+import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
+import { firstPendingUnit, unitDestination, type TimelineUnit } from '../lib/timeline';
+import { photoBadges, type PhotoBadge } from '../lib/photoBadges';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Groups'>;
 
-const STRIP_THUMBS = 6;
-
 /**
- * Overview of the session: cull groups (thumbnail strip + count), the
- * singles bucket, and a "Continue" button for the linear default flow.
- * m0.5 ("trust the user"): every group row is tappable and opens THAT
- * group's deck — any order, singles any time (even before groups),
- * completed groups re-open in browse/re-decide mode. The entire group card,
- * including every thumbnail, has one navigation action; "End session &
- * apply" banks all decisions made so far by jumping straight to the
- * staged-cull confirmation (unreviewed photos simply stay unreviewed
- * for a later session).
+ * The review overview (m0.8.2, F9): the merged timeline — group cards
+ * and singles-run cards interleaved in ONE newest-first capture order,
+ * the same order the deck's auto-advance walks, so the list never shows
+ * an order the flow does not follow. Every card is tappable and opens
+ * its own deck (any order); decisions land durably at swipe time, so
+ * there is nothing to end or apply.
  */
 export function GroupsScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
-  const { session, label, groups, singleIds, version, needsEdit, favouriteStatus } = useSession();
+  const { timeline, queueCounts, version, actionWeights } = useReview();
 
-  const stats = useMemo(() => {
-    if (!session) return null;
-    const s = session.summary();
-    const singlesPending = singleIds.filter((id) => session.getState(id) === 'unreviewed').length;
-    return { ...s, reviewed: s.total - s.unreviewed, singlesPending };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session, version, singleIds]);
-
-  const nextStep = useMemo(() => {
-    if (!session) return null;
-    if (session.currentGroupId()) return 'Deck' as const;
-    if (session.nextSingle()) return 'Singles' as const;
-    return 'CullList' as const;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session, version]);
-
-  const continueLabel = useMemo(() => {
-    if (!session || !stats) return '';
-    if (nextStep === 'Deck') return 'Review groups';
-    if (nextStep === 'Singles') return `Review singles (${stats.singlesPending})`;
-    return stats.culled > 0 ? `Review cull list (${stats.culled})` : 'Finish up';
-  }, [session, stats, nextStep]);
-
-  const decisionKind = useCallback(
-    (id: string): DecisionKind | null => {
-      if (!session) return null;
-      const state = session.getState(id);
-      if (state === 'culled') return 'cull';
-      if (state === 'kept') return needsEdit(id) ? 'edit' : 'keep';
-      return null;
+  const stateOf = useMemo(() => {
+    const map = new Map<string, PhotoState>();
+    for (const unit of timeline) {
+      const members = unit.kind === 'group' ? unit.group.members : unit.members;
+      for (const m of members) map.set(m.asset_id, m.state);
+    }
+    return map;
+  }, [timeline]);
+  /** Same badge set as the deck (m0.8.1 round 4): verdict plus every
+   * action, none hiding another, each at its own weight (m0.8.2). The
+   * verdict rides into actionWeights so a staged cull's retained actions
+   * badge quiet — they left the queues with it. */
+  const badgesFor = useCallback(
+    (assetId: string, bestPhotoId: string | null): PhotoBadge[] => {
+      const state = stateOf.get(assetId) ?? 'unreviewed';
+      return photoBadges({
+        state,
+        ...actionWeights(assetId, state),
+        best: assetId === bestPhotoId,
+      });
     },
-    [needsEdit, session],
+    [actionWeights, stateOf],
   );
 
-  const renderGroup = useCallback(
-    ({ item: group, index }: { item: GroupInfo; index: number }) => {
-      // A group can be emptied entirely via "not related — single".
-      const first = group.items[0];
-      const displayItems = group.bestId
-        ? [
-            ...group.items.filter((photo) => photo.id === group.bestId),
-            ...group.items.filter((photo) => photo.id !== group.bestId),
-          ]
-        : group.items;
-      return (
-        <Pressable
-          style={styles.groupRow}
-          onPress={() => navigation.navigate('Deck', { groupId: group.id })}
-        >
-          <View style={styles.groupHeader}>
-            <Text style={styles.groupTitle}>
-              Group {index + 1} · {group.items.length} shots
-              {first ? ` · ${formatClock(first.timestamp)}` : ''}
-            </Text>
-            <Text style={[styles.groupStatus, group.complete && styles.groupStatusDone]}>
-              {group.complete ? 'Reviewed · tap to revisit' : 'Pending'}
-            </Text>
-          </View>
-          <View style={styles.strip}>
-            {displayItems.slice(0, STRIP_THUMBS).map((item) => {
-              const decision = decisionKind(item.id);
-              return (
-                <View key={item.id} style={styles.thumbWrap} pointerEvents="none">
-                  <Image
-                    source={{ uri: item.uri }}
-                    style={[
-                      styles.thumb,
-                      item.id === group.bestId && [styles.thumbBest, { borderColor: theme.accent }],
-                    ]}
-                    contentFit="cover"
-                    recyclingKey={item.id}
-                  />
-                  {decision && <DecisionBadge kind={decision} style={styles.decisionBadge} />}
-                  {item.id === group.bestId && (
-                    <DecisionBadge kind="best" accent={theme.accent} style={styles.bestBadge} />
-                  )}
-                  {isFavouriteSelected(favouriteStatus(item.id)) && (
-                    <DecisionBadge kind="fav" style={styles.favouriteBadge} />
-                  )}
-                </View>
-              );
-            })}
-            {group.items.length > STRIP_THUMBS && (
-              <View style={[styles.thumb, styles.thumbMore]}>
-                <Text style={styles.thumbMoreText}>+{group.items.length - STRIP_THUMBS}</Text>
-              </View>
+  const openUnit = useCallback(
+    (unit: TimelineUnit) => {
+      const destination = unitDestination(unit);
+      if (destination.screen === 'Deck')
+        navigation.navigate('Deck', { groupId: destination.groupId });
+      else if (destination.screen === 'Singles')
+        navigation.navigate('Singles', {
+          day: destination.day,
+          from: destination.from,
+          to: destination.to,
+        });
+      else navigation.navigate('CullList');
+    },
+    [navigation],
+  );
+
+  const renderUnit = useCallback(
+    ({ item: unit }: { item: TimelineUnit }) => {
+      if (unit.kind === 'group') {
+        const group = unit.group;
+        const pending = group.members.filter((m) => m.state === 'unreviewed').length;
+        const newest = group.members[0];
+        const displayMembers = group.bestPhotoId
+          ? [
+              ...group.members.filter((m) => m.asset_id === group.bestPhotoId),
+              ...group.members.filter((m) => m.asset_id !== group.bestPhotoId),
+            ]
+          : group.members;
+        return (
+          <UnitCard
+            title={`Group · ${group.members.length} shots · ${labelForDayKey(newest?.day ?? UNDATED_DAY_KEY)}${newest ? ` ${formatClock(newest.taken_at)}` : ''}`}
+            status={pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`}
+            statusDone={pending === 0}
+            members={displayMembers}
+            onPress={() => openUnit(unit)}
+            borderColorOf={(id) => (id === group.bestPhotoId ? theme.accent : undefined)}
+            renderOverlay={(id) => (
+              <BadgeCluster
+                badges={badgesFor(id, group.bestPhotoId)}
+                size={14}
+                accent={theme.accent}
+                style={styles.badges}
+              />
             )}
-          </View>
-        </Pressable>
+          />
+        );
+      }
+      const pending = unit.members.filter((m) => m.state === 'unreviewed').length;
+      return (
+        <UnitCard
+          title={`Singles · ${unit.members.length} photo${unit.members.length === 1 ? '' : 's'} · ${labelForDayKey(unit.day)}`}
+          status={pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`}
+          statusDone={pending === 0}
+          members={unit.members}
+          onPress={() => openUnit(unit)}
+          renderOverlay={(id) => (
+            <BadgeCluster
+              badges={badgesFor(id, null)}
+              size={14}
+              accent={theme.accent}
+              style={styles.badges}
+            />
+          )}
+        />
       );
     },
-    [decisionKind, favouriteStatus, navigation, theme.accent],
+    [badgesFor, openUnit, theme.accent],
   );
 
-  if (!session || !stats) {
-    return (
-      <View style={[styles.root, styles.center]}>
-        <Text style={styles.emptyText}>No active session.</Text>
-      </View>
-    );
-  }
+  // First PENDING unit: a cull-only run stays a browseable card, but
+  // the overview CTA must open review work (lib/timeline.ts).
+  const first = firstPendingUnit(timeline);
+  const total = queueCounts.grouped + queueCounts.singles;
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top + 12 }]}>
-      <Text style={styles.title}>{label}</Text>
+    // The native stack header carries the title + back arrow (and eats
+    // the top inset) — stack screens never re-render their own title or
+    // re-pad insets.top (m0.8.1 consistency sweep).
+    <View style={[styles.root, { paddingTop: 12 }]}>
       <Text style={styles.subtitle}>
-        {stats.reviewed} of {stats.total} reviewed · {stats.culled} staged to cull
+        {total.toLocaleString()} photo{total === 1 ? '' : 's'} to review ·{' '}
+        {queueCounts.groups.toLocaleString()} group{queueCounts.groups === 1 ? '' : 's'} ·{' '}
+        {queueCounts.singles.toLocaleString()} single{queueCounts.singles === 1 ? '' : 's'}
       </Text>
       <FlatList
-        data={groups}
-        keyExtractor={(g) => g.id}
-        renderItem={renderGroup}
+        data={timeline}
+        keyExtractor={(unit) =>
+          unit.kind === 'group' ? `g:${unit.group.groupId}` : `r:${unit.day}:${unit.to}`
+        }
+        renderItem={renderUnit}
         contentContainerStyle={styles.list}
         extraData={version}
-        ListFooterComponent={
-          <Pressable style={styles.groupRow} onPress={() => navigation.navigate('Singles')}>
-            <View style={styles.groupHeader}>
-              <Text style={styles.groupTitle}>Singles · {singleIds.length} photos</Text>
-              <Text
-                style={[styles.groupStatus, stats.singlesPending === 0 && styles.groupStatusDone]}
-              >
-                {stats.singlesPending === 0 ? 'Reviewed' : `${stats.singlesPending} pending`}
-              </Text>
-            </View>
-          </Pressable>
-        }
+        ListEmptyComponent={<Text style={styles.emptyText}>Nothing left to review.</Text>}
       />
       <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
-        {nextStep && (
-          <BigButton
-            label={continueLabel}
-            color={theme.accent}
-            textColor={theme.onAccent}
-            onPress={() => navigation.navigate(nextStep)}
-          />
-        )}
-        {stats.reviewed > 0 && nextStep !== 'CullList' && (
-          <Pressable style={styles.endEarly} onPress={() => navigation.navigate('CullList')}>
-            <Text style={styles.endEarlyText}>
-              End session & apply — bank {stats.reviewed} decision{stats.reviewed === 1 ? '' : 's'}
-            </Text>
-          </Pressable>
-        )}
+        <BigButton
+          label={first ? 'Continue reviewing' : 'Review cull list'}
+          color={theme.accent}
+          textColor={theme.onAccent}
+          onPress={() => (first ? openUnit(first) : navigation.navigate('CullList'))}
+        />
       </View>
     </View>
   );
@@ -181,37 +161,10 @@ export function GroupsScreen({ navigation }: Props) {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 16 },
-  center: { alignItems: 'center', justifyContent: 'center' },
-  emptyText: { color: colors.textDim, fontSize: 16 },
-  title: { color: colors.text, fontSize: 24, fontWeight: '800' },
-  subtitle: { color: colors.textDim, fontSize: 15, marginTop: 2, marginBottom: 10 },
+  emptyText: { color: colors.textDim, fontSize: 14, textAlign: 'center', marginTop: 40 },
+  subtitle: { color: colors.textDim, fontSize: 14, marginBottom: 10 },
   list: { gap: 12, paddingBottom: 12 },
-  groupRow: {
-    backgroundColor: colors.surface,
-    borderRadius: touch.radius,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: 12,
-    gap: 10,
-  },
-  groupHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  groupTitle: { color: colors.text, fontSize: 15, fontWeight: '600', flexShrink: 1 },
-  groupStatus: { color: colors.textDim, fontSize: 13 },
-  groupStatusDone: { color: colors.keep },
-  strip: { flexDirection: 'row', gap: 6 },
-  thumbWrap: { flex: 1 },
-  thumb: { width: '100%', aspectRatio: 1, borderRadius: 8, backgroundColor: colors.surfaceRaised },
-  thumbBest: { borderWidth: 2 },
-  decisionBadge: {
-    position: 'absolute',
-    top: 2,
-    right: 2,
-  },
-  bestBadge: { position: 'absolute', top: 2, left: 2 },
-  favouriteBadge: { position: 'absolute', bottom: 2, left: 2 },
-  thumbMore: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  thumbMoreText: { color: colors.textDim, fontWeight: '700' },
+  // Wrapping cluster inside the thumbnail — every badge stays visible.
+  badges: { position: 'absolute', right: 2, bottom: 2, left: 2 },
   footer: { paddingTop: 8, gap: 8 },
-  endEarly: { minHeight: 44, alignItems: 'center', justifyContent: 'center' },
-  endEarlyText: { color: colors.textDim, fontSize: 14, fontWeight: '700' },
 });

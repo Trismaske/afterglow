@@ -1,31 +1,67 @@
 /**
  * Shared progress page body (m0.4 stage 3): state summary (tappable
  * filters) + filtered photo grid + per-photo state editor sheet. Used by
- * both the Day progress screen (scope = one local day, plus a "Review
- * this day" CTA) and the Global progress screen (scope = the Home
- * screen's selected rolling range) — same accounting, same components.
+ * the Day progress screen (one local day, plus a "Review this day" CTA)
+ * and the library-wide Progress screen — same accounting, same
+ * components.
+ *
+ * m0.8.2: callers pass ONE `target`, not a heading plus a DB scope plus
+ * a MediaStore range. The old quartet had to be kept consistent by hand
+ * at every call site (a day's label, its `{day}` scope and its ms range
+ * are three views of one fact), and the library caller passed the whole
+ * library in all three — the range was a parameter nothing varied.
  */
-import React, { useCallback, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
 import {
   computeBreakdown,
-  donePct,
+  reviewedOf,
+  reviewedPct,
   type EffectiveState,
   type ProgressFilter,
   type StateBreakdown,
 } from '../../lib/progress';
-import { getStateCountsInScope, type PhotoScope } from '../../db/store';
+import {
+  countUndatedAlive,
+  getBacklogFrontier,
+  getBurstStats,
+  getCaptureHistogram,
+  getStateCountsInScope,
+  getStorageBreakdown,
+  scopeKeyOf,
+  type BacklogFrontier,
+  type BurstStats,
+  type MonthBucket,
+  type PhotoScope,
+  type StorageBreakdown,
+} from '../../db/store';
+import {
+  buildHistogram,
+  frontierLine,
+  keepsPerGroup,
+  rangeOfMonth,
+  redundantFrames,
+  type Histogram,
+} from '../../lib/libraryInsights';
+import { formatBytes } from '../../lib/format';
+import { labelForDayKey, rangeOfDayKey, UNDATED_DAY_KEY } from '../../lib/dates';
 import { countPhotosInRange } from '../../lib/media';
 import { resolveSources } from '../../lib/sourceCatalog';
-import { useSession } from '../../session/SessionContext';
 import { StateProgressBar } from '../StateProgressBar';
 import { colors, touch, useTheme } from '../../theme';
-import { stateMetaFor, STATE_ORDER } from './stateMeta';
+import {
+  ACTION_META,
+  ACTION_ORDER,
+  actionFilterOf,
+  filterLabel,
+  VERDICT_META,
+  VERDICT_ORDER,
+} from './stateMeta';
 import { PhotoStateGrid, type GridPhoto } from './PhotoStateGrid';
-import { StateEditorSheet } from './StateEditorSheet';
+import { PhotoViewer, type ViewerItem } from '../PhotoViewer';
 
 interface ResolvedSrc {
   roots: string[] | null;
@@ -36,63 +72,308 @@ function countOf(b: StateBreakdown, state: EffectiveState): number {
   switch (state) {
     case 'unreviewed':
       return b.unreviewed;
-    case 'in_group':
-      return b.inGroups;
     case 'kept':
       return b.kept;
-    case 'to_edit':
-      return b.toEdit;
     case 'staged':
       return b.staged;
-    case 'done':
-      return b.done;
   }
 }
 
-export function ProgressView({
-  heading,
-  scope,
-  startMs,
-  endMs,
-  renderCta,
+/**
+ * What this page is looking at (m0.8.2). One discriminated target
+ * replaces the old heading + scope + startMs + endMs quartet: those four
+ * had to be kept mutually consistent by every caller, and the global one
+ * always passed the whole library anyway.
+ */
+export type ProgressTarget = { kind: 'library' } | { kind: 'day'; day: string };
+
+/** The three one-line insights under the histogram, already worded.
+ * Each is null when there is nothing true to say. */
+interface LibraryInsightLines {
+  histogram: Histogram;
+  frontier: string | null;
+  storage: string | null;
+  burst: string | null;
+}
+
+/** "Nov 2024" for a "YYYY-MM" key; the undated bucket names itself. */
+function monthTitle(key: string): string {
+  if (key === UNDATED_DAY_KEY) return 'Undated';
+  const [year, month] = key.split('-').map(Number);
+  return new Date(year, month - 1, 1).toLocaleDateString(undefined, {
+    month: 'long',
+    year: 'numeric',
+  });
+}
+
+function buildInsightLines(
+  buckets: MonthBucket[],
+  frontier: BacklogFrontier,
+  storage: StorageBreakdown,
+  burst: BurstStats,
+): LibraryInsightLines {
+  const libraryBytes = storage.bytes.kept + storage.bytes.staged + storage.bytes.unreviewed;
+  const keeps = keepsPerGroup(burst);
+  const redundant = redundantFrames(burst);
+  return {
+    histogram: buildHistogram(buckets),
+    frontier: frontierLine(frontier, monthTitle),
+    storage:
+      libraryBytes === 0
+        ? null
+        : // "your library", never "these photos": these lines stay
+          // library-wide while the chips and grid above them narrow to a
+          // selected month, and a demonstrative would claim otherwise.
+          `${formatBytes(libraryBytes)} across your library` +
+          (storage.bytes.staged > 0
+            ? ` · ${formatBytes(storage.bytes.staged)} staged to free`
+            : '') +
+          // Sizes land with the scan, so an in-progress library would
+          // otherwise present a partial total as the whole truth.
+          (storage.unsized > 0 ? ` · ${storage.unsized} not yet sized` : ''),
+    burst:
+      burst.groups === 0
+        ? null
+        : `${redundant.toLocaleString()} near-duplicate frame${redundant === 1 ? '' : 's'} in ` +
+          `${burst.groups.toLocaleString()} group${burst.groups === 1 ? '' : 's'}` +
+          (keeps === null ? '' : ` · you keep 1 of ${keeps.toFixed(1)}`),
+  };
+}
+
+/**
+ * Months across the library, each bar shaded by how much of that month
+ * is reviewed. Tapping one filters the grid; tapping it again clears.
+ */
+function CaptureHistogram({
+  histogram,
+  selected,
+  accent,
+  onSelect,
 }: {
+  histogram: Histogram;
+  selected: string | null;
+  accent: string;
+  onSelect: (key: string) => void;
+}) {
+  const scroller = useRef<ScrollView>(null);
+  // Open at the RECENT end: newest photos are where review actually
+  // happens, and a library spanning years would otherwise open on a
+  // decade-old month. Only on first layout — re-scrolling on every
+  // render would fight the user's own scrolling — and NEVER while a
+  // month is selected: selecting one reloads the grid, and jumping the
+  // chart back to today would strand the selected bar off-screen where
+  // it cannot be tapped again to clear (device-observed).
+  const settled = useRef(false);
+  if (selected !== null) settled.current = true;
+  return (
+    <View style={styles.histogramBlock}>
+      <ScrollView
+        ref={scroller}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.histogramContent}
+        onContentSizeChange={() => {
+          if (settled.current) return;
+          settled.current = true;
+          scroller.current?.scrollToEnd({ animated: false });
+        }}
+      >
+        {histogram.bars.map((bar) => {
+          const active = selected === bar.key;
+          return (
+            <Pressable
+              key={bar.key}
+              // A gap after the undated bar keeps its tick clear of the
+              // first month's and shows it standing outside the timeline.
+              style={[styles.histogramColumn, bar.undated && styles.histogramUndated]}
+              onPress={() => onSelect(bar.key)}
+              accessibilityLabel={`${bar.label}: ${bar.reviewed} of ${bar.total} reviewed`}
+            >
+              {/* Selection is an OUTLINE around the column, never a fill
+                  (docs/STATE_MODEL.md rule 4): filling the selected bar
+                  with the accent overwrote the one thing the bar is for
+                  — how much of that month is reviewed. */}
+              <View style={[styles.histogramPlot, active && { borderColor: accent }]}>
+                <View
+                  style={[
+                    styles.histogramBar,
+                    {
+                      // An EMPTY month draws nothing: a gap-filled month
+                      // with a stub would claim photos it does not have.
+                      height: bar.total === 0 ? 2 : `${Math.max(4, Math.round(bar.height * 100))}%`,
+                      backgroundColor: bar.total === 0 ? colors.border : colors.surfaceRaised,
+                    },
+                  ]}
+                >
+                  {bar.total > 0 && (
+                    <View
+                      style={[
+                        styles.histogramReviewed,
+                        {
+                          height: `${Math.round(bar.reviewedFraction * 100)}%`,
+                          backgroundColor: colors.keep,
+                        },
+                      ]}
+                    />
+                  )}
+                </View>
+              </View>
+              {/* Two rows: quarters on top so a 3-letter month has room,
+                  years beneath their January. */}
+              <Text style={[styles.histogramTick, active && { color: accent }]} numberOfLines={1}>
+                {bar.monthTick ?? ''}
+              </Text>
+              <Text style={[styles.histogramYear, active && { color: accent }]} numberOfLines={1}>
+                {bar.yearTick ?? ''}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
+/** Heading, DB scope and MediaStore range are all DERIVED from the
+ * target, so they cannot disagree with each other. */
+function resolveTarget(target: ProgressTarget): {
   heading: string;
-  /** DB-side scope (day column for Day progress, taken_at range otherwise). */
   scope: PhotoScope;
-  /** MediaStore-side range (ms). */
   startMs: number;
   endMs: number;
+} {
+  if (target.kind === 'library') {
+    // Open-ended on purpose: undated photos count too (media.ts bound
+    // contract), which is what makes this the whole library.
+    return {
+      heading: 'All photos',
+      scope: { startMs: 0, endMs: Number.POSITIVE_INFINITY },
+      startMs: 0,
+      endMs: Number.POSITIVE_INFINITY,
+    };
+  }
+  // The Unknown-day pseudo-day has no calendar range; its tracked rows
+  // are its population, so the ms range stays open-ended.
+  if (target.day === UNDATED_DAY_KEY) {
+    return {
+      heading: labelForDayKey(UNDATED_DAY_KEY),
+      scope: { day: target.day },
+      startMs: 0,
+      endMs: Number.POSITIVE_INFINITY,
+    };
+  }
+  const range = rangeOfDayKey(target.day);
+  return {
+    heading: range.label,
+    scope: { day: target.day },
+    // INCLUSIVE range → EXCLUSIVE MediaStore query (see the month filter
+    // below): widen by 1 ms so an exact-midnight photo stays counted.
+    startMs: range.startMs > 0 ? range.startMs - 1 : 0,
+    endMs: range.endMs + 1,
+  };
+}
+
+export function ProgressView({
+  target,
+  renderCta,
+}: {
+  target: ProgressTarget;
   /** Optional CTA (Day progress: "Review this day"). */
   renderCta?: (breakdown: StateBreakdown) => React.ReactNode;
 }) {
+  const base = useMemo(() => resolveTarget(target), [target]);
+  /** Month filter driven by the histogram ("YYYY-MM", or the undated
+   * bucket key). Null = the whole target. */
+  const [month, setMonth] = useState<string | null>(null);
+  // A selected month narrows BOTH sides — the counts above and the grid
+  // below — so the chips always describe the photos actually shown.
+  const { heading, scope, startMs, endMs } = useMemo(() => {
+    if (month === null) return base;
+    if (month === UNDATED_DAY_KEY)
+      return {
+        heading: base.heading,
+        scope: { day: UNDATED_DAY_KEY } as PhotoScope,
+        startMs: 0,
+        endMs: Number.POSITIVE_INFINITY,
+      };
+    const range = rangeOfMonth(month);
+    return {
+      heading: base.heading,
+      scope: { startMs: range.startMs, endMs: range.endMs } as PhotoScope,
+      // INCLUSIVE bounds → EXCLUSIVE MediaStore query: the DB side takes
+      // the scope's BETWEEN inclusively, but countPhotosInRange renders
+      // `DATE_TAKEN > start AND DATE_TAKEN < end` — a photo at exactly
+      // midnight on the month boundary would vanish from the denominator
+      // only. Widen by 1 ms, exactly as the scan's range pager does.
+      startMs: range.startMs > 0 ? range.startMs - 1 : 0,
+      endMs: range.endMs + 1,
+    };
+  }, [base, month]);
   const insets = useSafeAreaInsets();
   const db = useSQLiteContext();
   const { accent } = useTheme();
-  const stateMeta = useMemo(() => stateMetaFor(accent), [accent]);
-  const sessionCtx = useSession();
   const [src, setSrc] = useState<ResolvedSrc | null>(null);
-  const [data, setData] = useState<{ breakdown: StateBreakdown; trashed: number } | null>(null);
+  // Tagged with the scopeKey that PRODUCED it: the fail-closed keep-last
+  // below holds counts across a failed refresh, but only within the SAME
+  // scope — a histogram-month tap must not keep rendering the broader
+  // scope's totals over the narrowed grid (and a failed narrow count must
+  // read as loading, not as the old scope's numbers forever).
+  const [data, setData] = useState<{
+    scopeKey: string;
+    breakdown: StateBreakdown;
+    trashed: number;
+  } | null>(null);
   const [filter, setFilter] = useState<ProgressFilter>('all');
-  const [selected, setSelected] = useState<GridPhoto | null>(null);
+  const [viewer, setViewer] = useState<{ items: ViewerItem[]; index: number } | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
-  const scopeKey = 'day' in scope ? `d:${scope.day}` : `r:${scope.startMs}:${scope.endMs}`;
+  const scopeKey = scopeKeyOf(scope);
+  /** The counts, only when they describe the CURRENT scope; otherwise
+   * the loading presentation renders. Keep-last still works within an
+   * unchanged scope, where the tag matches by construction. */
+  const scopedData = data !== null && data.scopeKey === scopeKey ? data : null;
 
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
       (async () => {
         // Respect the photo-source folder filter (m0.3.1) on both sides.
-        const sources = await resolveSources(db).catch(() => null);
-        const roots = sources?.roots ?? null;
-        const albumIds = sources?.albumIds ?? null;
+        // FAIL CLOSED: a resolution failure keeps the previously rendered
+        // scope (or stays loading before any success) — null's meaning is
+        // "all folders", which would silently broaden a narrowed source.
+        let sources: Awaited<ReturnType<typeof resolveSources>>;
+        try {
+          sources = await resolveSources(db);
+        } catch (error) {
+          console.warn('[progress] source resolution failed — scope kept:', String(error));
+          return;
+        }
+        const roots = sources.roots ?? null;
+        const albumIds = sources.albumIds ?? null;
+        // The Unknown-day pseudo-day cannot be counted via MediaStore
+        // (no DATE_TAKEN query) — the tracked rows ARE its population.
+        const undatedScope = 'day' in scope && scope.day === UNDATED_DAY_KEY;
+        // FAIL CLOSED (m0.8.2): a failed MediaStore count used to become
+        // 0, and `computeBreakdown` would then happily report "10 of 0
+        // reviewed" at some impossible percentage. A count we could not
+        // take is not a count of zero — keep whatever is on screen and
+        // let the next focus try again.
         const [msTotal, counts] = await Promise.all([
-          countPhotosInRange(startMs, endMs, albumIds).catch(() => 0),
+          undatedScope
+            ? countUndatedAlive(db, roots)
+            : countPhotosInRange(startMs, endMs, albumIds).catch((error): null => {
+                console.warn('[progress] corpus count failed — numbers kept:', String(error));
+                return null;
+              }),
           getStateCountsInScope(db, scope, roots),
         ]);
-        if (cancelled) return;
+        if (cancelled || msTotal === null) return;
         setSrc({ roots, albumIds });
-        setData({ breakdown: computeBreakdown(msTotal, counts), trashed: counts.trashed });
+        setData({
+          scopeKey,
+          breakdown: computeBreakdown(msTotal, counts),
+          trashed: counts.trashed,
+        });
       })();
       return () => {
         cancelled = true;
@@ -102,22 +383,42 @@ export function ProgressView({
     }, [db, scopeKey, startMs, endMs, refreshTick]),
   );
 
-  /** Direct DB edits would desync the live session snapshot — read-only.
-   * Mid-restore, membership is unknown, so everything reads as active. */
-  const isInActiveSession = useCallback(
-    (id: string): boolean => {
-      const session = sessionCtx.session;
-      if (!session) return sessionCtx.restoring;
-      try {
-        session.getState(id);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    // version ties this to session mutations.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sessionCtx.session, sessionCtx.version, sessionCtx.restoring],
+  /**
+   * The library insights (m0.8.2), loaded once per focus for the library
+   * target only — a single day has no months to plot, no frontier to
+   * report, and its storage share is noise.
+   *
+   * Deliberately NOT re-run per month selection: these describe the whole
+   * library, and recomputing them for a filtered month would answer a
+   * different question than the one the lines ask.
+   */
+  const [insights, setInsights] = useState<LibraryInsightLines | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      if (target.kind !== 'library') return;
+      let cancelled = false;
+      void (async () => {
+        try {
+          const roots = (await resolveSources(db)).roots ?? null;
+          const [buckets, frontier, storage, burst] = await Promise.all([
+            getCaptureHistogram(db, roots),
+            getBacklogFrontier(db, roots),
+            getStorageBreakdown(db, roots),
+            getBurstStats(db, roots),
+          ]);
+          if (cancelled) return;
+          setInsights(buildInsightLines(buckets, frontier, storage, burst));
+        } catch (error) {
+          // Same fail-closed rule as the counts: keep whatever is shown
+          // rather than drawing insights over an unscoped library.
+          console.warn('[progress] insights unavailable — previous kept:', String(error));
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [db, target.kind, refreshTick]),
   );
 
   const toggleFilter = useCallback((state: EffectiveState) => {
@@ -127,74 +428,144 @@ export function ProgressView({
   const onChanged = useCallback(() => setRefreshTick((t) => t + 1), []);
 
   const header = useMemo(() => {
-    if (!data) return <View />;
-    const b = data.breakdown;
-    const pct = donePct(b);
+    if (!scopedData) return <View />;
+    const b = scopedData.breakdown;
+    const reviewed = reviewedOf(b);
+    const pct = reviewedPct(b);
     return (
       <View style={styles.header}>
-        <Text style={styles.title}>{heading}</Text>
+        {/* The library page's heading used to duplicate the navigation
+            title ("Progress") one line above it; only a day needs naming
+            (m0.8.2). */}
+        {target.kind === 'day' && <Text style={styles.title}>{heading}</Text>}
         <Text style={styles.subtitle}>
           {b.total === 0
             ? 'No photos here.'
-            : b.done === b.total
-              ? `Inbox zero — all ${b.total} photos done`
-              : `${b.done} of ${b.total} photos done · ${pct}%`}
+            : reviewed === b.total
+              ? `All ${b.total} photos reviewed`
+              : `${reviewed} of ${b.total} photos reviewed · ${pct}%`}
         </Text>
 
+        {/* A COMPOSITION bar, not a progress bar — the chips below carry
+            its colours so the two read as one control. Before m0.8.2 the
+            "in groups" segment (unreviewed, merely grouped) filled the
+            accent colour directly under a line saying 0% reviewed. */}
         <StateProgressBar
           height={14}
           total={b.total}
           segments={[
-            { count: b.done, color: colors.keep },
-            { count: b.toEdit, color: colors.edit },
+            { count: b.kept, color: colors.keep },
             { count: b.staged, color: colors.cull },
-            { count: b.kept, color: colors.keepDim },
-            { count: b.inGroups, color: accent },
-            // unreviewed = the empty track
+            // Unreviewed is the empty track: fill means DECIDED, so the
+            // coloured share always equals the percentage above (rule 1).
+          ]}
+          // Grouping rides UNDER the bar on its own plane, spanning every
+          // verdict, so an annotation can never read as a decision (rule 5).
+          grouped={[
+            { count: b.grouped.kept, of: b.kept },
+            { count: b.grouped.staged, of: b.staged },
+            { count: b.grouped.unreviewed, of: b.unreviewed },
           ]}
         />
 
-        <View style={styles.rows}>
-          {STATE_ORDER.map((state) => {
-            const meta = stateMeta[state];
+        <View style={styles.chips}>
+          {VERDICT_ORDER.map((state) => {
+            const meta = VERDICT_META[state];
             const active = filter === state;
             return (
               <Pressable
                 key={state}
-                style={[
-                  styles.stateRow,
-                  active && [styles.stateRowActive, { borderColor: accent }],
-                ]}
+                style={[styles.chip, active && [styles.chipActive, { borderColor: accent }]]}
                 onPress={() => toggleFilter(state)}
+                accessibilityLabel={`${meta.label}: ${countOf(b, state)}`}
               >
-                <View style={[styles.swatch, { backgroundColor: meta.color }]} />
-                <View style={styles.stateBody}>
-                  <Text style={styles.stateLabel}>{meta.label}</Text>
-                  <Text style={styles.stateHint}>{meta.hint}</Text>
-                </View>
-                <Text style={styles.stateCount}>{countOf(b, state)}</Text>
+                <View style={[styles.chipSwatch, { backgroundColor: meta.color }]} />
+                <Text style={styles.chipCount}>{countOf(b, state)}</Text>
+                <Text style={styles.chipLabel} numberOfLines={2}>
+                  {meta.label}
+                </Text>
               </Pressable>
             );
           })}
         </View>
-        <Text style={styles.footnote}>
-          Tap a state to filter the photos below — tap again for all states. Tap a photo to change
-          its state.
-        </Text>
+        {/* Row 2: PENDING ACTIONS. A separate row because they are a
+            separate layer — a photo can be kept AND queued to share, so
+            these never replace a verdict (docs/STATE_MODEL.md). */}
+        <View style={styles.chips}>
+          {ACTION_ORDER.map((kind) => {
+            const meta = ACTION_META[kind];
+            const value = actionFilterOf(kind);
+            const active = filter === value;
+            return (
+              <Pressable
+                key={kind}
+                style={[styles.chip, active && [styles.chipActive, { borderColor: accent }]]}
+                onPress={() => setFilter((current) => (current === value ? 'all' : value))}
+                accessibilityLabel={`${meta.label} queued: ${b.actions[kind]}`}
+              >
+                <View style={[styles.chipSwatch, { backgroundColor: meta.color }]} />
+                <Text style={styles.chipCount}>{b.actions[kind]}</Text>
+                <Text style={styles.chipLabel} numberOfLines={2}>
+                  {meta.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <Text style={styles.footnote}>Tap a state to filter · tap a photo to change it.</Text>
+
+        {/* The histogram is NAVIGATION: tapping a month filters the grid
+            below, so seeing where the backlog sits and going to work on
+            it are the same control. A single day has no months to plot. */}
+        {target.kind === 'library' && insights !== null && insights.histogram.bars.length > 0 && (
+          <CaptureHistogram
+            histogram={insights.histogram}
+            selected={month}
+            accent={accent}
+            onSelect={(key) => setMonth((current) => (current === key ? null : key))}
+          />
+        )}
+
+        {target.kind === 'library' && insights !== null && (
+          <>
+            {insights.frontier !== null && (
+              <Text style={styles.insightLine}>{insights.frontier}</Text>
+            )}
+            {insights.storage !== null && (
+              <Text style={styles.insightLine}>{insights.storage}</Text>
+            )}
+            {insights.burst !== null && <Text style={styles.insightLine}>{insights.burst}</Text>}
+          </>
+        )}
 
         {renderCta?.(b)}
 
-        <Text style={styles.gridLabel}>
-          {filter === 'all' ? 'Photos · all states' : `Photos · ${stateMeta[filter].label}`}
-          {filter === 'done' && data.trashed > 0
-            ? `  (${data.trashed} trashed — files gone, not shown)`
-            : ''}
-        </Text>
+        <View style={styles.gridLabelRow}>
+          <Text style={styles.gridLabel}>
+            {filter === 'all' ? 'Photos · all states' : `Photos · ${filterLabel(filter)}`}
+            {filter === 'kept' && scopedData.trashed > 0
+              ? `  (${scopedData.trashed} trashed — files gone, not shown)`
+              : ''}
+          </Text>
+          {/* An explicit way out of a month filter. Tapping the bar again
+              also clears it, but that means finding one 14 dp column
+              again in a chart that may have scrolled — not a way out a
+              user should have to hunt for. */}
+          {month !== null && (
+            <Pressable
+              style={[styles.monthPill, { borderColor: accent }]}
+              onPress={() => setMonth(null)}
+              accessibilityLabel={`Clear the ${monthTitle(month)} filter`}
+            >
+              <Text style={[styles.monthPillText, { color: accent }]}>{monthTitle(month)} ✕</Text>
+            </Pressable>
+          )}
+        </View>
       </View>
     );
-  }, [data, heading, filter, toggleFilter, renderCta, accent, stateMeta]);
+  }, [scopedData, heading, filter, toggleFilter, renderCta, accent, insights, month, target.kind]);
 
-  if (!data || !src) {
+  if (!scopedData || !src) {
     return (
       <View style={[styles.loadingRoot]}>
         <Text style={styles.loadingText}>Loading…</Text>
@@ -214,14 +585,21 @@ export function ProgressView({
         refreshKey={refreshTick}
         header={header}
         bottomInset={insets.bottom}
-        onPhotoPress={setSelected}
+        onPhotoPress={(_photo, siblings, index) =>
+          setViewer({
+            items: siblings.map((g) => ({ id: g.id, uri: g.uri, takenAt: g.takenAt })),
+            index,
+          })
+        }
       />
-      <StateEditorSheet
-        photo={selected}
-        inActiveSession={selected ? isInActiveSession(selected.id) : false}
-        onClose={() => setSelected(null)}
-        onChanged={onChanged}
-      />
+      {viewer && (
+        <PhotoViewer
+          items={viewer.items}
+          initialIndex={viewer.index}
+          onClose={() => setViewer(null)}
+          onChanged={onChanged}
+        />
+      )}
     </>
   );
 }
@@ -237,35 +615,95 @@ const styles = StyleSheet.create({
   header: { paddingHorizontal: 2, paddingTop: 16, paddingBottom: 12, gap: 14 },
   title: { color: colors.text, fontSize: 24, fontWeight: '800' },
   subtitle: { color: colors.textDim, fontSize: 15, marginTop: -8 },
-  rows: {
-    backgroundColor: colors.surface,
-    borderRadius: touch.radius,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingVertical: 4,
-  },
-  stateRow: {
-    flexDirection: 'row',
+  // Five columns instead of five rows (m0.8.2): the same filters and
+  // counts in ~130 px instead of ~790, which is what buys the histogram
+  // and insight lines their space above the grid.
+  chips: { flexDirection: 'row', gap: 6, marginTop: -4 },
+  chip: {
+    flex: 1,
     alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    gap: 3,
+    paddingVertical: 8,
+    paddingHorizontal: 2,
     borderRadius: touch.radius - 4,
     borderWidth: 1,
     borderColor: 'transparent',
+    backgroundColor: colors.surface,
+    // Android's minimum touch target; the stacked content clears it
+    // anyway, but a filter you cannot reliably hit is not a filter.
+    minHeight: 48,
   },
-  stateRowActive: { backgroundColor: colors.surfaceRaised },
-  swatch: { width: 14, height: 14, borderRadius: 4 },
-  stateBody: { flex: 1 },
-  stateLabel: { color: colors.text, fontSize: 15, fontWeight: '600' },
-  stateHint: { color: colors.textDim, fontSize: 12 },
-  stateCount: { color: colors.text, fontSize: 18, fontWeight: '800' },
+  chipActive: { backgroundColor: colors.surfaceRaised },
+  chipSwatch: { width: 12, height: 4, borderRadius: 2 },
+  chipCount: { color: colors.text, fontSize: 17, fontWeight: '800' },
+  chipLabel: { color: colors.textDim, fontSize: 10, textAlign: 'center', lineHeight: 13 },
+  histogramBlock: { marginHorizontal: -2 },
+  histogramContent: { alignItems: 'flex-end', paddingHorizontal: 2 },
+  // FIXED width per month, not flex: the chart scrolls instead of
+  // compressing, so a 20-year library stays as readable as a 1-year one
+  // and every bar is a reliable tap target (at flex width they were
+  // ~4 dp wide and genuinely hard to hit).
+  histogramColumn: { width: 14, height: 112, alignItems: 'center' },
+  histogramUndated: { marginRight: 16 },
+  // The plot area is also the selection outline (rule 4). The border is
+  // always present but transparent, so selecting a month cannot shift
+  // the bar's width or the column's alignment.
+  histogramPlot: {
+    width: 14,
+    height: 74,
+    justifyContent: 'flex-end',
+    paddingHorizontal: 1,
+    paddingBottom: 1,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    borderRadius: 4,
+  },
+  histogramBar: { width: '100%', borderRadius: 3, justifyContent: 'flex-end', overflow: 'hidden' },
+  histogramReviewed: { width: '100%' },
+  // Ticks are ABSOLUTE and wider than their column, centred on the bar:
+  // a 3-letter month cannot fit inside 14 dp, and letting it affect
+  // layout would either clip it or stretch every column to fit a label
+  // that only one bar in three actually has.
+  histogramTick: {
+    position: 'absolute',
+    top: 78,
+    width: 42,
+    left: -14,
+    textAlign: 'center',
+    color: colors.textDim,
+    fontSize: 10,
+  },
+  histogramYear: {
+    position: 'absolute',
+    top: 94,
+    width: 42,
+    left: -14,
+    textAlign: 'center',
+    color: colors.text,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  insightLine: { color: colors.textDim, fontSize: 13, lineHeight: 18, marginTop: -6 },
   footnote: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: -6 },
+  gridLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginTop: 4,
+  },
   gridLabel: {
     color: colors.textDim,
     fontSize: 13,
     textTransform: 'uppercase',
     letterSpacing: 1,
-    marginTop: 4,
+    flexShrink: 1,
   },
+  monthPill: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  monthPillText: { fontSize: 12, fontWeight: '700' },
 });

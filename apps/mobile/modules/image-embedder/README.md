@@ -15,5 +15,14 @@ curl -L --create-dirs -o android/src/main/assets/mobilenet_v3_large.tflite \
 echo "11af3c560dfeed7737cb4c03c23bf52a8403020784192d4dea0b74862a12828d  android/src/main/assets/mobilenet_v3_large.tflite" | sha256sum -c
 ```
 
-`embed(uri)` → `{ decodeMs, inferMs, dim, vecB64 }`; `decodeVec` yields the
-Float32Array. Cosine similarity = dot product (vectors are L2-normalized).
+`embed(uri, decodeCap?, withDhash?)` → `{ decodeMs, inferMs, dim, vecB64,
+dhashHex }`; `decodeVec` yields the Float32Array (`decodeVecBytes` the raw
+bytes for BLOB storage). Cosine similarity = dot product (vectors are
+L2-normalized). `decodeCap` bounds the decoded long edge (default
+`DEFAULT_DECODE_CAP` = 1024 — measured cap-invariant for speed, so the
+fidelity-maximal setting stays). `withDhash` also returns the photo's
+64-bit dHash from the SAME decode (exact lib/dhashDecode.ts semantics in
+Kotlin) — the corpus scan's hash source; `dhash(uri)` computes it alone
+with a bounded decode. `MODEL_SHA256` re-exports the pin above — it MUST
+change with the bundled asset; the app compares it against the stored pin
+and re-embeds everything on mismatch.

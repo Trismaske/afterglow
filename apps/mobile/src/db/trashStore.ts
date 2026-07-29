@@ -27,7 +27,11 @@
  * re-trash legitimately counts the next generation (P8#4).
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
+import { withWriteTransaction } from './database';
 import { closeShareCycleIfQueueEmpty } from './shareStore';
+// Runtime-only circular edge (store also imports a trashStore helper):
+// both are plain function refs resolved at call time — safe under ESM.
+import { chunk, IN_CHUNK, repairGroupMembership } from './store';
 
 /** Conservative app cap per MediaStore consent request (P5#4; platform
  * limit is 2000 — autonomous: 500, matching the SQL chunk size). */
@@ -39,6 +43,10 @@ export type TrashOutcome =
 export interface PreparedTrashBatch {
   batchId: number;
   members: { photoId: string; contentUri: string | null; measuredBytes: number }[];
+  /** Best stars cleared by the stage-and-reserve transition (edited-copy
+   * culls) — a DEFINITIVE non-application restores them with the
+   * un-staging (a cancelled sheet must be a true no-op). */
+  clearedStars: { groupId: number; photoId: string }[];
 }
 
 export interface TrashMemberInput {
@@ -47,10 +55,14 @@ export interface TrashMemberInput {
 }
 
 export interface PrepareTrashBatchOptions {
-  /** Edited-copy cull (Home): members currently 'to_edit' are staged to
-   * 'culled' in the SAME transaction as the reservation, so no crash
-   * window can leave a staged-but-unreserved photo behind. A non-trashed
-   * outcome reverts via unstageCullDirect (needs_edit stays set). */
+  /** Edited-copy cull (Home): members still WAITING IN THE EDIT QUEUE are
+   * staged to 'culled' in the SAME transaction as the reservation, so no
+   * crash window can leave a staged-but-unreserved photo behind, and
+   * their edit is RESOLVED in that transaction too — the editor already
+   * produced the copy, so the edit is done whatever happens to the
+   * original next. A non-trashed outcome reverts the verdict via
+   * unstageCullDirect; the photo comes back kept with its edit finished
+   * rather than still queued, which is the truth of what happened. */
   stageToEditMembers?: boolean;
 }
 
@@ -64,37 +76,83 @@ export interface PrepareTrashBatchOptions {
 export async function prepareTrashBatch(
   db: SQLiteDatabase,
   members: readonly TrashMemberInput[],
-  launchedFromSessionId: number | null,
   at: number,
   options: PrepareTrashBatchOptions = {},
 ): Promise<PreparedTrashBatch | null> {
   let result: PreparedTrashBatch | null = null;
-  await db.withExclusiveTransactionAsync(async (txn) => {
+  await withWriteTransaction(db, async (txn) => {
     const reserved = await txn.getAllAsync<{ photo_id: string }>(
       'SELECT photo_id FROM trash_reservations',
     );
     const taken = new Set(reserved.map((r) => r.photo_id));
     const eligible = members.filter((m) => !taken.has(m.photoId)).slice(0, TRASH_BATCH_LIMIT);
     if (eligible.length === 0) return;
+    const clearedStars: { groupId: number; photoId: string }[] = [];
     if (options.stageToEditMembers) {
       for (const member of eligible) {
+        const staged = await txn.runAsync(
+          `UPDATE photos SET state = 'culled', culled_at = COALESCE(culled_at, ?),
+             -- A staged cull is a VERDICT, and this path can reach an
+             -- unreviewed photo (flagging to edit does not decide) — so
+             -- it stamps like every other verdict write: reviewed_at
+             -- first-stamps, decided_at re-stamps.
+             reviewed_at = COALESCE(reviewed_at, ?), decided_at = ?, activity_at = ?
+           WHERE asset_id = ? AND state IN ('unreviewed', 'kept')
+             AND EXISTS (SELECT 1 FROM photo_actions pa
+                          WHERE pa.photo_id = photos.asset_id AND pa.kind = 'edit'
+                            AND pa.state IN ('queued', 'error'))`,
+          at,
+          at,
+          at,
+          at,
+          member.photoId,
+        );
+        // The edit COMPLETED the moment the editor wrote the copy — that
+        // is the whole reason this prompt exists — so record it here,
+        // inside the same transaction, right after the guard has
+        // confirmed the photo was still in the queue. Order matters: do
+        // it earlier and the guard finds no queued edit and stages
+        // nothing; do it later and the verified-removal cleanup has
+        // already deleted the unresolved row, so an edit you really did
+        // would count for nothing. The Keep-original branch of the same
+        // prompt records it too, so it counts exactly once either way.
+        if (Number(staged.changes) > 0) {
+          await txn.runAsync(
+            `UPDATE photo_actions
+                SET state = 'applied', resolved_at = ?
+              WHERE photo_id = ? AND kind = 'edit' AND state IN ('queued', 'error')`,
+            at,
+            member.photoId,
+          );
+        }
+        // A stale prompt whose original left the edit queue stages NOTHING —
+        // clearing its star anyway would lose it silently (the empty
+        // batch returns null and Home never sees clearedStars).
+        if (Number(staged.changes) === 0) continue;
+        // Every transition to 'culled' clears a star pointing at the
+        // photo (same hygiene as applyReviewDecisions): if the attempt
+        // stays ambiguous the photo remains staged, and a culled best
+        // would freeze its group. Record what was cleared — a DEFINITIVE
+        // cancellation restores it with the un-staging.
+        const starred = await txn.getAllAsync<{ id: number }>(
+          'SELECT id FROM photo_groups WHERE best_photo_id = ?',
+          member.photoId,
+        );
+        for (const group of starred) {
+          clearedStars.push({ groupId: Number(group.id), photoId: member.photoId });
+        }
         await txn.runAsync(
-          `UPDATE photos SET state = 'culled', culled_at = COALESCE(culled_at, ?), activity_at = ?
-           WHERE asset_id = ? AND state = 'to_edit'`,
-          at,
-          at,
+          'UPDATE photo_groups SET best_photo_id = NULL WHERE best_photo_id = ?',
           member.photoId,
         );
       }
     }
     const batch = await txn.runAsync(
-      `INSERT INTO trash_batches (state, launched_from_session_id, created_at)
-       VALUES ('preparing', ?, ?)`,
-      launchedFromSessionId,
+      `INSERT INTO trash_batches (state, created_at) VALUES ('preparing', ?)`,
       at,
     );
     const batchId = Number(batch.lastInsertRowId);
-    const out: PreparedTrashBatch = { batchId, members: [] };
+    const out: PreparedTrashBatch = { batchId, members: [], clearedStars };
     for (const member of eligible) {
       const row = await txn.getFirstAsync<{
         trash_generation: number;
@@ -149,14 +207,21 @@ export async function markBatchLaunching(
 
 /**
  * C#7 terminal-removal cleanup for one photo, inside the caller's
- * transaction: state converges to trashed, presence drops, queued AND
- * error-state intents cancel with their targets (the queue views include
- * 'error', so a later Gallery restore must not resurrect a stale
- * favourite/organize intent), the share-queue row leaves, and any
- * pending edited-copy match where this photo is the ORIGINAL resolves —
- * a removed original can never be re-prompted, and a stale pending match
+ * transaction: the verdict converges to trashed, presence drops, every
+ * OUTSTANDING pending action leaves its queue (queued AND error — the
+ * queue views include 'error', so a later Gallery restore must not
+ * resurrect a stale favourite/organize intent), and any pending
+ * edited-copy match where this photo is the ORIGINAL resolves — a
+ * removed original can never be re-prompted, and a stale pending match
  * would block detection for it after a Gallery restore. Shared by
  * verified trash outcomes and external-removal reconciliation.
+ *
+ * v18: the four action queues leave on the same terms `unqueueAction`
+ * uses — work that never happened is forgotten, work that DID happen
+ * keeps its `resolved_at` proof, because the base rates and turnaround
+ * stats are computed over exactly that. Removing the photo is not
+ * forgetting that it was once favourited.
+ *
  * `markCulled` stamps the culled_at lifetime-event marker — true only
  * for verified Afterglow cull outcomes; an external removal was never an
  * Afterglow cull decision and must not inflate the lifetime count.
@@ -168,17 +233,7 @@ async function applyRemovalCleanup(
   markCulled: boolean,
 ): Promise<void> {
   await txn.runAsync(
-    `UPDATE photos SET state = 'trashed', is_present = 0, needs_edit = 0,
-       favourite_state = CASE WHEN favourite_state IN ('queued_apply', 'queued_remove', 'error')
-         THEN 'none' ELSE favourite_state END,
-       favourite_target = CASE WHEN favourite_state IN ('queued_apply', 'queued_remove', 'error')
-         THEN NULL ELSE favourite_target END,
-       organize_state = CASE WHEN organize_state IN ('queued', 'error') THEN 'none'
-         ELSE organize_state END,
-       organize_volume = CASE WHEN organize_state IN ('queued', 'error') THEN NULL
-         ELSE organize_volume END,
-       organize_path = CASE WHEN organize_state IN ('queued', 'error') THEN NULL
-         ELSE organize_path END,
+    `UPDATE photos SET state = 'trashed', is_present = 0,
        culled_at = CASE WHEN ? = 1 THEN COALESCE(culled_at, ?) ELSE culled_at END,
        activity_at = ?
      WHERE asset_id = ?`,
@@ -187,7 +242,16 @@ async function applyRemovalCleanup(
     at,
     photoId,
   );
-  await txn.runAsync('DELETE FROM share_queue WHERE photo_id = ?', photoId);
+  await txn.runAsync(
+    `DELETE FROM photo_actions
+      WHERE photo_id = ? AND state IN ('queued', 'error') AND resolved_at IS NULL`,
+    photoId,
+  );
+  await txn.runAsync(
+    `UPDATE photo_actions SET state = 'applied', target = NULL
+      WHERE photo_id = ? AND state IN ('queued', 'error') AND resolved_at IS NOT NULL`,
+    photoId,
+  );
   await txn.runAsync(
     "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
     photoId,
@@ -202,17 +266,39 @@ async function applyRemovalCleanup(
  * reclaimed-bytes credit (nothing was measured or verified through the
  * lifecycle) and NO culled_at marker (the user made no Afterglow cull
  * decision, so the lifetime culled count is untouched). A photo later
- * restored from system trash re-enters via the session-draw restore
+ * restored from system trash re-enters via the scan/reconciliation restore
  * reconciliation as usual.
  */
+/** The distinct groups the given photos currently belong to — the repair
+ * scope for removal/trash paths. */
+async function groupsOfPhotos(txn: SQLiteDatabase, photoIds: readonly string[]): Promise<number[]> {
+  const out = new Set<number>();
+  for (const ids of chunk(photoIds, IN_CHUNK)) {
+    if (ids.length === 0) continue;
+    const rows = await txn.getAllAsync<{ group_id: number }>(
+      `SELECT DISTINCT group_id FROM photo_group_assignments
+       WHERE photo_id IN (${ids.map(() => '?').join(',')}) AND group_id IS NOT NULL`,
+      ...ids,
+    );
+    for (const row of rows) out.add(Number(row.group_id));
+  }
+  return [...out];
+}
+
 export async function reconcileExternallyRemoved(
   db: SQLiteDatabase,
   photoIds: readonly string[],
   at: number,
 ): Promise<void> {
   if (photoIds.length === 0) return;
-  await db.withExclusiveTransactionAsync(async (txn) => {
+  await withWriteTransaction(db, async (txn) => {
+    // The groups these photos sit in, read BEFORE cleanup (m0.8.1 scope:
+    // the whole-table repair costs ~12 ms even as a no-op).
+    const affected = await groupsOfPhotos(txn, photoIds);
     for (const id of photoIds) await applyRemovalCleanup(txn, id, at, false);
+    // A removal can leave a group with one present member — dissolve it
+    // in the same transaction so the deck never receives a 1-photo group.
+    await repairGroupMembership(txn, affected);
     await closeShareCycleIfQueueEmpty(txn, at);
   });
 }
@@ -268,7 +354,7 @@ export async function resolveTrashBatch(
 
   const outcomes: Record<string, TrashOutcome> = {};
   let creditedBytes = 0;
-  await db.withExclusiveTransactionAsync(async (txn) => {
+  await withWriteTransaction(db, async (txn) => {
     for (const member of members) {
       const check = checks.get(member.photo_id);
       let outcome: TrashOutcome;
@@ -303,23 +389,18 @@ export async function resolveTrashBatch(
       await txn.runAsync('DELETE FROM trash_reservations WHERE photo_id = ?', member.photo_id);
     }
 
+    // Verified removals can leave 1-present-member groups — dissolve them
+    // with the outcomes (same transaction), scoped to their groups.
+    await repairGroupMembership(
+      txn,
+      await groupsOfPhotos(
+        txn,
+        members.map((m) => m.photo_id),
+      ),
+    );
     // Trash cleanup may have emptied the share queue — the open cycle
     // must end with it (N#5) so a later requeue starts a fresh cycle.
     await closeShareCycleIfQueueEmpty(txn, input.at);
-
-    if (creditedBytes > 0) {
-      // The launching session's aggregate credits ATOMICALLY with the
-      // terminal outcomes — recovery skips terminal batches, so a credit
-      // written separately could be lost to a crash in the gap. (Lifetime
-      // stats derive from the verified member rows regardless; a batch
-      // launched without a session credits no aggregate.)
-      await txn.runAsync(
-        `UPDATE sessions SET reclaimed_bytes = reclaimed_bytes + ?
-         WHERE id = (SELECT launched_from_session_id FROM trash_batches WHERE id = ?)`,
-        creditedBytes,
-        input.batchId,
-      );
-    }
 
     const values = Object.values(outcomes);
     const batchState: ResolveResult['batchState'] =
@@ -354,7 +435,7 @@ export interface TrashRecoveryResult {
   /** Interrupted batches found (released or resolved). */
   staleBatches: number;
   /** Photos verified gone during recovery — the caller must reconcile
-   * these into any resumed session snapshot, or the stale 'culled' state
+   * these into the durable rows the screens read, or the stale 'culled' state
    * would be resurrected on restore. */
   trashedIds: string[];
 }
@@ -376,7 +457,7 @@ export async function recoverTrashBatches(
   const trashedIds: string[] = [];
   for (const batch of stale) {
     if (batch.state === 'preparing') {
-      await db.withExclusiveTransactionAsync(async (txn) => {
+      await withWriteTransaction(db, async (txn) => {
         await txn.runAsync('DELETE FROM trash_reservations WHERE batch_id = ?', batch.id);
         await txn.runAsync("UPDATE trash_batches SET state = 'cancelled' WHERE id = ?", batch.id);
       });
@@ -408,11 +489,13 @@ export async function lifetimeReclaimedBytes(db: SQLiteDatabase): Promise<number
   return verified?.total ?? 0;
 }
 
-/** Restore support (P8#4): when the session loader sees a 'trashed'-state
+/** Restore support (P8#4): when a scan/loader sees a 'trashed'-state
  * photo in a MediaStore page (proof of a Gallery restore), this increments
  * the generation exactly once so a later verified re-trash counts again.
- * The edit-cycle columns reset too: a restored photo starts over, and a
- * re-queued edit must not compare against a pre-trash baseline/hash. */
+ * The edit-detection baseline resets too: a restored photo starts over,
+ * and a re-queued edit must not compare against a pre-trash baseline/hash.
+ * (Its pending actions left when it was trashed — applyRemovalCleanup —
+ * so there is no queue membership to undo here.) */
 export async function markPhotoRestored(
   db: SQLiteDatabase,
   photoId: string,
@@ -421,7 +504,7 @@ export async function markPhotoRestored(
   await db.runAsync(
     `UPDATE photos SET state = 'unreviewed', is_present = 1,
        trash_generation = trash_generation + 1,
-       to_edit_at = NULL, mod_time = NULL, content_hash = NULL,
+       mod_time = NULL, content_hash = NULL,
        activity_at = ?
      WHERE asset_id = ? AND state = 'trashed'`,
     at,

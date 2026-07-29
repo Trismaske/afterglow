@@ -1,65 +1,55 @@
 /**
- * Small bottom-sheet state editor for one photo (progress pages, m0.4).
+ * Small bottom-sheet state editor for one photo (progress pages, m0.4;
+ * m0.8 gate 5: also hosted by the standard PhotoViewer's detail panel).
  * Shows the current state and the allowed transitions per lib/progress
  * `editorActions` (audited against the store semantics — see that
- * module's docs). Photos in the ACTIVE session are read-only here: a
- * direct DB write would desync the authoritative session snapshot.
+ * module's docs). Every durable state is editable (m0.8 — there is no
+ * session snapshot to desync); unreviewed/trashed/confirmed stay
+ * read-only because review and the trash lifecycle own them.
  */
 import React, { useCallback, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
 import { editorActions, type EditorAction } from '../../lib/progress';
-import {
-  markDoneToEdit,
-  markEditDone,
-  markKeptDone,
-  setNeedsEdit,
-  unstageCullDirect,
-} from '../../db/store';
+import { markDoneToEdit, markEditDone, unstageCullDirect } from '../../db/store';
+import { withUserWritePriority } from '../../lib/writePriority';
 import { dayKey, labelForDayKey } from '../../lib/dates';
 import { formatClockSeconds } from '../../lib/format';
 import { colors, touch, useTheme } from '../../theme';
-import { stateMetaFor } from './stateMeta';
+import { VERDICT_META } from './stateMeta';
 import type { GridPhoto } from './PhotoStateGrid';
 
 const ACTION_LABEL: Record<EditorAction, string> = {
-  mark_done: 'Mark done',
+  complete_edit: 'Mark the edit done',
   queue_edit: 'Send to the edit queue',
   unstage_cull: 'Un-cull — back to keepers',
 };
 
 const ACTION_ICON = {
-  mark_done: 'check',
+  complete_edit: 'check',
   queue_edit: 'pencil',
   unstage_cull: 'undo',
 } as const;
 
-function readOnlyHint(photo: GridPhoto, inActiveSession: boolean): string {
-  if (inActiveSession) {
-    return 'Part of the active review session — manage it from the session screens.';
-  }
+function readOnlyHint(photo: GridPhoto): string {
   switch (photo.dbState) {
     case 'trashed':
       return 'Moved to the system trash — your gallery controls how long it remains recoverable.';
-    case 'confirmed':
-      return 'Deletion in progress.';
     default:
-      return 'Not reviewed yet — a review session decides keep or cull.';
+      return 'Not reviewed yet — decide it in review.';
   }
 }
 
 export function StateEditorSheet({
   photo,
-  inActiveSession,
   onClose,
   onChanged,
 }: {
   /** Null hides the sheet. */
   photo: GridPhoto | null;
-  inActiveSession: boolean;
   onClose: () => void;
   /** A transition was written — reload counts and the grid. */
   onChanged: () => void;
@@ -75,19 +65,25 @@ export function StateEditorSheet({
       setBusy(true);
       try {
         // Every store call is state-guarded (`AND state = '…'`), so a
-        // stale sheet acting on an already-changed row is a no-op.
-        if (action === 'mark_done') {
-          if (photo.dbState === 'kept') await markKeptDone(db, [photo.id]);
-          else await markEditDone(db, photo.id);
-        } else if (action === 'queue_edit') {
-          if (photo.dbState === 'kept') await setNeedsEdit(db, photo.id, true, Date.now());
-          else await markDoneToEdit(db, photo.id, Date.now());
-        } else {
-          // An explicit restore decision — it settles the copy prompt.
-          await unstageCullDirect(db, photo.id, Date.now(), true);
-        }
+        // stale sheet acting on an already-changed row is a no-op. User
+        // write priority: the scan yields instead of queueing this.
+        await withUserWritePriority(async () => {
+          if (action === 'complete_edit') {
+            await markEditDone(db, photo.id);
+          } else if (action === 'queue_edit') {
+            await markDoneToEdit(db, photo.id, Date.now());
+          } else {
+            // An explicit restore decision — it settles the copy prompt.
+            await unstageCullDirect(db, photo.id, Date.now(), true);
+          }
+        });
         onChanged();
         onClose();
+      } catch (error) {
+        // This path bypasses ReviewContext.write, so ITS alert is the
+        // only surface — the decision was NOT saved; the sheet stays
+        // open for a retry.
+        Alert.alert('Could not save', error instanceof Error ? error.message : String(error));
       } finally {
         setBusy(false);
       }
@@ -96,8 +92,10 @@ export function StateEditorSheet({
   );
 
   if (!photo) return null;
-  const meta = stateMetaFor(accent)[photo.effective];
-  const actions = editorActions(photo.dbState, inActiveSession);
+  const meta = VERDICT_META[photo.effective];
+  // The edit ACTION and the verdict are separate layers now, so the sheet
+  // needs both to know what it may offer (docs/STATE_MODEL.md).
+  const actions = editorActions(photo.dbState, photo.editPending === true);
 
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
@@ -119,12 +117,11 @@ export function StateEditorSheet({
               <Text style={styles.when}>
                 {labelForDayKey(dayKey(photo.takenAt))} · {formatClockSeconds(photo.takenAt)}
               </Text>
-              <Text style={styles.hint}>{meta.hint}</Text>
             </View>
           </View>
 
           {actions.length === 0 ? (
-            <Text style={styles.readOnly}>{readOnlyHint(photo, inActiveSession)}</Text>
+            <Text style={styles.readOnly}>{readOnlyHint(photo)}</Text>
           ) : (
             actions.map((action) => (
               <Pressable

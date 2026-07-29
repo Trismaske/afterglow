@@ -1,19 +1,26 @@
 /**
- * Compare-tool confirmation preferences (m0.5) — settings-table keys.
+ * Compare-tool confirmation preferences (m0.5; tri-state m0.8.2 —
+ * Tristan's grilling) — settings-table keys.
  *
- * In a two-photo group, "X is better" offers to cull the other photo.
- * The confirm dialog carries a "Don't ask again" checkbox; once
- * suppressed, better = auto-cull the loser (matching tester intuition).
- * Settings has a "Reset confirmation dialogs" row that clears this.
+ * A whole-table "X is better" raises the keep-both/cull dialog, whose
+ * "Don't ask again" checkbox sticks with WHICHEVER outcome it rides on:
+ * suppressed-with-cull means better = auto-cull the loser;
+ * suppressed-with-keep-both means better = auto-keep both. Settings'
+ * "Reset confirmation dialogs" row restores asking.
  */
 
-/** '1' = skip the confirm and auto-cull the two-photo-group loser. */
+/** Legacy key name kept (durable settings row): '1' = auto-cull,
+ * 'keep_both' = auto-keep-both, anything else = ask. */
 export const COMPARE_AUTO_CULL_KEY = 'compare_auto_cull_loser';
 
-export function parseCompareAutoCull(raw: string | null): boolean {
-  return raw === '1';
+export type CompareDuelPref = 'ask' | 'cull' | 'keep_both';
+
+export function parseCompareDuelPref(raw: string | null): CompareDuelPref {
+  if (raw === '1') return 'cull';
+  if (raw === 'keep_both') return 'keep_both';
+  return 'ask';
 }
 
-export function serializeCompareAutoCull(autoCull: boolean): string {
-  return autoCull ? '1' : '0';
+export function serializeCompareDuelPref(pref: CompareDuelPref): string {
+  return pref === 'cull' ? '1' : pref === 'keep_both' ? 'keep_both' : '0';
 }

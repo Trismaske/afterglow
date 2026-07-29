@@ -1,7 +1,12 @@
 /**
- * Date-scope helpers for the Home screen (Today / Yesterday / custom range).
- * Pure logic, local time — clustering and review are day-scoped in the
- * user's own timezone, matching how they think about "today's photos".
+ * Day helpers. Pure logic, local time — clustering and review are
+ * day-scoped in the user's own timezone, matching how they think about
+ * "today's photos".
+ *
+ * m0.8.2: the Today/Yesterday/custom RANGE builders are gone with the
+ * range scope they served. Sessions took the UI that set an arbitrary
+ * review range, but the builders outlived it with no callers; the
+ * surviving range is `rangeOfDayKey`, which a real day still needs.
  */
 
 export interface DateRange {
@@ -27,16 +32,6 @@ export function endOfDay(d: Date): number {
   return copy.getTime();
 }
 
-export function todayRange(now: Date): DateRange {
-  return { startMs: startOfDay(now), endMs: endOfDay(now), label: 'Today' };
-}
-
-export function yesterdayRange(now: Date): DateRange {
-  const y = new Date(now);
-  y.setDate(y.getDate() - 1);
-  return { startMs: startOfDay(y), endMs: endOfDay(y), label: 'Yesterday' };
-}
-
 /**
  * Local calendar-day key, "YYYY-MM-DD" — the `photos.day` column. Must
  * stay lexicographically sortable (day comparisons use string >=).
@@ -58,8 +53,17 @@ export function rangeOfDayKey(key: string): DateRange {
   };
 }
 
+/**
+ * The pseudo-day for photos WITHOUT a capture date (NULL day in SQLite,
+ * no DATE_TAKEN in MediaStore). It gets its own still-to-review row and
+ * day-progress page; the reserved key can never collide with a
+ * "YYYY-MM-DD" calendar key.
+ */
+export const UNDATED_DAY_KEY = 'undated';
+
 /** "Today" / "Yesterday" / "Jul 12" for a day key, relative to now. */
 export function labelForDayKey(key: string, now: Date = new Date()): string {
+  if (key === UNDATED_DAY_KEY) return 'Unknown day';
   if (key === dayKey(now.getTime())) return 'Today';
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
@@ -84,63 +88,8 @@ export function recentDayKeys(count: number, now: Date = new Date()): string[] {
   return keys;
 }
 
-/** The day key immediately before `key` (handles month/year rollover). */
-export function previousDayKey(key: string): string {
-  const [y, m, d] = key.split('-').map(Number);
-  return dayKey(new Date(y, m - 1, d - 1).getTime());
-}
-
-/**
- * Review streak: consecutive days with a finished session, walking back
- * from `today`. A day without a session breaks the streak — except today
- * itself, which is still in progress (yesterday's streak holds until
- * midnight).
- */
-export function currentStreak(daysWithSessions: readonly string[], today: string): number {
-  const days = new Set(daysWithSessions);
-  let cursor = days.has(today) ? today : previousDayKey(today);
-  let streak = 0;
-  while (days.has(cursor)) {
-    streak++;
-    cursor = previousDayKey(cursor);
-  }
-  return streak;
-}
-
-/** Longest historical run plus the current run, both over unique local days. */
-export function streakStats(
-  daysWithSessions: readonly string[],
-  today: string,
-): { current: number; longest: number } {
-  const days = [...new Set(daysWithSessions)].sort();
-  let longest = 0;
-  let run = 0;
-  let previous: string | null = null;
-  for (const day of days) {
-    run = previous !== null && previousDayKey(day) === previous ? run + 1 : 1;
-    longest = Math.max(longest, run);
-    previous = day;
-  }
-  return { current: currentStreak(days, today), longest };
-}
-
 const DAY_FORMAT: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
 
 export function formatDay(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, DAY_FORMAT);
-}
-
-/**
- * Custom range spanning whole days. Start/end may be given in either order;
- * the range always covers full local days.
- */
-export function customRange(a: Date, b: Date): DateRange {
-  const [from, to] = a.getTime() <= b.getTime() ? [a, b] : [b, a];
-  const startMs = startOfDay(from);
-  const endMs = endOfDay(to);
-  const label =
-    startOfDay(from) === startOfDay(to)
-      ? formatDay(startMs)
-      : `${formatDay(startMs)} – ${formatDay(endMs)}`;
-  return { startMs, endMs, label };
 }

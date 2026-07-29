@@ -1,21 +1,17 @@
 /**
- * Global progress page (m0.4 stage 3): the Day progress experience —
- * state summary + filtered grid + state editor — over the whole selected
- * scope + source. Reached from the Home screen's Progress row; the range
- * is computed there (rolling scopes end at "now") and passed in. No
- * review CTA here: Home's "Start culling" already covers scope-wide
- * reviews.
+ * Library progress page (m0.4 stage 3): the Day progress experience —
+ * state summary + filtered grid + state editor — over the whole library
+ * and the selected photo sources. Reached from the Home screen's
+ * Progress row. No review CTA here: Home's "Continue reviewing" already
+ * covers library-wide reviews.
+ *
+ * m0.8.2: paramless. It used to receive a label and a taken_at range,
+ * but nothing set one after sessions were removed — both callers passed
+ * the whole library.
  */
 import React from 'react';
-import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { RootStackParamList } from '../navigation';
 import { ProgressView } from '../components/progress/ProgressView';
 
-type Props = NativeStackScreenProps<RootStackParamList, 'Progress'>;
-
-export function ProgressScreen({ route }: Props) {
-  const { label, startMs, endMs } = route.params;
-  return (
-    <ProgressView heading={label} scope={{ startMs, endMs }} startMs={startMs} endMs={endMs} />
-  );
+export function ProgressScreen() {
+  return <ProgressView target={{ kind: 'library' }} />;
 }

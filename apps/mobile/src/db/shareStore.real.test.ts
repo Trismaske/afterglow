@@ -82,6 +82,32 @@ describe('share queue + cycles', () => {
     expect(queue.find((r) => r.photo_id === 'p1')?.pass_count).toBe(1);
     expect(queue.find((r) => r.photo_id === 'p2')?.pass_count).toBe(0);
     expect(await countNeverShared(asExpo(d))).toBe(1);
+    // A confirmed pass is COMPLETION EVIDENCE on the action too (v18):
+    // share is the one action whose success is an event about a batch,
+    // and without this stamp every "ever shared" reader — the Habits
+    // turnaround row above all — would say no share ever finished.
+    // The row STAYS queued: multi-pass sharing is the feature.
+    const actions = d.raw
+      .prepare(
+        `SELECT photo_id, state, resolved_at FROM photo_actions
+          WHERE kind = 'share' ORDER BY photo_id`,
+      )
+      .all() as { photo_id: string; state: string; resolved_at: number | null }[];
+    expect(actions).toEqual([
+      { photo_id: 'p1', state: 'queued', resolved_at: AT + 11 },
+      { photo_id: 'p2', state: 'queued', resolved_at: null },
+    ]);
+    // A FAILED pass leaves no evidence, and re-promoting an ALREADY
+    // opened batch is a no-op — the guard is the batch's own state, so
+    // no stamp moves for a send that did not happen twice.
+    await promoteShareBatch(asExpo(d), b1, AT + 999);
+    expect(
+      (
+        d.raw
+          .prepare("SELECT resolved_at FROM photo_actions WHERE photo_id = 'p1' AND kind = 'share'")
+          .get() as { resolved_at: number }
+      ).resolved_at,
+    ).toBe(AT + 11);
   });
 
   it('clear ends the cycle, keeps events, and a requeue starts a new cycle', async () => {
@@ -103,6 +129,66 @@ describe('share queue + cycles', () => {
     expect(queue[0].pass_count).toBe(0);
     const cycles = d.raw.prepare('SELECT COUNT(*) AS n FROM share_cycles').get() as { n: number };
     expect(cycles.n).toBe(2);
+  });
+
+  it('culling the last LIVE shared photo ends the cycle — the next queue starts fresh', async () => {
+    // Verdict writes never touch this module, so the cull leaves the old
+    // cycle open with a retained (non-live) row; the next add must close
+    // it and mint a fresh cycle, or the new queue inherits pass history.
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    insertPhoto(d, 'p2');
+    await addToShareQueue(asExpo(d), 'p1', AT);
+    const b1 = await createShareBatch(asExpo(d), ['p1'], AT + 10);
+    await promoteShareBatch(asExpo(d), b1, AT + 11);
+    d.raw.prepare("UPDATE photos SET state = 'culled' WHERE asset_id = 'p1'").run();
+    await addToShareQueue(asExpo(d), 'p2', AT + 20);
+    const cycles = d.raw.prepare('SELECT COUNT(*) AS n FROM share_cycles').get() as { n: number };
+    expect(cycles.n).toBe(2);
+    const queue = await getShareQueue(asExpo(d));
+    expect(queue.map((r) => r.photo_id)).toEqual(['p2']);
+    expect(queue[0].pass_count).toBe(0);
+  });
+
+  it('a staged cull SURVIVES the clear, and un-staging restores its queue place', async () => {
+    // STATE_MODEL's restore promise outranks the sweep (grilling Q12):
+    // the clear takes exactly the live rows it counted and the screen
+    // showed; the hidden retained row rides through and resurfaces when
+    // the photo is un-staged.
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    insertPhoto(d, 'p2');
+    await addToShareQueue(asExpo(d), 'p1', AT);
+    await addToShareQueue(asExpo(d), 'p2', AT + 1);
+    d.raw.prepare("UPDATE photos SET state = 'culled' WHERE asset_id = 'p1'").run();
+    const result = await clearShareQueue(asExpo(d), AT + 10);
+    expect(result.cleared).toBe(1); // p2 — exactly what the screen showed
+    const rows = d.raw
+      .prepare("SELECT photo_id, state FROM photo_actions WHERE kind = 'share'")
+      .all() as { photo_id: string; state: string }[];
+    expect(rows).toEqual([{ photo_id: 'p1', state: 'queued' }]);
+    d.raw.prepare("UPDATE photos SET state = 'kept' WHERE asset_id = 'p1'").run();
+    const queue = await getShareQueue(asExpo(d));
+    expect(queue.map((r) => r.photo_id)).toEqual(['p1']);
+  });
+
+  it('clear removes an ERRORED never-sent row, exactly like clearQueue', async () => {
+    // The delete leg must cover state IN ('queued','error'): an errored
+    // row that never resolved matches neither a 'queued'-only delete nor
+    // the resolved-row demote, so it survived a clear and the queue
+    // never read as empty.
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    await addToShareQueue(asExpo(d), 'p1', AT);
+    d.raw
+      .prepare("UPDATE photo_actions SET state = 'error' WHERE photo_id = 'p1' AND kind = 'share'")
+      .run();
+    const result = await clearShareQueue(asExpo(d), AT + 20);
+    expect(result.cleared).toBe(1);
+    const rows = d.raw
+      .prepare("SELECT COUNT(*) AS n FROM photo_actions WHERE kind = 'share'")
+      .get() as { n: number };
+    expect(rows.n).toBe(0);
   });
 
   it('startup recovery reconciles crash-window launching rows to error (C#10)', async () => {

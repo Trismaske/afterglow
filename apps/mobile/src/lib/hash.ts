@@ -27,3 +27,13 @@ export function fileSize(uri: string): number {
     return 0;
   }
 }
+
+/** Like fileSize, but a FAILED stat is null — callers with a fallback
+ * must not treat a genuine zero-byte file as a failure. */
+export function fileSizeOrNull(uri: string): number | null {
+  try {
+    return new File(uri).size ?? null;
+  } catch {
+    return null;
+  }
+}

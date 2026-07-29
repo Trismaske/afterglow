@@ -2,12 +2,12 @@
  * Fresh-baseline schema proof on real SQLite (gate 1: C#3, C#4, P8#4,
  * pre-v1 velocity policy). The baseline DDL executes against a real
  * engine; schema-level invariants — enforced FKs, one live reservation,
- * one active session, per-generation trash terminality — are proven by
- * attempting to violate them.
+ * one continuous grouping run, per-generation trash terminality, and the
+ * v18 verdict vocabulary — are proven by attempting to violate them.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { SQLiteDatabase } from 'expo-sqlite';
-import { SCHEMA_VERSION, migrateDatabase } from './database';
+import { SCHEMA_VERSION, migrateDatabase, withWriteTransaction } from './database';
 import { foreignKeyCheck, openTestDb, userVersion, type TestDb } from './testDb';
 
 const open: TestDb[] = [];
@@ -39,7 +39,7 @@ function insertPhoto(d: TestDb, assetId: string): void {
 }
 
 describe('fresh baseline', () => {
-  it('creates the full v8 schema at SCHEMA_VERSION with clean FKs', async () => {
+  it('creates the full baseline schema at SCHEMA_VERSION with clean FKs', async () => {
     const d = await fresh();
     expect(userVersion(d)).toBe(SCHEMA_VERSION);
     const tables = d.raw
@@ -48,8 +48,8 @@ describe('fresh baseline', () => {
       .map((r) => (r as { name: string }).name);
     for (const t of [
       'photos',
+      'photo_actions',
       'duels',
-      'sessions',
       'settings',
       'photo_hashes',
       'grouping_runs',
@@ -58,7 +58,6 @@ describe('fresh baseline', () => {
       'day_index_scans',
       'day_index',
       'share_cycles',
-      'share_queue',
       'share_batches',
       'share_batch_members',
       'trash_batches',
@@ -118,7 +117,10 @@ describe('schema invariants', () => {
     const d = await fresh();
     expect(() =>
       d.raw
-        .prepare("INSERT INTO share_queue (photo_id, cycle_id, queued_at) VALUES ('ghost', 1, 1)")
+        .prepare(
+          `INSERT INTO photo_actions (photo_id, kind, state, queued_at)
+           VALUES ('ghost', 'edit', 'queued', 1)`,
+        )
         .run(),
     ).toThrow(/FOREIGN KEY/);
   });
@@ -131,29 +133,6 @@ describe('schema invariants', () => {
     expect(() =>
       d.raw.prepare('INSERT INTO trash_reservations VALUES (?, 1, 0)').run('p1'),
     ).toThrow(/UNIQUE|PRIMARY/);
-  });
-
-  it('allows exactly one active session', async () => {
-    const d = await fresh();
-    d.raw
-      .prepare(
-        "INSERT INTO sessions (label, range_start, range_end, snapshot, created_at) VALUES ('a', 0, 1, '{}', ?)",
-      )
-      .run(AT);
-    expect(() =>
-      d.raw
-        .prepare(
-          "INSERT INTO sessions (label, range_start, range_end, snapshot, created_at) VALUES ('b', 0, 1, '{}', ?)",
-        )
-        .run(AT),
-    ).toThrow(/UNIQUE/);
-    // Completing the first allows the next.
-    d.raw.prepare('UPDATE sessions SET completed_at = ? WHERE completed_at IS NULL').run(AT);
-    d.raw
-      .prepare(
-        "INSERT INTO sessions (label, range_start, range_end, snapshot, created_at) VALUES ('b', 0, 1, '{}', ?)",
-      )
-      .run(AT);
   });
 
   it('permits one absence-terminal trash outcome per generation, retries and re-trash allowed', async () => {
@@ -175,31 +154,45 @@ describe('schema invariants', () => {
     d.raw.prepare("INSERT INTO trash_batch_members VALUES (3, 'p9', 1, 10, 'trashed')").run();
   });
 
-  it('enforces one grouping assignment per photo and group-belongs-to-run', async () => {
+  it('enforces one grouping assignment per photo and ONE continuous run', async () => {
     const d = await fresh();
     insertPhoto(d, 'p1');
-    d.raw.prepare('INSERT INTO grouping_runs (session_id, created_at) VALUES (NULL, ?)').run(AT);
-    d.raw.prepare('INSERT INTO grouping_runs (session_id, created_at) VALUES (NULL, ?)').run(AT);
+    d.raw
+      .prepare("INSERT INTO grouping_runs (provenance, created_at) VALUES ('continuous', ?)")
+      .run(AT);
+    // The schema allows exactly one scan-owned run (m0.8: sessions gone).
+    expect(() =>
+      d.raw.prepare('INSERT INTO grouping_runs (created_at) VALUES (?)').run(AT),
+    ).toThrow(/UNIQUE/);
     d.raw.prepare('INSERT INTO photo_groups (run_id) VALUES (1)').run();
-    d.raw.prepare("INSERT INTO photo_group_assignments VALUES ('p1', 1, 1)").run();
+    d.raw
+      .prepare(
+        "INSERT INTO photo_group_assignments (photo_id, run_id, group_id) VALUES ('p1', 1, 1)",
+      )
+      .run();
     // Second current assignment for the same photo: impossible.
     expect(() =>
-      d.raw.prepare("INSERT INTO photo_group_assignments VALUES ('p1', 1, NULL)").run(),
+      d.raw
+        .prepare(
+          "INSERT INTO photo_group_assignments (photo_id, run_id, group_id) VALUES ('p1', 1, NULL)",
+        )
+        .run(),
     ).toThrow(/UNIQUE|PRIMARY/);
-    // An assignment pointing at a group from a DIFFERENT run: impossible.
-    insertPhoto(d, 'p2');
-    expect(() =>
-      d.raw.prepare("INSERT INTO photo_group_assignments VALUES ('p2', 2, 1)").run(),
-    ).toThrow(/FOREIGN KEY/);
   });
 
   it('best-of-group must be an assigned member (deferred composite FK)', async () => {
     const d = await fresh();
     insertPhoto(d, 'p1');
-    d.raw.prepare('INSERT INTO grouping_runs (session_id, created_at) VALUES (NULL, ?)').run(AT);
+    d.raw
+      .prepare("INSERT INTO grouping_runs (provenance, created_at) VALUES ('continuous', ?)")
+      .run(AT);
     d.raw.exec('BEGIN');
     d.raw.prepare('INSERT INTO photo_groups (run_id, best_photo_id) VALUES (1, ?)').run('p1');
-    d.raw.prepare("INSERT INTO photo_group_assignments VALUES ('p1', 1, 1)").run();
+    d.raw
+      .prepare(
+        "INSERT INTO photo_group_assignments (photo_id, run_id, group_id) VALUES ('p1', 1, 1)",
+      )
+      .run();
     d.raw.exec('COMMIT'); // deferred FK satisfied by commit time
     // A best that is NOT a member fails at commit.
     insertPhoto(d, 'p2');
@@ -207,5 +200,61 @@ describe('schema invariants', () => {
     d.raw.prepare('INSERT INTO photo_groups (run_id, best_photo_id) VALUES (1, ?)').run('p2');
     expect(() => d.raw.exec('COMMIT')).toThrow(/FOREIGN KEY/);
     d.raw.exec('ROLLBACK');
+  });
+});
+
+describe('the verdict column (v18)', () => {
+  it('accepts exactly the four verdicts and refuses the retired ones', async () => {
+    const d = await fresh();
+    for (const state of ['unreviewed', 'kept', 'culled', 'trashed']) {
+      d.raw
+        .prepare(
+          `INSERT INTO photos (asset_id, uri, taken_at, state)
+           VALUES (?, 'content://x', ?, ?)`,
+        )
+        .run(`ok/${state}`, AT, state);
+    }
+    // 'to_edit' is a pending ACTION now, and 'done' is spelled 'kept'.
+    for (const state of ['to_edit', 'done', 'confirmed']) {
+      expect(() =>
+        d.raw
+          .prepare(
+            `INSERT INTO photos (asset_id, uri, taken_at, state)
+             VALUES (?, 'content://x', ?, ?)`,
+          )
+          .run(`bad/${state}`, AT, state),
+      ).toThrow(/CHECK/);
+    }
+  });
+});
+
+describe('withWriteTransaction (m0.8.1 session pragmas)', () => {
+  it('arms busy_timeout and foreign_keys inside the transaction', async () => {
+    const d = await fresh();
+    d.raw.exec('PRAGMA busy_timeout = 0');
+    let seen: { busy: number; fk: number } | null = null;
+    await withWriteTransaction(asExpo(d), async (txn) => {
+      const busy = await txn.getFirstAsync<{ timeout: number }>('PRAGMA busy_timeout');
+      const fk = await txn.getFirstAsync<{ foreign_keys: number }>('PRAGMA foreign_keys');
+      seen = { busy: Number(busy?.timeout), fk: Number(fk?.foreign_keys) };
+    });
+    expect(seen).toEqual({ busy: 30_000, fk: 1 });
+  });
+
+  it('commits whole and rolls back whole around the pragma dance', async () => {
+    const d = await fresh();
+    await withWriteTransaction(asExpo(d), async (txn) => {
+      await txn.runAsync("INSERT INTO settings (key, value) VALUES ('a', '1')");
+    });
+    expect(d.raw.prepare("SELECT value FROM settings WHERE key = 'a'").get()).toEqual({
+      value: '1',
+    });
+    await expect(
+      withWriteTransaction(asExpo(d), async (txn) => {
+        await txn.runAsync("INSERT INTO settings (key, value) VALUES ('b', '2')");
+        throw new Error('abort');
+      }),
+    ).rejects.toThrow('abort');
+    expect(d.raw.prepare("SELECT value FROM settings WHERE key = 'b'").get()).toBeUndefined();
   });
 });

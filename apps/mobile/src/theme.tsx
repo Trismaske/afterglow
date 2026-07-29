@@ -3,7 +3,9 @@
  *
  * Split (m0.4): the background/surface/text neutrals and the FIXED
  * semantic colors (keep-green = success, cull-red = destructive,
- * edit-blue) live in the static `colors` object; the ACCENT — chips,
+ * edit-blue, favourite-pink, share-teal, organize-amber — one hue per
+ * queue action, shared by its button and its badge) live in the static
+ * `colors` object; the ACCENT — chips,
  * primary buttons, chevrons, links — is dynamic (Material You "System"
  * or a fixed preset, user-chosen in Settings) and comes from
  * `useTheme()`: `accent`, `onAccent`, `accentMuted`. Danger stays red
@@ -40,6 +42,10 @@ export const colors = {
   editDim: '#22334f',
   fav: '#e668a7',
   favDim: '#4f2238',
+  share: '#3fbccc',
+  shareDim: '#1c4048',
+  organize: '#d9a13c',
+  organizeDim: '#4a3a1c',
 } as const;
 
 export const touch = {

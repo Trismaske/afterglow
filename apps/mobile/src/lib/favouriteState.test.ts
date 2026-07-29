@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  favouriteBadgeWeight,
   isFavouriteSelected,
   nextFavouriteIntent,
   shouldOfferFavouriteHandoff,
+  type FavouriteStatus,
 } from './favouriteState';
 
 describe('favourite intent', () => {
@@ -56,5 +58,50 @@ describe('shouldOfferFavouriteHandoff (m0.7 item F, #10)', () => {
     expect(shouldOfferFavouriteHandoff({ state: 'none', target: null })).toBe(true);
     expect(shouldOfferFavouriteHandoff({ state: 'queued_remove', target: false })).toBe(true);
     expect(shouldOfferFavouriteHandoff({ state: 'error', target: false })).toBe(true);
+  });
+});
+
+describe('applied direction (v18)', () => {
+  it('a VERIFIED removal is not a filled heart', () => {
+    // The action model records a removal as an applied row whose target
+    // is false. Reading only `state === 'applied'` left the heart filled
+    // on a photo the gallery had just un-favourited, so the next tap
+    // queued a SECOND removal instead of an apply.
+    const removed: FavouriteStatus = { state: 'applied', target: false };
+    expect(isFavouriteSelected(removed)).toBe(false);
+    expect(nextFavouriteIntent('p1', removed)).toEqual({
+      assetId: 'p1',
+      state: 'queued_apply',
+      target: true,
+    });
+  });
+
+  it('a verified add stays filled, and an unknown direction is given the benefit of the doubt', () => {
+    expect(isFavouriteSelected({ state: 'applied', target: true })).toBe(true);
+    expect(isFavouriteSelected({ state: 'applied', target: null })).toBe(true);
+  });
+});
+
+describe('badge weight (m0.8.2)', () => {
+  it('is live while an apply waits, and carried once it stands', () => {
+    expect(favouriteBadgeWeight({ state: 'queued_apply', target: true })).toBe('live');
+    expect(favouriteBadgeWeight({ state: 'applied', target: true })).toBe('carried');
+    // No direction ever recorded keeps the same benefit of the doubt
+    // isFavouriteSelected gives it.
+    expect(favouriteBadgeWeight({ state: 'applied', target: null })).toBe('carried');
+  });
+
+  it('a QUEUED removal shows the heart-off badge; a verified one shows nothing', () => {
+    // Grilling Q5 (Tristan): three states must read apart — queued
+    // apply (heart, live), applied (heart, carried), queued removal
+    // (heart-off, live). Only a VERIFIED removal drops the badge.
+    expect(favouriteBadgeWeight({ state: 'queued_remove', target: false })).toBe('removing');
+    expect(favouriteBadgeWeight({ state: 'applied', target: false })).toBeNull();
+    expect(favouriteBadgeWeight({ state: 'none', target: null })).toBeNull();
+  });
+
+  it('retryable failures keep their direction: apply stays live, removal stays removing', () => {
+    expect(favouriteBadgeWeight({ state: 'error', target: true })).toBe('live');
+    expect(favouriteBadgeWeight({ state: 'error', target: false })).toBe('removing');
   });
 });

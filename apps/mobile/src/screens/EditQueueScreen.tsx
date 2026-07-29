@@ -3,22 +3,23 @@ import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
-import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { RootStackParamList } from '../navigation';
+import type { MainTabScreenProps } from '../navigation';
 import { getToEditPhotos, markEditDone, type ToEditRow } from '../db/store';
-import { useSession } from '../session/SessionContext';
+import { withUserWritePriority } from '../lib/writePriority';
+import { useReview } from '../review/ReviewContext';
 import { getEditableContentUri } from '../lib/media';
 import { launchEditor, launchViewer } from '../lib/edit';
 import { NO_EDITOR_MESSAGE, NO_EDITOR_TITLE } from '../lib/editActions';
 import { EditDiagnosticsSheet } from '../components/EditDiagnosticsSheet';
+import { QueueViewer } from '../components/QueueViewer';
+import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
 import { showToast } from '../lib/toast';
 import { labelForDayKey } from '../lib/dates';
 import { formatClock } from '../lib/format';
-import { colors, touch } from '../theme';
+import { colors, touch, useTheme } from '../theme';
 
-type Props = NativeStackScreenProps<RootStackParamList, 'EditQueue'>;
+type Props = MainTabScreenProps<'EditQueue'>;
 
 /**
  * The to-edit queue (PLAN.md: Android has no virtual gallery albums, so
@@ -31,38 +32,24 @@ type Props = NativeStackScreenProps<RootStackParamList, 'EditQueue'>;
  */
 export function EditQueueScreen(_props: Props) {
   const insets = useSafeAreaInsets();
+  const theme = useTheme();
   const db = useSQLiteContext();
-  const { flushPersistence, reconcileEditsDone } = useSession();
-  const [rows, setRows] = useState<ToEditRow[] | null>(null);
+  const { refresh } = useReview();
+  const { rows, failed, reload } = useQueueRows(useCallback(() => getToEditPhotos(db), [db]));
   const [busyId, setBusyId] = useState<string | null>(null);
   // Gate-0 (m0.7 item A): the editor-launch diagnostic matrix, opened from
   // the failure alert or by long-pressing Edit (proactive/emulator path).
   const [matrixAssetId, setMatrixAssetId] = useState<string | null>(null);
-
-  const reload = useCallback(async () => {
-    setRows(await getToEditPhotos(db));
-  }, [db]);
-
-  // Refresh whenever the screen gains focus (queue changes elsewhere).
-  useFocusEffect(
-    useCallback(() => {
-      void reload();
-    }, [reload]),
-  );
+  /** In-app full-screen viewer (gate 5) — thumbnail tap. */
+  const [viewerId, setViewerId] = useState<string | null>(null);
 
   const markDone = useCallback(
     async (assetId: string) => {
-      // Land every queued session write first: an older needs-edit intent
-      // executing AFTER the completion would re-queue the done row.
-      await flushPersistence();
-      await markEditDone(db, assetId);
-      // The photo may belong to the unfinished session — clear its live
-      // To-Edit flag, or the stale active verdict could later clear it
-      // back to unreviewed and overwrite the durable done.
-      reconcileEditsDone([assetId]);
+      await withUserWritePriority(() => markEditDone(db, assetId));
+      await refresh();
       await reload();
     },
-    [db, reload, flushPersistence, reconcileEditsDone],
+    [db, reload, refresh],
   );
 
   const askMarkDone = useCallback(
@@ -135,12 +122,14 @@ export function EditQueueScreen(_props: Props) {
   const renderItem = useCallback(
     ({ item }: { item: ToEditRow }) => (
       <View style={styles.row}>
-        <Image
-          source={{ uri: item.uri }}
-          style={styles.thumb}
-          contentFit="cover"
-          recyclingKey={item.asset_id}
-        />
+        <Pressable onPress={() => setViewerId(item.asset_id)}>
+          <Image
+            source={{ uri: item.uri }}
+            style={styles.thumb}
+            contentFit="cover"
+            recyclingKey={item.asset_id}
+          />
+        </Pressable>
         <View style={styles.rowBody}>
           <Text style={styles.rowTitle}>
             {item.day ? labelForDayKey(item.day) : 'Unknown day'} · {formatClock(item.taken_at)}
@@ -153,7 +142,7 @@ export function EditQueueScreen(_props: Props) {
             >
               <MaterialCommunityIcons name="pencil" size={18} color={colors.edit} />
               <Text style={styles.rowButtonText}>
-                {busyId === item.asset_id ? 'Opening…' : 'Edit'}
+                {busyId === item.asset_id ? 'Opening…' : 'Edit here'}
               </Text>
             </Pressable>
             <Pressable
@@ -162,43 +151,65 @@ export function EditQueueScreen(_props: Props) {
               onPress={() => void openGallery(item)}
             >
               <MaterialCommunityIcons name="image-outline" size={18} color={colors.text} />
-              <Text style={styles.rowButtonText}>Gallery</Text>
+              <Text style={styles.rowButtonText}>View only</Text>
             </Pressable>
             <Pressable
-              style={[styles.rowButton, styles.doneButton]}
+              style={[styles.rowButton, styles.doneButton, { borderColor: theme.accent }]}
               disabled={busyId !== null}
               onPress={() => void markDone(item.asset_id)}
             >
-              <MaterialCommunityIcons name="check" size={18} color={colors.keep} />
+              <MaterialCommunityIcons name="check" size={18} color={theme.accent} />
               <Text style={styles.rowButtonText}>Done</Text>
             </Pressable>
           </View>
         </View>
       </View>
     ),
-    [busyId, openEditor, openGallery, markDone],
+    [busyId, openEditor, openGallery, markDone, theme.accent],
   );
 
   return (
-    <View style={[styles.root, { paddingTop: 12 }]}>
+    // Tab screens render headerless — the top inset is theirs to pad.
+    <View style={[styles.root, { paddingTop: insets.top + 12 }]}>
+      <Text style={styles.heading}>Edit queue</Text>
       <Text style={styles.subtitle}>
         {rows === null
-          ? 'Loading…'
+          ? // codex r9: an initial reload failure would have said
+            // "Loading…" forever — the empty-state line says what happened.
+            failed
+            ? QUEUE_REFRESH_FAILED
+            : 'Loading…'
           : rows.length === 0
-            ? 'Nothing waiting to be edited.'
-            : `${rows.length} photo${rows.length === 1 ? '' : 's'} waiting · edits open in your editor of choice`}
+            ? 'Nothing queued to edit.'
+            : `${rows.length} queued · “Edit here” opens an editor that can save over the original; “View only” opens the photo read-only (use its own edit button to pick an editor)`}
       </Text>
+      {failed && rows !== null ? (
+        // codex r9: the reload kept the last rows on a failed read — the
+        // list may be stale, and it has to say so.
+        <Text style={styles.refreshFailed}>{QUEUE_REFRESH_FAILED}</Text>
+      ) : null}
       <FlatList
         data={rows ?? []}
         keyExtractor={(r) => r.asset_id}
         renderItem={renderItem}
-        contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + 16 }]}
+        contentContainerStyle={[styles.list, { paddingBottom: 16 }]}
         ListEmptyComponent={
           rows !== null && rows.length === 0 ? (
             <Text style={styles.emptyText}>
               Flag keepers with “needs edit” during review and they show up here.
             </Text>
           ) : null
+        }
+      />
+      <QueueViewer
+        rows={rows}
+        viewerId={viewerId}
+        toItem={(r) => ({ id: r.asset_id, uri: r.uri, takenAt: r.taken_at })}
+        onClose={() => setViewerId(null)}
+        onChanged={() =>
+          void reload()
+            .then(refresh)
+            .catch(() => {})
         }
       />
       {matrixAssetId !== null ? (
@@ -209,6 +220,7 @@ export function EditQueueScreen(_props: Props) {
 }
 
 const styles = StyleSheet.create({
+  heading: { color: colors.text, fontSize: 24, fontWeight: '800', marginBottom: 2 },
   root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 16 },
   subtitle: { color: colors.textDim, fontSize: 14, marginBottom: 10 },
   list: { gap: 10, flexGrow: 1 },
@@ -246,7 +258,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  doneButton: { backgroundColor: colors.keepDim, borderWidth: 1, borderColor: colors.keep },
+  // Completing an edit is NOT the keep verdict, so it does not wear
+  // keep-green (rule 2) — it is a confirm, and confirms take the accent.
+  doneButton: { backgroundColor: colors.surfaceRaised, borderWidth: 1 },
   rowButtonText: { color: colors.text, fontSize: 14, fontWeight: '700' },
   emptyText: { color: colors.textDim, fontSize: 15, textAlign: 'center', marginTop: 40 },
+  // codex r9: quiet stale-rows notice — dim like every read-failure line.
+  refreshFailed: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginBottom: 8 },
 });

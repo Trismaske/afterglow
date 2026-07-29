@@ -3,7 +3,7 @@
  * throttled). Pure decision logic lives in editDetection.ts; this file
  * wires it to MediaStore and SQLite.
  *
- * For every to_edit photo:
+ * For every photo waiting in the edit queue:
  *  - IN-PLACE: re-query the asset; if its modificationTime moved past our
  *    stored baseline (hash tiebreaker when we have one) → auto-mark done.
  *    The caller shows an unobtrusive notice.
@@ -24,13 +24,15 @@ import {
   type CandidateAsset,
 } from './media';
 import { reconcileExternallyRemoved } from '../db/trashStore';
+import { mapWithConcurrency } from './concurrency';
 import { sha256OfFile } from './hash';
 import { resolveSources } from './sourceCatalog';
-import { classifyInPlace, CREATION_TOLERANCE_MS, matchEditedCopies } from './editDetection';
+import { classifyInPlace, matchEditedCopies, mergeSiblingWindows } from './editDetection';
 import { dayKey } from './dates';
 import {
   dismissCopyMatch,
   getEditDetectionRows,
+  getDetectionTrackedAssets,
   getStatesForAssets,
   insertDetectedCopyWithMatch,
   getPendingCopyMatches,
@@ -44,7 +46,10 @@ import {
 const MAX_BASELINE_HASHES_PER_RUN = 5;
 /** Cap on the "new photos since flagging" candidate scan. */
 const MAX_NEW_ASSET_SCAN = 400;
-/** Cap on each ±2 s sibling window query (bursts are never this big). */
+/** Cap on ONE photo's ±2 s sibling window (bursts are never this big).
+ * A merged window carries this budget PER window it absorbed, so
+ * collapsing overlapping scans stays a speed change and never a coverage
+ * change. */
 const MAX_SIBLING_SCAN = 50;
 
 export interface DetectedCopy {
@@ -61,6 +66,9 @@ export interface EditDetectionResult {
   /** Edited copies detected (copy already tracked as done) — the caller
    * prompts keep-or-cull for each original. */
   copies: DetectedCopy[];
+  /** Externally removed photos reconciled during this run — group
+   * membership may have changed; the caller must refresh its queue. */
+  reconciled: number;
 }
 
 interface LiveRow {
@@ -78,20 +86,25 @@ export async function runEditDetection(
   db: SQLiteDatabase,
   onAutoDone?: (assetId: string) => void,
 ): Promise<EditDetectionResult> {
-  const result: EditDetectionResult = { autoDoneIds: [], copies: [] };
+  const result: EditDetectionResult = { autoDoneIds: [], copies: [], reconciled: 0 };
   const rows = await getEditDetectionRows(db);
   if (rows.length === 0) return result;
 
   // Pass 1: in-place edits. Rows that survive go to copy detection.
   const live: LiveRow[] = [];
   let hashBudget = MAX_BASELINE_HASHES_PER_RUN;
-  for (const row of rows) {
-    const details = await getAssetDetails(row.asset_id);
+  // The per-photo MediaStore lookups run bounded-parallel (m0.8.1, was
+  // serial); the decision loop below stays sequential because it WRITES.
+  const detailsByRow = await mapWithConcurrency(rows, 6, (row) =>
+    getAssetDetails(row.asset_id).catch(() => null),
+  );
+  for (const [index, row] of rows.entries()) {
+    const details = detailsByRow[index];
     if (!details) continue; // asset gone/unreadable — manual mark-done still works
     const verdict = classifyInPlace(row.mod_time, details.modificationTime, !!row.content_hash);
     if (verdict === 'edited') {
-      // Keyed to the captured cycle: a photo re-queued mid-run (fresh
-      // to_edit_at) must not be completed on this run's stale evidence.
+      // Keyed to the captured cycle: a photo re-queued mid-run (a fresh
+      // queued_at) must not be completed on this run's stale evidence.
       if (await markEditDone(db, row.asset_id, Date.now(), row.to_edit_at)) {
         onAutoDone?.(row.asset_id);
         result.autoDoneIds.push(row.asset_id);
@@ -118,7 +131,7 @@ export async function runEditDetection(
       await updateModTimeBaseline(db, row.asset_id, details.modificationTime, row.to_edit_at);
     } else {
       if (row.mod_time == null) {
-        // Fresh baseline for a re-queued photo (done → to_edit reset it):
+        // Fresh baseline for a re-queued photo (re-flagging reset it):
         // record the current file state so only FUTURE edits count — the
         // previous cycle's edit was already consumed.
         await updateModTimeBaseline(db, row.asset_id, details.modificationTime, row.to_edit_at);
@@ -152,20 +165,44 @@ export async function runEditDetection(
   )) {
     pool.set(c.id, c);
   }
-  for (const l of live) {
-    const siblings = await loadCandidatesCreatedBetween(
-      l.row.taken_at - CREATION_TOLERANCE_MS,
-      l.row.taken_at + CREATION_TOLERANCE_MS,
-      MAX_SIBLING_SCAN,
+  // MERGED + BOUNDED-PARALLEL sibling windows (m0.8.1): this ran ONE
+  // paged MediaStore scan per queued photo, serialized — and the windows
+  // are ±CREATION_TOLERANCE_MS around each photo, so a burst of queued
+  // photos re-scanned almost the same range N times. Overlapping windows
+  // now collapse into one scan each, each carrying the summed budget of
+  // the windows it absorbed (lib/editDetection.ts).
+  const merged = mergeSiblingWindows(live.map((l) => l.row.taken_at));
+  const scans = await mapWithConcurrency(merged, 4, async (window) => {
+    const cap = MAX_SIBLING_SCAN * window.merged;
+    // INCLUSIVE window → EXCLUSIVE MediaStore query: widen by 1 ms, or a
+    // copy whose cloned capture time sits EXACTLY at the ±tolerance edge
+    // is excluded before matching ever sees it (the same correction the
+    // scan pager and the progress ranges carry — codex r4).
+    const found = await loadCandidatesCreatedBetween(
+      window.startMs > 0 ? window.startMs - 1 : 0,
+      window.endMs + 1,
+      cap,
       sources.albumIds,
     );
-    for (const c of siblings) pool.set(c.id, c);
-  }
+    // A bound that silently drops rows reads as "we looked at everything"
+    // to whoever debugs the missed detection. Say so, once, loudly.
+    if (found.length >= cap) {
+      console.warn(
+        `[detect] sibling window ${window.startMs}-${window.endMs} hit its ${cap}-row cap ` +
+          `(${window.merged} merged) — an edited copy in this range may go undetected`,
+      );
+    }
+    return found;
+  });
+  for (const siblings of scans) for (const c of siblings) pool.set(c.id, c);
 
-  // Anything we already track (any state) is not an unnoticed copy —
-  // this also keeps burst siblings from false-positive timestamp matches
-  // and prevents re-prompting for copies detected on a previous run.
-  const tracked = await getStatesForAssets(db, [...pool.keys()]);
+  // Anything already REVIEW-tracked is not an unnoticed copy — that keeps
+  // burst siblings from false-positive timestamp matches and prevents
+  // re-prompting for copies detected on a previous run. Rows the
+  // continuous scan created but nobody touched do NOT count as tracked
+  // (m0.8: every photo gets a row within seconds, so a freshly saved
+  // editor copy usually has one before detection sees it).
+  const tracked = await getDetectionTrackedAssets(db, [...pool.keys()]);
   let candidates = [...pool.values()].filter((c) => !tracked.has(c.id));
 
   for (const l of live) {
@@ -236,6 +273,7 @@ export async function runEditDetection(
         // scan lands here again); the reverse order would strand a
         // 'done' row for an absent photo with no way back.
         await reconcileExternallyRemoved(db, [match.copy_id], Date.now());
+        result.reconciled += 1;
         await dismissCopyMatch(db, match.original_id, match.copy_id);
       }
       continue;

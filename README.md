@@ -1,5 +1,5 @@
 # afterglow
-Two apps: **Afterglow Desktop**, an Electron fullscreen ambient slideshow with smart "moments" ordering, muted video, and flag-to-queue photo capture (RAW with sidecar edits applied is the roadmap flagship, coming in v0.6); and **Afterglow Companion**, an Android photo-culling app that drives every phone photo to a reviewed end-state.
+Two apps: **Afterglow Desktop**, an Electron fullscreen ambient slideshow with smart "moments" ordering, muted video, and flag-to-queue photo capture (RAW with sidecar edits applied is the roadmap flagship, coming in v0.6); and **Afterglow** for Android, a photo-culling app that drives every phone photo to a reviewed end-state.
 
 See [PLAN.md](PLAN.md) for the product plan and release roadmap, and
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full developer setup —
@@ -137,12 +137,13 @@ Installers are built per platform with `npm run dist -w afterglow-desktop`
 (electron-builder; config in `apps/desktop/electron-builder.yml`). CI builds
 Windows + Linux artifacts on every `desktop-v*` tag.
 
-## Afterglow Companion (Android) — quickstart
+## Afterglow (Android) — quickstart
 
-The mobile app clears your camera roll down to keepers: burst groups
-(time-clustered, refined by perceptual similarity) are reviewed as a swipe
-deck — cull, keep, flag to-edit, or A/B-compare with synchronized zoom —
-and staged culls are deleted in one confirmed batch to the system trash.
+The mobile app clears your camera roll down to keepers: a continuous
+scan groups lookalike shots with an on-device image model, and the live
+review queue works through them as a swipe deck — cull, keep, flag
+to-edit, or A/B-compare with synchronized zoom — with staged culls
+deleted in confirmed batches to the system trash.
 See [apps/mobile/README.md](apps/mobile/README.md) for the flow and
 how to run it — it needs an Android development build
 (`npx expo run:android`), **not Expo Go**.

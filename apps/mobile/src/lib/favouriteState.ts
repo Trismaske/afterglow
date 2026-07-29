@@ -17,11 +17,45 @@ export function shouldOfferFavouriteHandoff(status: FavouriteStatus): boolean {
   return !isFavouriteSelected(status);
 }
 
-/** What the heart should communicate, including queued/error intent. */
+/**
+ * What the heart should communicate, including queued/error intent.
+ *
+ * `applied` reads its DIRECTION, not merely its existence: a verified
+ * REMOVAL is an applied favourite action whose target is false, and
+ * treating it as selected left the heart filled on a photo the gallery
+ * had just un-favourited — so the next tap queued a second removal. A
+ * null target on an applied row is the degenerate case (no direction
+ * ever recorded) and keeps the old benefit of the doubt.
+ */
 export function isFavouriteSelected(status: FavouriteStatus): boolean {
-  if (status.state === 'applied' || status.state === 'queued_apply') return true;
+  if (status.state === 'applied') return status.target !== false;
+  if (status.state === 'queued_apply') return true;
   if (status.state === 'error') return status.target === true;
   return false;
+}
+
+/**
+ * The heart's badge WEIGHT (m0.8.2), on the same two-position rule the
+ * other three actions use — but read from the status, because favourite
+ * is the only action that can point backwards.
+ *
+ * - `live` — a favourite is waiting to be applied (or its attempt failed
+ *   and is retryable).
+ * - `removing` — a REMOVAL is waiting (or its attempt failed): the badge
+ *   renders the heart-off glyph in the favourite hue at the live weight
+ *   (Tristan, grilling Q5) — still favourited in the gallery, with the
+ *   switch-off queued, and the three states must read apart everywhere.
+ * - `carried` — the gallery favourite is applied and still stands.
+ * - `null` — no heart: never favourited, or verifiably un-favourited.
+ */
+export function favouriteBadgeWeight(
+  status: FavouriteStatus,
+): 'live' | 'removing' | 'carried' | null {
+  if (status.state === 'queued_apply') return 'live';
+  if (status.state === 'error') return status.target === true ? 'live' : 'removing';
+  if (status.state === 'queued_remove') return 'removing';
+  if (status.state === 'applied') return status.target === false ? null : 'carried';
+  return null;
 }
 
 /**

@@ -17,6 +17,40 @@ android {
   }
 }
 
+// The model asset is gitignored (11 MB); every APK built without it would
+// fail at runtime on EVERY photo (the scan would silently fall back to
+// time-only groups), and a WRONG model would produce vectors labeled with
+// the pinned identity but incompatible with the calibrated thresholds.
+// Fail every build early on absence or checksum mismatch. The pin below
+// mirrors MODEL_SHA256 in ../index.ts and labels-v1.json — change all
+// together, deliberately.
+def PINNED_MODEL_SHA256 = '11af3c560dfeed7737cb4c03c23bf52a8403020784192d4dea0b74862a12828d'
+tasks.named('preBuild').configure {
+  doFirst {
+    def model = file('src/main/assets/mobilenet_v3_large.tflite')
+    if (!model.exists()) {
+      throw new GradleException(
+        "image-embedder: model asset missing at ${model}.\n" +
+        'Fetch and SHA-verify it per apps/mobile/modules/image-embedder/README.md ' +
+        '(CI does this in .github/workflows/mobile-release.yml).')
+    }
+    def digest = java.security.MessageDigest.getInstance('SHA-256')
+    model.withInputStream { stream ->
+      byte[] buffer = new byte[1 << 16]
+      int read
+      while ((read = stream.read(buffer)) > 0) digest.update(buffer, 0, read)
+    }
+    def actual = digest.digest().collect { String.format('%02x', it) }.join()
+    if (actual != PINNED_MODEL_SHA256) {
+      throw new GradleException(
+        "image-embedder: model asset at ${model} hashes to ${actual.take(12)}…, " +
+        "but the pin is ${PINNED_MODEL_SHA256.take(12)}… — wrong or corrupt model file; " +
+        're-fetch per the module README (a deliberate model swap must update index.ts ' +
+        'MODEL_SHA256, this pin, and the labels fixtures together).')
+    }
+  }
+}
+
 dependencies {
   // 0.10.35 matches the desktop pipeline that generated the labels-v1 fixture
   // and includes 16 KB page-size support (required from 0.10.26 for Android 15+ devices).

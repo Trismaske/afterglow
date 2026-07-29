@@ -15,7 +15,6 @@ import {
   trashMedia,
   type MediaStoreActionStatus,
 } from '../../modules/media-store-actions';
-import { tallyPhotoDays } from './recentMedia';
 
 /**
  * Canonical volume-qualified identity (m0.7 gate 1, P4#2): every photo id
@@ -39,6 +38,10 @@ export interface LoadedPhoto {
   modTime: number;
   width: number;
   height: number;
+  /** MediaStore has no DATE_TAKEN for it — `item.timestamp` is the
+   * modification-time fallback, and MediaStore sorted it at the end of
+   * a DATE_TAKEN-descending stream (the scan handles these separately). */
+  undated: boolean;
 }
 
 const PAGE_SIZE = 200;
@@ -58,6 +61,7 @@ function toLoadedPhoto(asset: MediaLibrary.Asset): LoadedPhoto {
     volumeName: PRIMARY_VOLUME,
     filename: asset.filename,
     modTime: asset.modificationTime,
+    undated: !asset.creationTime,
     width: asset.width,
     height: asset.height,
   };
@@ -84,8 +88,8 @@ export async function pagePhotosInRange(
       first: PAGE_SIZE,
       after,
       ...(albumId !== undefined ? { album: albumId } : {}),
-      createdAfter: startMs,
-      createdBefore: endMs,
+      ...(startMs > 0 ? { createdAfter: startMs } : {}),
+      ...(Number.isFinite(endMs) ? { createdBefore: endMs } : {}),
       mediaType: MediaLibrary.MediaType.photo,
       sortBy: [[MediaLibrary.SortBy.creationTime, !descending]],
     });
@@ -120,8 +124,14 @@ export async function fetchPhotoPageDesc(
     first,
     after,
     ...(albumId !== undefined ? { album: albumId } : {}),
-    createdAfter: startMs,
-    createdBefore: endMs,
+    // A 0 lower bound must be OMITTED: the legacy MediaStore query turns
+    // createdAfter into DATE_TAKEN > 0, which silently excludes undated
+    // photos — and the continuous scan is the only review ingress.
+    ...(startMs > 0 ? { createdAfter: startMs } : {}),
+    // A finite upper bound renders as DATE_TAKEN < endMs — FALSE for SQL
+    // NULL, so open-ended callers pass Infinity and get NO bounds (undated
+    // photos must enter the scan and the all-photos counts).
+    ...(Number.isFinite(endMs) ? { createdBefore: endMs } : {}),
     mediaType: MediaLibrary.MediaType.photo,
     sortBy: [[MediaLibrary.SortBy.creationTime, false]],
   });
@@ -140,60 +150,59 @@ export async function fetchPhotoPageDesc(
  * accepts a single album, hence the fan-out — the selected source is
  * typically one or two buckets.
  */
+/** Short-lived memo + single-flight for range counts (m0.8.1): Home, the
+ * Progress view and the scan all ask for the SAME whole-corpus count
+ * within the same second, and Home re-asked on every review mutation.
+ * The window is small enough that a library change surfaces on the next
+ * screen focus; `invalidatePhotoCounts()` clears it explicitly. */
+const COUNT_TTL_MS = 20_000;
+const countCache = new Map<string, { at: number; value: Promise<number> }>();
+
+export function invalidatePhotoCounts(): void {
+  countCache.clear();
+}
+
 export async function countPhotosInRange(
   startMs: number,
   endMs: number,
   albumIds?: readonly string[] | null,
+  options?: {
+    /** Bypass the memo and take a fresh count (the result still lands in
+     * the cache). The delta tripwire needs this: its count must postdate
+     * the generation snapshot, and a cache entry another screen primed
+     * seconds earlier would let a permanent delete slip both checks. */
+    fresh?: boolean;
+  },
 ): Promise<number> {
-  const buckets: (string | undefined)[] = albumIds ? [...albumIds] : [undefined];
-  let total = 0;
-  for (const album of buckets) {
-    const page = await MediaLibrary.getAssetsAsync({
-      first: 1,
-      ...(album !== undefined ? { album } : {}),
-      createdAfter: startMs,
-      createdBefore: endMs,
-      mediaType: MediaLibrary.MediaType.photo,
-    });
-    total += page.totalCount;
+  const key = `${startMs}|${endMs}|${albumIds ? [...albumIds].sort().join(',') : '*'}`;
+  const hit = options?.fresh ? undefined : countCache.get(key);
+  if (hit && Date.now() - hit.at < COUNT_TTL_MS) return hit.value;
+  const pending = (async () => {
+    const buckets: (string | undefined)[] = albumIds ? [...albumIds] : [undefined];
+    // Buckets counted CONCURRENTLY — a multi-folder source used to pay
+    // one serialized round trip per bucket.
+    const counts = await Promise.all(
+      buckets.map(async (album) => {
+        const page = await MediaLibrary.getAssetsAsync({
+          first: 1,
+          ...(album !== undefined ? { album } : {}),
+          // Same undated-photo contract as fetchPhotoPageDesc.
+          ...(startMs > 0 ? { createdAfter: startMs } : {}),
+          ...(Number.isFinite(endMs) ? { createdBefore: endMs } : {}),
+          mediaType: MediaLibrary.MediaType.photo,
+        });
+        return page.totalCount;
+      }),
+    );
+    return counts.reduce((sum, n) => sum + n, 0);
+  })();
+  countCache.set(key, { at: Date.now(), value: pending });
+  try {
+    return await pending;
+  } catch (error) {
+    countCache.delete(key); // never memoize a failure
+    throw error;
   }
-  return total;
-}
-
-/**
- * Count photos per local day with one ranged scan per selected source bucket,
- * instead of one totalCount query per day. Paging is retained for unusually
- * busy weeks, but the common camera-roll case is a single MediaStore request.
- */
-export async function countPhotosByDayInRange(
-  startMs: number,
-  endMs: number,
-  albumIds?: readonly string[] | null,
-): Promise<Map<string, number>> {
-  const buckets: (string | undefined)[] = albumIds ? [...albumIds] : [undefined];
-  const timestamps: number[] = [];
-  const seen = new Set<string>();
-  for (const album of buckets) {
-    let after: string | undefined;
-    for (;;) {
-      const page = await MediaLibrary.getAssetsAsync({
-        first: PAGE_SIZE,
-        after,
-        ...(album !== undefined ? { album } : {}),
-        createdAfter: startMs,
-        createdBefore: endMs,
-        mediaType: MediaLibrary.MediaType.photo,
-      });
-      for (const asset of page.assets) {
-        if (seen.has(asset.id)) continue;
-        seen.add(asset.id);
-        timestamps.push(asset.creationTime || asset.modificationTime || 0);
-      }
-      if (!page.hasNextPage || !page.endCursor) break;
-      after = page.endCursor;
-    }
-  }
-  return tallyPhotoDays(timestamps);
 }
 
 /** Live MediaStore details for one asset (edit detection, m0.3). */
@@ -261,7 +270,7 @@ export async function loadCandidatesCreatedBetween(
         first: Math.min(PAGE_SIZE, max - loaded),
         after,
         ...(album !== undefined ? { album } : {}),
-        createdAfter: startMs,
+        ...(startMs > 0 ? { createdAfter: startMs } : {}),
         ...(endMs !== undefined ? { createdBefore: endMs } : {}),
         mediaType: MediaLibrary.MediaType.photo,
         sortBy: [[MediaLibrary.SortBy.creationTime, false]],

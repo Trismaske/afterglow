@@ -1,6 +1,7 @@
 package expo.modules.mediastoreactions
 
 import android.content.ActivityNotFoundException
+import android.content.ContentResolver
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -116,6 +117,120 @@ class MediaStoreActionsModule : Module() {
     // organize boundary needs this native query. Counts are per
     // (volume, bucket); the same DCIM/Camera path on primary and SD
     // storage yields two distinct entries.
+    AsyncFunction("mediaGenerations") {
+      // MediaStore's per-volume change counter (API 30+): bumps on ANY
+      // insert/update/delete, so an unchanged generation is an OS-level
+      // guarantee the library did not change — the scan skip's evidence.
+      //
+      // KEYED "<volume>|<version>": generations are comparable ONLY while
+      // MediaStore.getVersion is unchanged (the contract requires a full
+      // re-sync when it moves — a provider rebuild resets counters, so an
+      // equal number would be a coincidence, not a proof). Baking the
+      // version into the key makes a rebuild mismatch every stored key:
+      // the skip fingerprint differs and the delta planner sees an
+      // unknown volume, both of which land on a full pass with no
+      // version-aware logic anywhere in JS. Volume names never contain
+      // '|'; JS recovers the raw name as everything before the first '|'.
+      val context = appContext.reactContext
+        ?: throw IllegalStateException("Android context unavailable")
+      val out = mutableMapOf<String, Double>()
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        for (volume in MediaStore.getExternalVolumeNames(context)) {
+          try {
+            val version = MediaStore.getVersion(context, volume)
+            out["$volume|$version"] = MediaStore.getGeneration(context, volume).toDouble()
+          } catch (error: Exception) {
+            // FAIL THE WHOLE CALL. This map is the scan skip's PROOF that
+            // nothing changed, and a proof missing a volume is not a
+            // proof — yet a partial map fingerprints and compares just
+            // fine, so the same volume failing on two launches would
+            // skip the scan forever while its photos changed underneath.
+            // The caller catches this and simply does not skip.
+            throw IllegalStateException("generation unreadable for volume $volume", error)
+          }
+        }
+      }
+      out
+    }
+
+    /**
+     * Rows whose MediaStore generation exceeds `since` on one volume —
+     * the change discovery a DELTA scan is built on (m0.8.2 phase 1).
+     *
+     * TRASHED ROWS ARE INCLUDED (`QUERY_ARG_MATCH_TRASHED` /
+     * `MATCH_INCLUDE`), and that is the point. On Android 11+ a user
+     * "deleting" a photo in their gallery is `createTrashRequest`: the
+     * row SURVIVES with `IS_TRASHED = 1` for 30 days, and MediaStore
+     * filters such rows out of every query by default. So the deletion
+     * that a full pass can only infer from an absence shows up here as
+     * an ordinary MODIFIED row — provided trashing bumps the generation,
+     * which is exactly what phase 1 exists to measure.
+     *
+     * Fails the whole call on any error, for the same reason
+     * `mediaGenerations` does: a partial change set is indistinguishable
+     * from a complete one, and acting on it would silently skip photos.
+     */
+    AsyncFunction("mediaChangedSince") { volume: String, since: Double ->
+      val context = appContext.reactContext
+        ?: throw IllegalStateException("Android context unavailable")
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+        throw IllegalStateException("generation queries need API 30+")
+      }
+      val out = mutableListOf<Map<String, Any?>>()
+      val uri = MediaStore.Images.Media.getContentUri(volume)
+      val selection =
+        "${MediaStore.MediaColumns.GENERATION_ADDED} > ? OR " +
+          "${MediaStore.MediaColumns.GENERATION_MODIFIED} > ?"
+      val bound = since.toLong().toString()
+      val queryArgs = android.os.Bundle().apply {
+        putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_INCLUDE)
+        putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
+        putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, arrayOf(bound, bound))
+      }
+      try {
+        context.contentResolver.query(
+          uri,
+          arrayOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DATE_TAKEN,
+            MediaStore.MediaColumns.DATE_MODIFIED,
+            MediaStore.MediaColumns.IS_TRASHED,
+            MediaStore.MediaColumns.GENERATION_ADDED,
+            MediaStore.MediaColumns.GENERATION_MODIFIED,
+          ),
+          queryArgs,
+          null,
+        )?.use { cursor ->
+          val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+          val takenCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_TAKEN)
+          val modifiedCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
+          val trashedCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_TRASHED)
+          val addedGenCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.GENERATION_ADDED)
+          val modGenCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.GENERATION_MODIFIED)
+          while (cursor.moveToNext()) {
+            out.add(
+              mapOf(
+                "volumeName" to volume,
+                "rawId" to cursor.getLong(idCol).toString(),
+                // DATE_TAKEN is ms since epoch and NULL for undated
+                // photos; DATE_MODIFIED is SECONDS. The JS side owns the
+                // fallback, so both are reported raw.
+                "dateTakenMs" to if (cursor.isNull(takenCol)) null else cursor.getLong(takenCol),
+                "dateModifiedSec" to
+                  if (cursor.isNull(modifiedCol)) null else cursor.getLong(modifiedCol),
+                "isTrashed" to (cursor.getInt(trashedCol) != 0),
+                "generationAdded" to cursor.getLong(addedGenCol).toDouble(),
+                "generationModified" to cursor.getLong(modGenCol).toDouble(),
+              ),
+            )
+          }
+        } ?: throw IllegalStateException("null cursor for volume $volume")
+      } catch (error: Exception) {
+        throw IllegalStateException("change query failed for volume $volume", error)
+      }
+      out
+    }
+
     AsyncFunction("listImageAlbums") {
       val context = appContext.reactContext
         ?: throw IllegalStateException("Android context unavailable")
@@ -129,7 +244,7 @@ class MediaStoreActionsModule : Module() {
         val uri = MediaStore.Images.Media.getContentUri(volume)
         val counts = HashMap<Long, Triple<String, String, Int>>()
         try {
-          context.contentResolver.query(
+          val cursorOrNull = context.contentResolver.query(
             uri,
             arrayOf(
               MediaStore.Images.Media.BUCKET_ID,
@@ -139,7 +254,13 @@ class MediaStoreActionsModule : Module() {
             null,
             null,
             null,
-          )?.use { cursor ->
+          )
+          // A NULL cursor is a failed query, not an empty volume — the
+          // `?.use` shortcut silently produced a partial catalog that
+          // passed as complete, the exact all-volumes-or-none violation
+          // the catch below exists to prevent (codex r5).
+          ?: throw IllegalStateException("album query returned null cursor for volume $volume")
+          cursorOrNull.use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_ID)
             val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
             val pathCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.RELATIVE_PATH)
@@ -152,9 +273,14 @@ class MediaStoreActionsModule : Module() {
             }
           }
         } catch (error: Exception) {
-          // A failed volume yields no entries — callers treat partial
-          // catalogs as fail-closed for organize targets.
-          continue
+          // FAIL THE WHOLE CALL, for the same reason as the generations
+          // above: a partial catalog is indistinguishable from a
+          // complete one. Silently dropping a volume hides the folders
+          // the user selected on it, and can make the "is DCIM/Camera
+          // present?" default-source probe answer no and broaden the
+          // scope to every folder — the exact fail-OPEN the source
+          // contract forbids. JS treats the error as "no catalog".
+          throw IllegalStateException("album query failed for volume $volume", error)
         }
         for ((bucket, entry) in counts) {
           out.add(

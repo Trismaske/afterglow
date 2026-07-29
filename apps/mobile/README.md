@@ -101,6 +101,34 @@ carry you to inbox zero.
 > from the S10e era — progress shows live on Home, the app stays usable
 > throughout, and later scans reuse the stored analysis.
 
+## Supported photo formats (the honest list)
+
+The app reviews what Android's MediaStore indexes as a photo on your
+device — everything your gallery treats as a picture (JPEG, PNG, WebP,
+HEIC, GIF) reviews normally. Videos are not reviewable yet.
+
+**RAW**, measured on real hardware (Samsung S23 / Android 16, 2026-07):
+
+| Format | Status |
+|---|---|
+| DNG (incl. Samsung Expert RAW) | **Fully supported** — grouped, rendered, reviewable like any photo |
+| NEF (Nikon) | **Supported, one caveat** — reviews and renders fine, but Android does not extract its capture date, so NEF photos land under *Unknown day* and sort by file date |
+| ARW (Sony) | **Fully supported** |
+| CR3 (Canon) | **Not supported** — Android does not classify CR3 as an image, so these files are invisible to the app (they are not shown, counted, or touched) |
+| Other RAW formats | Untested — the app shows whatever MediaStore indexes as an image |
+
+Format handling is the OS's: results can vary by device and Android
+version; the table above is what we measured, not a promise about every
+phone.
+
+**Where photos can live:** internal storage is fully supported. A card
+in the phone's **own SD slot** currently *appears* in the app but is not
+reliably actionable (deleting or favouriting from it can fail) — proper
+SD-card support is the next release (0.8.3). Cards in **USB/OTG
+readers** and USB drives are not supported at all: Android never indexes
+them for gallery apps, so they are invisible to Afterglow (use your
+file manager to copy them onto the phone first).
+
 ## What a photo carries
 
 A photo has exactly one **verdict**, plus any number of independent

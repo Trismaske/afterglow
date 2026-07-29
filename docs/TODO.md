@@ -8,28 +8,20 @@ moment it is answered — a closed question left here reads as open work.
 Numbers renumber whenever an item closes, so **cross-references from code
 or other docs quote the title, never the number**.
 
-1. **Real volume identity at ingestion** (post-m0.7 review, 2026-07-23).
-   `lib/media.ts` keys every asset as `external_primary` — an inline
-   **(autonomous)** gate-1 assumption ("refined in gate 3") that gate 3
-   only refined for the organize catalog, not for ingestion identity.
-   With an SD card present, MediaStore's `external` query can return
-   removable-volume assets: raw ids may collide across volumes, the
-   organize cross-volume rejection never fires (every row claims
-   primary), and the synthetic content-URI fallback can address the wrong
-   volume. Needs its own investigation: derive per-asset volume natively
-   (bucket→volume via `listImageAlbums`, or a native id lookup) vs.
-   excluding non-primary volumes from ingestion until multi-volume
-   support is designed.
+1. **In-app recovery-grade data reset (danger zone)** (Tristan,
+   2026-07-24; reworded 2026-07-29). A persistently failing startup
+   recovery currently escalates its error copy toward Android's
+   Clear-data escape hatch after 3 consecutive failures. Decide whether
+   Settings should gain an in-app "reset app data" row so the remedy
+   lives inside the app. Scope narrowed by m0.8.3: the volume-scoped
+   "Forget this card" flow covers healthy-DB data hygiene, so what
+   remains here is the RECOVERY case — the DB itself is broken, so the
+   reset must work at the file/schema level (not through row deletes)
+   and be reachable from the failure path (typed/strong confirmation,
+   photos untouched). A destructive flow like this deserves its own
+   design pass.
 
-2. **In-app data reset (danger zone)** (Tristan, 2026-07-24; m0.8
-   candidate). A persistently failing startup recovery currently
-   escalates its error copy toward Android's Clear-data escape hatch
-   after 3 consecutive failures. Decide whether Settings should gain an
-   in-app "reset app data" row (typed/strong confirmation, photos
-   untouched) so the remedy lives inside the app; a destructive flow
-   like this deserves its own design pass.
-
-3. **Restore CI audit gate to `--audit-level=high`** (2026-07-25;
+2. **Restore CI audit gate to `--audit-level=high`** (2026-07-25;
    re-checked 2026-07-29). Temporarily at `critical` in
    `.github/workflows/ci.yml`. One blocker:
    **brace-expansion** CVE-2026-14257 (GHSA-mh99-v99m-4gvg) flags every
@@ -40,7 +32,7 @@ or other docs quote the title, never the number**.
    fast-uri fix landed in m0.8.2's lockfile; the gate returns to `high`
    once brace-expansion backports.
 
-4. **Documentation standards for shipped releases** (Tristan, 2026-07-23).
+3. **Documentation standards for shipped releases** (Tristan, 2026-07-23).
    Should there be a per-release document recording what actually shipped
    (a `docs/Release_*.md` or a curated CHANGELOG)? Unclear whether it adds
    value or just duplicates the GitHub Releases page, which already
@@ -49,13 +41,13 @@ or other docs quote the title, never the number**.
    Feedback/Plan docs are deleted after shipping, and whether a
    lightweight standard (or none) fits.
 
-5. **Upstream expo-image-manipulator native leak report** (m0.8 device
+4. **Upstream expo-image-manipulator native leak report** (m0.8 device
    testing, 2026-07-25). The scan's thumbnail decode path observed a
    native-memory leak in `expo-image-manipulator` (worked around — the
    embedder module decodes natively instead). File a minimal-repro issue
    upstream so the workaround can eventually be dropped.
 
-6. **Confirm the real distribution of per-user median review deltas**
+5. **Confirm the real distribution of per-user median review deltas**
     (m0.8.2, 2026-07-28). The sitting boundary is settled by arithmetic
     (`lib/forecast.ts` — K = 40, 60 s floor, 5 min ceiling, with the
     crossover table in the header), and every parameter follows from ONE
@@ -73,7 +65,7 @@ or other docs quote the title, never the number**.
     "sweep K for a plateau" method is deliberately dropped: it tests
     stability, not correctness, and a plateau can sit in the wrong place.
 
-7. **Does "best of group" still earn its place?** (m0.8.2, parked
+6. **Does "best of group" still earn its place?** (m0.8.2, parked
     deliberately.) The star is an ANNOTATION under
     [STATE_MODEL.md](STATE_MODEL.md), but it also FREEZES its group
     against regrouping (`lib/regroupBoundary.ts`), and it is drawn in
@@ -83,7 +75,7 @@ or other docs quote the title, never the number**.
     should hang off the star at all, and if it stays, whether the star
     gets a fixed hue like every other meaning-bearing colour.
 
-8. **Group a detected edited copy with its original** (Tristan,
+7. **Group a detected edited copy with its original** (Tristan,
     2026-07-28). The de-dupe case is obvious — an editor that saves a
     copy leaves you holding two near-identical photos — but the scan
     cannot pair them today, and the blocker is specific: the regroup
@@ -103,7 +95,7 @@ or other docs quote the title, never the number**.
     use case for copy-saving editors is unclear in the first place, and
     a substantially cropped copy may genuinely be a different photo.
 
-9. **The accent must stop carrying meaning** (Tristan, 2026-07-28;
+8. **The accent must stop carrying meaning** (Tristan, 2026-07-28;
     m0.9 pass). Rule 3 says the accent is interaction only, because it is
     user-chosen and cannot hold a stable meaning. Six sites break it, and
     the collisions are measured, not suspected — CIE76 ΔE between each
@@ -140,14 +132,14 @@ or other docs quote the title, never the number**.
     late edit at the end of a release that already carried a state-model
     refactor and a visual sweep.
 
-10. **Type-scale and token pass** (m0.8.1 UI sweep, parked; wants
+9. **Type-scale and token pass** (m0.8.1 UI sweep, parked; wants
     before/after screenshots, not piecemeal edits). Headings are 28 or
     24; subtitles range 12-16; thumbnail radii are 8, 9 and 10; chip
     radii 10-20; scrim opacities 0.55-0.7; root paddings 12-20. Two
     smaller items belong with it: empty-state grammar has three
     phrasings, and Summary still has a blank loading view.
 
-11. **Two measured SQL costs, deliberately parked** (m0.8.1 rounds
+10. **Two measured SQL costs, deliberately parked** (m0.8.1 rounds
     5-7; each has evidence, none is currently hot).
     - `getStateCountsInScope` evaluates a correlated EXISTS per row in
       scope (~22 ms whole-corpus, once per Progress open). A LEFT JOIN
@@ -157,7 +149,7 @@ or other docs quote the title, never the number**.
       Only a normalized `source_root` column would fix it, and today it
       is always a secondary filter on index-fetched rows.
 
-12. **Re-gate the `[perf]` logs at v1** (Tristan, 2026-07-28; trigger:
+11. **Re-gate the `[perf]` logs at v1** (Tristan, 2026-07-28; trigger:
     the v1 release). m0.8.2 ungated `lib/perfLog.ts` so the field
     tripwires actually fire in the builds we hand to testers — every
     on-device pass runs a release build, and a timing measured on a dev
@@ -169,7 +161,7 @@ or other docs quote the title, never the number**.
     (honest, but earns a settings row off one use case), or a build
     flavour. Decide with the v1 distribution model in hand, not before.
 
-13. **Revisit the weekly full pass once the delta has field time**
+12. **Revisit the weekly full pass once the delta has field time**
     (Tristan, 2026-07-28; trigger: a few weeks of real use). The delta
     scan runs a full reconciliation pass at least weekly. Its original
     justification — a permanent delete numerically masked by an add —
@@ -219,7 +211,7 @@ or other docs quote the title, never the number**.
     mechanism that may be deleted, so it is listed as an option rather
     than a recommendation.
 
-14. **Coalesce tiny singles runs?** (m0.8.2 build, settled as keep-as-is
+13. **Coalesce tiny singles runs?** (m0.8.2 build, settled as keep-as-is
     by Tristan 2026-07-29; trigger: tester complaints about ceremony.)
     A sparse-photo stretch produces one timeline card and one one-photo
     deck per day (device-observed: dozens at the head on both phones).
@@ -229,7 +221,7 @@ or other docs quote the title, never the number**.
     at the cost of blurring the day-scoped run model (Plan_m0.8.2.md
     appendix 34 has the full trade).
 
-15. **Verify the UI gate's PiP dismissal against a live PiP**
+14. **Verify the UI gate's PiP dismissal against a live PiP**
     (2026-07-29). A YouTube picture-in-picture window ate the Stats tap
     without taking the foreground; the gate now force-stops known PiP
     apps at start (`dismissPipOverlays`), but Tristan closed the live
@@ -237,7 +229,7 @@ or other docs quote the title, never the number**.
     in anger. Next time a PiP is up anyway, run the gate before closing
     it.
 
-16. **Should non-review surfaces feed the goal celebration counter?**
+15. **Should non-review surfaces feed the goal celebration counter?**
     (m0.8.2, 2026-07-29). `noteDecisions` is wired to every deck and
     Compare decision path, so a crossing there celebrates instantly.
     Verdicts written from the PhotoViewer's state editor, History
@@ -246,7 +238,7 @@ or other docs quote the title, never the number**.
     paths, and wiring them means auditing each for its fresh-decision
     count; decide whether the latency matters before adding plumbing.
 
-17. **Measure `k`, the delta scan's per-range cost** (2026-07-28;
+16. **Measure `k`, the delta scan's per-range cost** (2026-07-28;
     trigger: field logs from normal use). `lib/deltaScan.ts` charges
     `RANGE_COST_IN_PHOTOS = 2` — a range costs about two photos' worth of
     work — derived from a ranged MediaStore query being the same order as
@@ -259,16 +251,17 @@ or other docs quote the title, never the number**.
     `pageAndGroup` against `ranges.length` and `covered` across real
     passes — the `[scan] delta …` line already prints both terms.
 
-18. **Compare: keeping photos in TRIAGE mode** (Tristan, 2026-07-29
+17. **Compare: keeping photos in TRIAGE mode** (Tristan, 2026-07-29
     device pass). With 3+ undecided members a duel is verdict-free by
     design, so Compare offers no way to KEEP a photo there — "N is
     better" stars and records only, and the keep-both/cull dialog
     appears once the pair covers the undecided remainder. Tristan found
     the pull-toward-culling flow acceptable but wants a keep path from
     Compare. Needs design: a direct "Keep N" chip mirroring "Cull N"
-    (plain verdict, no whole-table claim)? Or fold into item 20.
+    (plain verdict, no whole-table claim)? Or fold into "Retire 'best
+    of group' in favour of a plain Keep?" below.
 
-19. **Retire "best of group" in favour of a plain Keep?** (Tristan,
+18. **Retire "best of group" in favour of a plain Keep?** (Tristan,
     2026-07-29). The star may be confusing things: marking best is the
     only "positive" act a triage duel offers, and it drags the user
     toward the cull dialog rather than a keep. Deciding whether best
@@ -281,18 +274,7 @@ or other docs quote the title, never the number**.
     the star is the accent-as-data offender TODO's accent entry already
     tracks. Issues like these are why Tristan leans toward removal.
 
-20. **A source that matches no live bucket reads "0 pictures total"**
-    (sweep review, 2026-07-29; parked in the grilling). When the stored
-    source dirs match nothing — typically a source folder on an
-    unmounted SD card — resolution SUCCEEDS with `albumIds: []` while
-    `roots` stays set, so the MediaStore side confidently counts zero
-    ("0 pictures total") beside a correctly scoped DB side. Not a
-    resolution failure, so keep-last/retry never engages. The UI should
-    NAME the state ("your folder isn't reachable right now") rather
-    than show zeros or silently keep-last. Same population as item 1
-    (real volume identity) — ride that investigation.
-
-21. **Action-layer coherence pass: favourite event log, one queue
+19. **Action-layer coherence pass: favourite event log, one queue
     action language, full grid action hydration** (Tristan, 2026-07-29
     grilling — three merged items, one next-minor work package).
     (a) FAVOURITE EVENT LOG + external IS_FAVORITE reconciliation: the
@@ -322,3 +304,34 @@ or other docs quote the title, never the number**.
     all. Hydrate both paths with the weighted set (live/carried/
     removing), and solve the dot-scale design question (dots cannot
     render the heart-off glyph).
+
+20. **"N-day clear streak" reads like the goal streak** (tester
+    feedback, 2026-07-29; next feedback release). Home's Keeping-up
+    card renders `🔥 N-day clear streak` (HomeScreen.tsx) — the same
+    emoji and sentence shape as the count-goal card's `🔥 N-day streak`
+    a screen above, and the tester could not tell what distinguishes
+    them. Tester suggestion: something like "last 25 days fully
+    reviewed" with a DIFFERENT emoji. Copy caveat: the coverage streak
+    counts consecutive cleared SHOOTING days — empty days pass through
+    (`lib/coverageGoal.ts` `coverageStreak`) — so "last N days" is not
+    literally true; the new copy must convey shooting days without a
+    lecture. Stats' coverage caption already says "N of M days fully
+    reviewed" — align the family while touching it.
+
+21. **The review overview hides fully reviewed units** (tester
+    feedback, 2026-07-29; next feedback release). Flow that surfaced
+    it: "Continue reviewing" → review a group → want to revisit it →
+    Home → overview chevron — and the just-reviewed unit is gone. The
+    overview renders the PENDING timeline: `listReviewGroups` requires
+    a group to still hold an unreviewed member (db/store.ts, the
+    EXISTS on `state = 'unreviewed'`), and the singles feed keeps only
+    pending rows — staged culls stay badged, which is why cull-only
+    units still show while fully KEPT units vanish. Day pages do list
+    completed groups, but that door is not discoverable from the flow.
+    Wanted: the FULL timeline — every group and singles run, newest-
+    first, paged — with a filter that can hide fully reviewed units,
+    and probably rename the screen "Timeline". Needs its own design
+    pass: a full-timeline query is a different, bigger query than the
+    bounded pending feed (paging + perf on 27k corpora), the filter's
+    default state, and what "Continue reviewing" anchors to when the
+    list shows everything.

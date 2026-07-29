@@ -23,12 +23,13 @@ import {
   type HistoryRow,
 } from '../db/store';
 import { reconcileExternallyRemoved } from '../db/trashStore';
+import { mapWithConcurrency } from '../lib/concurrency';
 import { checkMediaPresence } from '../lib/media';
 import { formatDayClock } from '../lib/format';
 import { DecisionBadge, type DecisionKind } from '../components/DecisionBadge';
 import { PhotoViewer } from '../components/PhotoViewer';
 import { useReview } from '../review/ReviewContext';
-import { colors, touch } from '../theme';
+import { colors, touch, useTheme } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'History'>;
 
@@ -42,15 +43,20 @@ const FILTERS: { key: HistoryFilter; label: string }[] = [
   { key: 'shared', label: 'Sheet opened' },
 ];
 
-function badgeOf(row: Extract<HistoryRow, { kind: 'photo' }>): DecisionKind | null {
-  if (row.state === 'culled') return 'cull';
-  if (row.state === 'to_edit') return 'edit';
-  if (row.state === 'done') return 'keep';
-  return null;
+/** Every badge the row wears, verdict FIRST then its pending actions —
+ * the one order photoBadges.ts defines. Replacing the keep badge with an
+ * edit badge (as this did) hid the verdict behind an action. */
+function badgesOf(row: Extract<HistoryRow, { kind: 'photo' }>): DecisionKind[] {
+  const badges: DecisionKind[] = [];
+  if (row.state === 'culled') badges.push('cull');
+  else if (row.state === 'kept') badges.push('keep');
+  if (row.needs_edit === 1) badges.push('edit');
+  return badges;
 }
 
 export function HistoryScreen(_props: Props) {
   const insets = useSafeAreaInsets();
+  const theme = useTheme();
   const db = useSQLiteContext();
   const { refresh: refreshReview } = useReview();
 
@@ -71,12 +77,14 @@ export function HistoryScreen(_props: Props) {
   // nothing.
   const reconcilePage = useCallback(
     async (pageRows: HistoryRow[]): Promise<HistoryRow[]> => {
-      const gone = new Set<string>();
-      for (const row of pageRows) {
-        if (row.kind !== 'photo') continue;
-        const presence = await checkMediaPresence(row.asset_id);
-        if (presence === 'trashed' || presence === 'absent') gone.add(row.asset_id);
-      }
+      // BOUNDED CONCURRENCY (m0.8.1): checkMediaPresence is two native
+      // calls, and a 40-row page ran them 80× in series — the page's
+      // dominant cost on every focus and every "load more".
+      const photoIds = pageRows.filter((row) => row.kind === 'photo').map((row) => row.asset_id);
+      const presences = await mapWithConcurrency(photoIds, 6, (id) => checkMediaPresence(id));
+      const gone = new Set<string>(
+        photoIds.filter((_, i) => presences[i] === 'trashed' || presences[i] === 'absent'),
+      );
       if (gone.size === 0) return pageRows;
       await reconcileExternallyRemoved(db, [...gone], Date.now());
       // The removal may have dissolved a cached group or moved its
@@ -145,28 +153,28 @@ export function HistoryScreen(_props: Props) {
             </Text>
             <Text style={styles.rowTime}>{formatDayClock(item.opened_at)}</Text>
           </View>
-          <MaterialCommunityIcons name="share-variant" size={20} color={colors.edit} />
+          <MaterialCommunityIcons name="share-variant" size={20} color={colors.share} />
         </View>
       );
     }
-    const badge = badgeOf(item);
+    const badges = badgesOf(item);
     return (
       <Pressable style={styles.row} onPress={() => setViewerId(item.asset_id)}>
         <Image source={{ uri: item.uri }} style={styles.thumb} contentFit="cover" />
         <View style={styles.rowBody}>
           <Text style={styles.rowTime}>{formatDayClock(item.activity_at)}</Text>
           <View style={styles.badges}>
-            {badge && <DecisionBadge kind={badge} size={20} />}
-            {(item.favourite_state === 'applied' || item.favourite_state === 'queued_apply') && (
-              <DecisionBadge kind="fav" size={20} />
-            )}
+            {badges.map((kind) => (
+              <DecisionBadge key={kind} kind={kind} size={20} />
+            ))}
+            {item.favourited === 1 && <DecisionBadge kind="fav" size={20} />}
             {item.organize_applied_at != null && (
               // folder-clock: organized once, but a NEWER move intent is
               // pending/erroring — the shown fact is superseded until it
               // applies (history keeps the event either way).
               <MaterialCommunityIcons
                 name={
-                  item.organize_state === 'queued' || item.organize_state === 'error'
+                  item.organized === 1 && item.organize_applied_at == null
                     ? 'folder-clock'
                     : 'folder-move'
                 }
@@ -186,7 +194,10 @@ export function HistoryScreen(_props: Props) {
         {FILTERS.map((f) => (
           <Pressable
             key={f.key}
-            style={[styles.chip, filter === f.key && styles.chipActive]}
+            style={[
+              styles.chip,
+              filter === f.key && [styles.chipActive, { borderColor: theme.accent }],
+            ]}
             onPress={() => {
               setRows(null);
               if (f.key === filter) {
@@ -249,11 +260,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 11,
     paddingVertical: 6,
     borderRadius: 15,
-    backgroundColor: colors.surfaceRaised,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
   },
-  chipActive: { backgroundColor: colors.editDim, borderColor: colors.edit },
+  // Rule 4: selection is an ACCENT OUTLINE over a neutral lift, never a
+  // fill — a filled chip in edit-blue said "this filter is an edit".
+  // Same shape the Progress chips use.
+  chipActive: { backgroundColor: colors.surfaceRaised },
   chipText: { color: colors.textDim, fontSize: 13, fontWeight: '600' },
   chipTextActive: { color: colors.text },
   row: {
@@ -272,7 +286,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceRaised,
     borderRadius: touch.radius,
     borderWidth: 1,
-    borderColor: colors.edit,
+    // A share EVENT wears share's hue (rule 2) — it was edit-blue.
+    borderColor: colors.share,
     padding: 10,
     gap: 12,
   },

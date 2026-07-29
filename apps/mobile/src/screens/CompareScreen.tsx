@@ -1,29 +1,30 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, {
-  runOnJS,
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
-} from 'react-native-reanimated';
+import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { useReview } from '../review/ReviewContext';
-import { getSetting, setSetting, type ReviewGroupRow } from '../db/store';
+import { getSetting, setSetting, type ReviewGroupRow, type ReviewMemberRow } from '../db/store';
 import {
   COMPARE_AUTO_CULL_KEY,
   parseCompareAutoCull,
   serializeCompareAutoCull,
 } from '../lib/comparePrefs';
 import { showToast } from '../lib/toast';
+import { DOUBLE_TAP_MS } from '../lib/zoomTarget';
 import { colors, touch, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded } from '../lib/format';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { isFavouriteSelected } from '../lib/favouriteState';
+import { ActionChip } from '../components/ActionChip';
+import { GoalCelebration } from '../components/GoalCelebration';
+import { addToShareQueue, removeFromShareQueue } from '../db/shareStore';
+import { queueOrganize, unqueueOrganize } from '../db/organizeStore';
+import { useIsFocused } from '@react-navigation/native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Compare'>;
 
@@ -42,35 +43,47 @@ function clamp(value: number, max: number): number {
  * comparison is the point), and pinch/pan zooms BOTH identically because
  * the transform lives on the shared parent.
  *
- * m0.5 changes:
- * - Labels are the photos' GROUP POSITIONS ("3" / "7", matching the deck's
- *   "3/9" numbering) instead of A/B, so testers can find the photo again
- *   after leaving compare.
- * - "N is better" now visibly means something: it stars N best-of-group
- *   (markBest) and records the compare history, with a toast
- *   saying so. In a TWO-photo group it also offers to cull the other —
- *   confirm dialog with "Don't ask again" (suppression persisted in
- *   settings; resettable from Settings → auto-cull thereafter).
- * - "Cull N" is unchanged: stages N and records the compare.
+ * Labels are the photos' DECK POSITIONS ("3" / "7", matching the deck's
+ * "3/9" numbering) instead of A/B, so testers can find the photo again
+ * after leaving compare.
+ *
+ * VERDICTS (m0.8.2, F15): a duel writes them only when it IS the whole
+ * table — any singles duel, or a group whose undecided remainder this
+ * duel settles (≤ 2 alive). There the "N is better" tap raises the
+ * keep-both/cull dialog (suppressed by the persisted "don't ask again"
+ * auto-cull preference, resettable from Settings): "Keep both" marks
+ * BOTH photos kept, "Cull" stages the loser and leaves the winner
+ * untouched — atomically either way, with the winner's star + duel row
+ * in the group case. A duel with 3+ alive is TRIAGE: star + history,
+ * no verdict — repeated burst duels pick best/worst, they do not keep.
+ * Eligibility is undecided-or-KEPT (F11), so a duel can re-decide a
+ * prior keep; "Cull N" always just stages the visible photo.
  */
 export function CompareScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const db = useSQLiteContext();
-  const { groupId, aId, bId, singles = false } = route.params;
+  const { groupId, aId, bId, singles = false, day, from, to } = route.params;
   const {
     groups,
     singles: singleRows,
     recordCompare,
     compareCull,
-    markBest,
+    compareKeepBoth,
     needsEdit,
     toggleNeedsEdit,
     decide,
     favouriteStatus,
     toggleFavourite,
+    queuedFor,
+    refreshQueuedFor,
     loadGroup,
+    loadDeckSingles,
+    noteDecisions,
+    celebrationTick,
+    consumeCelebration,
   } = useReview();
+  const isFocused = useIsFocused();
   const numericGroupId = groupId ? Number(groupId) : null;
   const queueGroup = useMemo(
     () =>
@@ -105,15 +118,42 @@ export function CompareScreen({ navigation, route }: Props) {
   /** An off-page group fetch is still in flight — a missing pair is not
    * terminal yet. */
   const groupPending = numericGroupId !== null && !queueGroup && loadedGroup === 'loading';
+  // A day/run-scoped singles deck (m0.8.2) hands us photos that can sit
+  // outside the queue's newest-first singles page, so the two ids would
+  // not resolve from `singleRows` alone — fetch the SAME scope the deck
+  // showed (day, optionally run-range narrowed) so the position labels
+  // number over the same rows.
+  const [dayRows, setDayRows] = useState<ReviewMemberRow[] | null>(null);
+  useEffect(() => {
+    if (!day) return;
+    let cancelled = false;
+    void loadDeckSingles(day, from !== undefined && to !== undefined ? { from, to } : null).then(
+      (rows: ReviewMemberRow[]) => {
+        if (!cancelled) setDayRows(rows);
+      },
+      (error: unknown) => {
+        // Terminal, like a failed group fetch: the pair simply will not
+        // resolve, and the effect below returns to the deck.
+        console.warn('[compare] day singles load failed:', String(error));
+        if (!cancelled) setDayRows([]);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [day, from, to, loadDeckSingles]);
+  /** The day fetch is still in flight — a missing pair is not terminal
+   * yet (same rule as groupPending). */
+  const dayPending = !!day && dayRows === null;
   const itemLookup = useMemo(() => {
     const map = new Map<string, { id: string; timestamp: number; uri: string }>();
     for (const g of [...groups, ...(typeof loadedGroup === 'object' ? [loadedGroup] : [])])
       for (const m of g.members)
         map.set(m.asset_id, { id: m.asset_id, timestamp: m.taken_at, uri: m.uri });
-    for (const m of singleRows)
+    for (const m of [...singleRows, ...(dayRows ?? [])])
       map.set(m.asset_id, { id: m.asset_id, timestamp: m.taken_at, uri: m.uri });
     return map;
-  }, [groups, singleRows, loadedGroup]);
+  }, [groups, singleRows, dayRows, loadedGroup]);
   const [busy, setBusy] = useState(false);
   const [showB, setShowB] = useState(false);
   const [autoCull, setAutoCull] = useState(false);
@@ -136,34 +176,32 @@ export function CompareScreen({ navigation, route }: Props) {
     return a && b ? { a, b } : null;
   }, [itemLookup, aId, bId]);
 
-  // m0.5: group positions as labels (1-based over the deck's alive order,
-  // frozen at mount — membership can't change while this screen is up).
+  // m0.5: group positions as labels (1-based, frozen at mount). Since
+  // the deck keeps EVERY member in place badged (m0.8.2 unification),
+  // its numbering runs over ALL members — Compare's labels must match,
+  // kept members included (they are duel-able now, F11).
   const groupInfo = useMemo(() => {
     if (!group || singles) return null;
     return {
       aliveIds: group.members.filter((m) => m.state === 'unreviewed').map((m) => m.asset_id),
-      // LIVE-deck order (unreviewed + staged culls) — the deck header
-      // and picker number positions over it (gate 5 keeps culls in the
-      // deck), so Compare's labels must too.
-      liveIds: group.members
-        .filter((m) => m.state === 'unreviewed' || m.state === 'culled')
-        .map((m) => m.asset_id),
       memberIds: group.members.map((m) => m.asset_id),
     };
   }, [group, singles]);
   const posOf = useCallback(
     (id: string): string => {
       if (singles) {
-        const index = singleRows.findIndex((m) => m.asset_id === id);
+        // A singles deck numbers photos over its own day/run rows — the
+        // global feed is a bounded newest-first page that may not even
+        // contain them (codex r50).
+        const rows = day ? (dayRows ?? []) : singleRows;
+        const index = rows.findIndex((m) => m.asset_id === id);
         return index >= 0 ? String(index + 1) : '?';
       }
       if (!groupInfo) return '?';
-      const live = groupInfo.liveIds.indexOf(id);
-      if (live >= 0) return String(live + 1);
       const member = groupInfo.memberIds.indexOf(id);
       return member >= 0 ? String(member + 1) : '?';
     },
-    [groupInfo, singleRows, singles],
+    [day, dayRows, groupInfo, singleRows, singles],
   );
   const aliveCount = groupInfo?.aliveIds.length ?? 0;
 
@@ -179,37 +217,47 @@ export function CompareScreen({ navigation, route }: Props) {
 
   const flip = useCallback(() => setShowB((v) => !v), []);
 
-  const tapGesture = useMemo(
-    () =>
-      Gesture.Tap()
-        .maxDuration(300)
-        .onEnd((_event, success) => {
-          if (success) runOnJS(flip)();
-        }),
-    [flip],
-  );
-
-  // m0.7 (#18): double-tap resets zoom when zoomed; when not zoomed it
-  // falls through (fails fast) so the flip tap keeps its snappiness.
-  const doubleTapGesture = useMemo(
-    () =>
-      Gesture.Tap()
-        .numberOfTaps(2)
-        .onTouchesDown((_event, manager) => {
-          if (scale.value <= 1.02) manager.fail();
-        })
-        .onEnd((_event, success) => {
-          if (!success) return;
-          scale.value = withTiming(1);
-          savedScale.value = 1;
-          tx.value = withTiming(0);
-          ty.value = withTiming(0);
-          savedTx.value = 0;
-          savedTy.value = 0;
-        }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Taps live on the JS responder path (the stage is a Pressable), NOT
+  // on Gesture.Tap: any runOnJS from a gesture worklet segfaults this
+  // build (SIGSEGV in AroundLock::utf8; reanimated #9776, worklets
+  // 0.10.2 — see DeckScreen's bridge comment). Flip needs setState, so
+  // the whole tap/double-tap arbitration moves here.
+  // Not zoomed: every tap flips immediately (a double tap is two flips,
+  // exactly the old fails-fast behavior). Zoomed: a tap waits one
+  // double-tap window so m0.7 (#18)'s double-tap-resets-zoom can win —
+  // writing shared values FROM JS is the safe direction of the bridge.
+  // Deliberately NO double-tap-zoom here (unlike deck/viewer): the tap
+  // IS the flip, and buying a zoom gesture would tax every unzoomed
+  // flip with the wait window. Zooming in Compare stays pinch-only.
+  const pendingFlip = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (pendingFlip.current) clearTimeout(pendingFlip.current);
+    },
     [],
   );
+  const onStagePress = useCallback(() => {
+    if (scale.value <= 1.02) {
+      flip();
+      return;
+    }
+    if (pendingFlip.current) {
+      clearTimeout(pendingFlip.current);
+      pendingFlip.current = null;
+      scale.value = withTiming(1);
+      savedScale.value = 1;
+      tx.value = withTiming(0);
+      ty.value = withTiming(0);
+      savedTx.value = 0;
+      savedTy.value = 0;
+      return;
+    }
+    pendingFlip.current = setTimeout(() => {
+      pendingFlip.current = null;
+      flip();
+    }, DOUBLE_TAP_MS);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flip]);
 
   const pinchGesture = useMemo(
     () =>
@@ -261,13 +309,8 @@ export function CompareScreen({ navigation, route }: Props) {
   );
 
   const composedGesture = useMemo(
-    () =>
-      Gesture.Exclusive(
-        Gesture.Simultaneous(pinchGesture, panGesture),
-        doubleTapGesture,
-        tapGesture,
-      ),
-    [pinchGesture, panGesture, doubleTapGesture, tapGesture],
+    () => Gesture.Simultaneous(pinchGesture, panGesture),
+    [pinchGesture, panGesture],
   );
 
   const zoomStyle = useAnimatedStyle(() => ({
@@ -278,11 +321,39 @@ export function CompareScreen({ navigation, route }: Props) {
   // fall back to the deck rather than rendering a dead screen. An
   // off-page group still loading is NOT terminal (gate 5).
   useEffect(() => {
-    if (!pair && !groupPending) navigation.goBack();
-  }, [pair, groupPending, navigation]);
+    if (!pair && !groupPending && !dayPending) navigation.goBack();
+  }, [pair, groupPending, dayPending, navigation]);
 
-  /** Star the winner + keep both, with the m0.5 visibility toast. */
-  const betterKeepBoth = useCallback(
+  // Goal moment (F14, amended): a crossing HERE celebrates HERE — the
+  // context holds the counter; this screen notes its fresh decisions and
+  // claims the pending moment while it is the focused surface.
+  const [celebrating, setCelebrating] = useState(false);
+  const [celebrationGoal, setCelebrationGoal] = useState(0);
+  useEffect(() => {
+    if (!isFocused) return;
+    const goal = consumeCelebration();
+    if (goal !== null) {
+      setCelebrationGoal(goal);
+      setCelebrating(true);
+    }
+  }, [celebrationTick, isFocused, consumeCelebration]);
+  /** The photo's state BEFORE this duel wrote — the fresh-decision count
+   * for noteDecisions (only unreviewed → decided counts). */
+  const priorState = useCallback(
+    (id: string): string => {
+      const member = group?.members.find((m) => m.asset_id === id);
+      if (member) return member.state;
+      const row =
+        (dayRows ?? []).find((m) => m.asset_id === id) ?? singleRows.find((m) => m.asset_id === id);
+      return row?.state ?? 'unreviewed';
+    },
+    [group, dayRows, singleRows],
+  );
+
+  /** Triage (3+ comparable in the group, F15): star the winner + record
+   * the duel, NO verdicts — repeated burst duels pick best/worst, they
+   * do not keep. */
+  const recordTriage = useCallback(
     async (winnerId: string, loserId: string) => {
       if (numericGroupId === null) return;
       try {
@@ -296,61 +367,86 @@ export function CompareScreen({ navigation, route }: Props) {
     [numericGroupId, recordCompare, posOf, navigation],
   );
 
-  /** Star the winner + stage the two-photo-group loser (one atomic
-   * write inside compareCull — a partial verdict is impossible). */
-  const betterCullLoser = useCallback(
+  /** Dialog outcome "Keep both" (F15): BOTH participants land on kept —
+   * atomically, with the winner's star + duel row in the group case. */
+  const keepBothNow = useCallback(
     async (winnerId: string, loserId: string) => {
-      if (numericGroupId === null) return;
+      const fresh = [winnerId, loserId].filter((id) => priorState(id) === 'unreviewed').length;
       try {
-        await compareCull(numericGroupId, loserId, winnerId);
+        await compareKeepBoth(
+          winnerId,
+          loserId,
+          singles ? undefined : (numericGroupId ?? undefined),
+        );
       } catch {
         return; // surfaced by the provider alert; stay on the screen
       }
-      showToast(`Photo ${posOf(winnerId)} kept — photo ${posOf(loserId)} staged to cull`);
+      noteDecisions(fresh);
+      showToast(
+        singles
+          ? `Kept photos ${posOf(winnerId)} and ${posOf(loserId)}`
+          : `Both kept — photo ${posOf(winnerId)} starred best of group`,
+      );
       navigation.goBack();
     },
-    [numericGroupId, compareCull, posOf, navigation],
+    [compareKeepBoth, singles, numericGroupId, posOf, navigation, priorState, noteDecisions],
+  );
+
+  /** Dialog outcome "Cull": stage the loser; the winner stays untouched
+   * (a cull judgment says nothing about keeping — F15). */
+  const cullLoserNow = useCallback(
+    async (winnerId: string, loserId: string) => {
+      const fresh = priorState(loserId) === 'unreviewed' ? 1 : 0;
+      try {
+        if (singles) {
+          await decide(loserId, 'cull', null);
+          showToast(`Photo ${posOf(loserId)} staged to cull`);
+        } else if (numericGroupId !== null) {
+          await compareCull(numericGroupId, loserId, winnerId);
+          showToast(
+            `Photo ${posOf(winnerId)} starred best — photo ${posOf(loserId)} staged to cull`,
+          );
+        }
+      } catch {
+        return; // surfaced by the provider alert; stay on the screen
+      }
+      noteDecisions(fresh);
+      navigation.goBack();
+    },
+    [singles, decide, numericGroupId, compareCull, posOf, navigation, priorState, noteDecisions],
   );
 
   const decideBetter = useCallback(
     async (winnerId: string, loserId: string) => {
       if (busy) return;
-      if (singles) {
+      // The dialog appears exactly when the duel IS the whole table
+      // (F15): any singles duel, or a group whose undecided remainder
+      // this duel settles (≤ 2 alive — kept members can rejoin a duel
+      // via F11 without reopening the question for the rest). Otherwise
+      // the duel is triage and writes no verdict.
+      const wholeTable = singles || aliveCount <= 2;
+      if (!wholeTable) {
         setBusy(true);
         try {
-          await decide(winnerId, 'keep', null);
-          navigation.goBack();
-        } catch {
-          // surfaced by the provider alert; stay on the screen
+          await recordTriage(winnerId, loserId);
         } finally {
           setBusy(false);
         }
         return;
       }
-      // Two-photo group: "better" implies the other loses the group —
-      // offer the cull (or just do it once the dialog was suppressed).
-      if (aliveCount === 2) {
-        if (autoCull) {
-          setBusy(true);
-          try {
-            await betterCullLoser(winnerId, loserId);
-          } finally {
-            setBusy(false);
-          }
-        } else {
-          setDontAskAgain(false);
-          setCullOffer({ winnerId, loserId });
+      if (autoCull) {
+        setBusy(true);
+        try {
+          await cullLoserNow(winnerId, loserId);
+        } finally {
+          setBusy(false);
         }
-        return;
-      }
-      setBusy(true);
-      try {
-        await betterKeepBoth(winnerId, loserId);
-      } finally {
-        setBusy(false);
+      } else {
+        setDontAskAgain(false);
+        setCullOffer({ winnerId, loserId });
       }
     },
-    [aliveCount, autoCull, betterCullLoser, betterKeepBoth, busy, decide, navigation, singles],
+    [aliveCount, autoCull, busy, cullLoserNow, recordTriage, singles],
   );
 
   const resolveCullOffer = useCallback(
@@ -367,15 +463,15 @@ export function CompareScreen({ navigation, route }: Props) {
             setAutoCull(true);
             await setSetting(db, COMPARE_AUTO_CULL_KEY, serializeCompareAutoCull(true));
           }
-          await betterCullLoser(offer.winnerId, offer.loserId);
+          await cullLoserNow(offer.winnerId, offer.loserId);
         } else {
-          await betterKeepBoth(offer.winnerId, offer.loserId);
+          await keepBothNow(offer.winnerId, offer.loserId);
         }
       } finally {
         setBusy(false);
       }
     },
-    [cullOffer, busy, dontAskAgain, db, betterCullLoser, betterKeepBoth],
+    [cullOffer, busy, dontAskAgain, db, cullLoserNow, keepBothNow],
   );
 
   const decideCull = useCallback(
@@ -383,19 +479,12 @@ export function CompareScreen({ navigation, route }: Props) {
       if (busy) return;
       setBusy(true);
       try {
-        if (singles) {
-          await decide(loserId, 'cull', null);
-        } else if (numericGroupId !== null) {
-          await compareCull(numericGroupId, loserId, winnerId);
-        }
-        navigation.goBack();
-      } catch {
-        // surfaced by the provider alert; stay on the screen
+        await cullLoserNow(winnerId, loserId);
       } finally {
         setBusy(false);
       }
     },
-    [busy, compareCull, decide, navigation, numericGroupId, singles],
+    [busy, cullLoserNow],
   );
 
   if (!pair) {
@@ -424,8 +513,11 @@ export function CompareScreen({ navigation, route }: Props) {
       </View>
 
       <GestureDetector gesture={composedGesture}>
-        <View
+        {/* The stage itself is the tap target: presses flip (JS thread),
+            while drags and pinches hand over to the gestures above. */}
+        <Pressable
           style={styles.stage}
+          onPress={onStagePress}
           onLayout={(event) => {
             stageW.value = event.nativeEvent.layout.width;
             stageH.value = event.nativeEvent.layout.height;
@@ -452,7 +544,7 @@ export function CompareScreen({ navigation, route }: Props) {
               {visibleLabel} · {formatClockPrecise(visible.timestamp, withMs)}
             </Text>
           </View>
-        </View>
+        </Pressable>
       </GestureDetector>
 
       <View style={styles.subRow}>
@@ -462,7 +554,15 @@ export function CompareScreen({ navigation, route }: Props) {
             return (
               <Pressable
                 key={item.id}
-                onPress={() => setShowB(index === 1)}
+                onPress={() => {
+                  // An explicit chip choice outranks a stage tap still
+                  // waiting out its double-tap window.
+                  if (pendingFlip.current) {
+                    clearTimeout(pendingFlip.current);
+                    pendingFlip.current = null;
+                  }
+                  setShowB(index === 1);
+                }}
                 style={[
                   styles.abChip,
                   active && { backgroundColor: theme.accent, borderColor: theme.accent },
@@ -475,37 +575,56 @@ export function CompareScreen({ navigation, route }: Props) {
             );
           })}
         </View>
-        {/* m0.2: the flag follows the photo — a kept photo with the flag
-            lands in the to-edit queue instead of plain done. */}
-        <Pressable
-          style={[styles.editTag, needsEdit(visible.id) && styles.editTagActive]}
-          hitSlop={8}
+        <Text style={styles.actingOn}>Actions apply to photo {visibleLabel}</Text>
+      </View>
+
+      {/* All four actions, the deck's uniform chips (m0.8.2, F16) —
+          acting on the VISIBLE photo, like the verdict buttons below.
+          Edit is the flag toggle; Organize and Share toggle their queues
+          exactly as the deck does (organize queues target-less, F6). */}
+      <View style={styles.chipRow}>
+        <ActionChip
+          kind="edit"
+          active={needsEdit(visible.id)}
           disabled={busy}
           onPress={() => void toggleNeedsEdit(visible.id).catch(() => {})}
-        >
-          <MaterialCommunityIcons
-            name={needsEdit(visible.id) ? 'pencil' : 'pencil-outline'}
-            size={18}
-            color={needsEdit(visible.id) ? colors.edit : colors.textDim}
-          />
-          <Text style={[styles.editTagText, needsEdit(visible.id) && styles.editTagTextActive]}>
-            {visibleLabel} needs edit
-          </Text>
-        </Pressable>
+        />
         {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
-          <Pressable
-            style={[styles.editTag, favourite && styles.favouriteTagActive]}
-            hitSlop={8}
+          <ActionChip
+            kind="favourite"
+            active={favourite}
             disabled={busy}
             onPress={() => void toggleFavourite(visible.id).catch(() => {})}
-          >
-            <MaterialCommunityIcons
-              name={favourite ? 'heart' : 'heart-outline'}
-              size={18}
-              color={favourite ? colors.fav : colors.textDim}
-            />
-          </Pressable>
+          />
         )}
+        <ActionChip
+          kind="organize"
+          active={queuedFor(visible.id).organize}
+          disabled={busy}
+          onPress={() =>
+            void (async () => {
+              if (queuedFor(visible.id).organize) await unqueueOrganize(db, visible.id, Date.now());
+              else {
+                const error = await queueOrganize(db, visible.id, Date.now());
+                if (error) return;
+              }
+              await refreshQueuedFor();
+            })().catch(() => {})
+          }
+        />
+        <ActionChip
+          kind="share"
+          active={queuedFor(visible.id).share}
+          disabled={busy}
+          onPress={() =>
+            void (async () => {
+              if (queuedFor(visible.id).share)
+                await removeFromShareQueue(db, visible.id, Date.now());
+              else await addToShareQueue(db, visible.id, Date.now());
+              await refreshQueuedFor();
+            })().catch(() => {})
+          }
+        />
       </View>
 
       <View style={styles.actionRow}>
@@ -527,9 +646,10 @@ export function CompareScreen({ navigation, route }: Props) {
             size={21}
             color={singles ? colors.keep : theme.accent}
           />
-          <Text style={styles.actionText}>
-            {singles ? `Keep ${visibleLabel}` : `${visibleLabel} is better`}
-          </Text>
+          {/* One label for both modes (F15): the dialog carries the
+              verdict question, so the button no longer promises a keep
+              it might not write. */}
+          <Text style={styles.actionText}>{visibleLabel} is better</Text>
         </Pressable>
       </View>
       <Pressable style={styles.closeButton} disabled={busy} onPress={() => navigation.goBack()}>
@@ -548,9 +668,15 @@ export function CompareScreen({ navigation, route }: Props) {
             <Text style={styles.offerTitle}>
               Keep only photo {cullOffer ? posOf(cullOffer.winnerId) : ''}?
             </Text>
+            {/* F15: the dialog IS the verdict — both answers write. */}
             <Text style={styles.offerText}>
-              It becomes the group's best. Photo {cullOffer ? posOf(cullOffer.loserId) : ''} goes to
-              the cull list — deleted only after you confirm the list.
+              Keep both marks photos {cullOffer ? posOf(cullOffer.winnerId) : ''} and{' '}
+              {cullOffer ? posOf(cullOffer.loserId) : ''} kept
+              {singles
+                ? ''
+                : ` (photo ${cullOffer ? posOf(cullOffer.winnerId) : ''} stars as the group's best)`}
+              . Cull stages photo {cullOffer ? posOf(cullOffer.loserId) : ''} — deleted only after
+              you confirm the cull list.
             </Text>
             <Pressable
               style={styles.offerCheckRow}
@@ -590,6 +716,15 @@ export function CompareScreen({ navigation, route }: Props) {
           </View>
         </View>
       </Modal>
+
+      {/* The goal moment (F14): a crossing decided HERE shows HERE. */}
+      {celebrating && (
+        <GoalCelebration
+          goal={celebrationGoal}
+          accent={theme.accent}
+          onDone={() => setCelebrating(false)}
+        />
+      )}
     </View>
   );
 }
@@ -630,6 +765,8 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   subRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  actingOn: { color: colors.textDim, fontSize: 12, fontWeight: '600' },
+  chipRow: { flexDirection: 'row', gap: 10 },
   abChips: { flexDirection: 'row', gap: 6 },
   abChip: {
     minWidth: 44,
@@ -642,21 +779,6 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   abChipText: { color: colors.textDim, fontSize: 15, fontWeight: '700' },
-  editTag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: colors.surface,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  editTagActive: { backgroundColor: colors.editDim, borderColor: colors.edit },
-  favouriteTagActive: { backgroundColor: colors.favDim, borderColor: colors.fav },
-  editTagText: { color: colors.textDim, fontSize: 13, fontWeight: '700' },
-  editTagTextActive: { color: colors.edit },
   actionRow: { flexDirection: 'row', gap: 10 },
   actionButton: {
     flex: 1,
@@ -668,7 +790,7 @@ const styles = StyleSheet.create({
     gap: 7,
   },
   cullButton: { backgroundColor: colors.cullDim },
-  betterButton: { backgroundColor: '#1f3a2a' },
+  betterButton: { backgroundColor: colors.keepDim },
   actionText: { color: colors.text, fontSize: 17, fontWeight: '800' },
   closeButton: {
     minHeight: 44,

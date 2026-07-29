@@ -3,29 +3,37 @@
  * All multi-statement writes run in exclusive transactions.
  *
  * State machine (PLAN.md, m0.2): SQLite `photos.state` is the source of
- * truth and everything converges on 'done':
+ * truth and everything converges on 'kept':
  *
  *   unreviewed ──review──┬─▶ culled ─▶ (system trash) ─▶ trashed
  *                        └─▶ kept ──┬─▶ to_edit ─▶ done
  *                                   └─(session finish)─▶ done
  *
- * m0.8: a keep writes 'done' at swipe time (no kept state); 'done' +
+ * m0.8: a keep writes 'kept' at swipe time (no kept state); 'kept' +
  * needs_edit = 1 is stored as 'to_edit' — the CASE expressions below keep
  * that invariant no matter which path writes the state. 'confirmed' is
  * deliberately never persisted (m0.1 decision: SQLite keeps 'culled'
  * until the system trash request succeeds).
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
+import { withReadTransaction, withWriteTransaction } from './database';
 import type { DuelRecord, PhotoState } from '@afterglow/core';
 import { lifetimeReclaimedBytes } from './trashStore';
+import {
+  ACTION_KINDS,
+  leaveQueue,
+  livePhotoClause,
+  queuedClause,
+  type ActionKind,
+} from './actions';
 import type { LoadedPhoto } from '../lib/media';
 import { frozenPhotos, reconcileWindowGroups } from '../lib/regroupBoundary';
 import { sourceLikePattern } from '../lib/sources';
-import { UNDATED_DAY_KEY } from '../lib/dates';
+import { rangeOfDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import type { StateCounts } from '../lib/progress';
 
 /** Max ids per IN (...) chunk — stays under SQLite's bind-parameter limit. */
-const IN_CHUNK = 500;
+export const IN_CHUNK = 500;
 
 export type FavouriteState = 'none' | 'queued_apply' | 'applied' | 'queued_remove' | 'error';
 
@@ -70,9 +78,18 @@ export interface PersistDecisionExtras {
  * DB-side photo scope (m0.4 stage 3). Day-keyed queries use the `day`
  * column (matching the Recent-days rollups exactly); everything else
  * scopes by `taken_at` range. Both progress pages share the same store
- * functions through this union.
+ * functions through this union. An open-ended range (`startMs: 0`,
+ * `endMs: Infinity`) is the whole tracked corpus — undated photos
+ * included, since `taken_at` is NOT NULL (the mtime fallback) even when
+ * their `day` is.
  */
 export type PhotoScope = { day: string } | { startMs: number; endMs: number };
+
+/** Stable identity string for a scope — the effect-dependency stand-in
+ * for the scope object in the progress screens. */
+export function scopeKeyOf(scope: PhotoScope): string {
+  return 'day' in scope ? `d:${scope.day}` : `r:${scope.startMs}:${scope.endMs}`;
+}
 
 function scopeClause(scope: PhotoScope): { sql: string; params: (string | number)[] } {
   return 'day' in scope
@@ -134,7 +151,7 @@ export async function deleteSetting(db: SQLiteDatabase, key: string): Promise<vo
   await db.runAsync('DELETE FROM settings WHERE key = ?', key);
 }
 
-function chunk<T>(items: readonly T[], size: number): T[][] {
+export function chunk<T>(items: readonly T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += size) out.push([...items.slice(i, i + size)]);
   return out;
@@ -157,17 +174,37 @@ export interface StagedCullRow {
   day: string | null;
 }
 
-export async function getStagedCulls(db: SQLiteDatabase): Promise<StagedCullRow[]> {
+export async function getStagedCulls(
+  db: SQLiteDatabase,
+  /** Cap the read (m0.8.1). The confirm loop batches at TRASH_BATCH_LIMIT
+   * and used to re-read EVERY staged row per batch, then measure a file
+   * size for each before the batch discarded all but the first 500 — a
+   * 3,000-cull confirm did ~18,000 native stats to trash 3,000 photos. */
+  limit?: number,
+): Promise<StagedCullRow[]> {
   return db.getAllAsync<StagedCullRow>(
     `SELECT asset_id, uri, taken_at, day FROM photos
      WHERE state = 'culled' AND is_present = 1
-     ORDER BY taken_at ASC`,
+     ORDER BY taken_at ASC${limit === undefined ? '' : ' LIMIT ?'}`,
+    ...(limit === undefined ? [] : [limit]),
   );
 }
 
-/** A direct review verdict (m0.8 — the DB-backed deck writes photos
- * directly; decision 2: keeps write done at swipe, no kept state). */
-export type ReviewVerdict = 'done' | 'culled' | 'to_edit' | 'unreviewed';
+/**
+ * SQL: is an edit cycle LIVE for this row right now?
+ *
+ * Correlated on the enclosing statement's `photos` row, so it reads the
+ * value as it stands before the update. Used to protect a running edit
+ * cycle's detection baseline from verdict writes (see below).
+ */
+const queuedEditExists = `EXISTS (SELECT 1 FROM photo_actions live_edit
+  WHERE live_edit.photo_id = photos.asset_id AND live_edit.kind = 'edit'
+    AND live_edit.state IN ('queued', 'error'))`;
+
+/** A direct review VERDICT (layer 1, docs/STATE_MODEL.md). v18: no
+ * 'to_edit' — flagging an edit is a pending ACTION and leaves the
+ * verdict alone, so the deck writes 'kept' either way. */
+export type ReviewVerdict = 'kept' | 'culled' | 'unreviewed';
 
 /**
  * Persist review decisions atomically — verdicts, needs-edit flips,
@@ -175,18 +212,15 @@ export type ReviewVerdict = 'done' | 'culled' | 'to_edit' | 'unreviewed';
  * resolutions in ONE transaction (the m0.7 edit-cycle hardening carried
  * over sessionless):
  *
- * - 'done'   → state done (or to_edit when the needs-edit flag is up);
- *              reviewed_at stamps once (first review wins, survives
- *              re-decides so lifetime stats never undercount).
- * - 'to_edit'→ state to_edit + needs_edit, to_edit_at first-entry stamp
- *              (the m0.3 detection cycle key); reviewed_at stamps too —
- *              flagging IS the review moment (markEditDone later flips
- *              to done without re-stamping).
+ * - 'kept'   → state kept; reviewed_at stamps once (first review wins,
+ *              survives re-decides so lifetime stats never undercount).
  * - 'culled' → staged cull; reviewed_at + culled_at stamp once.
- * - 'unreviewed' → verdict cleared (re-decide/undo/Restore); leaving a
- *              completed edit ALSO resets the edit-cycle columns so a
- *              later re-flag starts a fresh detection cycle instead of
- *              consuming the old baseline/hash.
+ * - 'unreviewed' → verdict cleared (re-decide/undo/Restore).
+ *
+ * v18: edit flags are no longer written here. Queuing or clearing an
+ * edit is a photo_actions write (db/actions.ts) and never moves the
+ * verdict — the CASE ladders that kept state and needs_edit in lockstep
+ * are gone with the column.
  */
 export async function applyReviewDecisions(
   db: SQLiteDatabase,
@@ -194,7 +228,7 @@ export async function applyReviewDecisions(
   at: number,
   extras: PersistDecisionExtras = {},
 ): Promise<void> {
-  await db.withExclusiveTransactionAsync(async (txn) => {
+  await withWriteTransaction(db, async (txn) => {
     for (const expected of extras.requireAssignment ?? []) {
       const row = await txn.getFirstAsync<{ group_id: number | null }>(
         'SELECT group_id FROM photo_group_assignments WHERE photo_id = ?',
@@ -247,36 +281,32 @@ export async function applyReviewDecisions(
       }
     }
     for (const change of extras.needsEditChanges ?? []) {
-      const flag = change.needsEdit ? 1 : 0;
-      const flagged = await txn.runAsync(
-        `UPDATE photos
-         SET needs_edit = ?,
-             state = CASE
-               WHEN ? = 1 AND state = 'done' THEN 'to_edit'
-               WHEN ? = 0 AND state = 'to_edit' THEN 'done'
-               ELSE state
-             END,
-             to_edit_at = CASE
-               WHEN ? = 1 AND state = 'done' THEN ?
-               ELSE to_edit_at
-             END,
-             mod_time = CASE WHEN ? = 1 AND state = 'done' THEN NULL ELSE mod_time END,
-             content_hash = CASE WHEN ? = 1 AND state = 'done' THEN NULL ELSE content_hash END,
-             activity_at = ?
-         WHERE asset_id = ?
-           -- A reconciled (absent) row must not regain the flag: a later
-           -- Gallery restore would turn an ordinary Keep into to_edit.
-           AND is_present = 1`,
-        flag,
-        flag,
-        flag,
-        flag,
-        at,
-        flag,
-        flag,
-        at,
-        change.assetId,
-      );
+      // v18: the verdict is untouched. Flagging an edit queues an ACTION
+      // and resets the detection baseline so the next edit is detected
+      // against THIS cycle, not a stale hash from the previous one.
+      const flagged = change.needsEdit
+        ? await txn.runAsync(
+            `INSERT INTO photo_actions (photo_id, kind, state, queued_at)
+             SELECT ?, 'edit', 'queued', ?
+               FROM photos
+              -- A reconciled (absent) row must not gain the flag: a later
+              -- Gallery restore would turn an ordinary Keep into an edit.
+              WHERE asset_id = ? AND is_present = 1
+             ON CONFLICT(photo_id, kind) DO UPDATE SET
+               state = 'queued', queued_at = excluded.queued_at`,
+            change.assetId,
+            at,
+            change.assetId,
+          )
+        : { changes: await leaveQueue(txn, change.assetId, 'edit') };
+      if (change.needsEdit) {
+        await txn.runAsync(
+          `UPDATE photos SET mod_time = NULL, content_hash = NULL, activity_at = ?
+            WHERE asset_id = ? AND is_present = 1`,
+          at,
+          change.assetId,
+        );
+      }
       if (
         Number(flagged.changes) === 0 &&
         changes.length === 0 &&
@@ -291,58 +321,38 @@ export async function applyReviewDecisions(
     for (const [assetId, verdict] of changes) {
       const applied = await txn.runAsync(
         `UPDATE photos
-         SET state = CASE
-               WHEN ? = 'done' AND needs_edit = 1 THEN 'to_edit'
-               WHEN ? = 'to_edit' THEN 'to_edit'
-               ELSE ?
-             END,
-             needs_edit = CASE
-               WHEN ? = 'to_edit' THEN 1
-               WHEN ? = 'unreviewed' THEN 0
-               ELSE needs_edit
-             END,
-             to_edit_at = CASE
-               WHEN ? IN ('to_edit', 'done') AND (needs_edit = 1 OR ? = 'to_edit')
-                    AND to_edit_at IS NULL THEN ?
-               WHEN ? = 'unreviewed' THEN NULL
-               ELSE to_edit_at
-             END,
-             -- EVERY return to 'unreviewed' resets the full edit-cycle
-             -- baseline (also from 'culled'): a later re-flag must never
-             -- reuse a previous cycle's detection evidence.
-             mod_time = CASE
-               WHEN ? = 'unreviewed' THEN NULL
-               ELSE mod_time
-             END,
-             content_hash = CASE
-               WHEN ? = 'unreviewed' THEN NULL
-               ELSE content_hash
-             END,
+         SET state = ?,
+             -- A return to 'unreviewed' resets the edit-cycle baseline so
+             -- a later re-flag can never reuse a previous cycle's
+             -- detection evidence — UNLESS an edit is queued right now.
+             -- v18 made the layers independent, so clearing a verdict no
+             -- longer clears the flag: wiping a LIVE cycle's baseline
+             -- here would re-baseline against the already-edited file and
+             -- silently lose the detection the user is waiting on.
+             mod_time = CASE WHEN ? = 'unreviewed' AND NOT ${queuedEditExists}
+                             THEN NULL ELSE mod_time END,
+             content_hash = CASE WHEN ? = 'unreviewed' AND NOT ${queuedEditExists}
+                                 THEN NULL ELSE content_hash END,
              reviewed_at = CASE
-               WHEN ? IN ('done', 'culled', 'to_edit') THEN COALESCE(reviewed_at, ?)
+               WHEN ? IN ('kept', 'culled') THEN COALESCE(reviewed_at, ?)
                ELSE reviewed_at
              END,
-             culled_at = CASE
-               WHEN ? = 'culled' THEN COALESCE(culled_at, ?)
-               ELSE culled_at
-             END,
+             -- decided_at RE-stamps on every verdict (v15): the daily
+             -- goal counts today's reviewing work; a clear keeps the
+             -- stamp (the earlier decision still happened).
+             decided_at = CASE WHEN ? IN ('kept', 'culled') THEN ? ELSE decided_at END,
+             culled_at = CASE WHEN ? = 'culled' THEN COALESCE(culled_at, ?) ELSE culled_at END,
              activity_at = ?
          WHERE asset_id = ?
            -- Externally removed/converged rows reject decisions: a stale
            -- deck tile deciding a reconciled photo would overwrite
            -- 'trashed' and strand it from the scan's restore path.
-           AND is_present = 1 AND state NOT IN ('trashed', 'confirmed')`,
-        verdict,
-        verdict,
-        verdict,
+           AND is_present = 1 AND state <> 'trashed'`,
         verdict,
         verdict,
         verdict,
         verdict,
         at,
-        verdict,
-        verdict,
-        verdict,
         verdict,
         at,
         verdict,
@@ -395,25 +405,43 @@ export async function applyReviewDecisions(
       );
     }
     for (const change of extras.favouriteChanges ?? []) {
-      const applied = await txn.runAsync(
-        `UPDATE photos
-         SET favourite_state = ?, favourite_target = ?, favourite_changed_at = ?,
-             activity_at = ?
-         WHERE asset_id = ?
-           -- Removal cleanup cancelled the row's intents; a stale tile's
-           -- toggle must not recreate an impossible gallery operation.
-           AND is_present = 1`,
-        change.state,
-        change.target === null ? null : change.target ? 1 : 0,
-        at,
-        at,
-        change.assetId,
-      );
+      // v18: a favourite intent is a photo_actions row like any other
+      // action. `target` carries the DIRECTION ('1' apply, '0' remove),
+      // which is what made favourite the odd one out before.
+      const applied =
+        change.target === null
+          ? { changes: await leaveQueue(txn, change.assetId, 'favourite') }
+          : await txn.runAsync(
+              `INSERT INTO photo_actions (photo_id, kind, state, target, queued_at)
+               SELECT ?, 'favourite', 'queued', ?, ?
+                 FROM photos
+                -- Removal cleanup cancelled the row's intents; a stale
+                -- tile's toggle must not recreate an impossible gallery
+                -- operation.
+                WHERE asset_id = ? AND is_present = 1
+               ON CONFLICT(photo_id, kind) DO UPDATE SET
+                 state = 'queued', target = excluded.target,
+                 queued_at = excluded.queued_at`,
+              change.assetId,
+              change.target ? '1' : '0',
+              at,
+              change.assetId,
+            );
       if (Number(applied.changes) === 0 && changes.length === 0) {
         // A lone favourite toggle on a reconciled photo surfaces like a
         // lone verdict would (batch paths converge on refresh).
         throw new Error('This photo is no longer available — it was removed outside Afterglow.');
       }
+      // History is ORDERED BY activity_at and requires it non-null, so a
+      // favourite change that does not stamp it lands at a stale
+      // position — or never appears at all on a photo nothing else has
+      // touched. The pre-v18 column write stamped it; moving the fact
+      // into photo_actions must not quietly drop it from the feed.
+      await txn.runAsync(
+        'UPDATE photos SET activity_at = ? WHERE asset_id = ?',
+        at,
+        change.assetId,
+      );
     }
     if (extras.madeSingles && extras.madeSingles.length > 0) {
       await applyPhotoSingles(txn, extras.madeSingles);
@@ -428,10 +456,56 @@ export async function applyReviewDecisions(
 }
 
 /**
- * Set/clear the "this keeper needs editing" flag (m0.8: kept is gone —
- * the flag flips a done photo to to_edit and back). Entering to_edit
- * records `to_edit_at` (first entry wins) and resets the detection
- * baseline for a fresh cycle.
+ * Eject photos to durable singles: the explicitly "not related" photo
+ * plus the survivor when the group dissolved. Marks user_single so no
+ * scan ever regroups them, then runs the shared repairs.
+ */
+async function applyPhotoSingles(txn: SQLiteDatabase, assetIds: readonly string[]): Promise<void> {
+  // The survivor query interpolates the id list THREE times, so batches
+  // stay ≤ 300 ids (3 × 300 < SQLite's 999-parameter floor) — the callers
+  // used to pass 1-2 ids by discipline, but m0.8.2's batch flows made
+  // "the first caller that passes a batch" real (TODO rider). Sequential
+  // batches compose: an earlier batch's ejections are already
+  // group_id = NULL, so a later batch's survivor count still lands on
+  // exactly the member left behind.
+  for (const batch of chunk(assetIds, 300)) {
+    const placeholders = batch.map(() => '?').join(',');
+    // "Not related" on a pair judged BOTH photos: the survivor of a group
+    // this ejection shrinks to one member becomes a durable user single too
+    // — the bare membership repair would leave it regroupable, silently
+    // undoing the decision (the session flow persisted both ids).
+    await txn.runAsync(
+      `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0, user_single = 1
+       WHERE photo_id IN (
+         SELECT a.photo_id FROM photo_group_assignments a
+         WHERE a.group_id IS NOT NULL
+           AND a.photo_id NOT IN (${placeholders})
+           AND a.group_id IN (SELECT group_id FROM photo_group_assignments
+                              WHERE photo_id IN (${placeholders}) AND group_id IS NOT NULL)
+           AND (SELECT COUNT(*) FROM photo_group_assignments b
+                WHERE b.group_id = a.group_id AND b.photo_id NOT IN (${placeholders})) = 1
+       )`,
+      ...batch,
+      ...batch,
+      ...batch,
+    );
+    await txn.runAsync(
+      `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0, user_single = 1
+       WHERE photo_id IN (${placeholders})`,
+      ...batch,
+    );
+  }
+  await repairGroupMembership(txn);
+}
+
+/**
+ * Queue or clear the "this keeper needs editing" ACTION (v18).
+ *
+ * The verdict is not touched: wanting an edit was never a change of mind
+ * about keeping the photo. Queuing resets the detection baseline
+ * (mod_time + content_hash) so the next detected change belongs to THIS
+ * edit cycle — the action's `queued_at` is that cycle's key, the role
+ * `to_edit_at` used to play.
  */
 export async function setNeedsEdit(
   db: SQLiteDatabase,
@@ -439,102 +513,69 @@ export async function setNeedsEdit(
   needsEdit: boolean,
   at: number,
 ): Promise<void> {
-  const flag = needsEdit ? 1 : 0;
-  await db.runAsync(
-    `UPDATE photos
-     SET needs_edit = ?,
-         state = CASE
-           WHEN ? = 1 AND state = 'done' THEN 'to_edit'
-           WHEN ? = 0 AND state = 'to_edit' THEN 'done'
-           ELSE state
-         END,
-         to_edit_at = CASE
-           WHEN ? = 1 AND state = 'done' THEN ?
-           ELSE to_edit_at
-         END,
-         mod_time = CASE WHEN ? = 1 AND state = 'done' THEN NULL ELSE mod_time END,
-         content_hash = CASE WHEN ? = 1 AND state = 'done' THEN NULL ELSE content_hash END,
-         activity_at = ?
-     WHERE asset_id = ?`,
-    flag,
-    flag,
-    flag,
-    flag,
-    at,
-    flag,
-    flag,
-    at,
-    assetId,
-  );
+  await withWriteTransaction(db, async (txn) => {
+    if (needsEdit) {
+      await txn.runAsync(
+        `INSERT INTO photo_actions (photo_id, kind, state, queued_at)
+         VALUES (?, 'edit', 'queued', ?)
+         ON CONFLICT(photo_id, kind) DO UPDATE SET
+           state = 'queued', queued_at = excluded.queued_at`,
+        assetId,
+        at,
+      );
+      await txn.runAsync(
+        `UPDATE photos SET mod_time = NULL, content_hash = NULL, activity_at = ?
+          WHERE asset_id = ?`,
+        at,
+        assetId,
+      );
+    } else {
+      await leaveQueue(txn, assetId, 'edit');
+      await txn.runAsync('UPDATE photos SET activity_at = ? WHERE asset_id = ?', at, assetId);
+    }
+  });
 }
 
-/**
- * "Not related — review as single" (m0.4, completed m0.7; m0.8: durable
- * user-ejection): the given photos left their cull group — the ejected
- * photo plus the survivor when the group dissolved. Marks user_single so
- * no scan ever regroups them, then runs the shared repairs.
- */
-async function applyPhotoSingles(txn: SQLiteDatabase, assetIds: readonly string[]): Promise<void> {
-  const placeholders = assetIds.map(() => '?').join(',');
-  // "Not related" on a pair judged BOTH photos: the survivor of a group
-  // this ejection shrinks to one member becomes a durable user single too
-  // — the bare membership repair would leave it regroupable, silently
-  // undoing the decision (the session flow persisted both ids).
-  await txn.runAsync(
-    `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0, user_single = 1
-     WHERE photo_id IN (
-       SELECT a.photo_id FROM photo_group_assignments a
-       WHERE a.group_id IS NOT NULL
-         AND a.photo_id NOT IN (${placeholders})
-         AND a.group_id IN (SELECT group_id FROM photo_group_assignments
-                            WHERE photo_id IN (${placeholders}) AND group_id IS NOT NULL)
-         AND (SELECT COUNT(*) FROM photo_group_assignments b
-              WHERE b.group_id = a.group_id AND b.photo_id NOT IN (${placeholders})) = 1
-     )`,
-    ...assetIds,
-    ...assetIds,
-    ...assetIds,
-  );
-  await txn.runAsync(
-    `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0, user_single = 1
-     WHERE photo_id IN (${placeholders})`,
-    ...assetIds,
-  );
-  await repairGroupMembership(txn);
-}
-
-/**
- * Shared membership repairs (N#1, applied by single ejections, regroup
- * resets, window writes, and removal reconciliation alike): a group with
- * fewer than 2 PRESENT members dissolves — an absent (trashed/removed)
- * member must not hold a one-photo group in the deck; an orphaned best
- * clears; empty groups are deleted. photo_group_assignments is the ONE
- * membership truth (m0.8: the legacy photos.group_id column is gone).
- */
-export async function repairGroupMembership(txn: SQLiteDatabase): Promise<void> {
-  await txn.runAsync(
-    `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0
-     WHERE group_id IN (
-       SELECT g.id FROM photo_groups g
-       WHERE (SELECT COUNT(*) FROM photo_group_assignments a
-              JOIN photos p ON p.asset_id = a.photo_id
-              WHERE a.group_id = g.id AND p.is_present = 1) < 2
-     )`,
-  );
-  await txn.runAsync(
-    `UPDATE photo_groups SET best_photo_id = NULL
-     WHERE best_photo_id IS NOT NULL
-       AND NOT EXISTS (
-         SELECT 1 FROM photo_group_assignments a
-         JOIN photos p ON p.asset_id = a.photo_id
-         WHERE a.group_id = photo_groups.id AND a.photo_id = photo_groups.best_photo_id
-           AND p.is_present = 1
+export async function repairGroupMembership(
+  txn: SQLiteDatabase,
+  groupIds?: readonly number[],
+): Promise<void> {
+  if (groupIds !== undefined && groupIds.length === 0) return;
+  const scopes: (readonly number[] | null)[] =
+    groupIds === undefined ? [null] : chunk([...new Set(groupIds)], IN_CHUNK);
+  for (const scope of scopes) {
+    const inList = scope === null ? '' : `(${scope.map(() => '?').join(',')})`;
+    const params = scope === null ? [] : scope;
+    await txn.runAsync(
+      `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0
+       WHERE group_id IN (
+         SELECT g.id FROM photo_groups g
+         WHERE ${scope === null ? '' : `g.id IN ${inList} AND `}
+           (SELECT COUNT(*) FROM photo_group_assignments a
+                JOIN photos p ON p.asset_id = a.photo_id
+                WHERE a.group_id = g.id AND p.is_present = 1) < 2
        )`,
-  );
-  await txn.runAsync(
-    `DELETE FROM photo_groups
-     WHERE (SELECT COUNT(*) FROM photo_group_assignments a WHERE a.group_id = photo_groups.id) = 0`,
-  );
+      ...params,
+    );
+    await txn.runAsync(
+      `UPDATE photo_groups SET best_photo_id = NULL
+       WHERE ${scope === null ? '' : `id IN ${inList} AND `}best_photo_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM photo_group_assignments a
+           JOIN photos p ON p.asset_id = a.photo_id
+           WHERE a.group_id = photo_groups.id AND a.photo_id = photo_groups.best_photo_id
+             AND p.is_present = 1
+         )`,
+      ...params,
+    );
+    await txn.runAsync(
+      `DELETE FROM photo_groups
+       WHERE ${scope === null ? '' : `id IN ${inList} AND `}
+         (SELECT COUNT(*) FROM photo_group_assignments a
+          WHERE a.group_id = photo_groups.id) = 0`,
+      ...params,
+    );
+  }
 }
 
 export async function makePhotoSingles(
@@ -547,7 +588,7 @@ export async function makePhotoSingles(
   expectedGroupId?: number,
 ): Promise<void> {
   if (assetIds.length === 0) return;
-  await db.withExclusiveTransactionAsync(async (txn) => {
+  await withWriteTransaction(db, async (txn) => {
     if (expectedGroupId !== undefined) {
       const rows = await txn.getAllAsync<{ photo_id: string }>(
         `SELECT a.photo_id FROM photo_group_assignments a
@@ -574,6 +615,9 @@ export interface ReviewMemberRow {
   asset_id: string;
   uri: string;
   taken_at: number;
+  /** Local capture-day key (photos.day); null = undated. The timeline
+   * splits singles runs on it (lib/timeline.ts). */
+  day: string | null;
   state: PhotoState;
   needs_edit: number;
   time_attached: number;
@@ -583,7 +627,8 @@ export interface ReviewMemberRow {
 export interface ReviewGroupRow {
   groupId: number;
   bestPhotoId: string | null;
-  /** Chronological members, all states (the deck badges non-unreviewed). */
+  /** NEWEST-first members, all states (the deck badges non-unreviewed).
+   * Every deck reads most-recently-taken first (Tristan, m0.8.2). */
   members: ReviewMemberRow[];
 }
 
@@ -602,6 +647,12 @@ async function listReviewGroupsIn(
   // works on whole groups.
   const src = sourceClause(roots, 'p.uri');
   {
+    // CROSS JOIN is SQLite's documented join-order hint: the EXISTS must
+    // walk THIS group's few assignments and probe photos by primary key.
+    // Left to itself the planner started from idx_photos_present_state —
+    // every group re-scanning every unreviewed photo, ~200M probes and a
+    // 14 s read on a 27k corpus (measured; queuePlan.real.test.ts pins
+    // the plan).
     const groups = await txn.getAllAsync<{
       id: number;
       best_photo_id: string | null;
@@ -613,9 +664,9 @@ async function listReviewGroupsIn(
               WHERE a.group_id = g.id AND p.is_present = 1) AS newest
      FROM photo_groups g
      WHERE EXISTS (
-       SELECT 1 FROM photo_group_assignments a
-       JOIN photos p ON p.asset_id = a.photo_id
-       WHERE a.group_id = g.id AND p.state = 'unreviewed' AND p.is_present = 1${src.sql}
+       SELECT 1 FROM photo_group_assignments a CROSS JOIN photos p
+       WHERE a.group_id = g.id AND p.asset_id = a.photo_id
+         AND p.state = 'unreviewed' AND p.is_present = 1${src.sql}
      )
      ORDER BY newest DESC
      LIMIT ?`,
@@ -624,11 +675,11 @@ async function listReviewGroupsIn(
     );
     if (groups.length === 0) return [];
     const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
-      `SELECT a.group_id, p.asset_id, p.uri, p.taken_at, p.state, p.needs_edit, a.time_attached
+      `SELECT a.group_id, p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id IN (${groups.map(() => '?').join(',')}) AND p.is_present = 1
-       ORDER BY p.taken_at ASC, p.asset_id ASC`,
+       ORDER BY p.taken_at DESC, p.asset_id DESC`,
       ...groups.map((g) => g.id),
     );
     const byGroup = new Map<number, ReviewMemberRow[]>();
@@ -638,6 +689,7 @@ async function listReviewGroupsIn(
         asset_id: m.asset_id,
         uri: m.uri,
         taken_at: m.taken_at,
+        day: m.day,
         state: m.state,
         needs_edit: m.needs_edit,
         time_attached: m.time_attached,
@@ -662,7 +714,7 @@ export async function listReviewGroups(
   roots: readonly string[] | null = null,
 ): Promise<ReviewGroupRow[]> {
   let out: ReviewGroupRow[] = [];
-  await db.withExclusiveTransactionAsync(async (txn) => {
+  await withReadTransaction(db, async (txn) => {
     out = await listReviewGroupsIn(txn, limit, roots);
   });
   return out;
@@ -679,18 +731,18 @@ export async function getReviewGroup(
 ): Promise<ReviewGroupRow | null> {
   // One snapshot for header + members (same race as listReviewGroups).
   let out: ReviewGroupRow | null = null;
-  await db.withExclusiveTransactionAsync(async (txn) => {
+  await withReadTransaction(db, async (txn) => {
     const group = await txn.getFirstAsync<{ id: number; best_photo_id: string | null }>(
       'SELECT id, best_photo_id FROM photo_groups WHERE id = ?',
       groupId,
     );
     if (!group) return;
     const members = await txn.getAllAsync<ReviewMemberRow>(
-      `SELECT p.asset_id, p.uri, p.taken_at, p.state, p.needs_edit, a.time_attached
+      `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id = ? AND p.is_present = 1
-       ORDER BY p.taken_at ASC, p.asset_id ASC`,
+       ORDER BY p.taken_at DESC, p.asset_id DESC`,
       groupId,
     );
     if (members.length === 0) return;
@@ -712,7 +764,7 @@ async function listSinglesFeedIn(
 ): Promise<ReviewMemberRow[]> {
   const src = sourceClause(roots, 'p.uri');
   return txn.getAllAsync<ReviewMemberRow>(
-    `SELECT p.asset_id, p.uri, p.taken_at, p.state, p.needs_edit, a.time_attached
+    `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
      WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled') AND p.is_present = 1${src.sql}
@@ -734,6 +786,43 @@ export async function listSinglesFeed(
 }
 
 /**
+ * The singles a DECK reviews (m0.8.2 timeline): one local day's
+ * ungrouped photos, optionally narrowed to a run's taken_at range,
+ * NEWEST first (Tristan's call — groups stay chronological, singles
+ * decks read newest-first) — and INCLUDING kept ones. The pending feed
+ * drops a kept single (it is no longer to-do), but an open deck keeps
+ * every decided photo in place badged (group-deck parity, F10), so deck
+ * rows come through this wider predicate: everything but trashed, which
+ * never renders on a review surface. The day scope exists because the
+ * global feed is a bounded newest-first page — an older day's singles
+ * are simply not in it (m0.8.2 day decks), and a run is one day's
+ * slice by construction.
+ */
+export async function listSinglesForDeck(
+  db: SQLiteDatabase,
+  day: string,
+  roots: readonly string[] | null = null,
+  range: { from: number; to: number } | null = null,
+  limit = 500,
+): Promise<ReviewMemberRow[]> {
+  const src = sourceClause(roots, 'p.uri');
+  const dayPredicate = day === UNDATED_DAY_KEY ? ' AND p.day IS NULL' : ' AND p.day = ?';
+  const rangePredicate = range ? ' AND p.taken_at BETWEEN ? AND ?' : '';
+  return db.getAllAsync<ReviewMemberRow>(
+    `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+     FROM photo_group_assignments a
+     JOIN photos p ON p.asset_id = a.photo_id
+     WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled', 'kept') AND p.is_present = 1${src.sql}${dayPredicate}${rangePredicate}
+     ORDER BY p.taken_at DESC, p.asset_id DESC
+     LIMIT ?`,
+    ...src.params,
+    ...(day === UNDATED_DAY_KEY ? [] : [day]),
+    ...(range ? [range.from, range.to] : []),
+    limit,
+  );
+}
+
+/**
  * Every group with a present member taken on the given local day, newest
  * first, completion state irrespective — a completed day re-shows its
  * groups for browse/re-decide (gate 5). Members outside the day ride
@@ -746,23 +835,64 @@ export async function listGroupsForDay(
 ): Promise<ReviewGroupRow[]> {
   const src = sourceClause(roots, 'p.uri');
   const dayPredicate = day === UNDATED_DAY_KEY ? 'p.day IS NULL' : 'p.day = ?';
-  const ids = await db.getAllAsync<{ group_id: number }>(
-    `SELECT DISTINCT a.group_id FROM photo_group_assignments a
-     JOIN photos p ON p.asset_id = a.photo_id
-     WHERE a.group_id IS NOT NULL AND ${dayPredicate} AND p.is_present = 1${src.sql}`,
-    ...(day === UNDATED_DAY_KEY ? [] : [day]),
-    ...src.params,
-  );
-  // Sequential: each getReviewGroup opens its own snapshot transaction —
-  // interleaving them via Promise.all would nest transactions.
+  // ONE snapshot for ids + headers + members (m0.8.1 — the previous
+  // one-transaction-per-group shape opened a fresh SQLite connection per
+  // group, a visible per-day cost on older devices).
   const groups: ReviewGroupRow[] = [];
-  for (const r of ids) {
-    const group = await getReviewGroup(db, Number(r.group_id));
-    if (group) groups.push(group);
-  }
-  // Members are chronologically ASCENDING — newest-first ordering keys
-  // on each group's LAST member.
-  const newest = (g: ReviewGroupRow): number => g.members[g.members.length - 1]?.taken_at ?? 0;
+  await withReadTransaction(db, async (txn) => {
+    const ids = await txn.getAllAsync<{ group_id: number }>(
+      `SELECT DISTINCT a.group_id FROM photo_group_assignments a
+       JOIN photos p ON p.asset_id = a.photo_id
+       WHERE a.group_id IS NOT NULL AND ${dayPredicate} AND p.is_present = 1${src.sql}`,
+      ...(day === UNDATED_DAY_KEY ? [] : [day]),
+      ...src.params,
+    );
+    for (const batch of chunk(
+      ids.map((r) => Number(r.group_id)),
+      IN_CHUNK,
+    )) {
+      if (batch.length === 0) continue;
+      const placeholders = batch.map(() => '?').join(',');
+      const headers = await txn.getAllAsync<{ id: number; best_photo_id: string | null }>(
+        `SELECT id, best_photo_id FROM photo_groups WHERE id IN (${placeholders})`,
+        ...batch,
+      );
+      const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
+        `SELECT a.group_id, p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+         FROM photo_group_assignments a
+         JOIN photos p ON p.asset_id = a.photo_id
+         WHERE a.group_id IN (${placeholders}) AND p.is_present = 1
+         ORDER BY p.taken_at DESC, p.asset_id DESC`,
+        ...batch,
+      );
+      const byGroup = new Map<number, ReviewMemberRow[]>();
+      for (const m of members) {
+        const row: ReviewMemberRow = {
+          asset_id: m.asset_id,
+          uri: m.uri,
+          taken_at: m.taken_at,
+          day: m.day,
+          state: m.state,
+          needs_edit: m.needs_edit,
+          time_attached: m.time_attached,
+        };
+        const bucket = byGroup.get(Number(m.group_id));
+        if (bucket) bucket.push(row);
+        else byGroup.set(Number(m.group_id), [row]);
+      }
+      for (const header of headers) {
+        const groupMembers = byGroup.get(Number(header.id)) ?? [];
+        if (groupMembers.length === 0) continue;
+        groups.push({
+          groupId: Number(header.id),
+          bestPhotoId: header.best_photo_id,
+          members: groupMembers,
+        });
+      }
+    }
+  });
+  // Members are newest-first — ordering keys on each group's FIRST member.
+  const newest = (g: ReviewGroupRow): number => g.members[0]?.taken_at ?? 0;
   return groups.sort((a, b) => newest(b) - newest(a));
 }
 
@@ -774,11 +904,14 @@ export interface PhotoFacts {
   taken_at: number;
   state: PhotoState;
   needs_edit: number;
-  favourite_state: FavouriteState;
-  organize_state: string;
+  /** Favourite direction currently queued: 1 apply, 0 remove, null none. */
+  favourite_queued: number | null;
+  /** An organize move is waiting. */
+  organize_queued: number;
+  /** When the last organize move actually landed. */
   organize_applied_at: number | null;
   reviewed_at: number | null;
-  /** Last completed edit-queue cycle (durable marker). */
+  /** Last completed edit cycle (the edit action's resolved_at). */
   edit_completed_at: number | null;
   /** Continuous group membership (null = single). */
   group_id: number | null;
@@ -795,8 +928,19 @@ export async function getPhotoFacts(
   assetId: string,
 ): Promise<PhotoFacts | null> {
   return db.getFirstAsync<PhotoFacts>(
-    `SELECT p.asset_id, p.uri, p.taken_at, p.state, p.needs_edit, p.favourite_state,
-            p.organize_state, p.organize_applied_at, p.reviewed_at, p.edit_completed_at,
+    `SELECT p.asset_id, p.uri, p.taken_at, p.state, p.reviewed_at,
+            (EXISTS (SELECT 1 FROM photo_actions e WHERE e.photo_id = p.asset_id
+                      AND e.kind = 'edit' AND e.state IN ('queued', 'error'))) AS needs_edit,
+            (SELECT CAST(f.target AS INTEGER) FROM photo_actions f
+              WHERE f.photo_id = p.asset_id AND f.kind = 'favourite'
+                AND f.state IN ('queued', 'error')) AS favourite_queued,
+            (EXISTS (SELECT 1 FROM photo_actions o WHERE o.photo_id = p.asset_id
+                      AND o.kind = 'organize' AND o.state IN ('queued', 'error')))
+              AS organize_queued,
+            (SELECT o2.resolved_at FROM photo_actions o2 WHERE o2.photo_id = p.asset_id
+              AND o2.kind = 'organize') AS organize_applied_at,
+            (SELECT e2.resolved_at FROM photo_actions e2 WHERE e2.photo_id = p.asset_id
+              AND e2.kind = 'edit') AS edit_completed_at,
             a.group_id, COALESCE(a.time_attached, 0) AS time_attached,
             COALESCE(a.user_single, 0) AS user_single,
             CASE WHEN g.best_photo_id = p.asset_id THEN 1 ELSE 0 END AS is_best
@@ -810,16 +954,22 @@ export async function getPhotoFacts(
 
 /**
  * State-aware RE-decision on an already-decided photo (gate 5 browse,
- * cull-list sheet) — the initial-decision verdict path deliberately
- * honors the needs-edit flag and first-entry cycle stamps, which is
- * wrong for an explicit change of mind:
- * - keep: done + flag CLEARED (an explicit Keep overrides the flag; the
- *   initial path would bounce a flagged photo straight back to to_edit)
- *   with the abandoned cycle's baseline reset;
- * - to_edit: a FRESH edit cycle (unconditional to_edit_at + baseline
- *   reset — reusing a completed cycle's stamp would let stale detection
- *   evidence auto-complete the new cycle).
- * Both targets resolve pending edited-copy matches (C#12: an explicit
+ * cull-list sheet). Both targets land on the verdict `kept` — v18 has no
+ * `to_edit` verdict — and differ only in what they ASK FOR:
+ * - keep: kept, and pending actions are left exactly as they were. It is
+ *   reachable only from a staged cull, and rescuing a photo from
+ *   deletion says "do not delete this", not "and cancel the edit I asked
+ *   for". `unstageCullDirect` — the same culled -> kept transition from
+ *   the state editor and the trash rollback — has always carried the
+ *   edit across, and one transition must not mean two things.
+ *   (Until m0.8.2 this abandoned the edit. That existed to escape the
+ *   pre-v18 CASE ladder, where keep + flag bounced the verdict straight
+ *   back to `to_edit`; with the bounce gone, so is the reason.)
+ * - to_edit: kept, with a FRESH edit cycle (queued_at re-stamped
+ *   unconditionally + baseline reset — reusing a completed cycle's stamp
+ *   would let stale detection evidence auto-complete the new one). This
+ *   one IS an explicit statement about the edit, which is why it writes.
+ * Both resolve pending edited-copy matches (C#12: an explicit
  * keep/to-edit answers the copy prompt). Only decided states transition;
  * an unreviewed photo takes the normal verdict path instead.
  */
@@ -829,27 +979,49 @@ export async function applyRedecision(
   target: 'keep' | 'to_edit',
   at: number,
 ): Promise<void> {
-  await db.withExclusiveTransactionAsync(async (txn) => {
+  await withWriteTransaction(db, async (txn) => {
     if (target === 'keep') {
-      await txn.runAsync(
-        `UPDATE photos SET state = 'done', needs_edit = 0,
-           to_edit_at = NULL, mod_time = NULL, content_hash = NULL,
-           reviewed_at = COALESCE(reviewed_at, ?), activity_at = ?
-         WHERE asset_id = ? AND state IN ('culled', 'to_edit')`,
+      const moved = await txn.runAsync(
+        `UPDATE photos SET state = 'kept',
+           mod_time = NULL, content_hash = NULL,
+           reviewed_at = COALESCE(reviewed_at, ?), decided_at = ?, activity_at = ?
+         WHERE asset_id = ? AND state IN ('culled', 'kept')`,
+        at,
         at,
         at,
         assetId,
       );
+      // A STALE sheet: the photo left the decided states while it was
+      // open. The guard above already refused the verdict, so nothing
+      // below may run either — resolving copy matches for a decision
+      // that did not happen is the same bug the guard exists to
+      // prevent, just further down the function.
+      if (Number(moved.changes) === 0) return;
     } else {
-      await txn.runAsync(
-        `UPDATE photos SET state = 'to_edit', needs_edit = 1,
-           to_edit_at = ?, mod_time = NULL, content_hash = NULL,
-           reviewed_at = COALESCE(reviewed_at, ?), activity_at = ?
-         WHERE asset_id = ? AND state IN ('culled', 'done')`,
+      const moved = await txn.runAsync(
+        `UPDATE photos SET state = 'kept', mod_time = NULL, content_hash = NULL,
+           reviewed_at = COALESCE(reviewed_at, ?), decided_at = ?, activity_at = ?
+         WHERE asset_id = ? AND state IN ('culled', 'kept')`,
         at,
         at,
         at,
         assetId,
+      );
+      if (Number(moved.changes) === 0) return; // stale sheet — see above
+
+      // A FRESH edit cycle: queued_at is re-stamped unconditionally,
+      // because reusing a completed cycle's stamp would let stale
+      // detection evidence auto-complete the new one.
+      await txn.runAsync(
+        `INSERT INTO photo_actions (photo_id, kind, state, queued_at)
+         VALUES (?, 'edit', 'queued', ?)
+         ON CONFLICT(photo_id, kind) DO UPDATE SET
+           -- resolved_at is NOT cleared: that an edit once completed
+           -- stays true while a new cycle runs (the cycle key is
+           -- queued_at, and the base rates read resolved_at).
+           state = 'queued', queued_at = excluded.queued_at`,
+        assetId,
+        at,
       );
     }
     await txn.runAsync(
@@ -882,7 +1054,7 @@ export async function setGroupBest(
              JOIN photos p ON p.asset_id = a.photo_id
              WHERE a.group_id = photo_groups.id AND a.photo_id = ?
                AND p.is_present = 1
-               AND p.state NOT IN ('culled', 'confirmed', 'trashed')
+               AND p.state NOT IN ('culled', 'trashed')
            )`,
           bestPhotoId,
           groupId,
@@ -893,29 +1065,39 @@ export async function setGroupBest(
   }
 }
 
-/** Home CTA counts: unreviewed present photos in groups / as singles. */
+/** Unreviewed present photos still to review: how many sit in groups /
+ * as singles, and how many GROUPS the grouped ones span (Home's "N in M
+ * groups" line — the loaded queue page is bounded, so the group count
+ * cannot be taken from the queue array). */
+export interface QueueCounts {
+  grouped: number;
+  singles: number;
+  groups: number;
+}
+
 async function countReviewQueueIn(
   txn: SQLiteDatabase,
   roots: readonly string[] | null,
-): Promise<{ grouped: number; singles: number }> {
+): Promise<QueueCounts> {
   const src = sourceClause(roots, 'p.uri');
-  const row = await txn.getFirstAsync<{ grouped: number; singles: number }>(
+  const row = await txn.getFirstAsync<{ grouped: number; singles: number; groups: number }>(
     `SELECT
        SUM(CASE WHEN a.group_id IS NOT NULL THEN 1 ELSE 0 END) AS grouped,
-       SUM(CASE WHEN a.group_id IS NULL THEN 1 ELSE 0 END) AS singles
+       SUM(CASE WHEN a.group_id IS NULL THEN 1 ELSE 0 END) AS singles,
+       COUNT(DISTINCT a.group_id) AS groups
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
      WHERE p.state = 'unreviewed' AND p.is_present = 1${src.sql}`,
     ...src.params,
   );
-  return { grouped: row?.grouped ?? 0, singles: row?.singles ?? 0 };
+  return { grouped: row?.grouped ?? 0, singles: row?.singles ?? 0, groups: row?.groups ?? 0 };
 }
 
 /** Public wrapper (Home CTA counts outside the queue snapshot). */
 export async function countReviewQueue(
   db: SQLiteDatabase,
   roots: readonly string[] | null = null,
-): Promise<{ grouped: number; singles: number }> {
+): Promise<QueueCounts> {
   return countReviewQueueIn(db, roots);
 }
 
@@ -931,14 +1113,14 @@ export async function readReviewQueue(
 ): Promise<{
   groups: ReviewGroupRow[];
   singles: ReviewMemberRow[];
-  counts: { grouped: number; singles: number };
+  counts: QueueCounts;
 }> {
   let out: {
     groups: ReviewGroupRow[];
     singles: ReviewMemberRow[];
-    counts: { grouped: number; singles: number };
-  } = { groups: [], singles: [], counts: { grouped: 0, singles: 0 } };
-  await db.withExclusiveTransactionAsync(async (txn) => {
+    counts: QueueCounts;
+  } = { groups: [], singles: [], counts: { grouped: 0, singles: 0, groups: 0 } };
+  await withReadTransaction(db, async (txn) => {
     out = {
       groups: await listReviewGroupsIn(txn, groupLimit, roots),
       singles: await listSinglesFeedIn(txn, singlesLimit, roots),
@@ -948,19 +1130,78 @@ export async function readReviewQueue(
   return out;
 }
 
-/** Reviewed-photo counts per local day (first-review stamps; the daily
- * goal and streaks read these — decision 4). */
+/**
+ * Capture-day coverage (m0.8.1 round 8, the coverage goal): per local
+ * capture day, how many tracked present photos exist and how many are
+ * still unreviewed. `day IS NULL` comes back as the undated bucket,
+ * which only the all-time goal counts.
+ *
+ * ONE indexed grouped read — no MediaStore involvement — so the Home
+ * "keeping up" card and the Stats coverage chart share it.
+ * `sinceDay` bounds the rolling-window case; null means all time.
+ */
+export interface DayCoverageRow {
+  day: string | null;
+  total: number;
+  pending: number;
+}
+
+export async function getCoverageByDay(
+  db: SQLiteDatabase,
+  sinceDay: string | null,
+  roots: readonly string[] | null = null,
+): Promise<DayCoverageRow[]> {
+  const src = sourceClause(roots);
+  // The undated bucket must survive a sinceDay bound (all-time needs it,
+  // and `NULL >= '2026-01-01'` is NULL — i.e. filtered out), so the
+  // bound explicitly keeps the NULL day.
+  const bound = sinceDay === null ? '' : ' AND (day IS NULL OR day >= ?)';
+  const rows = await db.getAllAsync<{ day: string | null; total: number; pending: number }>(
+    `SELECT day,
+            COUNT(*) AS total,
+            SUM(CASE WHEN state = 'unreviewed' THEN 1 ELSE 0 END) AS pending
+     FROM photos
+     WHERE is_present = 1${src.sql}${bound}
+     GROUP BY day`,
+    ...src.params,
+    ...(sinceDay === null ? [] : [sinceDay]),
+  );
+  return rows.map((r) => ({ day: r.day, total: Number(r.total), pending: Number(r.pending) }));
+}
+
+/** Review-ACTION counts per local day (the daily goal ring and streaks).
+ * m0.8.1 (tester decision): the goal is today's reviewing WORK — a photo
+ * decided today counts regardless of when it was first reviewed, so this
+ * reads the re-stamping decided_at, not reviewed_at's first-stamp
+ * (which stays the lifetime-stats truth). One photo decided twice in a
+ * day still counts once (the column holds only the latest stamp). */
 export async function getReviewedCountsByDay(
   db: SQLiteDatabase,
-  sinceDay: string,
+  /** Epoch ms lower bound — NOT a day key: bounding on decided_at keeps
+   * the filter indexable and, critically, avoids the alias trap below. */
+  sinceMs: number,
+  /** SOURCE-SCOPED (m0.8.2): the ring, the streaks, the 30-day chart and
+   * the forecast's pace all read this, and every one of them is a claim
+   * about the library you selected. See statsLoad.ts for where the line
+   * between "your library now" and "what you did" is drawn. */
+  roots: readonly string[] | null = null,
 ): Promise<Map<string, number>> {
-  const rows = await db.getAllAsync<{ day: string; n: number }>(
-    `SELECT date(reviewed_at / 1000, 'unixepoch', 'localtime') AS day, COUNT(*) AS n
-     FROM photos WHERE reviewed_at IS NOT NULL
-     GROUP BY day HAVING day >= ?`,
-    sinceDay,
+  const src = sourceClause(roots);
+  // `AS decided_day`, never `AS day`: `day` is a REAL COLUMN on photos
+  // (the capture day), and SQLite resolves a bare name in GROUP BY /
+  // HAVING to the COLUMN, not to the output alias. The old
+  // `… AS day … GROUP BY day HAVING day >= ?` therefore grouped and
+  // filtered by CAPTURE day — silently dropping photos captured before
+  // the window but decided today, which is exactly the semantics the
+  // daily goal promises (proven in store.real.test.ts).
+  const rows = await db.getAllAsync<{ decided_day: string; n: number }>(
+    `SELECT date(decided_at / 1000, 'unixepoch', 'localtime') AS decided_day, COUNT(*) AS n
+     FROM photos WHERE decided_at IS NOT NULL AND decided_at >= ?${src.sql}
+     GROUP BY decided_day`,
+    sinceMs,
+    ...src.params,
   );
-  return new Map(rows.map((r) => [r.day, r.n]));
+  return new Map(rows.map((r) => [r.decided_day, r.n]));
 }
 
 /** Home corpus stats: groups found + rows with a CURRENT verdict (a
@@ -979,7 +1220,7 @@ export async function getCorpusStats(
        (SELECT COUNT(*) FROM photos p
         -- Home's denominator is the current MediaStore corpus — count
         -- only verdicts on PRESENT photos (trashed/removed rows left it).
-        WHERE p.state IN ('done', 'to_edit', 'culled', 'confirmed')
+        WHERE p.state IN ('kept', 'culled')
           AND p.is_present = 1${src.sql}) AS reviewed`,
     ...src.params,
     ...src.params,
@@ -1024,7 +1265,7 @@ async function resetUnreviewedGroupsIn(txn: SQLiteDatabase): Promise<void> {
 
 /** Public wrapper (tests). */
 export async function resetUnreviewedGroups(db: SQLiteDatabase): Promise<void> {
-  await db.withExclusiveTransactionAsync((txn) => resetUnreviewedGroupsIn(txn));
+  await withWriteTransaction(db, (txn) => resetUnreviewedGroupsIn(txn));
 }
 
 /**
@@ -1040,7 +1281,7 @@ export async function applyGroupingSettingChange(
   key: string,
   value: string | null,
 ): Promise<void> {
-  await db.withExclusiveTransactionAsync(async (txn) => {
+  await withWriteTransaction(db, async (txn) => {
     if (value === null) {
       await txn.runAsync('DELETE FROM settings WHERE key = ?', key);
     } else {
@@ -1084,11 +1325,26 @@ export async function getMetadataGroupIds(
  * user-bounded, so the sweep stays cheap. */
 export async function getStagedCullBytes(
   db: SQLiteDatabase,
-): Promise<{ uri: string; sizeBytes: number | null }[]> {
-  return db.getAllAsync<{ uri: string; sizeBytes: number | null }>(
-    `SELECT uri, size_bytes AS sizeBytes FROM photos
-     WHERE state IN ('culled', 'confirmed') AND is_present = 1`,
+): Promise<{ scanned: number; unsized: string[] }> {
+  // The SUM lives in SQL (m0.8.1): Home used to receive EVERY staged row
+  // and blocking-stat each one on the JS thread, per focus. Only rows the
+  // v14 scan never sized need a stat, and the caller caps those.
+  const row = await db.getFirstAsync<{ total: number; unsized: number }>(
+    `SELECT COALESCE(SUM(size_bytes), 0) AS total,
+            SUM(CASE WHEN size_bytes IS NULL THEN 1 ELSE 0 END) AS unsized
+     FROM photos WHERE state = 'culled' AND is_present = 1`,
   );
+  const unsized =
+    (row?.unsized ?? 0) === 0
+      ? []
+      : (
+          await db.getAllAsync<{ uri: string }>(
+            `SELECT uri FROM photos
+             WHERE state = 'culled' AND is_present = 1 AND size_bytes IS NULL
+             LIMIT 200`,
+          )
+        ).map((r) => r.uri);
+  return { scanned: Number(row?.total ?? 0), unsized };
 }
 
 /** Alive tracked undated photos (the Unknown-day pseudo-day's
@@ -1202,7 +1458,7 @@ export async function writeContinuousGroups(
   options: { abortIf?: () => boolean } = {},
 ): Promise<void> {
   if (write.photos.length === 0) return;
-  await db.withExclusiveTransactionAsync(async (txn) => {
+  await withWriteTransaction(db, async (txn) => {
     if (options.abortIf?.()) return;
     // A scanned photo EXISTS in MediaStore — authoritative presence. A row
     // still marked trashed was restored outside Afterglow (Gallery
@@ -1217,7 +1473,7 @@ export async function writeContinuousGroups(
       await txn.runAsync(
         `UPDATE photos SET state = 'unreviewed', is_present = 1,
            trash_generation = trash_generation + 1,
-           to_edit_at = NULL, mod_time = NULL, content_hash = NULL,
+           mod_time = NULL, content_hash = NULL,
            activity_at = ?
          WHERE asset_id IN (${ids.map(() => '?').join(',')}) AND state = 'trashed'`,
         at,
@@ -1236,7 +1492,7 @@ export async function writeContinuousGroups(
            -- photos.mod_time is the in-place edit detector's baseline
            -- while a row is in an edit cycle: refreshing it here would
            -- make the pending edit look unchanged (silent detection loss).
-           mod_time = CASE WHEN photos.state = 'to_edit'
+           mod_time = CASE WHEN ${queuedClause('edit', 'photos.asset_id')}
                            THEN photos.mod_time ELSE excluded.mod_time END,
            day = excluded.day,
            volume_name = excluded.volume_name,
@@ -1279,13 +1535,43 @@ export async function writeContinuousGroups(
       frozen,
     );
 
+    // UNCHANGED assignments are NO-OPS (m0.8.1): re-scan windows used to
+    // delete-and-recreate identical unreviewed groups under fresh ids,
+    // invalidating the ids the deck had rendered — every decision taken
+    // mid-scan on such a group then hit the staleness guard ("group
+    // changed while reviewing"). Skipping identical writes keeps group
+    // ids stable across re-scans (and drops thousands of redundant
+    // window writes per pass). A group is identical only when every
+    // planned member already sits in ONE existing group of exactly the
+    // planned size with matching time-attached flags.
+    const identicalGroup = (group: ContinuousGroupWrite): boolean => {
+      const timeAttached = new Set(group.timeAttached);
+      let existing: number | null = null;
+      for (const member of group.members) {
+        const live = liveAssignments.get(member);
+        if (!live || live.groupId === null) return false;
+        if (existing === null) existing = live.groupId;
+        else if (live.groupId !== existing) return false;
+        if (live.timeAttached !== timeAttached.has(member)) return false;
+      }
+      if (existing === null) return false;
+      const liveSet = liveMembers.get(existing);
+      // Same size + every planned member inside ⇒ the sets are equal.
+      return liveSet !== undefined && liveSet.length === group.members.length;
+    };
+
     const runId = await ensureContinuousRun(txn, at);
+    // Repair scope: the groups these photos already belonged to (they can
+    // be left short a member) plus the ones written below.
+    const touchedGroups = new Set<number>(liveTouched);
     for (const group of plan.groups) {
+      if (identicalGroup(group)) continue;
       const groupResult = await txn.runAsync(
         'INSERT INTO photo_groups (run_id, best_photo_id) VALUES (?, NULL)',
         runId,
       );
       const groupId = Number(groupResult.lastInsertRowId);
+      touchedGroups.add(groupId);
       const timeAttached = new Set(group.timeAttached);
       for (const assetId of group.members) {
         await txn.runAsync(
@@ -1299,6 +1585,8 @@ export async function writeContinuousGroups(
       }
     }
     for (const assetId of plan.singles) {
+      const live = liveAssignments.get(assetId);
+      if (live && live.groupId === null && !live.timeAttached) continue; // already this single
       await txn.runAsync(
         `INSERT OR REPLACE INTO photo_group_assignments (photo_id, run_id, group_id, time_attached)
          VALUES (?, ?, NULL, 0)`,
@@ -1306,7 +1594,7 @@ export async function writeContinuousGroups(
         runId,
       );
     }
-    await repairGroupMembership(txn);
+    await repairGroupMembership(txn, [...touchedGroups]);
   });
 }
 
@@ -1316,6 +1604,8 @@ export interface GroupAssignmentRow {
   groupId: number | null;
   /** The USER ejected this photo to singles — never regroup it. */
   userSingle: boolean;
+  /** Grouped by time only (embedding was unavailable). */
+  timeAttached: boolean;
 }
 
 /** Current durable group membership for the given photos (missing = no
@@ -1331,8 +1621,9 @@ export async function getGroupAssignments(
       photo_id: string;
       group_id: number | null;
       user_single: number;
+      time_attached: number;
     }>(
-      `SELECT photo_id, group_id, user_single FROM photo_group_assignments
+      `SELECT photo_id, group_id, user_single, time_attached FROM photo_group_assignments
        WHERE photo_id IN (${placeholders})`,
       ...ids,
     );
@@ -1340,6 +1631,7 @@ export async function getGroupAssignments(
       out.set(row.photo_id, {
         groupId: row.group_id === null ? null : Number(row.group_id),
         userSingle: row.user_single === 1,
+        timeAttached: row.time_attached === 1,
       });
   }
   return out;
@@ -1387,18 +1679,29 @@ export async function markEditDone(
   onlyIfToEditAt?: number | null,
 ): Promise<boolean> {
   let applied = false;
-  await db.withExclusiveTransactionAsync(async (txn) => {
-    const guard = onlyIfToEditAt === undefined ? '' : ' AND to_edit_at IS ?';
-    const params: (string | number | null)[] = [at, at, assetId];
+  await withWriteTransaction(db, async (txn) => {
+    // v18: completing an edit RESOLVES the action. The verdict is
+    // already 'kept' and does not move — finishing an edit was never a
+    // change of mind about keeping the photo.
+    const guard = onlyIfToEditAt === undefined ? '' : ' AND queued_at IS ?';
+    const params: (string | number | null)[] = [at, assetId];
     if (onlyIfToEditAt !== undefined) params.push(onlyIfToEditAt);
     const result = await txn.runAsync(
-      `UPDATE photos
-       SET state = 'done', needs_edit = 0, edit_completed_at = COALESCE(edit_completed_at, ?),
-           activity_at = ?
-       WHERE asset_id = ? AND state = 'to_edit'${guard}`,
+      // resolved_at takes the LATEST completion, not the first. COALESCE
+      // here looks conservative but is not: a second edit cycle moves
+      // queued_at forward while leaving an older resolved_at behind, and
+      // `resolved_at < queued_at` makes getQueueTurnaround drop the row
+      // for good. "Ever actioned" survives either way — the column stays
+      // non-null — so the only thing COALESCE preserved was a stale gap.
+      `UPDATE photo_actions
+          SET state = 'applied', resolved_at = ?
+        WHERE photo_id = ? AND kind = 'edit' AND state IN ('queued', 'error')${guard}`,
       ...params,
     );
     applied = result.changes > 0;
+    if (applied) {
+      await txn.runAsync('UPDATE photos SET activity_at = ? WHERE asset_id = ?', at, assetId);
+    }
     if (!applied) return;
     await txn.runAsync(
       "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
@@ -1454,6 +1757,29 @@ export async function getPhotoUris(
   return uris;
 }
 
+/** The photo facts a QUEUE ROW needs beside its action: the thumbnail and
+ * the CAPTURE time. Queue screens hand these to the standard viewer,
+ * which labels the timestamp as when the photo was taken — so passing an
+ * action's `queued_at` there tells the user the wrong thing. */
+export async function getPhotoQueueFacts(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+): Promise<Map<string, { uri: string; takenAt: number }>> {
+  const facts = new Map<string, { uri: string; takenAt: number }>();
+  for (const ids of chunk(assetIds, IN_CHUNK)) {
+    if (ids.length === 0) continue;
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await db.getAllAsync<{ asset_id: string; uri: string; taken_at: number }>(
+      `SELECT asset_id, uri, taken_at FROM photos WHERE asset_id IN (${placeholders})`,
+      ...ids,
+    );
+    for (const row of rows) {
+      facts.set(row.asset_id, { uri: row.uri, takenAt: Number(row.taken_at) });
+    }
+  }
+  return facts;
+}
+
 export async function getStatesForAssets(
   db: SQLiteDatabase,
   assetIds: readonly string[],
@@ -1479,12 +1805,44 @@ export async function getNeedsEditAssets(
   for (const ids of chunk(assetIds, IN_CHUNK)) {
     const placeholders = ids.map(() => '?').join(',');
     const rows = await db.getAllAsync<{ asset_id: string }>(
-      `SELECT asset_id FROM photos WHERE needs_edit = 1 AND asset_id IN (${placeholders})`,
+      `SELECT p.asset_id FROM photos p WHERE (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AND p.asset_id IN (${placeholders})`,
       ...ids,
     );
     for (const row of rows) flagged.add(row.asset_id);
   }
   return flagged;
+}
+
+/** Queue membership behind the deck/Groups badges: a photo waiting in the
+ * share queue or with a queued (or retryable-error) organize intent. Read
+ * for the loaded queue ids on every refresh — the badges must show the
+ * same durable rows the Share/Organize tabs list. */
+export interface QueuedForAssets {
+  share: Set<string>;
+  organize: Set<string>;
+}
+
+export async function getQueuedForAssets(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+): Promise<QueuedForAssets> {
+  const out: QueuedForAssets = { share: new Set(), organize: new Set() };
+  for (const ids of chunk(assetIds, IN_CHUNK)) {
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await db.getAllAsync<{ asset_id: string; shared: number; organized: number }>(
+      `SELECT p.asset_id,
+              (EXISTS (SELECT 1 FROM photo_actions s WHERE s.photo_id = p.asset_id AND s.kind = 'share' AND s.state IN ('queued', 'error'))) AS shared,
+              (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'organize' AND pa.state IN ('queued', 'error'))) AS organized
+       FROM photos p
+       WHERE p.asset_id IN (${placeholders})`,
+      ...ids,
+    );
+    for (const row of rows) {
+      if (row.shared) out.share.add(row.asset_id);
+      if (row.organized) out.organize.add(row.asset_id);
+    }
+  }
+  return out;
 }
 
 export interface ToEditRow {
@@ -1494,10 +1852,15 @@ export interface ToEditRow {
   day: string | null;
 }
 
-/** The to-edit queue: every photo flagged for editing, newest first. */
+/** The to-edit queue: every photo flagged for editing, newest first.
+ * Live work only — a staged cull is not waiting to be edited. */
 export async function getToEditPhotos(db: SQLiteDatabase): Promise<ToEditRow[]> {
   return db.getAllAsync<ToEditRow>(
-    "SELECT asset_id, uri, taken_at, day FROM photos WHERE state = 'to_edit' ORDER BY taken_at DESC",
+    `SELECT p.asset_id, p.uri, p.taken_at, p.day FROM photos p
+       JOIN photo_actions pa ON pa.photo_id = p.asset_id
+      WHERE pa.kind = 'edit' AND pa.state IN ('queued', 'error')
+        AND ${livePhotoClause('p.asset_id')}
+      ORDER BY p.taken_at DESC`,
   );
 }
 
@@ -1513,8 +1876,12 @@ export interface EditDetectionRow {
 
 export async function getEditDetectionRows(db: SQLiteDatabase): Promise<EditDetectionRow[]> {
   return db.getAllAsync<EditDetectionRow>(
-    `SELECT asset_id, uri, taken_at, mod_time, content_hash, to_edit_at
-     FROM photos WHERE state = 'to_edit'`,
+    `SELECT p.asset_id, p.uri, p.taken_at, p.mod_time, p.content_hash,
+            pa.queued_at AS to_edit_at
+       FROM photos p
+       JOIN photo_actions pa ON pa.photo_id = p.asset_id
+      WHERE pa.kind = 'edit' AND pa.state IN ('queued', 'error')
+        AND ${livePhotoClause('p.asset_id')}`,
   );
 }
 
@@ -1532,7 +1899,11 @@ export async function updateModTimeBaseline(
   onlyIfToEditAt: number | null,
 ): Promise<void> {
   await db.runAsync(
-    "UPDATE photos SET mod_time = ? WHERE asset_id = ? AND state = 'to_edit' AND to_edit_at IS ?",
+    `UPDATE photos SET mod_time = ?
+      WHERE asset_id = ?
+        AND EXISTS (SELECT 1 FROM photo_actions pa
+                     WHERE pa.photo_id = photos.asset_id AND pa.kind = 'edit'
+                       AND pa.state IN ('queued', 'error') AND pa.queued_at IS ?)`,
     modTime,
     assetId,
     onlyIfToEditAt,
@@ -1540,15 +1911,34 @@ export async function updateModTimeBaseline(
 }
 
 /**
- * Track a detected edited copy as already-done AND record its durable
- * original ↔ copy match (C#12) in ONE transaction — a crash between the
- * two would leave a tracked copy whose prompt could never be recovered
- * (tracked photos are excluded from future scans). One best copy per
- * original: an original that already has ANY recorded match is skipped
- * entirely (the table's (original, copy) key alone would let every
- * candidate pair insert) — returns false and nothing is written, so an
- * unchosen candidate stays untracked and reviewable. activity_at is
- * stamped so the detected copy appears in the History feed.
+ * Track a detected edited copy AND record its durable original ↔ copy
+ * match (C#12) in ONE transaction — a crash between the two would leave
+ * a tracked copy whose prompt could never be recovered (tracked photos
+ * are excluded from future scans). One best copy per original: an
+ * original that already has ANY recorded match is skipped entirely (the
+ * table's (original, copy) key alone would let every candidate pair
+ * insert) — returns false and nothing is written, so an unchosen
+ * candidate stays untracked and reviewable.
+ *
+ * THE COPY IS A NEW PHOTO, NOT A DECIDED ONE (Tristan, 2026-07-28). It
+ * is written `unreviewed`, so it joins the review queue like anything
+ * else the camera produced — the app has no business deciding you want
+ * to keep a photo you have never seen. Only `activity_at` is stamped,
+ * which is all "tracked" needs (see getDetectionTrackedAssets: a row is
+ * tracked unless it is unreviewed AND activity-less), so it still never
+ * re-enters candidate scanning.
+ *
+ * It carries NO edit action either: an action row means work was queued
+ * against a photo, and the copy was never in a queue — it is the OUTPUT
+ * of the original's edit. The relationship it does have lives in
+ * edit_copy_matches, and "edits completed" counts the ORIGINAL's
+ * resolved action, once, whichever way the prompt is answered.
+ *
+ * Known limit: the copy will not be GROUPED with its original, because
+ * the regroup boundary freezes any photo that has left 'unreviewed' and
+ * the original has a verdict by then (docs/TODO.md). The exception is
+ * pleasant — flag an edit while the original is still undecided and both
+ * stay unfrozen, so the scan can pair them.
  */
 export async function insertDetectedCopyWithMatch(
   db: SQLiteDatabase,
@@ -1556,13 +1946,15 @@ export async function insertDetectedCopyWithMatch(
   copy: { assetId: string; uri: string; takenAt: number; modTime: number; day: string },
   detectedAt: number,
   /** The edit cycle the detection evidence belongs to — the original must
-   * still be in it (state to_edit, same to_edit_at), or nothing records. */
+   * still be in THAT cycle (its edit action still queued, same
+   * `queued_at`), or nothing records. */
   onlyIfToEditAt: number | null,
 ): Promise<boolean> {
   let recorded = false;
-  await db.withExclusiveTransactionAsync(async (txn) => {
+  await withWriteTransaction(db, async (txn) => {
     const original = await txn.getFirstAsync<{ to_edit_at: number | null }>(
-      "SELECT to_edit_at FROM photos WHERE asset_id = ? AND state = 'to_edit'",
+      `SELECT queued_at AS to_edit_at FROM photo_actions
+        WHERE photo_id = ? AND kind = 'edit' AND state IN ('queued', 'error')`,
       originalId,
     );
     if (!original || original.to_edit_at !== onlyIfToEditAt) return; // superseded cycle
@@ -1577,18 +1969,15 @@ export async function insertDetectedCopyWithMatch(
       originalId,
     );
     if (existing) return;
-    // The continuous scan may have inserted the copy's row first (scan-only:
-    // unreviewed, no activity); flip exactly those to done — a row a user
-    // already touched never gets clobbered (it was not a candidate anyway).
+    // The continuous scan may have inserted the copy's row first
+    // (scan-only: unreviewed, no activity); stamping activity_at is what
+    // marks it tracked. A row a user already touched never gets
+    // clobbered (it was not a candidate anyway).
     const upsert = await txn.runAsync(
       `INSERT INTO photos
-         (asset_id, uri, taken_at, state, mod_time, day, needs_edit, edit_completed_at, reviewed_at, activity_at)
-       VALUES (?, ?, ?, 'done', ?, ?, 0, ?, ?, ?)
+         (asset_id, uri, taken_at, state, mod_time, day, activity_at)
+       VALUES (?, ?, ?, 'unreviewed', ?, ?, ?)
        ON CONFLICT(asset_id) DO UPDATE SET
-         state = 'done',
-         needs_edit = 0,
-         edit_completed_at = excluded.edit_completed_at,
-         reviewed_at = excluded.reviewed_at,
          activity_at = excluded.activity_at
        WHERE photos.state = 'unreviewed' AND photos.activity_at IS NULL`,
       copy.assetId,
@@ -1596,8 +1985,6 @@ export async function insertDetectedCopyWithMatch(
       copy.takenAt,
       copy.modTime,
       copy.day,
-      detectedAt,
-      detectedAt,
       detectedAt,
     );
     if (Number(upsert.changes) === 0) {
@@ -1658,10 +2045,10 @@ export interface HistoryPhotoRow {
   asset_id: string;
   uri: string;
   taken_at: number;
-  state: PhotoState | 'done' | 'to_edit';
+  state: PhotoState;
   needs_edit: number;
-  favourite_state: FavouriteState;
-  organize_state: string;
+  favourited: number;
+  organized: number;
   organize_applied_at: number | null;
   day: string | null;
   activity_at: number;
@@ -1700,6 +2087,31 @@ export interface HistoryPage {
 const HISTORY_PAGE = 40;
 
 /**
+ * "This photo has EVER had a move applied" as a WHERE-clause predicate.
+ * The SELECT list exposes the same fact as `organize_applied_at`, but a
+ * result alias cannot be referenced from WHERE in SQLite, so the filters
+ * spell the subquery out. Correlated on `photos.asset_id`, which every
+ * caller here selects from.
+ */
+const ORGANIZE_APPLIED = `EXISTS (SELECT 1 FROM photo_actions pv_organize
+  WHERE pv_organize.photo_id = photos.asset_id AND pv_organize.kind = 'organize'
+    AND pv_organize.resolved_at IS NOT NULL)`;
+
+/** "An edit is waiting on this photo." Badge semantics on purpose: the
+ * History feed reports what a photo carries, not what a queue serves. */
+const EDIT_QUEUED = `EXISTS (SELECT 1 FROM photo_actions pa_edit
+  WHERE pa_edit.photo_id = photos.asset_id AND pa_edit.kind = 'edit'
+    AND pa_edit.state IN ('queued', 'error'))`;
+
+/** "A favourite was ever queued or ever applied" — the pinned formula. */
+const FAVOURITE_TOUCHED = `(EXISTS (SELECT 1 FROM photo_actions pa_favourite
+  WHERE pa_favourite.photo_id = photos.asset_id AND pa_favourite.kind = 'favourite'
+    AND pa_favourite.state IN ('queued', 'error'))
+  OR EXISTS (SELECT 1 FROM photo_actions pv_favourite
+  WHERE pv_favourite.photo_id = photos.asset_id AND pv_favourite.kind = 'favourite'
+    AND pv_favourite.resolved_at IS NOT NULL))`;
+
+/**
  * One keyset page of the History feed. Photo rows require presence
  * (is_present = 1 — trashed/deleted photos drop out; restore brings them
  * back) and at least one recorded decision (activity_at beyond the draw).
@@ -1714,25 +2126,33 @@ export async function getHistoryPage(
 ): Promise<HistoryPage> {
   const filterSql =
     filter === 'kept'
-      ? "AND state = 'done' AND needs_edit = 0"
+      ? // The VERDICT, nothing more (v18): a kept photo with an edit
+        // queued is still kept, and excluding it here kept the retired
+        // mutually-exclusive done-vs-to_edit model alive on this surface.
+        // It appears under Kept AND under To edit, which is the point of
+        // having two layers.
+        "AND state = 'kept'"
       : filter === 'culled'
         ? "AND state = 'culled'"
         : filter === 'to_edit'
-          ? "AND state = 'to_edit'"
+          ? `AND ${EDIT_QUEUED}`
           : filter === 'favourite'
-            ? "AND favourite_state IN ('queued_apply', 'applied')"
+            ? `AND ${FAVOURITE_TOUCHED}`
             : filter === 'organized'
               ? // The retained applied marker, NOT the live queue state:
                 // re-queueing another move must not erase the photo's
                 // organized history (possibly forever, on error).
-                'AND organize_applied_at IS NOT NULL'
-              : // All is the union of the specific filters: a review
-                // decision, an applied move, or a favourite intent — a
-                // merely-drawn photo (activity_at stamped at insert) has
-                // none of these.
+                `AND ${ORGANIZE_APPLIED}`
+              : // All is the UNION of the specific filters, and has to be
+                // kept one: v18 lets an UNREVIEWED photo carry a queued
+                // edit, so leaving the edit term out here hid photos that
+                // the To-edit filter beside it happily listed. A
+                // merely-drawn photo (activity_at stamped at insert) still
+                // matches none of these.
                 `AND (state <> 'unreviewed'
-                   OR organize_applied_at IS NOT NULL
-                   OR favourite_state IN ('queued_apply', 'applied'))`;
+                   OR ${ORGANIZE_APPLIED}
+                   OR ${EDIT_QUEUED}
+                   OR ${FAVOURITE_TOUCHED})`;
   const photoPos: HistoryCursor['photo'] = filter === 'shared' ? 'end' : (after?.photo ?? 'top');
   const sharePos: HistoryCursor['share'] =
     filter === 'all' || filter === 'shared' ? (after?.share ?? 'top') : 'end';
@@ -1749,7 +2169,12 @@ export async function getHistoryPage(
     photoPos === 'end'
       ? []
       : await db.getAllAsync<Omit<HistoryPhotoRow, 'kind'>>(
-          `SELECT asset_id, uri, taken_at, state, needs_edit, favourite_state, organize_state, organize_applied_at, day, activity_at
+          `SELECT asset_id, uri, taken_at, state, day, activity_at,
+                  EXISTS (SELECT 1 FROM photo_actions pa_edit WHERE pa_edit.photo_id = photos.asset_id AND pa_edit.kind = 'edit' AND pa_edit.state IN ('queued', 'error')) AS needs_edit,
+                  (EXISTS (SELECT 1 FROM photo_actions pa_favourite WHERE pa_favourite.photo_id = photos.asset_id AND pa_favourite.kind = 'favourite' AND pa_favourite.state IN ('queued', 'error')) OR EXISTS (SELECT 1 FROM photo_actions pv_favourite WHERE pv_favourite.photo_id = photos.asset_id AND pv_favourite.kind = 'favourite' AND pv_favourite.resolved_at IS NOT NULL)) AS favourited,
+                  (EXISTS (SELECT 1 FROM photo_actions pa_organize WHERE pa_organize.photo_id = photos.asset_id AND pa_organize.kind = 'organize' AND pa_organize.state IN ('queued', 'error')) OR EXISTS (SELECT 1 FROM photo_actions pv_organize WHERE pv_organize.photo_id = photos.asset_id AND pv_organize.kind = 'organize' AND pv_organize.resolved_at IS NOT NULL)) AS organized,
+                  (SELECT o.resolved_at FROM photo_actions o WHERE o.photo_id = photos.asset_id
+                    AND o.kind = 'organize') AS organize_applied_at
            FROM photos
            WHERE is_present = 1 AND activity_at IS NOT NULL ${filterSql} ${photoKeyset}
            ORDER BY activity_at DESC, asset_id DESC
@@ -1828,21 +2253,14 @@ export async function getHistoryPage(
   };
 }
 
-/** Number of photos waiting in the to-edit queue. */
-export async function countToEdit(db: SQLiteDatabase): Promise<number> {
-  const row = await db.getFirstAsync<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM photos WHERE state = 'to_edit'",
-  );
-  return row?.n ?? 0;
-}
-
 /**
- * Per-state DB counts for one scope, split by cull-group membership
- * (StateCounts lives in lib/progress.ts — pure, shared with the
- * breakdown math). Replaces m0.2's getDayStateCounts and m0.3.1's
- * countHandledInRange: "handled" = toEdit + done (still in MediaStore;
- * trashed rows are deliberately separate — they left MediaStore, so
- * they are not part of the count this gets subtracted from).
+ * Per-state DB counts for one scope, split by cull-group membership, PLUS
+ * the pending-action counts for the same scope (StateCounts lives in
+ * lib/progress.ts — pure, shared with the breakdown math).
+ *
+ * Both layers in one call because both label the same chip rows: a
+ * verdict chip and an action chip that disagreed about their scope would
+ * be two different questions wearing one design.
  */
 export async function getStateCountsInScope(
   db: SQLiteDatabase,
@@ -1851,44 +2269,61 @@ export async function getStateCountsInScope(
 ): Promise<StateCounts> {
   const where = scopeClause(scope);
   const src = sourceClause(roots);
-  const rows = await db.getAllAsync<{ state: PhotoState; grouped: number; n: number }>(
-    `SELECT state,
-            EXISTS (SELECT 1 FROM photo_group_assignments a
-                    WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped,
-            COUNT(*) AS n
-     FROM photos WHERE ${where.sql}${src.sql} GROUP BY state, grouped`,
-    ...where.params,
-    ...src.params,
-  );
+  const [rows, actionRows] = await Promise.all([
+    db.getAllAsync<{ state: PhotoState; grouped: number; n: number }>(
+      `SELECT state,
+              EXISTS (SELECT 1 FROM photo_group_assignments a
+                      WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped,
+              COUNT(*) AS n
+       FROM photos WHERE ${where.sql}${src.sql} GROUP BY state, grouped`,
+      ...where.params,
+      ...src.params,
+    ),
+    // Deliberately NOT the queue rule: these chips label a BROWSE grid
+    // that already shows staged culls under its own verdict chip, and a
+    // photo visible there but missing from "To edit" while wearing an
+    // edit badge would be the page contradicting itself. The predicate
+    // is GRID_FILTER_SQL's, exactly — chip and grid must agree, and it
+    // is the tab badges (countQueues) that answer "waiting for you".
+    db.getAllAsync<{ kind: ActionKind; n: number }>(
+      `SELECT pa.kind, COUNT(*) AS n
+         FROM photos
+         JOIN photo_actions pa ON pa.photo_id = photos.asset_id
+        WHERE ${where.sql}${src.sql}
+          AND pa.state IN ('queued', 'error')
+          AND photos.state <> 'trashed'
+        GROUP BY pa.kind`,
+      ...where.params,
+      ...src.params,
+    ),
+  ]);
   const counts: StateCounts = {
-    unreviewedGrouped: 0,
-    unreviewedSingle: 0,
-    toEdit: 0,
+    unreviewed: 0,
+    kept: 0,
     staged: 0,
     trashed: 0,
-    done: 0,
     tracked: 0,
+    grouped: { unreviewed: 0, kept: 0, staged: 0 },
+    actions: { edit: 0, favourite: 0, organize: 0, share: 0 },
   };
+  for (const row of actionRows) counts.actions[row.kind] = Number(row.n);
   for (const row of rows) {
     counts.tracked += row.n;
-    switch (row.state) {
-      case 'unreviewed':
-        if (row.grouped) counts.unreviewedGrouped += row.n;
-        else counts.unreviewedSingle += row.n;
-        break;
-      case 'to_edit':
-        counts.toEdit += row.n;
-        break;
-      case 'culled':
-      case 'confirmed': // never persisted by design, but count it as staged
-        counts.staged += row.n;
-        break;
-      case 'trashed':
-        counts.trashed += row.n;
-        break;
-      case 'done':
-        counts.done += row.n;
-        break;
+    // Grouping is an ANNOTATION counted per verdict, not a verdict of
+    // its own (docs/STATE_MODEL.md): it is what the grouped underline
+    // spans, and a grouped unreviewed photo is still simply unreviewed.
+    const verdict =
+      row.state === 'culled'
+        ? 'staged'
+        : row.state === 'kept'
+          ? 'kept'
+          : row.state === 'unreviewed'
+            ? 'unreviewed'
+            : null;
+    if (row.state === 'trashed') counts.trashed += row.n;
+    else if (verdict !== null) {
+      counts[verdict] += row.n;
+      if (row.grouped) counts.grouped[verdict] += row.n;
     }
   }
   return counts;
@@ -1916,6 +2351,8 @@ export async function getStateRowsForAssets(
 
 /** One photo row for the progress grids' DB-backed filters. */
 export interface GridPhotoRow {
+  /** An edit action is queued (layer 2). */
+  needs_edit: number;
   asset_id: string;
   uri: string;
   taken_at: number;
@@ -1923,28 +2360,31 @@ export interface GridPhotoRow {
   grouped: number;
 }
 
-/** SQL predicate per DB-backed grid filter (see getGridPhotosByFilter). */
-const GRID_FILTER_SQL: Record<
-  'in_group' | 'to_edit' | 'staged' | 'done' | 'all' | 'unreviewed',
-  string
-> = {
+/**
+ * SQL predicate per DB-backed grid filter (v18).
+ *
+ * Verdicts and pending ACTIONS both filter the same grid, from the two
+ * different layers of docs/STATE_MODEL.md — action filters carry an
+ * `act:` prefix so the two vocabularies can never collide.
+ */
+const GRID_FILTER_SQL: Record<string, string> = {
   // 'all'/'unreviewed' are DB-backed ONLY for the Unknown-day pseudo-day
   // (its photos cannot be paged from MediaStore; the tracked rows are the
   // complete population there).
   all: "state <> 'trashed'",
-  unreviewed:
-    "state = 'unreviewed' AND NOT EXISTS (SELECT 1 FROM photo_group_assignments a " +
-    'WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL)',
-  in_group:
-    "state = 'unreviewed' AND EXISTS (SELECT 1 FROM photo_group_assignments a " +
-    'WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL)',
-  to_edit: "state = 'to_edit'",
-  staged: "state IN ('culled', 'confirmed')",
-  // 'trashed' rows also count as done in the summaries, but their files
-  // are gone — no thumbnail to show, so the grid excludes them (the UI
-  // notes how many are hidden).
-  done: "state = 'done'",
+  unreviewed: "state = 'unreviewed'",
+  staged: "state = 'culled'",
+  // 'trashed' rows count as kept in the summaries (both converged), but
+  // their files are gone — no thumbnail to show, so the grid excludes
+  // them and the UI notes how many are hidden.
+  kept: "state = 'kept'",
 };
+
+for (const kind of ['edit', 'favourite', 'organize', 'share']) {
+  GRID_FILTER_SQL[`act:${kind}`] = `state <> 'trashed' AND EXISTS (SELECT 1 FROM photo_actions pa
+      WHERE pa.photo_id = photos.asset_id AND pa.kind = '${kind}'
+        AND pa.state IN ('queued', 'error'))`;
+}
 
 /**
  * One newest-first page of tracked photos in a DB-backed grid filter.
@@ -1957,7 +2397,7 @@ export async function getGridPhotosByFilter(
   db: SQLiteDatabase,
   scope: PhotoScope,
   roots: readonly string[] | null,
-  filter: keyof typeof GRID_FILTER_SQL,
+  filter: string,
   limit: number,
   offset: number,
 ): Promise<GridPhotoRow[]> {
@@ -1966,8 +2406,10 @@ export async function getGridPhotosByFilter(
   return db.getAllAsync<GridPhotoRow>(
     `SELECT asset_id, uri, taken_at, state,
             EXISTS (SELECT 1 FROM photo_group_assignments a
-                    WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped
-     FROM photos WHERE ${where.sql} AND (${GRID_FILTER_SQL[filter]})${src.sql}
+                    WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped,
+            EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = photos.asset_id
+                     AND pa.kind = 'edit' AND pa.state IN ('queued', 'error')) AS needs_edit
+     FROM photos WHERE ${where.sql} AND (${GRID_FILTER_SQL[filter] ?? GRID_FILTER_SQL.all})${src.sql}
      ORDER BY taken_at DESC, asset_id DESC LIMIT ? OFFSET ?`,
     ...where.params,
     ...src.params,
@@ -1977,29 +2419,40 @@ export async function getGridPhotosByFilter(
 }
 
 /**
- * State editor: send a converged 'done' photo back to the edit queue.
+ * State editor: send a converged 'kept' photo back to the edit queue.
  * A re-queue starts a FRESH edit cycle: the detection baseline
  * (mod_time + content hash) resets — the previous cycle's edit was
  * already consumed, and a stale baseline would auto-complete the photo
- * before any new edit — and to_edit_at resets too, so copy detection
- * scans only from THIS cycle (an old untracked copy in the previous
- * window must not be claimed as the new cycle's result).
+ * before any new edit — and the action's `queued_at` re-stamps, so copy
+ * detection scans only from THIS cycle (an old untracked copy in the
+ * previous window must not be claimed as the new cycle's result).
  */
 export async function markDoneToEdit(
   db: SQLiteDatabase,
   assetId: string,
   at: number,
 ): Promise<void> {
-  await db.runAsync(
-    `UPDATE photos
-     SET state = 'to_edit', needs_edit = 1, to_edit_at = ?,
-         mod_time = NULL, content_hash = NULL,
-         activity_at = ?
-     WHERE asset_id = ? AND state = 'done'`,
-    at,
-    at,
-    assetId,
-  );
+  await withWriteTransaction(db, async (txn) => {
+    const moved = await txn.runAsync(
+      `UPDATE photos
+       SET mod_time = NULL, content_hash = NULL, activity_at = ?
+       WHERE asset_id = ? AND state = 'kept'`,
+      at,
+      assetId,
+    );
+    // Only a kept photo re-enters the edit queue; anything else (staged,
+    // trashed, never reviewed) is not a "converged keeper" and the sheet
+    // does not offer this.
+    if (Number(moved.changes) === 0) return;
+    await txn.runAsync(
+      `INSERT INTO photo_actions (photo_id, kind, state, queued_at)
+       VALUES (?, 'edit', 'queued', ?)
+       ON CONFLICT(photo_id, kind) DO UPDATE SET
+         state = 'queued', queued_at = excluded.queued_at`,
+      assetId,
+      at,
+    );
+  });
 }
 
 /**
@@ -2016,10 +2469,13 @@ export async function restoreCarriedCull(
   at: number,
   resolvePendingMatches = true,
 ): Promise<void> {
-  await db.withExclusiveTransactionAsync(async (txn) => {
+  await withWriteTransaction(db, async (txn) => {
     await txn.runAsync(
+      // Same rule as the verdict path: a LIVE edit cycle keeps its
+      // detection baseline, because the verdict says nothing about it.
       `UPDATE photos SET state = 'unreviewed',
-         to_edit_at = NULL, mod_time = NULL, content_hash = NULL, needs_edit = 0,
+         mod_time = CASE WHEN ${queuedEditExists} THEN mod_time ELSE NULL END,
+         content_hash = CASE WHEN ${queuedEditExists} THEN content_hash ELSE NULL END,
          activity_at = ?
        WHERE asset_id = ? AND state = 'culled'`,
       at,
@@ -2052,14 +2508,11 @@ export async function unstageCullDirect(
    * group must still exist with this photo as a present member. */
   restoreStars: readonly { groupId: number; photoId: string }[] = [],
 ): Promise<void> {
-  await db.withExclusiveTransactionAsync(async (txn) => {
+  await withWriteTransaction(db, async (txn) => {
     await txn.runAsync(
       `UPDATE photos
-       SET state = CASE WHEN needs_edit = 1 THEN 'to_edit' ELSE 'done' END,
-           to_edit_at = CASE
-             WHEN needs_edit = 1 AND to_edit_at IS NULL THEN ?
-             ELSE to_edit_at
-           END,
+       SET state = 'kept',
+           decided_at = ?,
            activity_at = ?
        WHERE asset_id = ? AND state = 'culled'`,
       at,
@@ -2082,7 +2535,7 @@ export async function unstageCullDirect(
            JOIN photos p ON p.asset_id = a.photo_id
            WHERE a.group_id = photo_groups.id AND a.photo_id = ?
              AND p.is_present = 1
-             AND p.state NOT IN ('culled', 'confirmed', 'trashed')
+             AND p.state NOT IN ('culled', 'trashed')
          )`,
         star.photoId,
         star.groupId,
@@ -2103,37 +2556,56 @@ export interface DaySummaryRow {
 
 const DAY_SUMMARY_SELECT = `SELECT day,
             COUNT(*) AS tracked,
-            SUM(CASE WHEN state IN ('done', 'trashed') THEN 1 ELSE 0 END) AS done,
+            SUM(CASE WHEN state IN ('kept', 'trashed') THEN 1 ELSE 0 END) AS done,
             SUM(CASE WHEN state = 'trashed' THEN 1 ELSE 0 END) AS trashed,
-            SUM(CASE WHEN state = 'to_edit' THEN 1 ELSE 0 END) AS toEdit,
-            SUM(CASE WHEN state IN ('culled', 'confirmed') THEN 1 ELSE 0 END) AS staged
+            -- PENDING WORK, so it takes the queue rule, not the badge
+            -- one: Home's day row must not say "1 to edit" about a photo
+            -- the Edit tab correctly refuses to list because it is
+            -- staged for deletion.
+            SUM(CASE WHEN ${queuedClause('edit', 'photos.asset_id')} THEN 1 ELSE 0 END) AS toEdit,
+            SUM(CASE WHEN state = 'culled' THEN 1 ELSE 0 END) AS staged
      FROM photos WHERE day IS NOT NULL`;
 
-/** What was DECIDED on one local day (Summary "done for today"): counts
- * by current state over photos whose first review stamp fell that day —
- * capture-day rollups miss older photos reviewed today. */
+/**
+ * What was DECIDED on one local day (Stats/Summary "done for today"):
+ * counts by current state over photos DECIDED that day.
+ *
+ * m0.8.1 — two fixes in one: it keyed on `reviewed_at` (the FIRST-ever
+ * verdict, which never moves), so a photo first reviewed last week and
+ * re-decided today was missing — the same screen's goal ring counts it
+ * (decided_at), and the two "today" numbers disagreed. It also filtered
+ * with `date(reviewed_at…) = ?`, an expression no index can serve, so it
+ * full-scanned the corpus per Stats/Summary open. Now: `decided_at`
+ * BETWEEN the day's bounds (inclusive, like every other range scope
+ * here — rangeOfDayKey's endMs IS 23:59:59.999), which the decided_at
+ * index serves.
+ */
 export async function getDayReviewSummary(
   db: SQLiteDatabase,
   day: string,
-): Promise<{ reviewed: number; done: number; staged: number; trashed: number }> {
+  roots: readonly string[] | null = null,
+): Promise<{ reviewed: number; kept: number; staged: number; trashed: number }> {
+  const range = rangeOfDayKey(day);
+  const src = sourceClause(roots);
   const row = await db.getFirstAsync<{
     reviewed: number;
-    done: number;
+    kept: number;
     staged: number;
     trashed: number;
   }>(
     `SELECT COUNT(*) AS reviewed,
-            SUM(CASE WHEN state = 'done' THEN 1 ELSE 0 END) AS done,
-            SUM(CASE WHEN state IN ('culled', 'confirmed') THEN 1 ELSE 0 END) AS staged,
+            SUM(CASE WHEN state = 'kept' THEN 1 ELSE 0 END) AS kept,
+            SUM(CASE WHEN state = 'culled' THEN 1 ELSE 0 END) AS staged,
             SUM(CASE WHEN state = 'trashed' THEN 1 ELSE 0 END) AS trashed
      FROM photos
-     WHERE reviewed_at IS NOT NULL
-       AND date(reviewed_at / 1000, 'unixepoch', 'localtime') = ?`,
-    day,
+     WHERE decided_at BETWEEN ? AND ?${src.sql}`,
+    range.startMs,
+    range.endMs,
+    ...src.params,
   );
   return {
     reviewed: row?.reviewed ?? 0,
-    done: row?.done ?? 0,
+    kept: row?.kept ?? 0,
     staged: row?.staged ?? 0,
     trashed: row?.trashed ?? 0,
   };
@@ -2176,10 +2648,14 @@ export async function getDaySummariesForDays(
   if (days.includes(UNDATED_DAY_KEY)) {
     const row = await db.getFirstAsync<Omit<DaySummaryRow, 'day'>>(
       `SELECT COUNT(*) AS tracked,
-              SUM(CASE WHEN state IN ('done', 'trashed') THEN 1 ELSE 0 END) AS done,
+              SUM(CASE WHEN state IN ('kept', 'trashed') THEN 1 ELSE 0 END) AS done,
               SUM(CASE WHEN state = 'trashed' THEN 1 ELSE 0 END) AS trashed,
-              SUM(CASE WHEN state = 'to_edit' THEN 1 ELSE 0 END) AS toEdit,
-              SUM(CASE WHEN state IN ('culled', 'confirmed') THEN 1 ELSE 0 END) AS staged
+              -- PENDING WORK, so it takes the queue rule, not the badge
+            -- one: Home's day row must not say "1 to edit" about a photo
+            -- the Edit tab correctly refuses to list because it is
+            -- staged for deletion.
+            SUM(CASE WHEN ${queuedClause('edit', 'photos.asset_id')} THEN 1 ELSE 0 END) AS toEdit,
+              SUM(CASE WHEN state = 'culled' THEN 1 ELSE 0 END) AS staged
        FROM photos WHERE day IS NULL${src.sql}`,
       ...src.params,
     );
@@ -2212,145 +2688,548 @@ export async function getUnreviewedDayRows(
   return rows;
 }
 
-// ------------------------------------------------ favourite queue + lifetime metrics
+// The favourite queue lived here as six bespoke functions over four
+// photos columns. v18: it is four rows in photo_actions like every
+// other action — see db/actions.ts. Lifetime metrics stay below.
 
-export interface FavouriteQueueRow {
-  asset_id: string;
-  uri: string;
-  taken_at: number;
-  favourite_state: FavouriteState;
-  favourite_target: number | null;
-}
+// ------------------------------------------------------------- forecast
 
-/** Favourite state for current-session UI; absent rows are `none`. */
-export async function getFavouriteStates(
+/** One equal slice of the decision history, in decision order. Chunk
+ * boundaries come from SQL NTILE, so the slices stay balanced without
+ * shipping every decided row to JS. */
+/**
+ * Every tracked, present photo's timestamp in scope, ASCENDING — the one
+ * read the delta scan's planning needs (lib/deltaScan.ts).
+ *
+ * It answers both questions at once: the merge-window bounds around each
+ * changed photo are WALKED through this array (a window is a maximal
+ * chain of ≤gap steps, so its extent cannot be assumed), and the cost
+ * model's `covered` term is counted from the same array — so the ranges
+ * and the number of photos in them can never disagree.
+ *
+ * There is deliberately no index on `taken_at` (m0.8.1 measured it
+ * costing the scan's write path more than it saves any read), so this
+ * sorts via a temp B-tree. Paid once per delta decision, against a pass
+ * it may save entirely.
+ */
+export async function getPhotoTimestamps(
   db: SQLiteDatabase,
-  assetIds: readonly string[],
-): Promise<Map<string, { state: FavouriteState; target: boolean | null }>> {
-  const out = new Map<string, { state: FavouriteState; target: boolean | null }>();
-  for (const ids of chunk(assetIds, IN_CHUNK)) {
-    if (ids.length === 0) continue;
-    const placeholders = ids.map(() => '?').join(',');
-    const rows = await db.getAllAsync<{
-      asset_id: string;
-      favourite_state: FavouriteState;
-      favourite_target: number | null;
-    }>(
-      `SELECT asset_id, favourite_state, favourite_target FROM photos
-       WHERE asset_id IN (${placeholders})`,
-      ...ids,
-    );
-    for (const row of rows) {
-      out.set(row.asset_id, {
-        state: row.favourite_state,
-        target: row.favourite_target === null ? null : row.favourite_target === 1,
-      });
-    }
-  }
-  return out;
-}
-
-/** Record user intent before opening Android's batch confirmation sheet. */
-export async function queueFavouriteChange(
-  db: SQLiteDatabase,
-  assetIds: readonly string[],
-  favourite: boolean,
-  at: number,
-): Promise<void> {
-  for (const ids of chunk(assetIds, IN_CHUNK)) {
-    if (ids.length === 0) continue;
-    const placeholders = ids.map(() => '?').join(',');
-    await db.runAsync(
-      `UPDATE photos SET favourite_state = ?, favourite_target = ?, favourite_changed_at = ?
-       WHERE asset_id IN (${placeholders})`,
-      favourite ? 'queued_apply' : 'queued_remove',
-      favourite ? 1 : 0,
-      at,
-      ...ids,
-    );
-  }
-}
-
-/** Pending favourite work survives restarts and is safe to retry. */
-export async function getFavouriteQueue(db: SQLiteDatabase): Promise<FavouriteQueueRow[]> {
-  return db.getAllAsync<FavouriteQueueRow>(
-    `SELECT asset_id, uri, taken_at, favourite_state, favourite_target FROM photos
-     WHERE favourite_state IN ('queued_apply', 'queued_remove', 'error')
-     ORDER BY favourite_changed_at, taken_at`,
+  roots: readonly string[] | null = null,
+): Promise<number[]> {
+  const src = sourceClause(roots);
+  const rows = await db.getAllAsync<{ taken_at: number }>(
+    `SELECT taken_at FROM photos WHERE is_present = 1${src.sql} ORDER BY taken_at ASC`,
+    ...src.params,
   );
+  return rows.map((row) => Number(row.taken_at));
 }
 
-export async function countFavouriteQueue(db: SQLiteDatabase): Promise<number> {
+/**
+ * Present, tracked photos in scope — the `corpus` term in the delta-scan
+ * cost model, and the population a full pass walks.
+ *
+ * Counted from the DB rather than MediaStore deliberately: `covered`
+ * comes from the same table, and the comparison only means anything if
+ * both sides count the same population. A library with photos the scan
+ * has never ingested reads slightly low here, which biases toward the
+ * full pass — the safe direction.
+ */
+export async function countTrackedPhotos(
+  db: SQLiteDatabase,
+  roots: readonly string[] | null = null,
+): Promise<number> {
+  const src = sourceClause(roots);
   const row = await db.getFirstAsync<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM photos
-     WHERE favourite_state IN ('queued_apply', 'queued_remove', 'error')`,
+    `SELECT COUNT(*) AS n FROM photos WHERE is_present = 1${src.sql}`,
+    ...src.params,
   );
-  return row?.n ?? 0;
+  return Number(row?.n ?? 0);
 }
 
-/** Commit a verified MediaStore outcome; removal retains lifetime history.
- * C#14/P5#4: every SQL chunk for ONE verified OS batch commits in ONE
- * exclusive transaction — a late chunk failure can never record a partial
- * verified outcome. */
-export async function markFavouriteBatchApplied(
-  db: SQLiteDatabase,
-  assetIds: readonly string[],
-  favourite: boolean,
-  at: number,
-): Promise<void> {
-  await db.withExclusiveTransactionAsync(async (txn) => {
-    for (const ids of chunk(assetIds, IN_CHUNK)) {
-      if (ids.length === 0) continue;
-      const placeholders = ids.map(() => '?').join(',');
-      await txn.runAsync(
-        `UPDATE photos
-         SET favourite_state = ?,
-             favourite_target = NULL,
-             favourite_changed_at = ?,
-             favourite_applied_at = CASE
-               WHEN ? = 1 THEN COALESCE(favourite_applied_at, ?)
-               ELSE favourite_applied_at
-             END,
-             activity_at = ?
-         WHERE asset_id IN (${placeholders})
-           AND favourite_state IN ('queued_apply', 'queued_remove', 'error')
-           AND favourite_target = ?`,
-        favourite ? 'applied' : 'none',
-        at,
-        favourite ? 1 : 0,
-        at,
-        at,
-        ...ids,
-        favourite ? 1 : 0,
-      );
-    }
-  });
+export interface OutcomeChunkRow {
+  chunk: number;
+  total: number;
+  culled: number;
+  toEdit: number;
+  favourited: number;
+  shared: number;
+  organized: number;
 }
 
-export async function markFavouriteBatchError(
+export interface DecisionTotals {
+  /** Lifetime decisions — the floor that gates every projection. */
+  decisions: number;
+  /** Epoch ms of the earliest verdict, or null when nothing is decided.
+   * Shortens the pace denominator for a new user. */
+  firstDecidedAt: number | null;
+}
+
+export interface ForecastBaseRates extends DecisionTotals {
+  chunks: OutcomeChunkRow[];
+}
+
+/**
+ * The two numbers the finish line needs beyond what Home already loads.
+ * Split out from `getForecastBaseRates` deliberately: Home renders only
+ * the headline, and must not pay for an NTILE pass over every decision
+ * to do it. One aggregate on `idx_photos_decided`.
+ */
+export async function getDecisionTotals(
   db: SQLiteDatabase,
-  assetIds: readonly string[],
-  target: boolean,
-  at: number,
-): Promise<void> {
-  await db.withExclusiveTransactionAsync(async (txn) => {
-    for (const ids of chunk(assetIds, IN_CHUNK)) {
-      if (ids.length === 0) continue;
-      const placeholders = ids.map(() => '?').join(',');
-      await txn.runAsync(
-        `UPDATE photos
-         SET favourite_state = 'error', favourite_changed_at = ?,
-             activity_at = ?
-         WHERE asset_id IN (${placeholders})
-           AND favourite_state IN ('queued_apply', 'queued_remove')
-           AND favourite_target = ?`,
-        at,
-        at,
-        ...ids,
-        target ? 1 : 0,
-      );
-    }
-  });
+  roots: readonly string[] | null = null,
+): Promise<DecisionTotals> {
+  const src = sourceClause(roots);
+  const row = await db.getFirstAsync<{ decisions: number; firstDecidedAt: number | null }>(
+    `SELECT COUNT(*) AS decisions, MIN(decided_at) AS firstDecidedAt
+     FROM photos WHERE decided_at IS NOT NULL${src.sql}`,
+    ...src.params,
+  );
+  return { decisions: Number(row?.decisions ?? 0), firstDecidedAt: row?.firstDecidedAt ?? null };
+}
+
+/**
+ * Base rates over EVERY decision ever made (D11), sliced into `chunks`
+ * equal parts in decision order.
+ *
+ * The slices ARE the uncertainty the projections render as a range (D12):
+ * a user whose culling standards drifted produces widely-spread chunks
+ * and therefore a wide range, which is the honest output — rather than a
+ * confident point estimate or a hidden card.
+ *
+ * `shared` is the only outcome without a column: `clearShareQueue` deletes
+ * queue rows, so the sole durable per-photo record of a share is
+ * membership of a batch that actually reached the sheet. That is the same
+ * definition `countNeverShared` uses (shareStore.ts) — deliberately not a
+ * second, subtly different one.
+ */
+export async function getForecastBaseRates(
+  db: SQLiteDatabase,
+  roots: readonly string[] | null = null,
+  chunks = 5,
+): Promise<ForecastBaseRates> {
+  const src = sourceClause(roots);
+  const rows = await db.getAllAsync<{
+    chunk: number;
+    total: number;
+    culled: number;
+    toEdit: number;
+    favourited: number;
+    shared: number;
+    organized: number;
+  }>(
+    `WITH decided AS (
+       SELECT asset_id, state,
+              NTILE(?) OVER (ORDER BY decided_at) AS chunk
+       FROM photos
+       WHERE decided_at IS NOT NULL${src.sql}
+     )
+     SELECT chunk,
+            COUNT(*) AS total,
+            SUM(CASE WHEN state IN ('culled', 'trashed') THEN 1 ELSE 0 END) AS culled,
+            SUM(CASE WHEN EXISTS (SELECT 1 FROM photo_actions pa_edit WHERE pa_edit.photo_id = decided.asset_id AND pa_edit.kind = 'edit' AND pa_edit.state IN ('queued', 'error')) OR EXISTS (SELECT 1 FROM photo_actions pv_edit WHERE pv_edit.photo_id = decided.asset_id AND pv_edit.kind = 'edit' AND pv_edit.resolved_at IS NOT NULL) THEN 1 ELSE 0 END) AS toEdit,
+            -- Direction matters here where it does not elsewhere: an
+            -- un-favourite is an action, but it is not a favourite, and
+            -- counting it would project the opposite of what happened.
+            SUM(CASE WHEN EXISTS (
+                  SELECT 1 FROM photo_actions f
+                   WHERE f.photo_id = decided.asset_id AND f.kind = 'favourite'
+                     AND COALESCE(f.target, f.applied_target) = '1'
+                ) THEN 1 ELSE 0 END) AS favourited,
+            SUM(CASE WHEN EXISTS (
+                  SELECT 1 FROM share_batch_members m
+                    JOIN share_batches b ON b.id = m.batch_id
+                  WHERE m.photo_id = decided.asset_id AND b.state = 'sheet_opened'
+                ) THEN 1 ELSE 0 END) AS shared,
+            SUM(CASE WHEN EXISTS (SELECT 1 FROM photo_actions pa_organize WHERE pa_organize.photo_id = decided.asset_id AND pa_organize.kind = 'organize' AND pa_organize.state IN ('queued', 'error')) OR EXISTS (SELECT 1 FROM photo_actions pv_organize WHERE pv_organize.photo_id = decided.asset_id AND pv_organize.kind = 'organize' AND pv_organize.resolved_at IS NOT NULL) THEN 1 ELSE 0 END) AS organized
+     FROM decided
+     GROUP BY chunk
+     ORDER BY chunk`,
+    chunks,
+    ...src.params,
+  );
+  const totals = await getDecisionTotals(db, roots);
+  return {
+    chunks: rows.map((row) => ({
+      chunk: Number(row.chunk),
+      total: Number(row.total),
+      culled: Number(row.culled),
+      toEdit: Number(row.toEdit),
+      favourited: Number(row.favourited),
+      shared: Number(row.shared),
+      organized: Number(row.organized),
+    })),
+    ...totals,
+  };
+}
+
+/**
+ * The most recent decision stamps, NEWEST first, for the per-photo timing
+ * median. Bounded because the estimate needs a rhythm, not a biography —
+ * and the bound keeps this on `idx_photos_decided` instead of the table.
+ */
+export async function getRecentDecisionStamps(
+  db: SQLiteDatabase,
+  limit = 2000,
+  roots: readonly string[] | null = null,
+): Promise<number[]> {
+  const src = sourceClause(roots);
+  const rows = await db.getAllAsync<{ decided_at: number }>(
+    `SELECT decided_at FROM photos
+     WHERE decided_at IS NOT NULL${src.sql}
+     ORDER BY decided_at DESC
+     LIMIT ?`,
+    ...src.params,
+    limit,
+  );
+  return rows.map((row) => Number(row.decided_at));
+}
+
+/**
+ * Mean file size of photos still awaiting review — the pool whose bytes a
+ * projected cull would actually free. Sizes of photos already culled
+ * describe a different set and would price the projection wrongly.
+ *
+ * `sized` is reported so the caller can see how much of the pool the mean
+ * rests on: `size_bytes` is NULL until the scan has walked a photo.
+ */
+export async function getRemainingPoolSize(
+  db: SQLiteDatabase,
+  roots: readonly string[] | null = null,
+): Promise<{ sized: number; meanBytes: number }> {
+  const src = sourceClause(roots);
+  const row = await db.getFirstAsync<{ sized: number; meanBytes: number | null }>(
+    `SELECT COUNT(size_bytes) AS sized, AVG(size_bytes) AS meanBytes
+     FROM photos
+     WHERE state = 'unreviewed' AND is_present = 1${src.sql}`,
+    ...src.params,
+  );
+  return { sized: Number(row?.sized ?? 0), meanBytes: Math.round(row?.meanBytes ?? 0) };
+}
+
+// ------------------------------------------------------------- habits
+
+/** Decisions in one (weekday, hour) cell of the rhythm heatmap. */
+export interface RhythmCell {
+  /** 0 = Sunday, matching SQLite's %w. */
+  weekday: number;
+  hour: number;
+  count: number;
+}
+
+/**
+ * When you actually review, as a weekday × hour grid.
+ *
+ * Bucketed in SQLite with 'localtime' rather than in JS: the alternative
+ * reads every decided_at into memory to divide it by 3.6e6, and the
+ * whole point of the cell is the LOCAL hour — 23:30 on Saturday is
+ * Saturday night, whatever UTC calls it.
+ *
+ * Empty cells are simply absent; the caller fills the grid.
+ */
+export async function getDecisionRhythm(
+  db: SQLiteDatabase,
+  roots: readonly string[] | null = null,
+): Promise<RhythmCell[]> {
+  const src = sourceClause(roots);
+  const rows = await db.getAllAsync<{ weekday: string; hour: string; n: number }>(
+    `SELECT strftime('%w', decided_at / 1000, 'unixepoch', 'localtime') AS weekday,
+            strftime('%H', decided_at / 1000, 'unixepoch', 'localtime') AS hour,
+            COUNT(*) AS n
+     FROM photos
+     WHERE decided_at IS NOT NULL${src.sql}
+     GROUP BY weekday, hour`,
+    ...src.params,
+  );
+  return rows.map((row) => ({
+    weekday: Number(row.weekday),
+    hour: Number(row.hour),
+    count: Number(row.n),
+  }));
+}
+
+/** How one action queue behaves over time (the Habits turnaround rows). */
+export interface QueueTurnaround {
+  kind: ActionKind;
+  /** Waiting right now — the same number the tab badge shows. */
+  waiting: number;
+  /** Ever completed. NOTE: `waiting + finished` is NOT the total ever
+   * queued — work removed from a queue without being done leaves no row,
+   * which is why no completion RATE is derived from these two (m0.8.2:
+   * queues are designed to drain, so any such rate converges on 100% for
+   * every healthy user and says nothing). */
+  finished: number;
+  /** When the oldest thing still waiting was queued, or null when the
+   * queue is empty. The one queue signal a badge count cannot carry: a
+   * badge showing 3 looks identical whether they arrived this morning or
+   * three weeks ago. */
+  oldestWaitingAt: number | null;
+  /** Recent completed turnarounds in ms, for the median. Bounded: the
+   * habit is a rhythm, not a biography. */
+  gaps: number[];
+}
+
+const TURNAROUND_SAMPLE = 500;
+
+/**
+ * Per-kind queue behaviour: how much is waiting, how much you have ever
+ * finished, and how long finishing usually takes.
+ *
+ * This is the question "why does my edit queue never empty?" — and it is
+ * answerable at all only because `resolved_at` is permanent, so clearing
+ * a queue does not erase the evidence that its work once got done.
+ */
+export async function getQueueTurnaround(db: SQLiteDatabase): Promise<QueueTurnaround[]> {
+  const [waiting, finished, gaps] = await Promise.all([
+    db.getAllAsync<{ kind: ActionKind; n: number; oldest: number | null }>(
+      `SELECT kind, COUNT(*) AS n, MIN(queued_at) AS oldest FROM photo_actions
+        WHERE state IN ('queued', 'error')
+          AND ${livePhotoClause('photo_actions.photo_id')}
+        GROUP BY kind`,
+    ),
+    db.getAllAsync<{ kind: ActionKind; n: number }>(
+      `SELECT kind, COUNT(*) AS n FROM photo_actions
+        WHERE resolved_at IS NOT NULL GROUP BY kind`,
+    ),
+    // PER KIND, not one shared bound: a single 2,000-row read ordered by
+    // resolved_at would give the whole sample to whichever queue is
+    // busiest, and a rarely-used one would report no turnaround at all
+    // despite having finished work. Four bounded index reads instead.
+    Promise.all(
+      ACTION_KINDS.map(async (kind) => ({
+        kind,
+        rows: await db.getAllAsync<{ gap: number }>(
+          `SELECT resolved_at - queued_at AS gap FROM photo_actions
+            WHERE kind = ? AND resolved_at IS NOT NULL AND resolved_at >= queued_at
+            ORDER BY resolved_at DESC
+            LIMIT ?`,
+          kind,
+          TURNAROUND_SAMPLE,
+        ),
+      })),
+    ),
+  ]);
+  const waitingBy = new Map(waiting.map((row) => [row.kind, Number(row.n)]));
+  const oldestBy = new Map(
+    waiting.map((row) => [row.kind, row.oldest === null ? null : Number(row.oldest)]),
+  );
+  const finishedBy = new Map(finished.map((row) => [row.kind, Number(row.n)]));
+  const gapsBy = new Map<ActionKind, number[]>(
+    gaps.map((entry) => [entry.kind, entry.rows.map((row) => Number(row.gap))]),
+  );
+  return ACTION_KINDS.map((kind) => ({
+    kind,
+    waiting: waitingBy.get(kind) ?? 0,
+    finished: finishedBy.get(kind) ?? 0,
+    oldestWaitingAt: oldestBy.get(kind) ?? null,
+    gaps: gapsBy.get(kind) ?? [],
+  }));
+}
+
+/** Compare-screen history: how often a duel ended in keeping both. */
+export interface DuelSummary {
+  duels: number;
+  keptBoth: number;
+}
+
+export async function getDuelSummary(db: SQLiteDatabase): Promise<DuelSummary> {
+  const row = await db.getFirstAsync<{ duels: number; keptBoth: number }>(
+    `SELECT COUNT(*) AS duels, SUM(kept_both) AS keptBoth FROM duels`,
+  );
+  return { duels: Number(row?.duels ?? 0), keptBoth: Number(row?.keptBoth ?? 0) };
+}
+
+/** Decisions and culls since a timestamp — the decisiveness trend's
+ * numerator and denominator, against the all-time rate the base rates
+ * already carry. */
+export async function getDecisionOutcomesSince(
+  db: SQLiteDatabase,
+  sinceMs: number,
+  roots: readonly string[] | null = null,
+): Promise<{ decided: number; culled: number }> {
+  const src = sourceClause(roots);
+  const row = await db.getFirstAsync<{ decided: number; culled: number }>(
+    `SELECT COUNT(*) AS decided,
+            SUM(CASE WHEN state IN ('culled', 'trashed') THEN 1 ELSE 0 END) AS culled
+     FROM photos
+     WHERE decided_at IS NOT NULL AND decided_at >= ?${src.sql}`,
+    sinceMs,
+    ...src.params,
+  );
+  return { decided: Number(row?.decided ?? 0), culled: Number(row?.culled ?? 0) };
+}
+
+// ----------------------------------------------------- library insights
+
+/** One month of the capture histogram; `month` is null for undated. */
+export interface MonthBucket {
+  /** "YYYY-MM", or null for the undated bucket. */
+  month: string | null;
+  total: number;
+  /** Of those, carrying a verdict. */
+  reviewed: number;
+}
+
+/**
+ * Photos per capture MONTH with their reviewed share (m0.8.2).
+ *
+ * Grouped on `substr(day, 1, 7)` rather than on `taken_at`: `day` is the
+ * indexed local-day key the rest of the app already agrees on, and
+ * deriving months from a UTC epoch would drift across timezones for
+ * photos taken near midnight. Undated photos have a NULL day and land in
+ * their own bucket, which is exactly where the UI wants them.
+ *
+ * Counts TRACKED rows, so it plots what the scan has seen — unlike the
+ * corpus breakdown, which uses the MediaStore total. Documented rather
+ * than corrected: MediaStore cannot report per-month counts without a
+ * query per month.
+ */
+export async function getCaptureHistogram(
+  db: SQLiteDatabase,
+  roots: readonly string[] | null = null,
+): Promise<MonthBucket[]> {
+  const src = sourceClause(roots);
+  const rows = await db.getAllAsync<{ month: string | null; total: number; reviewed: number }>(
+    `SELECT substr(day, 1, 7) AS month,
+            COUNT(*) AS total,
+            SUM(CASE WHEN state IN ('kept', 'culled', 'trashed')
+                     THEN 1 ELSE 0 END) AS reviewed
+     FROM photos
+     WHERE is_present = 1${src.sql}
+     GROUP BY month
+     ORDER BY month`,
+    ...src.params,
+  );
+  return rows.map((row) => ({
+    month: row.month,
+    total: Number(row.total),
+    reviewed: Number(row.reviewed),
+  }));
+}
+
+/** Where the review front has reached (m0.8.2). */
+export interface BacklogFrontier {
+  /** Oldest capture day carrying a verdict — how far back you have got. */
+  reviewedBackTo: string | null;
+  /** Oldest capture day still holding unreviewed photos. */
+  oldestUnreviewedDay: string | null;
+  /** Undated photos still awaiting review (they sit outside the calendar). */
+  undatedPending: number;
+}
+
+export async function getBacklogFrontier(
+  db: SQLiteDatabase,
+  roots: readonly string[] | null = null,
+): Promise<BacklogFrontier> {
+  const src = sourceClause(roots);
+  const row = await db.getFirstAsync<{
+    reviewedBackTo: string | null;
+    oldestUnreviewedDay: string | null;
+    undatedPending: number;
+  }>(
+    `SELECT
+       MIN(CASE WHEN state IN ('kept', 'culled', 'trashed') THEN day END)
+         AS reviewedBackTo,
+       MIN(CASE WHEN state = 'unreviewed' THEN day END) AS oldestUnreviewedDay,
+       SUM(CASE WHEN state = 'unreviewed' AND day IS NULL THEN 1 ELSE 0 END) AS undatedPending
+     FROM photos WHERE is_present = 1${src.sql}`,
+    ...src.params,
+  );
+  return {
+    reviewedBackTo: row?.reviewedBackTo ?? null,
+    oldestUnreviewedDay: row?.oldestUnreviewedDay ?? null,
+    undatedPending: Number(row?.undatedPending ?? 0),
+  };
+}
+
+/** Scan-recorded bytes by review state (m0.8.2). */
+export interface StorageBreakdown {
+  /** Photos with a recorded size — the mean's honest denominator. */
+  sized: number;
+  /** Photos the scan has not sized yet (excluded from every sum). */
+  unsized: number;
+  bytes: { kept: number; staged: number; unreviewed: number };
+}
+
+export async function getStorageBreakdown(
+  db: SQLiteDatabase,
+  roots: readonly string[] | null = null,
+): Promise<StorageBreakdown> {
+  const src = sourceClause(roots);
+  const row = await db.getFirstAsync<{
+    sized: number;
+    unsized: number;
+    kept: number;
+    staged: number;
+    unreviewed: number;
+  }>(
+    `SELECT COUNT(size_bytes) AS sized,
+            SUM(CASE WHEN size_bytes IS NULL THEN 1 ELSE 0 END) AS unsized,
+            COALESCE(SUM(CASE WHEN state IN ('kept', 'trashed') THEN size_bytes END), 0) AS kept,
+            COALESCE(SUM(CASE WHEN state = 'culled' THEN size_bytes END), 0)
+              AS staged,
+            COALESCE(SUM(CASE WHEN state = 'unreviewed' THEN size_bytes END), 0) AS unreviewed
+     FROM photos WHERE is_present = 1${src.sql}`,
+    ...src.params,
+  );
+  return {
+    sized: Number(row?.sized ?? 0),
+    unsized: Number(row?.unsized ?? 0),
+    bytes: {
+      kept: Number(row?.kept ?? 0),
+      staged: Number(row?.staged ?? 0),
+      unreviewed: Number(row?.unreviewed ?? 0),
+    },
+  };
+}
+
+/** Similarity-group shape — the app's reason for existing, in numbers. */
+export interface BurstStats {
+  /** Present photos sitting in a similarity group. */
+  photosInGroups: number;
+  /** Groups holding them. */
+  groups: number;
+  /** Members of groups where EVERY member has been decided. */
+  decidedMembers: number;
+  /** Of those, the ones kept (done or to-edit). */
+  decidedKept: number;
+}
+
+/**
+ * Burst statistics. `decidedMembers / decidedKept` is the "you keep 1 of
+ * N" figure, and it counts only FULLY decided groups: a half-reviewed
+ * group would report a keep rate for work not yet done.
+ */
+export async function getBurstStats(
+  db: SQLiteDatabase,
+  roots: readonly string[] | null = null,
+): Promise<BurstStats> {
+  const src = sourceClause(roots, 'p.uri');
+  const row = await db.getFirstAsync<{ photosInGroups: number; groups: number }>(
+    `SELECT COUNT(*) AS photosInGroups, COUNT(DISTINCT a.group_id) AS groups
+     FROM photo_group_assignments a
+     JOIN photos p ON p.asset_id = a.photo_id
+     WHERE a.group_id IS NOT NULL AND p.is_present = 1${src.sql}`,
+    ...src.params,
+  );
+  const decided = await db.getFirstAsync<{ members: number; kept: number }>(
+    `SELECT COUNT(*) AS members,
+            SUM(CASE WHEN p.state = 'kept' THEN 1 ELSE 0 END) AS kept
+     FROM photo_group_assignments a
+     JOIN photos p ON p.asset_id = a.photo_id
+     WHERE a.group_id IS NOT NULL AND p.is_present = 1${src.sql}
+       AND a.group_id NOT IN (
+         SELECT a2.group_id FROM photo_group_assignments a2
+         JOIN photos p2 ON p2.asset_id = a2.photo_id
+         WHERE a2.group_id IS NOT NULL AND p2.state = 'unreviewed'
+       )`,
+    ...src.params,
+  );
+  return {
+    photosInGroups: Number(row?.photosInGroups ?? 0),
+    groups: Number(row?.groups ?? 0),
+    decidedMembers: Number(decided?.members ?? 0),
+    decidedKept: Number(decided?.kept ?? 0),
+  };
 }
 
 /**
@@ -2378,8 +3257,10 @@ export async function getLifetimeStats(db: SQLiteDatabase): Promise<LifetimeStat
     `SELECT
        SUM(CASE WHEN reviewed_at IS NOT NULL THEN 1 ELSE 0 END) AS reviewed,
        SUM(CASE WHEN culled_at IS NOT NULL THEN 1 ELSE 0 END) AS culled,
-       SUM(CASE WHEN edit_completed_at IS NOT NULL THEN 1 ELSE 0 END) AS editsCompleted,
-       SUM(CASE WHEN favourite_applied_at IS NOT NULL THEN 1 ELSE 0 END) AS favouritesApplied
+       (SELECT COUNT(*) FROM photo_actions
+         WHERE kind = 'edit' AND resolved_at IS NOT NULL) AS editsCompleted,
+       (SELECT COUNT(*) FROM photo_actions
+         WHERE kind = 'favourite' AND resolved_at IS NOT NULL) AS favouritesApplied
      FROM photos`,
   );
   return {
@@ -2455,7 +3336,12 @@ export async function setContentHash(
   hash: string,
   onlyIfToEditAt?: number | null,
 ): Promise<void> {
-  const guard = onlyIfToEditAt === undefined ? '' : " AND state = 'to_edit' AND to_edit_at IS ?";
+  const guard =
+    onlyIfToEditAt === undefined
+      ? ''
+      : ` AND EXISTS (SELECT 1 FROM photo_actions pa
+                       WHERE pa.photo_id = photos.asset_id AND pa.kind = 'edit'
+                         AND pa.state IN ('queued', 'error') AND pa.queued_at IS ?)`;
   const params: (string | number | null)[] = [hash, assetId];
   if (onlyIfToEditAt !== undefined) params.push(onlyIfToEditAt);
   await db.runAsync(

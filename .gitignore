@@ -160,3 +160,7 @@ screenshots/
 apps/mobile/modules/image-embedder/android/src/main/assets/*.tflite
 codex-review.md
 __pycache__/
+
+# Pre-release UI-gate output: screenshots of the TEST DEVICE LIBRARY.
+# Real photos of real people — never commit them (docs/MOBILE_UI_GATE.md).
+mobile-ui-gate-report/

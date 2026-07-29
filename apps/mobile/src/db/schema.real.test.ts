@@ -2,12 +2,12 @@
  * Fresh-baseline schema proof on real SQLite (gate 1: C#3, C#4, P8#4,
  * pre-v1 velocity policy). The baseline DDL executes against a real
  * engine; schema-level invariants — enforced FKs, one live reservation,
- * one active session, per-generation trash terminality — are proven by
- * attempting to violate them.
+ * one continuous grouping run, per-generation trash terminality, and the
+ * v18 verdict vocabulary — are proven by attempting to violate them.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { SQLiteDatabase } from 'expo-sqlite';
-import { SCHEMA_VERSION, migrateDatabase } from './database';
+import { SCHEMA_VERSION, migrateDatabase, withWriteTransaction } from './database';
 import { foreignKeyCheck, openTestDb, userVersion, type TestDb } from './testDb';
 
 const open: TestDb[] = [];
@@ -48,6 +48,7 @@ describe('fresh baseline', () => {
       .map((r) => (r as { name: string }).name);
     for (const t of [
       'photos',
+      'photo_actions',
       'duels',
       'settings',
       'photo_hashes',
@@ -57,7 +58,6 @@ describe('fresh baseline', () => {
       'day_index_scans',
       'day_index',
       'share_cycles',
-      'share_queue',
       'share_batches',
       'share_batch_members',
       'trash_batches',
@@ -117,7 +117,10 @@ describe('schema invariants', () => {
     const d = await fresh();
     expect(() =>
       d.raw
-        .prepare("INSERT INTO share_queue (photo_id, cycle_id, queued_at) VALUES ('ghost', 1, 1)")
+        .prepare(
+          `INSERT INTO photo_actions (photo_id, kind, state, queued_at)
+           VALUES ('ghost', 'edit', 'queued', 1)`,
+        )
         .run(),
     ).toThrow(/FOREIGN KEY/);
   });
@@ -200,27 +203,58 @@ describe('schema invariants', () => {
   });
 });
 
-describe('v13 → v14 additive migration', () => {
-  it('adds size_bytes WITHOUT destroying existing rows', async () => {
-    const d = openTestDb();
-    open.push(d);
-    await migrateDatabase(asExpo(d));
-    // Simulate a v13 database: remove the v14 column, wind the version
-    // back, and plant durable data that must survive.
-    d.raw.exec('ALTER TABLE photos DROP COLUMN size_bytes');
-    d.raw.exec(`
-      INSERT INTO photos (asset_id, uri, taken_at, state, day, volume_name, raw_id)
-      VALUES ('external_primary/keep', 'file:///dcim/keep.jpg', 1, 'done', '2026-07-20',
-              'external_primary', 'keep')
-    `);
-    d.raw.exec('PRAGMA user_version = 13');
-    await migrateDatabase(asExpo(d));
-    const row = d.raw
-      .prepare('SELECT state, size_bytes FROM photos WHERE asset_id = ?')
-      .get('external_primary/keep') as { state: string; size_bytes: number | null };
-    expect(row).toMatchObject({ state: 'done', size_bytes: null });
-    expect(
-      (d.raw.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
-    ).toBe(SCHEMA_VERSION);
+describe('the verdict column (v18)', () => {
+  it('accepts exactly the four verdicts and refuses the retired ones', async () => {
+    const d = await fresh();
+    for (const state of ['unreviewed', 'kept', 'culled', 'trashed']) {
+      d.raw
+        .prepare(
+          `INSERT INTO photos (asset_id, uri, taken_at, state)
+           VALUES (?, 'content://x', ?, ?)`,
+        )
+        .run(`ok/${state}`, AT, state);
+    }
+    // 'to_edit' is a pending ACTION now, and 'done' is spelled 'kept'.
+    for (const state of ['to_edit', 'done', 'confirmed']) {
+      expect(() =>
+        d.raw
+          .prepare(
+            `INSERT INTO photos (asset_id, uri, taken_at, state)
+             VALUES (?, 'content://x', ?, ?)`,
+          )
+          .run(`bad/${state}`, AT, state),
+      ).toThrow(/CHECK/);
+    }
+  });
+});
+
+describe('withWriteTransaction (m0.8.1 session pragmas)', () => {
+  it('arms busy_timeout and foreign_keys inside the transaction', async () => {
+    const d = await fresh();
+    d.raw.exec('PRAGMA busy_timeout = 0');
+    let seen: { busy: number; fk: number } | null = null;
+    await withWriteTransaction(asExpo(d), async (txn) => {
+      const busy = await txn.getFirstAsync<{ timeout: number }>('PRAGMA busy_timeout');
+      const fk = await txn.getFirstAsync<{ foreign_keys: number }>('PRAGMA foreign_keys');
+      seen = { busy: Number(busy?.timeout), fk: Number(fk?.foreign_keys) };
+    });
+    expect(seen).toEqual({ busy: 30_000, fk: 1 });
+  });
+
+  it('commits whole and rolls back whole around the pragma dance', async () => {
+    const d = await fresh();
+    await withWriteTransaction(asExpo(d), async (txn) => {
+      await txn.runAsync("INSERT INTO settings (key, value) VALUES ('a', '1')");
+    });
+    expect(d.raw.prepare("SELECT value FROM settings WHERE key = 'a'").get()).toEqual({
+      value: '1',
+    });
+    await expect(
+      withWriteTransaction(asExpo(d), async (txn) => {
+        await txn.runAsync("INSERT INTO settings (key, value) VALUES ('b', '2')");
+        throw new Error('abort');
+      }),
+    ).rejects.toThrow('abort');
+    expect(d.raw.prepare("SELECT value FROM settings WHERE key = 'b'").get()).toBeUndefined();
   });
 });

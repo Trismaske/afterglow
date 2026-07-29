@@ -18,9 +18,7 @@ import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } 
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
-import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainTabScreenProps } from '../navigation';
 import {
   clearShareQueue,
@@ -38,15 +36,28 @@ import {
 import { shareMediaUris } from '../../modules/media-store-actions';
 import { getEditableContentUri } from '../lib/media';
 import { showToast } from '../lib/toast';
-import { colors, touch } from '../theme';
-import { PhotoViewer } from '../components/PhotoViewer';
+import { colors, touch, useTheme } from '../theme';
+import { Chip, QueueGridCell } from '../components/QueueGrid';
+import { QueueViewer } from '../components/QueueViewer';
+import { useQueueRows } from '../components/useQueueRows';
+import { useReview } from '../review/ReviewContext';
 
 type Props = MainTabScreenProps<'ShareQueue'>;
 
 export function ShareQueueScreen(_props: Props) {
   const insets = useSafeAreaInsets();
+  const theme = useTheme();
   const db = useSQLiteContext();
-  const [rows, setRows] = useState<ShareQueueRow[] | null>(null);
+  const { refreshQueuedFor } = useReview();
+  const { rows, reload: reloadRows } = useQueueRows<ShareQueueRow>(
+    useCallback(() => getShareQueue(db), [db]),
+  );
+  /** Every mutation here also moves the share BADGE on review surfaces
+   * (deck, Groups) — the provider's membership map is their source. */
+  const reload = useCallback(async () => {
+    await reloadRows();
+    await refreshQueuedFor().catch(() => {});
+  }, [reloadRows, refreshQueuedFor]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [labelBatchId, setLabelBatchId] = useState<number | null>(null);
@@ -56,17 +67,12 @@ export function ShareQueueScreen(_props: Props) {
    * (a plain tap toggles pass selection). */
   const [viewerId, setViewerId] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
-    const queue = await getShareQueue(db);
-    setRows(queue);
-    setSelected((old) => new Set([...old].filter((id) => queue.some((r) => r.photo_id === id))));
-  }, [db]);
-
-  useFocusEffect(
-    useCallback(() => {
-      void reload();
-    }, [reload]),
-  );
+  // Selection follows the queue: ids that left it (shared away, removed
+  // elsewhere) must not linger invisibly selected.
+  useEffect(() => {
+    if (rows === null) return;
+    setSelected((old) => new Set([...old].filter((id) => rows.some((r) => r.photo_id === id))));
+  }, [rows]);
 
   useEffect(() => {
     void recentShareLabels(db).then(setLabelChips);
@@ -179,45 +185,32 @@ export function ShareQueueScreen(_props: Props) {
   }, [db, selected, reload]);
 
   const renderItem = useCallback(
-    ({ item }: { item: ShareQueueRow }) => {
-      const isSelected = selected.has(item.photo_id);
-      return (
-        <Pressable
-          style={styles.cell}
-          onPress={() => toggle(item.photo_id)}
-          onLongPress={() => setViewerId(item.photo_id)}
-        >
-          <Image
-            source={{ uri: item.uri }}
-            style={[styles.thumb, isSelected && styles.thumbSelected]}
-            contentFit="cover"
-            recyclingKey={item.photo_id}
-          />
-          {item.pass_count > 0 ? (
-            <View style={styles.passBadge}>
-              <MaterialCommunityIcons name="check" size={12} color={colors.text} />
-              {item.pass_count > 1 ? (
-                <Text style={styles.passBadgeText}>{item.pass_count}</Text>
-              ) : null}
-            </View>
-          ) : null}
-          {isSelected ? (
-            <View style={styles.selectBadge}>
-              <MaterialCommunityIcons name="check-circle" size={20} color={colors.edit} />
-            </View>
-          ) : null}
-        </Pressable>
-      );
-    },
-    [selected, toggle],
+    ({ item }: { item: ShareQueueRow }) => (
+      <QueueGridCell
+        id={item.photo_id}
+        uri={item.uri}
+        selected={selected.has(item.photo_id)}
+        accent={theme.accent}
+        onPress={() => toggle(item.photo_id)}
+        onLongPress={() => setViewerId(item.photo_id)}
+      >
+        {item.pass_count > 0 ? (
+          <View style={styles.passBadge}>
+            <MaterialCommunityIcons name="check" size={12} color={colors.text} />
+            {item.pass_count > 1 ? (
+              <Text style={styles.passBadgeText}>{item.pass_count}</Text>
+            ) : null}
+          </View>
+        ) : null}
+      </QueueGridCell>
+    ),
+    [selected, theme.accent, toggle],
   );
-
-  const viewerIndex =
-    viewerId !== null && rows ? rows.findIndex((r) => r.photo_id === viewerId) : -1;
 
   const count = rows?.length ?? 0;
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, { paddingTop: insets.top + 12 }]}>
+      <Text style={styles.heading}>Share queue</Text>
       <Text style={styles.subtitle}>
         {rows === null
           ? 'Loading…'
@@ -225,27 +218,17 @@ export function ShareQueueScreen(_props: Props) {
             ? 'Queue photos with Share during review, then send them in passes.'
             : selectionMode
               ? `${selected.size} selected · ✓ marks photos already shared this cycle`
-              : `${count} photo${count === 1 ? '' : 's'} · share overlapping sets to different people`}
+              : `${count} queued · share overlapping sets to different people`}
       </Text>
       {count > 0 ? (
         <View style={styles.chips}>
-          <Pressable
-            style={styles.chip}
+          <Chip
+            label="Select all"
             onPress={() => setSelected(new Set((rows ?? []).map((r) => r.photo_id)))}
-          >
-            <Text style={styles.chipText}>Select all</Text>
-          </Pressable>
-          <Pressable style={styles.chip} onPress={() => setSelected(new Set())}>
-            <Text style={styles.chipText}>None</Text>
-          </Pressable>
-          <Pressable style={styles.chip} onPress={selectUnshared}>
-            <Text style={styles.chipText}>Unshared</Text>
-          </Pressable>
-          {selectionMode ? (
-            <Pressable style={styles.chip} onPress={() => void removeSelected()}>
-              <Text style={styles.chipText}>Remove</Text>
-            </Pressable>
-          ) : null}
+          />
+          <Chip label="None" onPress={() => setSelected(new Set())} />
+          <Chip label="Unshared" onPress={selectUnshared} />
+          {selectionMode ? <Chip label="Remove" onPress={() => void removeSelected()} /> : null}
         </View>
       ) : null}
       <FlatList
@@ -253,19 +236,18 @@ export function ShareQueueScreen(_props: Props) {
         numColumns={4}
         keyExtractor={(r) => r.photo_id}
         renderItem={renderItem}
-        contentContainerStyle={{ paddingBottom: insets.bottom + 140, gap: 4 }}
+        contentContainerStyle={{ paddingBottom: 140, gap: 4 }}
         columnWrapperStyle={{ gap: 4 }}
       />
-      {viewerIndex >= 0 && rows ? (
-        <PhotoViewer
-          items={rows.map((r) => ({ id: r.photo_id, uri: r.uri, takenAt: r.taken_at }))}
-          initialIndex={viewerIndex}
-          onClose={() => setViewerId(null)}
-          onChanged={() => void reload().catch(() => {})}
-        />
-      ) : null}
+      <QueueViewer
+        rows={rows}
+        viewerId={viewerId}
+        toItem={(r) => ({ id: r.photo_id, uri: r.uri, takenAt: r.taken_at })}
+        onClose={() => setViewerId(null)}
+        onChanged={() => void reload().catch(() => {})}
+      />
       {count > 0 ? (
-        <View style={[styles.actions, { paddingBottom: insets.bottom + 12 }]}>
+        <View style={styles.actions}>
           <Pressable
             style={[styles.shareButton, busy && styles.disabled]}
             disabled={busy}
@@ -288,15 +270,13 @@ export function ShareQueueScreen(_props: Props) {
         onRequestClose={() => setLabelBatchId(null)}
       >
         <View style={styles.labelBackdrop}>
-          <View style={styles.labelSheet}>
+          <View style={[styles.labelSheet, { paddingBottom: insets.bottom + 16 }]}>
             <Text style={styles.labelTitle}>Label this share? (optional)</Text>
             <Text style={styles.labelHint}>A note for History about who this pass went to.</Text>
             {labelChips.length > 0 ? (
               <View style={styles.chips}>
                 {labelChips.map((chip) => (
-                  <Pressable key={chip} style={styles.chip} onPress={() => void saveLabel(chip)}>
-                    <Text style={styles.chipText}>{chip}</Text>
-                  </Pressable>
+                  <Chip key={chip} label={chip} onPress={() => void saveLabel(chip)} />
                 ))}
               </View>
             ) : null}
@@ -309,15 +289,8 @@ export function ShareQueueScreen(_props: Props) {
               onSubmitEditing={() => void saveLabel(labelText)}
             />
             <View style={styles.labelActions}>
-              <Pressable style={styles.chip} onPress={() => setLabelBatchId(null)}>
-                <Text style={styles.chipText}>Skip</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.chip, styles.chipPrimary]}
-                onPress={() => void saveLabel(labelText)}
-              >
-                <Text style={styles.chipText}>Save</Text>
-              </Pressable>
+              <Chip label="Skip" onPress={() => setLabelBatchId(null)} />
+              <Chip label="Save" onPress={() => void saveLabel(labelText)} />
             </View>
           </View>
         </View>
@@ -327,22 +300,10 @@ export function ShareQueueScreen(_props: Props) {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 12, paddingTop: 12 },
+  heading: { color: colors.text, fontSize: 24, fontWeight: '800', marginBottom: 2 },
+  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 12 },
   subtitle: { color: colors.textDim, fontSize: 14, marginBottom: 10 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
-  chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 16,
-    backgroundColor: colors.surfaceRaised,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  chipPrimary: { backgroundColor: colors.editDim, borderColor: colors.edit },
-  chipText: { color: colors.text, fontSize: 13, fontWeight: '600' },
-  cell: { flex: 1 / 4, aspectRatio: 1 },
-  thumb: { flex: 1, borderRadius: 8, backgroundColor: colors.surfaceRaised },
-  thumbSelected: { opacity: 0.55 },
   passBadge: {
     position: 'absolute',
     top: 4,
@@ -357,20 +318,20 @@ const styles = StyleSheet.create({
     borderColor: colors.keep,
   },
   passBadgeText: { color: colors.text, fontSize: 10, fontWeight: '700' },
-  selectBadge: { position: 'absolute', bottom: 4, right: 4 },
   actions: {
     position: 'absolute',
     left: 12,
     right: 12,
-    bottom: 0,
+    bottom: 12,
     gap: 8,
   },
   shareButton: {
     minHeight: 52,
     borderRadius: touch.radius,
-    backgroundColor: colors.editDim,
+    // The share action's own hue, matching the deck's Share control.
+    backgroundColor: colors.shareDim,
     borderWidth: 1,
-    borderColor: colors.edit,
+    borderColor: colors.share,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',

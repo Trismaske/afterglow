@@ -1,10 +1,13 @@
 /**
  * Re-decide sheet (m0.5 reversible decisions): tap a DECIDED photo
- * anywhere it is visible in-session (group strips, completed-group
- * browse, cull list) and change its verdict — keep / to edit / cull —
- * until the final cull confirmation. Wraps SessionContext.redecide
- * (core unstageCull/cullKept + the app-side needs-edit flag); the modal
- * chrome follows the m0.4 StateEditorSheet.
+ * anywhere it is visible — group strips, completed-group browse, the
+ * cull list — and change your mind, until the final cull confirmation.
+ * Wraps ReviewContext.redecideStaged; the chrome follows StateEditorSheet.
+ *
+ * The three chips are a PRESENTATION of two layers (docs/STATE_MODEL.md),
+ * not three verdicts: "To edit" means kept with an edit queued, which is
+ * why picking it and picking "Keep" both land on the verdict `kept` and
+ * differ only in what happens to the edit.
  */
 import React, { useCallback, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';

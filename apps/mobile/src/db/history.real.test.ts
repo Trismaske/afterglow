@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { migrateDatabase } from './database';
 import { getHistoryPage, type HistoryCursor } from './store';
+import { encodeOrganizeTarget } from './actions';
 import { openTestDb, type TestDb } from './testDb';
 
 const open: TestDb[] = [];
@@ -27,36 +28,57 @@ async function fresh(): Promise<TestDb> {
   return d;
 }
 
-function insert(
+function insertPhoto(
   d: TestDb,
   id: string,
   state: string,
   activityAt: number,
-  extras: Partial<Record<string, unknown>> = {},
+  extras: { is_present?: number } = {},
 ): void {
   d.raw
     .prepare(
-      `INSERT INTO photos (asset_id, uri, taken_at, day, state, activity_at, is_present, favourite_state, needs_edit)
-       VALUES (?, 'content://x', ?, '2026-07-20', ?, ?, ?, ?, ?)`,
+      `INSERT INTO photos (asset_id, uri, taken_at, day, state, activity_at, is_present)
+       VALUES (?, 'content://x', ?, '2026-07-20', ?, ?, ?)`,
+    )
+    .run(id, AT, state, activityAt, extras.is_present ?? 1);
+}
+
+/** Attach a pending action (v18) — `resolvedAt` set means it happened. */
+function action(
+  d: TestDb,
+  photoId: string,
+  kind: 'edit' | 'favourite' | 'organize' | 'share',
+  state: 'queued' | 'applied' | 'error',
+  options: {
+    target?: string | null;
+    /** What actually landed, when it differs from what is queued now. */
+    appliedTarget?: string | null;
+    resolvedAt?: number | null;
+  } = {},
+): void {
+  d.raw
+    .prepare(
+      `INSERT INTO photo_actions (photo_id, kind, state, target, applied_target, queued_at, resolved_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
-      id,
-      AT,
+      photoId,
+      kind,
       state,
-      activityAt,
-      (extras.is_present as number) ?? 1,
-      (extras.favourite_state as string) ?? 'none',
-      (extras.needs_edit as number) ?? 0,
+      options.target ?? null,
+      options.appliedTarget ?? (options.resolvedAt == null ? null : (options.target ?? null)),
+      AT,
+      options.resolvedAt ?? null,
     );
 }
 
 describe('getHistoryPage', () => {
   it('orders by activity_at desc, drops absent photos, excludes unreviewed', async () => {
     const d = await fresh();
-    insert(d, 'newest', 'done', AT + 300);
-    insert(d, 'older', 'culled', AT + 100);
-    insert(d, 'gone', 'done', AT + 200, { is_present: 0 });
-    insert(d, 'fresh', 'unreviewed', AT + 400);
+    insertPhoto(d, 'newest', 'kept', AT + 300);
+    insertPhoto(d, 'older', 'culled', AT + 100);
+    insertPhoto(d, 'gone', 'kept', AT + 200, { is_present: 0 });
+    insertPhoto(d, 'fresh', 'unreviewed', AT + 400);
     const page = await getHistoryPage(asExpo(d), 'all', null);
     expect(
       page.rows
@@ -67,7 +89,7 @@ describe('getHistoryPage', () => {
 
   it('keyset-paginates without skipping or duplicating', async () => {
     const d = await fresh();
-    for (let i = 0; i < 95; i++) insert(d, `p${String(i).padStart(3, '0')}`, 'done', AT + i);
+    for (let i = 0; i < 95; i++) insertPhoto(d, `p${String(i).padStart(3, '0')}`, 'kept', AT + i);
     const first = await getHistoryPage(asExpo(d), 'all', null);
     expect(first.rows).toHaveLength(40);
     expect(first.next).not.toBeNull();
@@ -83,14 +105,14 @@ describe('getHistoryPage', () => {
 
   it('All includes unreviewed photos with applied moves or favourite intents', async () => {
     const d = await fresh();
-    insert(d, 'organized-only', 'unreviewed', AT + 1);
-    d.raw
-      .prepare(
-        "UPDATE photos SET organize_state = 'applied', organize_applied_at = ? WHERE asset_id = 'organized-only'",
-      )
-      .run(AT + 1);
-    insert(d, 'fav-only', 'unreviewed', AT + 2, { favourite_state: 'applied' });
-    insert(d, 'merely-drawn', 'unreviewed', AT + 3);
+    insertPhoto(d, 'organized-only', 'unreviewed', AT + 1);
+    action(d, 'organized-only', 'organize', 'applied', {
+      target: encodeOrganizeTarget('external_primary', 'Pictures/A/'),
+      resolvedAt: AT + 1,
+    });
+    insertPhoto(d, 'fav-only', 'unreviewed', AT + 2);
+    action(d, 'fav-only', 'favourite', 'applied', { target: '1', resolvedAt: AT + 2 });
+    insertPhoto(d, 'merely-drawn', 'unreviewed', AT + 3);
     const all = await getHistoryPage(asExpo(d), 'all', null);
     expect(all.rows.map((r) => (r.kind === 'photo' ? r.asset_id : '')).sort()).toEqual([
       'fav-only',
@@ -98,28 +120,63 @@ describe('getHistoryPage', () => {
     ]);
   });
 
+  it('All is the union of the filters, edits included', async () => {
+    // v18 lets an UNREVIEWED photo carry a queued edit, so All has to
+    // list it — the To-edit filter beside it does, and a feed where a
+    // photo appears under a filter but not under All contradicts itself.
+    const d = await fresh();
+    insertPhoto(d, 'edit-only', 'unreviewed', AT + 1);
+    action(d, 'edit-only', 'edit', 'queued');
+    insertPhoto(d, 'merely-drawn', 'unreviewed', AT + 2);
+    const toEdit = await getHistoryPage(asExpo(d), 'to_edit', null);
+    expect(toEdit.rows.map((r) => (r.kind === 'photo' ? r.asset_id : ''))).toEqual(['edit-only']);
+    const all = await getHistoryPage(asExpo(d), 'all', null);
+    expect(all.rows.map((r) => (r.kind === 'photo' ? r.asset_id : ''))).toEqual(['edit-only']);
+  });
+
   it('a re-queued move keeps the photo organized in History (applied marker wins)', async () => {
     const d = await fresh();
-    insert(d, 'requeued', 'unreviewed', AT + 1);
+    insertPhoto(d, 'requeued', 'unreviewed', AT + 1);
     // Moved once (applied marker retained), then queued again — History
     // must keep showing it under Organized and All, even if the retry
     // errors forever.
-    d.raw
-      .prepare(
-        "UPDATE photos SET organize_state = 'queued', organize_applied_at = ? WHERE asset_id = 'requeued'",
-      )
-      .run(AT + 1);
+    action(d, 'requeued', 'organize', 'queued', {
+      target: encodeOrganizeTarget('external_primary', 'Pictures/B/'),
+      appliedTarget: encodeOrganizeTarget('external_primary', 'Pictures/A/'),
+      resolvedAt: AT + 1,
+    });
     const organized = await getHistoryPage(asExpo(d), 'organized', null);
     expect(organized.rows.map((r) => (r.kind === 'photo' ? r.asset_id : ''))).toEqual(['requeued']);
     const all = await getHistoryPage(asExpo(d), 'all', null);
     expect(all.rows.map((r) => (r.kind === 'photo' ? r.asset_id : ''))).toEqual(['requeued']);
   });
 
+  it('Kept is the VERDICT, so a queued edit does not remove a photo from it', async () => {
+    // Before v18 "kept" and "to edit" were mutually exclusive states, and
+    // this filter kept that model alive by excluding edit-pending rows.
+    // The photo now has both layers, so it belongs under BOTH filters.
+    const d = await fresh();
+    insertPhoto(d, 'kept-and-queued', 'kept', AT + 1);
+    action(d, 'kept-and-queued', 'edit', 'queued');
+    insertPhoto(d, 'plain-keeper', 'kept', AT + 2);
+    const kept = await getHistoryPage(asExpo(d), 'kept', null);
+    expect(kept.rows.map((r) => (r.kind === 'photo' ? r.asset_id : '')).sort()).toEqual([
+      'kept-and-queued',
+      'plain-keeper',
+    ]);
+    const toEdit = await getHistoryPage(asExpo(d), 'to_edit', null);
+    expect(toEdit.rows.map((r) => (r.kind === 'photo' ? r.asset_id : ''))).toEqual([
+      'kept-and-queued',
+    ]);
+  });
+
   it('filters map to the pinned formulas (favourite = queued + applied)', async () => {
     const d = await fresh();
-    insert(d, 'fav-q', 'done', AT + 1, { favourite_state: 'queued_apply' });
-    insert(d, 'fav-a', 'done', AT + 2, { favourite_state: 'applied' });
-    insert(d, 'plain', 'done', AT + 3);
+    insertPhoto(d, 'fav-q', 'kept', AT + 1);
+    action(d, 'fav-q', 'favourite', 'queued', { target: '1' });
+    insertPhoto(d, 'fav-a', 'kept', AT + 2);
+    action(d, 'fav-a', 'favourite', 'applied', { target: '1', resolvedAt: AT + 2 });
+    insertPhoto(d, 'plain', 'kept', AT + 3);
     const favourites = await getHistoryPage(asExpo(d), 'favourite', null);
     expect(favourites.rows.map((r) => (r.kind === 'photo' ? r.asset_id : '')).sort()).toEqual([
       'fav-a',
@@ -129,7 +186,7 @@ describe('getHistoryPage', () => {
 
   it('paginates share events past the first page (Shared filter)', async () => {
     const d = await fresh();
-    insert(d, 'p1', 'done', AT);
+    insertPhoto(d, 'p1', 'kept', AT);
     d.raw.prepare('INSERT INTO share_cycles (started_at) VALUES (?)').run(AT);
     const stmt = d.raw.prepare(
       "INSERT INTO share_batches (cycle_id, attempted_at, opened_at, label, state) VALUES (1, ?, ?, ?, 'sheet_opened')",
@@ -155,7 +212,8 @@ describe('getHistoryPage', () => {
   it('merges both streams by timestamp on every page (All filter)', async () => {
     const d = await fresh();
     // 50 photos at even timestamps, 50 shares interleaved at odd ones.
-    for (let i = 0; i < 50; i++) insert(d, `p${String(i).padStart(2, '0')}`, 'done', AT + i * 2);
+    for (let i = 0; i < 50; i++)
+      insertPhoto(d, `p${String(i).padStart(2, '0')}`, 'kept', AT + i * 2);
     d.raw.prepare('INSERT INTO share_cycles (started_at) VALUES (?)').run(AT);
     const stmt = d.raw.prepare(
       "INSERT INTO share_batches (cycle_id, attempted_at, opened_at, label, state) VALUES (1, ?, ?, ?, 'sheet_opened')",
@@ -179,7 +237,7 @@ describe('getHistoryPage', () => {
 
   it('interleaves sheet_opened share events with labels; errors never appear', async () => {
     const d = await fresh();
-    insert(d, 'p1', 'done', AT + 10);
+    insertPhoto(d, 'p1', 'kept', AT + 10);
     d.raw.prepare('INSERT INTO share_cycles (started_at) VALUES (?)').run(AT);
     d.raw
       .prepare(

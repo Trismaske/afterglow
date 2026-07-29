@@ -7,14 +7,12 @@
  * too — completed ones included — and reopen in the deck's
  * browse/re-decide mode.
  */
-import React, { useCallback, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { Image } from 'expo-image';
+import React, { useCallback, useState } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
-import { labelForDayKey, rangeOfDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { formatClock } from '../lib/format';
 import { remainingReviewable, type StateBreakdown } from '../lib/progress';
 import { listGroupsForDay, type ReviewGroupRow } from '../db/store';
@@ -22,17 +20,16 @@ import { resolveSources } from '../lib/sourceCatalog';
 import { ProgressView } from '../components/progress/ProgressView';
 import { useReview } from '../review/ReviewContext';
 import { DecisionBadge, type DecisionKind } from '../components/DecisionBadge';
+import { UnitCard } from '../components/UnitCard';
 import { BigButton } from '../components/BigButton';
-import { colors, touch } from '../theme';
+import { colors } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'DayProgress'>;
 
-const STRIP_THUMBS = 6;
-
 function decisionKindOf(member: ReviewGroupRow['members'][number]): DecisionKind | null {
   if (member.state === 'culled') return 'cull';
-  if (member.state === 'done' || member.state === 'to_edit')
-    return member.needs_edit === 1 ? 'edit' : 'keep';
+  // v18: one kept verdict; the pencil comes from the edit ACTION.
+  if (member.state === 'kept') return member.needs_edit === 1 ? 'edit' : 'keep';
   return null;
 }
 
@@ -40,16 +37,6 @@ export function DayProgressScreen({ route, navigation }: Props) {
   const { day } = route.params;
   const db = useSQLiteContext();
   const { version } = useReview();
-  // The Unknown-day pseudo-day has no calendar range: heading from the
-  // shared label, an open-ended ms range (the grid and totals read from
-  // the DB for it anyway).
-  const range = useMemo(
-    () =>
-      day === UNDATED_DAY_KEY
-        ? { startMs: 0, endMs: Number.POSITIVE_INFINITY, label: labelForDayKey(day) }
-        : rangeOfDayKey(day),
-    [day],
-  );
   const [groups, setGroups] = useState<ReviewGroupRow[] | null>(null);
 
   useFocusEffect(
@@ -92,7 +79,19 @@ export function DayProgressScreen({ route, navigation }: Props) {
             }
             color={colors.keep}
             disabled={remaining === 0}
-            onPress={() => navigation.navigate('Groups')}
+            // The label promises THIS day, so BOTH destinations are day
+            // scoped: the day's first pending group, else the day's own
+            // singles deck. The plain `Singles` route opens the GLOBAL
+            // newest-first feed, which for any day but the newest is a
+            // different day's photos entirely (m0.8.2).
+            onPress={() => {
+              const pendingGroup = (groups ?? []).find((g) =>
+                g.members.some((m) => m.state === 'unreviewed'),
+              );
+              if (pendingGroup)
+                navigation.navigate('Deck', { groupId: String(pendingGroup.groupId) });
+              else navigation.navigate('Singles', { day });
+            }}
           />
           {groups !== null && groups.length > 0 && (
             <>
@@ -100,47 +99,25 @@ export function DayProgressScreen({ route, navigation }: Props) {
               {groups.map((group) => {
                 const pending = group.members.filter((m) => m.state === 'unreviewed').length;
                 const first = group.members[0];
+                const decisionOf = (assetId: string) => {
+                  const member = group.members.find((m) => m.asset_id === assetId);
+                  return member ? decisionKindOf(member) : null;
+                };
                 return (
-                  <Pressable
+                  <UnitCard
                     key={group.groupId}
-                    style={styles.groupRow}
+                    title={`${group.members.length} shots${first ? ` · ${formatClock(first.taken_at)}` : ''}`}
+                    status={pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`}
+                    statusDone={pending === 0}
+                    members={group.members}
                     onPress={() => navigation.navigate('Deck', { groupId: String(group.groupId) })}
-                  >
-                    <View style={styles.groupHeader}>
-                      <Text style={styles.groupTitle}>
-                        {group.members.length} shots
-                        {first ? ` · ${formatClock(first.taken_at)}` : ''}
-                      </Text>
-                      <Text style={[styles.groupStatus, pending === 0 && styles.groupStatusDone]}>
-                        {pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`}
-                      </Text>
-                    </View>
-                    <View style={styles.strip}>
-                      {group.members.slice(0, STRIP_THUMBS).map((member) => {
-                        const decision = decisionKindOf(member);
-                        return (
-                          <View key={member.asset_id} style={styles.thumbWrap} pointerEvents="none">
-                            <Image
-                              source={{ uri: member.uri }}
-                              style={styles.thumb}
-                              contentFit="cover"
-                              recyclingKey={member.asset_id}
-                            />
-                            {decision && (
-                              <DecisionBadge kind={decision} style={styles.decisionBadge} />
-                            )}
-                          </View>
-                        );
-                      })}
-                      {group.members.length > STRIP_THUMBS && (
-                        <View style={[styles.thumb, styles.thumbMore]}>
-                          <Text style={styles.thumbMoreText}>
-                            +{group.members.length - STRIP_THUMBS}
-                          </Text>
-                        </View>
-                      )}
-                    </View>
-                  </Pressable>
+                    renderOverlay={(assetId) => {
+                      const decision = decisionOf(assetId);
+                      return decision ? (
+                        <DecisionBadge kind={decision} style={styles.decisionBadge} />
+                      ) : null;
+                    }}
+                  />
                 );
               })}
             </>
@@ -148,18 +125,10 @@ export function DayProgressScreen({ route, navigation }: Props) {
         </View>
       );
     },
-    [groups, navigation],
+    [day, groups, navigation],
   );
 
-  return (
-    <ProgressView
-      heading={range.label}
-      scope={{ day }}
-      startMs={range.startMs}
-      endMs={range.endMs}
-      renderCta={renderCta}
-    />
-  );
+  return <ProgressView target={{ kind: 'day', day }} renderCta={renderCta} />;
 }
 
 const styles = StyleSheet.create({
@@ -171,22 +140,5 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     marginTop: 4,
   },
-  groupRow: {
-    backgroundColor: colors.surface,
-    borderRadius: touch.radius,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: 12,
-    gap: 10,
-  },
-  groupHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  groupTitle: { color: colors.text, fontSize: 15, fontWeight: '600', flexShrink: 1 },
-  groupStatus: { color: colors.textDim, fontSize: 13 },
-  groupStatusDone: { color: colors.keep },
-  strip: { flexDirection: 'row', gap: 6 },
-  thumbWrap: { flex: 1 },
-  thumb: { width: '100%', aspectRatio: 1, borderRadius: 8, backgroundColor: colors.surfaceRaised },
-  thumbMore: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  thumbMoreText: { color: colors.textDim, fontWeight: '700' },
   decisionBadge: { position: 'absolute', top: 2, right: 2 },
 });

@@ -19,17 +19,17 @@ import { withUserWritePriority } from '../../lib/writePriority';
 import { dayKey, labelForDayKey } from '../../lib/dates';
 import { formatClockSeconds } from '../../lib/format';
 import { colors, touch, useTheme } from '../../theme';
-import { stateMetaFor } from './stateMeta';
+import { VERDICT_META } from './stateMeta';
 import type { GridPhoto } from './PhotoStateGrid';
 
 const ACTION_LABEL: Record<EditorAction, string> = {
-  mark_done: 'Mark done',
+  complete_edit: 'Mark the edit done',
   queue_edit: 'Send to the edit queue',
   unstage_cull: 'Un-cull — back to keepers',
 };
 
 const ACTION_ICON = {
-  mark_done: 'check',
+  complete_edit: 'check',
   queue_edit: 'pencil',
   unstage_cull: 'undo',
 } as const;
@@ -38,8 +38,6 @@ function readOnlyHint(photo: GridPhoto): string {
   switch (photo.dbState) {
     case 'trashed':
       return 'Moved to the system trash — your gallery controls how long it remains recoverable.';
-    case 'confirmed':
-      return 'Deletion in progress.';
     default:
       return 'Not reviewed yet — decide it in review.';
   }
@@ -70,7 +68,7 @@ export function StateEditorSheet({
         // stale sheet acting on an already-changed row is a no-op. User
         // write priority: the scan yields instead of queueing this.
         await withUserWritePriority(async () => {
-          if (action === 'mark_done') {
+          if (action === 'complete_edit') {
             await markEditDone(db, photo.id);
           } else if (action === 'queue_edit') {
             await markDoneToEdit(db, photo.id, Date.now());
@@ -94,8 +92,10 @@ export function StateEditorSheet({
   );
 
   if (!photo) return null;
-  const meta = stateMetaFor(accent)[photo.effective];
-  const actions = editorActions(photo.dbState);
+  const meta = VERDICT_META[photo.effective];
+  // The edit ACTION and the verdict are separate layers now, so the sheet
+  // needs both to know what it may offer (docs/STATE_MODEL.md).
+  const actions = editorActions(photo.dbState, photo.editPending === true);
 
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
@@ -117,7 +117,6 @@ export function StateEditorSheet({
               <Text style={styles.when}>
                 {labelForDayKey(dayKey(photo.takenAt))} · {formatClockSeconds(photo.takenAt)}
               </Text>
-              <Text style={styles.hint}>{meta.hint}</Text>
             </View>
           </View>
 

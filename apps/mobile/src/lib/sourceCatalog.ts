@@ -3,16 +3,22 @@
  * of sources.ts. Talks to MediaStore (album/bucket listing, one-asset
  * directory probes) and SQLite (the persisted selection).
  *
- * Android buckets are per-directory and carry no path, only a display
- * name ("Camera") — so each bucket's directory is probed with one
- * `first: 1` asset query and derived from that asset's raw `file://`
- * uri. The probe also yields the bucket's photo count (totalCount) for
- * free, which the picker displays. ~1 cheap query per bucket; a device
- * typically has a few dozen buckets, and results are cached for 60 s
+ * The catalog (API 30+) comes from ONE native cursor walk
+ * (media-store-actions listImageAlbums: bucket → relative path + count).
+ * Below API 30 the expo fallback probes each bucket with a `first: 1`
+ * asset query and derives the directory from the asset's file uri.
+ * Results are cached 10 min with a single-flighted cold build
  * (invalidated when the picker saves).
  */
 import * as MediaLibrary from 'expo-media-library/legacy';
 import type { SQLiteDatabase } from 'expo-sqlite';
+import {
+  listImageAlbums,
+  mediaStoreActionsAvailable,
+  type VolumeAlbum,
+} from '../../modules/media-store-actions';
+import { invalidatePhotoCounts } from './media';
+import { perfLog } from './perfLog';
 import {
   DEFAULT_SOURCE_DIR,
   isUnderAnyRoot,
@@ -36,46 +42,193 @@ export interface SourceDir {
   photoCount: number;
 }
 
-const CATALOG_TTL_MS = 60_000;
+/** 10 min (m0.8.1, was 60 s): the catalog is consulted by EVERY screen
+ * loader via resolveSources, and a cold rebuild costs one MediaStore
+ * probe per bucket — the recurring "screens load slowly" cost on older
+ * devices. The picker force-refreshes and saves invalidate explicitly;
+ * a brand-new album appearing in the DEFAULT-source resolution within
+ * 10 min is acceptable staleness. */
+const CATALOG_TTL_MS = 600_000;
 
 let catalogCache: { at: number; dirs: SourceDir[] } | null = null;
+/** In-flight cold build, shared by concurrent callers (m0.8.1): the
+ * startup refresh, the Home loaders, and the scan all resolve sources
+ * within the same second — without single-flight each ran its OWN full
+ * catalog build (3× the cost, device-observed). */
+let catalogBuild: Promise<SourceDir[]> | null = null;
+
+/** Short-lived memo + single-flight for the RESOLVED selection (m0.8.1):
+ * a single Home focus resolved sources twice, DayProgress twice, and cold
+ * start four times — each re-reading the setting and re-walking
+ * matchAlbumIds over the whole bucket catalog (~900 on the S10e). The
+ * window only needs to span one burst of loaders; picker saves invalidate
+ * explicitly, and the settings flows use refreshScoped with explicit
+ * roots, so a stale read can never leave an old scope actionable. */
+const RESOLVED_TTL_MS = 5_000;
+let resolvedCache: { at: number; value: ResolvedSources } | null = null;
+let resolvedInFlight: Promise<ResolvedSources> | null = null;
+
+/**
+ * Cache generation. Nulling the caches is not enough on its own: a build
+ * or resolution already IN FLIGHT still lands afterwards, and its
+ * `.then` would happily repopulate the cache with the selection the user
+ * has just replaced — so saving a new source could be silently undone by
+ * a request that started before the save. Every writer captures this
+ * counter first and only commits if it is still current.
+ */
+let cacheGeneration = 0;
 
 /** Drop the cached catalog (picker saves, pull-to-refresh style paths). */
 export function invalidateSourceCatalog(): void {
+  cacheGeneration += 1;
   catalogCache = null;
+  albumsCache = null;
+  albumsInFlight = null;
+  resolvedCache = null;
+  resolvedInFlight = null;
+  invalidatePhotoCounts();
 }
 
 /**
  * Every photo directory on the device, derived from MediaStore buckets,
  * sorted by path. Buckets whose directory can't be derived (no photo
  * asset, non-file uri) are skipped — they contribute no photos anyway.
+ *
+ * Fast path (API 30+): ONE native cursor walk (`listImageAlbums`)
+ * returns every bucket's relative path + count — the expo fallback
+ * costs one MediaStore probe PER bucket (an S10e with 895 buckets spent
+ * 35 s here; the native walk is a few hundred ms).
  */
 export async function listSourceDirs(force = false): Promise<SourceDir[]> {
   if (!force && catalogCache && Date.now() - catalogCache.at < CATALOG_TTL_MS) {
     return catalogCache.dirs;
   }
+  if (!force && catalogBuild) return catalogBuild;
+  const build = buildCatalog();
+  catalogBuild = build;
+  // Every sharer sees the SAME rejection (fail-closed: callers keep
+  // their last-known scope); the side chain only prevents an
+  // unhandled-rejection warning and clears the slot for a fresh retry.
+  void build
+    .catch(() => {})
+    .finally(() => {
+      if (catalogBuild === build) catalogBuild = null;
+    });
+  return build;
+}
+
+/** The raw native bucket list, cached + single-flighted (m0.8.1): the
+ * album pickers each ran their OWN full cursor walk per open while the
+ * catalog cached the identical call. */
+const ALBUMS_TTL_MS = 60_000;
+let albumsCache: { at: number; albums: VolumeAlbum[] } | null = null;
+let albumsInFlight: Promise<VolumeAlbum[]> | null = null;
+
+export async function listImageAlbumsCached(force = false): Promise<VolumeAlbum[]> {
+  if (force) {
+    albumsCache = null;
+    albumsInFlight = null;
+  }
+  if (albumsCache && Date.now() - albumsCache.at < ALBUMS_TTL_MS) return albumsCache.albums;
+  if (albumsInFlight) return albumsInFlight;
+  const pending = listImageAlbums();
+  const generation = cacheGeneration;
+  albumsInFlight = pending;
+  void pending
+    .then((albums) => {
+      if (generation !== cacheGeneration) return; // invalidated mid-flight
+      albumsCache = { at: Date.now(), albums };
+    })
+    .catch(() => {})
+    .finally(() => {
+      if (albumsInFlight === pending) albumsInFlight = null;
+    });
+  return pending;
+}
+
+async function buildCatalog(): Promise<SourceDir[]> {
+  const started = Date.now();
+  // Captured BEFORE any await: a picker save landing mid-build must not
+  // be overwritten by this build's result (see cacheGeneration).
+  const generation = cacheGeneration;
+  const commit = (dirs: SourceDir[]): SourceDir[] => {
+    if (generation === cacheGeneration) catalogCache = { at: Date.now(), dirs };
+    return dirs;
+  };
+  if (mediaStoreActionsAvailable()) {
+    const albums = await listImageAlbumsCached();
+    const byDir = new Map<string, SourceDir>();
+    for (const album of albums) {
+      const dir = album.relativePath.replace(/\/+$/, '');
+      if (dir === '' || album.photoCount === 0) continue;
+      const existing = byDir.get(dir.toLowerCase());
+      if (existing) {
+        existing.albumIds.push(album.bucketId);
+        existing.photoCount += album.photoCount;
+      } else {
+        byDir.set(dir.toLowerCase(), {
+          dir,
+          albumIds: [album.bucketId],
+          photoCount: album.photoCount,
+        });
+      }
+    }
+    const dirs = commit([...byDir.values()].sort((a, b) => a.dir.localeCompare(b.dir)));
+    perfLog(() => `source catalog (native): ${albums.length} buckets in ${Date.now() - started}ms`);
+    return dirs;
+  }
   const albums = await MediaLibrary.getAlbumsAsync();
   const byDir = new Map<string, SourceDir>();
   let failedProbes = 0;
-  for (const album of albums) {
-    try {
-      const page = await MediaLibrary.getAssetsAsync({
-        first: 1,
-        album: album.id,
-        mediaType: MediaLibrary.MediaType.photo,
-      });
-      const asset = page.assets[0];
-      if (!asset || page.totalCount === 0) continue;
-      const dir = sourceDirOfUri(asset.uri);
+  // Probe buckets CONCURRENTLY (m0.8.1, was sequential): each probe is
+  // one first:1 MediaStore query; dozens of buckets in series took
+  // multiple seconds per cold rebuild on older devices. Results are
+  // folded in the ORIGINAL album order so dir aggregation stays
+  // deterministic.
+  const PROBE_CONCURRENCY = 6;
+  const probes: ({ albumId: string; uri: string; totalCount: number } | null | 'failed')[] =
+    new Array(albums.length).fill(null);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(PROBE_CONCURRENCY, albums.length) }, async () => {
+      for (;;) {
+        const index = next;
+        next += 1;
+        if (index >= albums.length) return;
+        try {
+          const page = await MediaLibrary.getAssetsAsync({
+            first: 1,
+            album: albums[index].id,
+            mediaType: MediaLibrary.MediaType.photo,
+          });
+          const asset = page.assets[0];
+          probes[index] =
+            asset && page.totalCount > 0
+              ? { albumId: albums[index].id, uri: asset.uri, totalCount: page.totalCount }
+              : null;
+        } catch {
+          probes[index] = 'failed';
+        }
+      }
+    }),
+  );
+  for (const probe of probes) {
+    if (probe === null) continue;
+    if (probe !== 'failed') {
+      const dir = sourceDirOfUri(probe.uri);
       if (dir === null) continue;
       const existing = byDir.get(dir.toLowerCase());
       if (existing) {
-        existing.albumIds.push(album.id);
-        existing.photoCount += page.totalCount;
+        existing.albumIds.push(probe.albumId);
+        existing.photoCount += probe.totalCount;
       } else {
-        byDir.set(dir.toLowerCase(), { dir, albumIds: [album.id], photoCount: page.totalCount });
+        byDir.set(dir.toLowerCase(), {
+          dir,
+          albumIds: [probe.albumId],
+          photoCount: probe.totalCount,
+        });
       }
-    } catch {
+    } else {
       // One unreadable bucket must not sink the whole catalog.
       failedProbes += 1;
     }
@@ -87,8 +240,10 @@ export async function listSourceDirs(force = false): Promise<SourceDir[]> {
     // so callers keep their last-known scope (never cached).
     throw new Error(`source catalog incomplete — ${failedProbes} album probes failed`);
   }
-  const dirs = [...byDir.values()].sort((a, b) => a.dir.localeCompare(b.dir));
-  catalogCache = { at: Date.now(), dirs };
+  const dirs = commit([...byDir.values()].sort((a, b) => a.dir.localeCompare(b.dir)));
+  // Field diagnostic (once per cold rebuild): this is the shared cost of
+  // every screen's source resolution — regressions show up here first.
+  perfLog(() => `source catalog: ${albums.length} buckets probed in ${Date.now() - started}ms`);
   return dirs;
 }
 
@@ -112,6 +267,24 @@ export interface ResolvedSources {
  * until the user saves an explicit choice in the picker.
  */
 export async function resolveSources(db: SQLiteDatabase): Promise<ResolvedSources> {
+  if (resolvedCache && Date.now() - resolvedCache.at < RESOLVED_TTL_MS) return resolvedCache.value;
+  if (resolvedInFlight) return resolvedInFlight;
+  const pending = resolveSourcesUncached(db);
+  const generation = cacheGeneration;
+  resolvedInFlight = pending;
+  void pending
+    .then((value) => {
+      if (generation !== cacheGeneration) return; // invalidated mid-flight
+      resolvedCache = { at: Date.now(), value };
+    })
+    .catch(() => {})
+    .finally(() => {
+      if (resolvedInFlight === pending) resolvedInFlight = null;
+    });
+  return pending;
+}
+
+async function resolveSourcesUncached(db: SQLiteDatabase): Promise<ResolvedSources> {
   const stored = parsePhotoSourceSetting(await getSetting(db, PHOTO_SOURCES_KEY));
   if (stored?.mode === 'all') {
     return {

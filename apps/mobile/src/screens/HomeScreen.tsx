@@ -1,24 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  Alert,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
-import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import * as MediaLibrary from 'expo-media-library';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainTabScreenProps } from '../navigation';
-import { countShareQueue } from '../db/shareStore';
-import { countOrganizeQueue } from '../db/organizeStore';
 import {
   dayKey,
   labelForDayKey,
@@ -27,13 +15,24 @@ import {
   UNDATED_DAY_KEY,
 } from '../lib/dates';
 import { DAILY_GOAL_KEY, goalProgress, goalStreaks, parseDailyGoal } from '../lib/dailyGoal';
-import { countPhotosByDayInRange, countPhotosInRange } from '../lib/media';
+import { finishLine, type FinishLine } from '../lib/forecast';
+import { forecastHeadline } from '../lib/forecastCopy';
+import {
+  COVERAGE_GOAL_KEY,
+  COVERAGE_GOAL_LABELS,
+  coverageStatus,
+  coverageWindowDays,
+  parseCoverageGoal,
+  type CoverageGoal,
+  type CoverageStatus,
+} from '../lib/coverageGoal';
+import { countPhotosInRange } from '../lib/media';
 import { resolveSources } from '../lib/sourceCatalog';
 import {
-  countFavouriteQueue,
   countStagedCulls,
+  getCoverageByDay,
+  getDecisionTotals,
   getStagedCullBytes,
-  countToEdit,
   getCorpusStats,
   getDaySummariesForDays,
   getReviewedCountsByDay,
@@ -47,8 +46,15 @@ import { runTrashAttempt } from '../lib/trashFlow';
 import { formatBytes } from '../lib/format';
 import { fileSize, fileSizeOrNull } from '../lib/hash';
 import { runEditDetection, type DetectedCopy } from '../lib/detect';
-import { getScanStatus, startContinuousScan, subscribeScanStatus } from '../scan/scanRunner';
+import {
+  getScanStatus,
+  startContinuousScan,
+  subscribeScanStatus,
+  type ScanStatus,
+} from '../scan/scanRunner';
+import { Ghost } from '../components/Ghost';
 import { GoalRing } from '../components/GoalRing';
+import { unitDestination } from '../lib/timeline';
 import { useReview } from '../review/ReviewContext';
 import { BigButton } from '../components/BigButton';
 import { StateProgressBar } from '../components/StateProgressBar';
@@ -68,10 +74,12 @@ interface DayRow {
   label: string;
   /** All photos taken that day (MediaStore + trashed rows). */
   total: number;
-  /** Every verdict: done + trashed + to-edit + staged (gate 5 audit). */
+  /** Carries a verdict: kept + trashed + staged (docs/STATE_MODEL.md). */
   reviewed: number;
-  /** done + trashed. */
-  done: number;
+  /** kept + trashed (both converged keepers). */
+  kept: number;
+  /** Photos with an edit QUEUED — a pending action, not a verdict, so it
+   * appears in the hint line and never as a bar segment. */
   toEdit: number;
   staged: number;
 }
@@ -89,11 +97,20 @@ export function HomeScreen({ navigation }: Props) {
     granularPermissions: ['photo'],
   });
 
-  const [editCount, setEditCount] = useState(0);
   const [scan, setScan] = useState(getScanStatus());
   const [goal, setGoal] = useState(50);
+  /** The goal/streak/corpus loader has committed once — before that the
+   * ring shows a placeholder, not a hardcoded "0 of 50" (F2). */
+  const [goalLoaded, setGoalLoaded] = useState(false);
   const [reviewedToday, setReviewedToday] = useState(0);
   const [streaks, setStreaks] = useState({ current: 0, longest: 0 });
+  const [coverage, setCoverage] = useState<CoverageGoal>('off');
+  const [coverageState, setCoverageStatus] = useState<CoverageStatus | null>(null);
+  /** m0.8.2: the finish line, on the Progress row. Every input is already
+   * on this screen's load path — pace from the streak counts, intake from
+   * the coverage rows, remaining from the corpus stats — so the headline
+   * costs no extra query. */
+  const [finish, setFinish] = useState<FinishLine | null>(null);
   const [corpus, setCorpus] = useState<{
     total: number;
     groupsFound: number;
@@ -104,9 +121,6 @@ export function HomeScreen({ navigation }: Props) {
    * scan-recorded sizes, plus transient per-file stats for rows the v14
    * scan has not sized yet. */
   const [reclaimableBytes, setReclaimableBytes] = useState(0);
-  const [shareCount, setShareCount] = useState(0);
-  const [organizeCount, setOrganizeCount] = useState(0);
-  const [favouriteCount, setFavouriteCount] = useState(0);
   const [dayRows, setDayRows] = useState<DayRow[] | null>(null);
   /** Gate 5: older days that still hold unreviewed photos. */
   const [unreviewedDayRowsState, setUnreviewedDayRowsState] = useState<DayRow[]>([]);
@@ -121,18 +135,91 @@ export function HomeScreen({ navigation }: Props) {
   // m0.8 gate 2: kick the continuous scan once media permission is in.
   // Fire-and-forget — the runner is single-flight, per-photo persistent,
   // and reports through its own status store (gate 4 puts it on Home).
+  // m0.8.1: kick AFTER the first queue read completes (review.loaded) — the
+  // cold-start scan burst starved the first read for 20-30 s on a 27k
+  // corpus, leaving Home on "Loading your queue…". The timer is the
+  // fail-open: a skipped first refresh (source resolution down) must
+  // never block scanning.
+  const queueLoaded = review.loaded;
   useEffect(() => {
     if (!permission?.granted) return;
-    void startContinuousScan(db);
-  }, [db, permission?.granted]);
+    if (queueLoaded) {
+      void startContinuousScan(db);
+      return;
+    }
+    const fallback = setTimeout(() => void startContinuousScan(db), 8000);
+    return () => clearTimeout(fallback);
+  }, [db, permission?.granted, queueLoaded]);
 
-  useEffect(() => subscribeScanStatus(setScan), []);
+  // THROTTLED scan status (m0.8.1): the scan patches its status many
+  // times per second; re-rendering the card per event burns work on a
+  // counter nobody reads at that rate and starves accessibility idle
+  // (uiautomator dumps — the UI gate — never complete on a never-idle
+  // screen; its idle detector needs ≥500 ms of quiet). Phase changes
+  // apply immediately; counters trail ≤ 1.5 s.
+  useEffect(() => {
+    let lastApplied = 0;
+    let lastPhase = getScanStatus().phase;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let pending: ScanStatus | null = null;
+    const apply = (status: ScanStatus) => {
+      lastApplied = Date.now();
+      lastPhase = status.phase;
+      pending = null;
+      setScan(status);
+    };
+    const unsubscribe = subscribeScanStatus((status) => {
+      const elapsed = Date.now() - lastApplied;
+      if (status.phase !== lastPhase || elapsed >= 1500) {
+        apply(status);
+        return;
+      }
+      pending = status;
+      if (!timer) {
+        timer = setTimeout(() => {
+          timer = null;
+          if (pending) apply(pending);
+        }, 1500 - elapsed);
+      }
+    });
+    return () => {
+      unsubscribe();
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
 
   // Scan-driven refresh key, COARSENED: every 250 grouped windows and on
   // phase changes. Per-window refreshes (4,913 windows on a 27k corpus)
   // would issue thousands of redundant source resolutions, SQLite reads
   // and MediaStore counts while Home stays focused.
-  const scanRefreshKey = `${scan.phase}:${Math.floor(scan.windowsGrouped / 250)}`;
+  // Derived from its OWN unthrottled subscription (m0.8.2, F4 rider):
+  // reading the throttled `scan` state made even the coarse 250-window
+  // boundary observed up to 1.5 s late. Same-value sets skip the
+  // re-render, so this costs nothing between boundaries.
+  const [scanRefreshKey, setScanRefreshKey] = useState(() => {
+    const s = getScanStatus();
+    return `${s.phase}:${Math.floor(s.windowsGrouped / 250)}`;
+  });
+  useEffect(
+    () =>
+      subscribeScanStatus((s) => {
+        const key = `${s.phase}:${Math.floor(s.windowsGrouped / 250)}`;
+        setScanRefreshKey((old) => (old === key ? old : key));
+      }),
+    [],
+  );
+
+  // Home regaining focus means the review stack unwound — release the
+  // browsed-unit ids a deck installed for its overlay reads (loadGroup /
+  // loadDeckSingles), so a stale group's ids stop riding every refresh
+  // (m0.8.2 rider). Anchored HERE, not on deck unmount: a deck→deck
+  // replace runs the new deck's load before the old deck's cleanup, and
+  // an unmount-time clear would wipe the freshly installed ids.
+  useFocusEffect(
+    useCallback(() => {
+      review.releaseBrowseIds();
+    }, [review]),
+  );
 
   // Daily goal + streaks + live corpus stats (gate 4): refresh on focus,
   // on review mutations, and as scan windows land.
@@ -142,6 +229,8 @@ export function HomeScreen({ navigation }: Props) {
       void (async () => {
         const today = dayKey(Date.now());
         const since = recentDayKeys(120)[119] ?? today;
+        // decided_at bound in epoch ms (see getReviewedCountsByDay).
+        const sinceMs = rangeOfDayKey(since).startMs;
         // Corpus stats share the queue's source scope: the MediaStore
         // denominator and the verdict/group numerators must count the
         // same photos. FAIL CLOSED: a resolution error keeps the last
@@ -155,9 +244,18 @@ export function HomeScreen({ navigation }: Props) {
             console.warn('[home] source resolution failed — corpus stats skipped:', String(error));
           }
         }
-        const [rawGoal, reviewedByDay, stats, total] = await Promise.all([
+        const [rawGoal, rawCoverage, reviewedByDay, totals, stats, total] = await Promise.all([
           getSetting(db, DAILY_GOAL_KEY),
-          getReviewedCountsByDay(db, since),
+          getSetting(db, COVERAGE_GOAL_KEY),
+          // Source-scoped like everything else about the current library
+          // (statsLoad.ts header). `src` is null only with no permission
+          // or a failed resolution; the ring then counts everything,
+          // which is what it did before scoping and is visible beside
+          // the source label on this same screen.
+          getReviewedCountsByDay(db, sinceMs, src?.roots ?? null),
+          // m0.8.2: the forecast's decision floor and pace denominator —
+          // one indexed aggregate, not the full base-rate pass.
+          getDecisionTotals(db, src?.roots ?? null),
           permission?.granted && src ? getCorpusStats(db, src.roots) : null,
           // null = the MediaStore count FAILED — keep the last rendered
           // stats rather than presenting an authoritative-looking zero.
@@ -170,12 +268,69 @@ export function HomeScreen({ navigation }: Props) {
         ]);
         if (cancelled) return;
         const currentGoal = parseDailyGoal(rawGoal);
+        const keys = [...recentDayKeys(120)].reverse();
+        // The second, independent goal (m0.8.1 round 8). One grouped
+        // query over the same 120-day horizon as the count streaks: the
+        // goal's window bounds the headline, but the clear streak reads
+        // back across every key, and an unloaded day would masquerade as
+        // a day with no photos. All time is unbounded.
+        const coverageGoal = parseCoverageGoal(rawCoverage);
+        // m0.8.2: the rows load whenever photo access allows, not only
+        // when the coverage goal is on — they are also the forecast's
+        // INTAKE, and a user with the goal off still deserves a finish
+        // line. 'all time' alone needs the unbounded read.
+        // `undefined` = KEEP what is on screen (the fail-closed cases).
+        let nextCoverageStatus: CoverageStatus | null | undefined;
+        let nextFinish: FinishLine | null | undefined;
+        if (!permission?.granted) {
+          nextCoverageStatus = null;
+          nextFinish = null;
+        } else if (src === null) {
+          // FAIL CLOSED. `src` is null only because source resolution
+          // FAILED (the catch above), and every read below is
+          // corpus-scoped: passing `null` roots means ALL FOLDERS, which
+          // would quietly replace a correctly narrowed coverage figure
+          // and finish line with an unscoped one. Keep what is on screen.
+          console.warn('[home] sources unresolved — coverage and forecast kept');
+        } else {
+          const sinceDay = coverageWindowDays(coverageGoal) === null ? null : keys[0];
+          const rows = await getCoverageByDay(db, sinceDay, src.roots);
+          if (cancelled) return;
+          nextCoverageStatus =
+            coverageGoal === 'off' ? null : coverageStatus(rows, coverageGoal, keys);
+          // Remaining reconciles exactly with Progress's remainingReviewable:
+          // both reduce to MediaStore total minus photos carrying a verdict.
+          const remaining = stats && total !== null ? Math.max(0, total - stats.reviewed) : null;
+          const captured = new Map<string, number>();
+          for (const row of rows) if (row.day !== null) captured.set(row.day, row.total);
+          nextFinish =
+            remaining === null
+              ? null
+              : finishLine({
+                  remaining,
+                  reviewedByDay,
+                  capturedByDay: captured,
+                  dayKeys: keys,
+                  decisions: totals.decisions,
+                  firstDecisionDay:
+                    totals.firstDecidedAt === null ? null : dayKey(totals.firstDecidedAt),
+                  goal: currentGoal,
+                });
+        }
+        // ONE commit (F2): every setter lands in the same task, so React
+        // batches them into a single render — the ring number, streaks,
+        // coverage card and corpus line stop arriving as separate
+        // repaints. (This effect used to commit twice, split by the
+        // coverage await above.)
         setGoal(currentGoal);
         setReviewedToday(reviewedByDay.get(today) ?? 0);
-        const keys = [...recentDayKeys(120)].reverse();
         setStreaks(goalStreaks(reviewedByDay, keys, currentGoal));
+        setCoverage(coverageGoal);
+        if (nextCoverageStatus !== undefined) setCoverageStatus(nextCoverageStatus);
+        if (nextFinish !== undefined) setFinish(nextFinish);
         if (stats && total !== null)
           setCorpus({ total, groupsFound: stats.groupsFound, reviewed: stats.reviewed });
+        setGoalLoaded(true);
       })();
       return () => {
         cancelled = true;
@@ -198,7 +353,7 @@ export function HomeScreen({ navigation }: Props) {
       Alert.alert(
         'Edited copy detected',
         `“${head.copyFilename}” looks like an edited copy of “${head.originalFilename}”. ` +
-          'The copy is marked done. What about the original?',
+          'The copy has joined your review queue. What about the original?',
         [
           { text: 'Decide later', style: 'cancel', onPress: next },
           {
@@ -206,10 +361,13 @@ export function HomeScreen({ navigation }: Props) {
             style: 'destructive',
             onPress: () =>
               void (async () => {
+                // (The original's edit is resolved inside the staging
+                // transaction — prepareTrashBatch's stageToEditMembers —
+                // because the guard there needs it still queued.)
                 // The same durable trash lifecycle as staged culls (item
                 // H): stage+reserve in ONE transaction → system dialog →
                 // verify → C#7 cleanup — a crash anywhere leaves either
-                // the untouched to_edit row or a recoverable attempt
+                // the untouched queued edit or a recoverable attempt
                 // (whose photo lands visibly in the cull list, the
                 // vetted fallback), never a stranded state.
                 const photo = await db.getFirstAsync<{ uri: string }>(
@@ -332,28 +490,18 @@ export function HomeScreen({ navigation }: Props) {
     useCallback(() => {
       let cancelled = false;
       (async () => {
-        const [toEdit, favouriteQueue, shareQueue, organizeQueue, stagedCulls] = await Promise.all([
-          countToEdit(db),
-          countFavouriteQueue(db),
-          countShareQueue(db),
-          countOrganizeQueue(db),
-          countStagedCulls(db),
-        ]);
+        const stagedCulls = await countStagedCulls(db);
         if (cancelled) return;
-        setEditCount(toEdit);
-        setFavouriteCount(favouriteQueue);
-        setShareCount(shareQueue);
-        setOrganizeCount(organizeQueue);
         setStagedCullCount(stagedCulls);
         if (stagedCulls > 0) {
           const staged = await getStagedCullBytes(db);
           if (cancelled) return;
-          // Stat LIVE, recorded size ONLY on stat failure: a file edited
-          // in place since its last scan must not report a stale size,
-          // and a genuine zero-byte file is a real (zero) value.
-          setReclaimableBytes(
-            staged.reduce((sum, row) => sum + (fileSizeOrNull(row.uri) ?? row.sizeBytes ?? 0), 0),
-          );
+          // Scan-recorded sizes SUM in SQL; only rows the scan never
+          // sized get a (blocking) stat, bounded by the query's LIMIT.
+          // Home's line is an estimate ("~") — the trash flow measures
+          // exact bytes per photo at attempt time for the credit.
+          const statted = staged.unsized.reduce((sum, uri) => sum + (fileSizeOrNull(uri) ?? 0), 0);
+          setReclaimableBytes(staged.scanned + statted);
         } else {
           setReclaimableBytes(0);
         }
@@ -377,15 +525,18 @@ export function HomeScreen({ navigation }: Props) {
           // Trashed photos are gone from MediaStore, so the day's true
           // total is MediaStore + trashed rows (DB `done` includes them).
           const total = msTotal + (dbRow?.trashed ?? 0);
-          const done = dbRow?.done ?? 0;
+          const kept = dbRow?.done ?? 0;
           const toEdit = dbRow?.toEdit ?? 0;
           const staged = dbRow?.staged ?? 0;
           return {
             day,
             label: labelForDayKey(day),
             total,
-            reviewed: Math.min(total, done + toEdit + staged),
-            done,
+            // Reviewed = has a VERDICT (docs/STATE_MODEL.md). A queued
+            // edit is a pending action on an already-kept photo, so
+            // adding it here counted those photos twice.
+            reviewed: Math.min(total, kept + staged),
+            kept,
             toEdit,
             staged,
           };
@@ -396,8 +547,21 @@ export function HomeScreen({ navigation }: Props) {
         const buildRows = async (days: readonly string[]): Promise<DayRow[]> => {
           if (days.length === 0) return [];
           const summaries = await getDaySummariesForDays(db, days, src?.roots ?? null);
+          // Per-day MediaStore counts run CONCURRENTLY and via the cheap
+          // totalCount path (m0.8.1): this used to PAGE every asset of
+          // every day (200 at a time) sequentially just to tally one
+          // number per day — the day list's dominant cost. A day's range
+          // bounds already select exactly that day, so totalCount IS the
+          // day's count.
+          const msTotals = await Promise.all(
+            days.map(async (day) => {
+              if (day === UNDATED_DAY_KEY || !permission?.granted) return 0;
+              const range = rangeOfDayKey(day);
+              return countPhotosInRange(range.startMs, range.endMs, src?.albumIds ?? null);
+            }),
+          );
           const rows: DayRow[] = [];
-          for (const day of days) {
+          days.forEach((day, index) => {
             if (day === UNDATED_DAY_KEY) {
               // No MediaStore count exists for undated photos — the
               // tracked rows are the population (alive = tracked-trashed;
@@ -406,19 +570,11 @@ export function HomeScreen({ navigation }: Props) {
               const alive = (summary?.tracked ?? 0) - (summary?.trashed ?? 0);
               const row = toRow(day, summary, alive);
               if (row.total > 0) rows.push(row);
-              continue;
+              return;
             }
-            const range = rangeOfDayKey(day);
-            const msTotal = permission?.granted
-              ? await countPhotosByDayInRange(
-                  range.startMs,
-                  range.endMs,
-                  src?.albumIds ?? null,
-                ).then((m) => m.get(day) ?? 0)
-              : 0;
-            const row = toRow(day, summaries.get(day), msTotal);
+            const row = toRow(day, summaries.get(day), msTotals[index]);
             if (row.total > 0) rows.push(row);
-          }
+          });
           return rows;
         };
         try {
@@ -474,16 +630,15 @@ export function HomeScreen({ navigation }: Props) {
     }
   }, [olderDays]);
 
-  const openProgress = useCallback(() => {
-    navigation.navigate('Progress', {
-      label: 'All photos',
-      startMs: 0,
-      // Open-ended: undated photos count too (media.ts bound contract).
-      endMs: Number.POSITIVE_INFINITY,
-    });
-  }, [navigation]);
+  const openProgress = useCallback(() => navigation.navigate('Progress'), [navigation]);
 
   const queueTotal = review.queueCounts.grouped + review.queueCounts.singles;
+  /** The one library-size number this screen shows (F4): the running
+   * scan's own snapshot while it scans, the focus loader's count idle. */
+  const libraryTotal =
+    scan.phase === 'scanning' && scan.corpusTotal !== null
+      ? scan.corpusTotal
+      : (corpus?.total ?? null);
 
   // One card per day (gate 5 audit: the headline count is REVIEWED —
   // every verdict — not just converged "done").
@@ -507,8 +662,7 @@ export function HomeScreen({ navigation }: Props) {
         <StateProgressBar
           total={row.total}
           segments={[
-            { count: row.done, color: colors.keep },
-            { count: row.toEdit, color: colors.edit },
+            { count: row.kept, color: colors.keep },
             { count: row.staged, color: colors.cull },
           ]}
         />
@@ -530,14 +684,19 @@ export function HomeScreen({ navigation }: Props) {
   return (
     <ScrollView
       style={styles.root}
-      contentContainerStyle={[
-        styles.content,
-        { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 },
-      ]}
+      contentContainerStyle={[styles.content, { paddingTop: insets.top + 24, paddingBottom: 24 }]}
     >
       <View style={styles.titleRow}>
         <Text style={styles.title}>Afterglow</Text>
         <View style={styles.titleActions}>
+          <Pressable
+            style={styles.gearButton}
+            hitSlop={8}
+            accessibilityLabel="Stats"
+            onPress={() => navigation.navigate('Stats')}
+          >
+            <MaterialCommunityIcons name="chart-box-outline" size={24} color={colors.textDim} />
+          </Pressable>
           <Pressable
             style={styles.gearButton}
             hitSlop={8}
@@ -565,7 +724,20 @@ export function HomeScreen({ navigation }: Props) {
         </Pressable>
       )}
 
-      {!permission?.granted && (
+      {/* Permission is TRI-state (F2): null = still resolving — ghosts
+          hold the page's shape; the ask card renders only on a RESOLVED
+          denial. Before this, every cold start flashed "Allow photo
+          access" at long-granted users while the hook resolved. */}
+      {permission === null && (
+        <>
+          <Ghost height={208} />
+          <Ghost height={64} />
+          <Ghost height={92} />
+          <Ghost height={92} />
+        </>
+      )}
+
+      {permission !== null && !permission.granted && (
         <View style={styles.card}>
           <Text style={styles.cardText}>
             Afterglow needs access to your photos to review them. Nothing is ever deleted without
@@ -573,7 +745,7 @@ export function HomeScreen({ navigation }: Props) {
           </Text>
           <BigButton
             label={
-              permission?.canAskAgain === false
+              permission.canAskAgain === false
                 ? 'Enable photo access in Settings'
                 : 'Allow photo access'
             }
@@ -590,21 +762,77 @@ export function HomeScreen({ navigation }: Props) {
             <GoalRing
               size={132}
               strokeWidth={12}
-              progress={goalProgress(reviewedToday, goal)}
-              color={reviewedToday >= goal ? colors.keep : theme.accent}
-              centerTitle={`${reviewedToday}`}
-              centerSubtitle={`of ${goal} today`}
+              progress={goalLoaded ? goalProgress(reviewedToday, goal) : 0}
+              color={goalLoaded && reviewedToday >= goal ? colors.keep : theme.accent}
+              // Placeholder until the loader's single commit (F2): a
+              // hardcoded "0 of 50" is a wrong number, not a loading one.
+              centerTitle={goalLoaded ? `${reviewedToday}` : '–'}
+              centerSubtitle={goalLoaded ? `of ${goal} today` : 'today'}
             />
             <View style={styles.goalBody}>
               <Text style={styles.cardTitle}>
                 {reviewedToday >= goal ? 'Daily goal reached 🎉' : 'Daily goal'}
               </Text>
-              <Text style={styles.cardText}>
-                {queueTotal === 0
-                  ? 'Everything reviewed — new photos join the queue as they are found.'
-                  : `${queueTotal} photo${queueTotal === 1 ? '' : 's'} waiting · ` +
-                    `${review.queueCounts.grouped} in groups · ${review.queueCounts.singles} singles`}
-              </Text>
+              {/* version 0 = no queue read has COMMITTED yet (cold
+                  start) — the empty-queue copy would falsely announce
+                  "everything reviewed" under a scan line reporting a
+                  full library (tester-observed). */}
+              {!review.loaded ? (
+                <Text style={styles.cardText}>Loading your queue…</Text>
+              ) : (
+                <>
+                  {/* The library headline (tester ask, round 4): total
+                      first, then what is left and how it is shaped.
+                      While a scan runs the card reads the SCAN'S OWN
+                      library snapshot (m0.8.2, F4), so this line and the
+                      scan line's "of N photos" are one number by
+                      construction; idle, it is the focus loader's count.
+                      Null (either source) drops the line rather than
+                      showing a wrong total. */}
+                  {libraryTotal !== null && (
+                    <Text style={styles.cardText}>
+                      {`${libraryTotal.toLocaleString()} picture${libraryTotal === 1 ? '' : 's'} total`}
+                    </Text>
+                  )}
+                  {queueTotal === 0 ? (
+                    <Text style={styles.cardText}>
+                      Everything reviewed — new photos join the queue as they are found.
+                    </Text>
+                  ) : (
+                    // The breakdown IS the door to the timeline overview
+                    // (m0.8.2, F8): the CTA below goes straight into the
+                    // next unit, so browsing the queue lives here — the
+                    // information scent is the numbers themselves.
+                    <Pressable
+                      style={styles.queueLink}
+                      onPress={() => navigation.navigate('Groups')}
+                    >
+                      <View style={styles.queueLinkBody}>
+                        <Text style={styles.cardText}>{`${queueTotal} to review`}</Text>
+                        {review.queueCounts.grouped > 0 && (
+                          <Text style={styles.queueBreakdown}>
+                            {`${review.queueCounts.grouped} in ${review.queueCounts.groups} group${
+                              review.queueCounts.groups === 1 ? '' : 's'
+                            }`}
+                          </Text>
+                        )}
+                        {review.queueCounts.singles > 0 && (
+                          <Text style={styles.queueBreakdown}>
+                            {`${review.queueCounts.singles} single${
+                              review.queueCounts.singles === 1 ? '' : 's'
+                            }`}
+                          </Text>
+                        )}
+                      </View>
+                      <MaterialCommunityIcons
+                        name="chevron-right"
+                        size={20}
+                        color={colors.textDim}
+                      />
+                    </Pressable>
+                  )}
+                </>
+              )}
               {streaks.current > 0 && (
                 <Text style={styles.streakText}>
                   🔥 {streaks.current}-day streak
@@ -614,109 +842,59 @@ export function HomeScreen({ navigation }: Props) {
             </View>
           </View>
           <BigButton
-            label={queueTotal === 0 ? 'All reviewed' : 'Continue reviewing'}
+            label={
+              !review.loaded ? 'Loading…' : queueTotal === 0 ? 'All reviewed' : 'Continue reviewing'
+            }
             color={colors.keep}
             disabled={queueTotal === 0}
-            onPress={() => navigation.navigate('Groups')}
+            // STRAIGHT into the next timeline unit (m0.8.2, F8) — the
+            // overview hop was a redundant tap; it stays reachable via
+            // the queue-breakdown link above. Every input is already
+            // loaded here, so there is no empty-deck flash. An empty
+            // page with a nonzero DB count (all pending beyond the
+            // horizon) falls back to the overview.
+            onPress={() => {
+              const first = review.timeline[0];
+              if (!first) {
+                navigation.navigate('Groups');
+                return;
+              }
+              const destination = unitDestination(first);
+              if (destination.screen === 'Deck')
+                navigation.navigate('Deck', { groupId: destination.groupId });
+              else if (destination.screen === 'Singles')
+                navigation.navigate('Singles', {
+                  day: destination.day,
+                  from: destination.from,
+                  to: destination.to,
+                });
+              else navigation.navigate('CullList', { fromHome: true });
+            }}
           />
-          <Text style={styles.scanStatus}>
-            {scan.phase === 'scanning'
-              ? `Scanning photos… ${scan.scanned} seen · ${scan.embedded} analyzed · ${scan.windowsGrouped} groups formed`
-              : scan.phase === 'error'
+          {/* Only a RUNNING scan (or a failed one) talks below the CTA
+              (tester ask, round 4): an idle line repeated numbers the
+              card above already states. The line speaks ONLY about the
+              scan (m0.8.2, F4): "groups found" is gone — the card above
+              carries the one truthful group count, and a second,
+              differently-scoped number on the same screen could never
+              agree with it. A full pass shows the percent (F3); a delta
+              has no meaningful denominator and shows plain counts. */}
+          {(scan.phase === 'scanning' || scan.phase === 'error') && (
+            <Text style={styles.scanStatus}>
+              {scan.phase === 'error'
                 ? 'Photo scan hit a problem — it will retry on next launch.'
-                : corpus
-                  ? `${corpus.total} photos · ${corpus.groupsFound} groups found · ` +
-                    `${corpus.total > 0 ? Math.min(100, Math.round((corpus.reviewed / corpus.total) * 100)) : 0}% reviewed` +
-                    (reclaimableBytes > 0 ? ` · ~${formatBytes(reclaimableBytes)} reclaimable` : '')
-                  : 'Preparing scan…'}
-          </Text>
-        </View>
-      )}
-
-      <Pressable
-        style={styles.editQueueRow}
-        onPress={() => navigation.navigate('Main', { screen: 'EditQueue' })}
-      >
-        <MaterialCommunityIcons name="pencil" size={22} color={colors.edit} />
-        <View style={styles.editQueueBody}>
-          <Text style={styles.editQueueTitle}>Edit queue</Text>
-          <Text style={styles.editQueueHint}>
-            {editCount === 0
-              ? 'No keepers waiting for edits'
-              : `${editCount} keeper${editCount === 1 ? '' : 's'} waiting for edits`}
-          </Text>
-        </View>
-        {editCount > 0 && (
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>{editCount}</Text>
-          </View>
-        )}
-      </Pressable>
-
-      {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
-        <Pressable
-          style={styles.editQueueRow}
-          onPress={() => navigation.navigate('Main', { screen: 'FavouritesQueue' })}
-        >
-          <MaterialCommunityIcons name="heart" size={22} color={colors.fav} />
-          <View style={styles.editQueueBody}>
-            <Text style={styles.editQueueTitle}>Favourite queue</Text>
-            <Text style={styles.editQueueHint}>
-              {favouriteCount === 0
-                ? 'No favourite changes waiting'
-                : `${favouriteCount} change${favouriteCount === 1 ? '' : 's'} waiting for gallery confirmation`}
+                : scan.total !== null && scan.total > 0
+                  ? `Scanning ${Math.min(100, Math.round((scan.scanned / scan.total) * 100))}% · ` +
+                    `${Math.min(scan.scanned, scan.total).toLocaleString()} of ${scan.total.toLocaleString()} photos`
+                  : `Scanning photos… ${scan.scanned.toLocaleString()} seen · ${scan.embedded.toLocaleString()} analyzed`}
             </Text>
-          </View>
-          {favouriteCount > 0 && (
-            <View style={[styles.badge, { backgroundColor: colors.favDim }]}>
-              <Text style={[styles.badgeText, { color: colors.fav }]}>{favouriteCount}</Text>
-            </View>
           )}
-        </Pressable>
-      )}
-
-      <Pressable
-        style={styles.editQueueRow}
-        onPress={() => navigation.navigate('Main', { screen: 'ShareQueue' })}
-      >
-        <MaterialCommunityIcons name="share-variant" size={22} color={colors.edit} />
-        <View style={styles.editQueueBody}>
-          <Text style={styles.editQueueTitle}>Share queue</Text>
-          <Text style={styles.editQueueHint}>
-            {shareCount === 0
-              ? 'Queue photos to share in passes'
-              : `${shareCount} photo${shareCount === 1 ? '' : 's'} ready to share`}
-          </Text>
         </View>
-        {shareCount > 0 && (
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>{shareCount}</Text>
-          </View>
-        )}
-      </Pressable>
-
-      {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
-        <Pressable
-          style={styles.editQueueRow}
-          onPress={() => navigation.navigate('Main', { screen: 'OrganizeQueue' })}
-        >
-          <MaterialCommunityIcons name="folder-move" size={22} color={colors.textDim} />
-          <View style={styles.editQueueBody}>
-            <Text style={styles.editQueueTitle}>Organize queue</Text>
-            <Text style={styles.editQueueHint}>
-              {organizeCount === 0
-                ? 'Queue photos to move into albums'
-                : `${organizeCount} photo${organizeCount === 1 ? '' : 's'} waiting to move`}
-            </Text>
-          </View>
-          {organizeCount > 0 && (
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>{organizeCount}</Text>
-            </View>
-          )}
-        </Pressable>
       )}
 
+      {/* The edit/favourite/share/organize queues live on the bottom tab
+          bar (count-badged there) — Home keeps only the rows without a
+          tab: the cull list and Progress. */}
       {stagedCullCount > 0 && (
         // The durable global cull queue must stay reachable even with no
         // active session (carried culls, edited-copy culls) — the
@@ -728,8 +906,12 @@ export function HomeScreen({ navigation }: Props) {
           <MaterialCommunityIcons name="delete-outline" size={22} color={colors.cull} />
           <View style={styles.editQueueBody}>
             <Text style={styles.editQueueTitle}>Cull list</Text>
+            {/* The reclaimable estimate belongs to the deletion it
+                describes (tester ask, round 4) — it used to trail the
+                scan line, where it read as a scan statistic. */}
             <Text style={styles.editQueueHint}>
-              {`${stagedCullCount} photo${stagedCullCount === 1 ? '' : 's'} staged for deletion`}
+              {`${stagedCullCount} photo${stagedCullCount === 1 ? '' : 's'} staged to cull` +
+                (reclaimableBytes > 0 ? ` · ~${formatBytes(reclaimableBytes)} reclaimable` : '')}
             </Text>
           </View>
           <View style={[styles.badge, { backgroundColor: colors.cullDim }]}>
@@ -738,17 +920,79 @@ export function HomeScreen({ navigation }: Props) {
         </Pressable>
       )}
 
+      {/* The COVERAGE goal (m0.8.1 round 8): its own card because it has
+          its own progress AND its own streak — and keeping it separate
+          leaves the count-goal card above untouched. */}
+      {permission?.granted && coverage !== 'off' && coverageState !== null && (
+        <View style={styles.coverageCard}>
+          <View style={styles.coverageHeader}>
+            <Text style={styles.coverageTitle}>Keeping up</Text>
+            <Text style={styles.coverageScope}>{COVERAGE_GOAL_LABELS[coverage]}</Text>
+          </View>
+          {/* An EMPTY window is neither a win nor a failure (m0.8.2, D15):
+              the ratio is vacuously 1, which used to paint a full green
+              bar over "nothing captured yet". The Stats chart already
+              draws empty days as gaps and the streak already passes over
+              them — this makes the third surface agree. */}
+          <View style={styles.coverageBarTrack}>
+            {coverageState.total > 0 && (
+              <View
+                style={[
+                  styles.coverageBarFill,
+                  {
+                    width: `${Math.round(coverageState.ratio * 100)}%`,
+                    backgroundColor: coverageState.pending === 0 ? colors.keep : theme.accent,
+                  },
+                ]}
+              />
+            )}
+          </View>
+          <Text style={styles.coverageText}>
+            {coverageState.total === 0
+              ? 'Nothing captured in this window yet.'
+              : coverageState.pending === 0
+                ? coverage === 'all'
+                  ? 'Everything reviewed — the whole library is clear. 🎉'
+                  : `All clear — nothing left from ${COVERAGE_GOAL_LABELS[coverage].toLowerCase()}. 🎉`
+                : coverage === 'all'
+                  ? `${Math.round(coverageState.ratio * 100)}% of your library reviewed · ${coverageState.pending} to go`
+                  : `${coverageState.pending} left from ${COVERAGE_GOAL_LABELS[coverage].toLowerCase()}`}
+          </Text>
+          {coverageState.streak !== null && coverageState.streak > 0 && (
+            <Text style={styles.streakText}>🔥 {coverageState.streak}-day clear streak</Text>
+          )}
+        </View>
+      )}
+
       {permission?.granted && (
         <Pressable style={styles.progressRow} onPress={openProgress}>
           <Text style={styles.progressIcon}>◔</Text>
           <View style={styles.progressBody}>
             <Text style={styles.progressTitle}>Progress</Text>
-            <Text style={styles.progressHint}>All photos · state browsing</Text>
+            {/* m0.8.2: the row's subtitle was pure navigation boilerplate;
+                the finish line costs no height and no query, and falls
+                back to that boilerplate when there is not enough history
+                to say anything true. */}
+            <Text style={styles.progressHint}>
+              {finish === null
+                ? 'All photos · state browsing'
+                : forecastHeadline(finish, Date.now())}
+            </Text>
           </View>
           <Text style={[styles.progressChevron, { color: theme.accent }]}>›</Text>
         </Pressable>
       )}
 
+      {/* Day rows GHOST until their (multi-query) load lands, so the
+          bottom sections fill in place instead of materialising (F2). An
+          empty result (fresh install) simply clears the ghosts. */}
+      {permission?.granted && dayRows === null && (
+        <>
+          <Text style={styles.sectionLabel}>Recent days</Text>
+          <Ghost height={92} />
+          <Ghost height={92} />
+        </>
+      )}
       {permission?.granted && dayRows && dayRows.length > 0 && (
         <>
           <Text style={styles.sectionLabel}>Recent days</Text>
@@ -799,8 +1043,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  gearIcon: { color: colors.textDim, fontSize: 22 },
-  subtitle: { color: colors.textDim, fontSize: 16, marginBottom: 8 },
   goalRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   goalBody: { flex: 1, gap: 4 },
   streakText: { color: colors.text, fontSize: 14, fontWeight: '600' },
@@ -833,22 +1075,28 @@ const styles = StyleSheet.create({
   },
   cardTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
   cardText: { color: colors.textDim, fontSize: 15, lineHeight: 21 },
-  scopeWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  scopeChip: {
-    minHeight: 44,
-    borderRadius: touch.radius,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 14,
+  coverageCard: {
     backgroundColor: colors.surface,
+    borderRadius: touch.radius,
+    padding: 16,
+    gap: 8,
     borderWidth: 1,
     borderColor: colors.border,
   },
-  scopeChipDisabled: { opacity: 0.4 },
-  scopeChipText: { color: colors.textDim, fontSize: 15, fontWeight: '600' },
-  scopeChipTextDisabled: { color: colors.textDim },
-  gateHint: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: -8 },
-  headline: { color: colors.text, fontSize: 17, fontWeight: '700', marginBottom: -6 },
+  coverageHeader: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' },
+  coverageTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
+  coverageScope: { color: colors.textDim, fontSize: 13, fontWeight: '600' },
+  coverageBarTrack: {
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: colors.surfaceRaised,
+    overflow: 'hidden',
+  },
+  coverageBarFill: { height: '100%', borderRadius: 5 },
+  coverageText: { color: colors.textDim, fontSize: 14, lineHeight: 19 },
+  queueBreakdown: { color: colors.textDim, fontSize: 13, lineHeight: 18 },
+  queueLink: { flexDirection: 'row', alignItems: 'center' },
+  queueLinkBody: { flex: 1 },
   progressRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -864,7 +1112,6 @@ const styles = StyleSheet.create({
   progressTitle: { color: colors.text, fontSize: 16, fontWeight: '700' },
   progressHint: { color: colors.textDim, fontSize: 13 },
   progressChevron: { fontSize: 22, fontWeight: '600' },
-  customRow: { flexDirection: 'row', gap: 10 },
   dateField: {
     flex: 1,
     backgroundColor: colors.surface,
@@ -887,17 +1134,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     minHeight: 48,
   },
-  saveScopeButton: {
-    minHeight: 48,
-    borderRadius: touch.radius,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 14,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  saveScopeText: { color: colors.textDim, fontSize: 14, fontWeight: '700' },
   notice: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -929,12 +1165,14 @@ const styles = StyleSheet.create({
     minWidth: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: colors.edit,
+    // Neutral by default: a generic badge carries no action (rule 2).
+    // Its one caller overrides this with the cull hue.
+    backgroundColor: colors.surfaceRaised,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 8,
   },
-  badgeText: { color: '#0d1524', fontSize: 14, fontWeight: '800' },
+  badgeText: { color: colors.background, fontSize: 14, fontWeight: '800' },
   dayRow: {
     backgroundColor: colors.surface,
     borderRadius: touch.radius,

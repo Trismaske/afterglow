@@ -1,3 +1,8 @@
+/**
+ * Progress accounting (v18) — the three-layer model in numbers
+ * (docs/STATE_MODEL.md): verdict counts, the grouped ANNOTATION counted
+ * per verdict, and what the state editor may offer.
+ */
 import { describe, expect, it } from 'vitest';
 import {
   classifyPhotoState,
@@ -5,8 +10,10 @@ import {
   reviewedOf,
   reviewedPct,
   editorActions,
+  isActionFilter,
   remainingReviewable,
   progressRemainder,
+  groupedUnderlineRuns,
   type StateCounts,
 } from './progress';
 
@@ -21,60 +28,99 @@ describe('progressRemainder', () => {
   });
 });
 
+describe('groupedUnderlineRuns', () => {
+  it('marks the grouped part of each verdict and blanks the rest', () => {
+    // 20 kept (10 grouped), 10 staged (0 grouped), 70 unreviewed (40).
+    expect(
+      groupedUnderlineRuns(100, [
+        { count: 10, of: 20 },
+        { count: 0, of: 10 },
+        { count: 40, of: 70 },
+      ]),
+    ).toEqual([
+      { weight: 10, marked: true },
+      { weight: 10, marked: false },
+      { weight: 10, marked: false },
+      { weight: 40, marked: true },
+      { weight: 30, marked: false },
+    ]);
+  });
+
+  it('pads to the total so the underline stays under its own segment', () => {
+    // 500 photos MediaStore has that the scan has not tracked yet: the
+    // marked run must stay 10/1000 of the width, not 10/500.
+    const runs = groupedUnderlineRuns(1000, [
+      { count: 10, of: 100 },
+      { count: 0, of: 400 },
+    ]);
+    expect(runs.reduce((sum, run) => sum + run.weight, 0)).toBe(1000);
+    expect(runs[0]).toEqual({ weight: 10, marked: true });
+    expect(runs[runs.length - 1]).toEqual({ weight: 500, marked: false });
+  });
+
+  it('never marks more than its segment holds, nor pads below zero', () => {
+    expect(groupedUnderlineRuns(5, [{ count: 99, of: 5 }])).toEqual([{ weight: 5, marked: true }]);
+    expect(groupedUnderlineRuns(1, [{ count: 4, of: 8 }])).toEqual([
+      { weight: 4, marked: true },
+      { weight: 4, marked: false },
+    ]);
+  });
+});
+
 function counts(partial: Partial<StateCounts>): StateCounts {
   const base: StateCounts = {
-    unreviewedGrouped: 0,
-    unreviewedSingle: 0,
-    toEdit: 0,
+    unreviewed: 0,
+    kept: 0,
     staged: 0,
     trashed: 0,
-    done: 0,
     tracked: 0,
+    grouped: { unreviewed: 0, kept: 0, staged: 0 },
+    actions: { edit: 0, favourite: 0, organize: 0, share: 0 },
   };
   const merged = { ...base, ...partial };
   if (partial.tracked === undefined) {
-    merged.tracked =
-      merged.unreviewedGrouped +
-      merged.unreviewedSingle +
-      merged.toEdit +
-      merged.staged +
-      merged.trashed +
-      merged.done;
+    merged.tracked = merged.unreviewed + merged.kept + merged.staged + merged.trashed;
   }
   return merged;
 }
 
 describe('computeBreakdown', () => {
   it('counts never-tracked MediaStore photos as unreviewed', () => {
-    const b = computeBreakdown(10, counts({ done: 3, toEdit: 1 }));
+    const b = computeBreakdown(10, counts({ kept: 4 }));
     expect(b.total).toBe(10);
     expect(b.unreviewed).toBe(6); // 10 alive − 4 tracked-alive
-    expect(b.done).toBe(3);
-    expect(b.toEdit).toBe(1);
+    expect(b.kept).toBe(4);
   });
 
   it('adds trashed rows back into the true total (they left MediaStore)', () => {
-    const b = computeBreakdown(8, counts({ trashed: 2, done: 3 }));
+    const b = computeBreakdown(8, counts({ trashed: 2, kept: 3 }));
     expect(b.total).toBe(10);
-    expect(b.done).toBe(5); // done + trashed both converged
+    // Trashed converges with kept: the work is over either way, and a
+    // fourth segment for invisible files would help nobody.
+    expect(b.kept).toBe(5);
     expect(b.unreviewed).toBe(5); // 8 alive − 3 tracked-alive
   });
 
-  it('splits unreviewed rows into singles vs in-groups', () => {
-    const b = computeBreakdown(6, counts({ unreviewedGrouped: 4, unreviewedSingle: 1 }));
-    expect(b.inGroups).toBe(4);
-    expect(b.unreviewed).toBe(2); // 1 tracked single + 1 never-loaded
+  it('carries grouped counts per verdict, never as a verdict', () => {
+    const b = computeBreakdown(
+      6,
+      counts({ unreviewed: 5, kept: 1, grouped: { unreviewed: 4, kept: 1, staged: 0 } }),
+    );
+    expect(b.grouped).toEqual({ unreviewed: 4, kept: 1, staged: 0 });
+    // Grouping does not move a photo out of its verdict.
+    expect(b.unreviewed).toBe(5);
+    expect(b.kept).toBe(1);
   });
 
   it('clamps never-loaded at 0 when the DB briefly knows more than MediaStore', () => {
-    const b = computeBreakdown(2, counts({ done: 3 }));
+    const b = computeBreakdown(2, counts({ kept: 3 }));
     expect(b.unreviewed).toBe(0);
   });
 });
 
 describe('remainingReviewable / reviewedPct', () => {
-  it('remaining excludes done and to_edit (both converged/handled)', () => {
-    const b = computeBreakdown(10, counts({ done: 4, toEdit: 2 }));
+  it('remaining excludes kept photos', () => {
+    const b = computeBreakdown(10, counts({ kept: 6 }));
     expect(remainingReviewable(b)).toBe(4); // 4 never-loaded
   });
 
@@ -89,14 +135,21 @@ describe('remainingReviewable / reviewedPct', () => {
     expect(remainingReviewable(b)).toBe(0);
   });
 
-  it('reviewed counts every verdict: done + to-edit + staged', () => {
-    const b = computeBreakdown(10, counts({ done: 4, toEdit: 2, staged: 1 }));
+  it('reviewed counts every verdict: kept + staged', () => {
+    const b = computeBreakdown(10, counts({ kept: 6, staged: 1 }));
     expect(reviewedOf(b)).toBe(7);
     expect(reviewedPct(b)).toBe(70);
   });
 
+  it('a pending edit does NOT change the reviewed count', () => {
+    // Under the old model a flagged keeper sat in its own 'to_edit'
+    // state; now the edit is an action and the photo is simply kept.
+    const flagged = computeBreakdown(10, counts({ kept: 6 }));
+    expect(reviewedOf(flagged)).toBe(6);
+  });
+
   it('rounds the reviewed share to whole percent', () => {
-    const b = computeBreakdown(3, counts({ done: 1 }));
+    const b = computeBreakdown(3, counts({ kept: 1 }));
     expect(reviewedPct(b)).toBe(33);
   });
 });
@@ -106,37 +159,39 @@ describe('classifyPhotoState', () => {
     expect(classifyPhotoState(undefined)).toBe('unreviewed');
   });
 
-  it('splits unreviewed by group membership', () => {
-    expect(classifyPhotoState({ state: 'unreviewed', grouped: false })).toBe('unreviewed');
-    expect(classifyPhotoState({ state: 'unreviewed', grouped: true })).toBe('in_group');
+  it('maps each stored verdict to its bucket, grouping aside', () => {
+    expect(classifyPhotoState({ state: 'unreviewed' })).toBe('unreviewed');
+    expect(classifyPhotoState({ state: 'culled' })).toBe('staged');
+    expect(classifyPhotoState({ state: 'kept' })).toBe('kept');
+    expect(classifyPhotoState({ state: 'trashed' })).toBe('kept');
   });
+});
 
-  it('maps each stored state to its effective bucket', () => {
-    expect(classifyPhotoState({ state: 'to_edit', grouped: false })).toBe('to_edit');
-    expect(classifyPhotoState({ state: 'culled', grouped: true })).toBe('staged');
-    expect(classifyPhotoState({ state: 'confirmed', grouped: false })).toBe('staged');
-    expect(classifyPhotoState({ state: 'done', grouped: false })).toBe('done');
-    expect(classifyPhotoState({ state: 'trashed', grouped: true })).toBe('done');
+describe('isActionFilter', () => {
+  it('separates the two filter vocabularies', () => {
+    expect(isActionFilter('act:edit')).toBe(true);
+    expect(isActionFilter('kept')).toBe(false);
+    expect(isActionFilter('all')).toBe(false);
   });
 });
 
 describe('editorActions', () => {
-  it('to_edit can only converge to done', () => {
-    expect(editorActions('to_edit')).toEqual(['mark_done']);
+  it('offers completing the edit when one is pending', () => {
+    expect(editorActions('kept', true)).toEqual(['complete_edit']);
   });
 
-  it('done can be sent back to the edit queue', () => {
-    expect(editorActions('done')).toEqual(['queue_edit']);
+  it('offers queuing an edit on a keeper that has none', () => {
+    expect(editorActions('kept', false)).toEqual(['queue_edit']);
   });
 
-  it('a staged cull can be un-culled', () => {
-    expect(editorActions('culled')).toEqual(['unstage_cull']);
+  it('a staged cull can be un-culled, edit pending or not', () => {
+    expect(editorActions('culled', false)).toEqual(['unstage_cull']);
+    expect(editorActions('culled', true)).toEqual(['unstage_cull']);
   });
 
-  it('unreviewed, untracked, trashed and confirmed are read-only', () => {
-    expect(editorActions('unreviewed')).toEqual([]);
-    expect(editorActions(null)).toEqual([]);
-    expect(editorActions('trashed')).toEqual([]);
-    expect(editorActions('confirmed')).toEqual([]);
+  it('unreviewed, untracked and trashed are read-only', () => {
+    expect(editorActions('unreviewed', false)).toEqual([]);
+    expect(editorActions(null, false)).toEqual([]);
+    expect(editorActions('trashed', false)).toEqual([]);
   });
 });

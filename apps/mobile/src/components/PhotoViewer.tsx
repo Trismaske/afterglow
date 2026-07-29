@@ -25,7 +25,7 @@ import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import Animated, {
-  runOnJS,
+  useAnimatedProps,
   useAnimatedStyle,
   useSharedValue,
   withTiming,
@@ -39,9 +39,11 @@ import { classifyPhotoState } from '../lib/progress';
 import { dayKey, labelForDayKey } from '../lib/dates';
 import { formatClockSeconds } from '../lib/format';
 import { colors, useTheme } from '../theme';
-import { stateMetaFor } from './progress/stateMeta';
+import { VERDICT_META } from './progress/stateMeta';
 import { StateEditorSheet } from './progress/StateEditorSheet';
 import type { GridPhoto } from './progress/PhotoStateGrid';
+import { useDoubleTapZoom } from './useDoubleTapZoom';
+import { panBounds } from '../lib/zoomTarget';
 
 /** What a host must know about each photo it shows. */
 export interface ViewerItem {
@@ -111,7 +113,11 @@ export function PhotoViewer({
   }, [items]);
 
   // ------------------------------------------------------ pinch zoom
-  const [zoomed, setZoomed] = useState(false);
+  // NO GESTURE CALLBACK MAY CROSS THE WORKLETS->JS BRIDGE — runOnJS from
+  // a gesture worklet segfaults this build (SIGSEGV in AroundLock::utf8;
+  // reanimated #9776, worklets 0.10.2 — see DeckScreen's bridge
+  // comment). So "is the viewer zoomed?" lives ONLY in shared values,
+  // and the overlay/panel react to `scale` via animated props.
   const scale = useSharedValue(1);
   const savedScale = useSharedValue(1);
   const tx = useSharedValue(0);
@@ -120,6 +126,10 @@ export function PhotoViewer({
   const savedTy = useSharedValue(0);
   const stageW = useSharedValue(0);
   const stageH = useSharedValue(0);
+  // Photo width / height, set by the overlay image's onLoad (JS → shared
+  // value, the safe bridge direction). Pans clamp to the photo's own
+  // rendered edges via panBounds — 0 means not yet loaded.
+  const imageAspect = useSharedValue(0);
   const pagerGesture = useMemo(() => Gesture.Native(), []);
 
   const resetZoom = useCallback(() => {
@@ -129,60 +139,71 @@ export function PhotoViewer({
     ty.value = 0;
     savedTx.value = 0;
     savedTy.value = 0;
-    setZoomed(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The stage detector is the PINCH ALONE, built once and never rebuilt
+  // (React state in a gesture's deps rebuilds the composition mid-touch
+  // — its own crash). Pan + double-tap live on the zoom overlay, which
+  // only receives touches while zoomed: DeckScreen's two-detector split.
   const zoomGesture = useMemo(() => {
-    const pinch = Gesture.Pinch()
-      .simultaneousWithExternalGesture(pagerGesture)
-      .onBegin(() => {
-        runOnJS(setZoomed)(true);
-      })
-      .onUpdate((event) => {
-        scale.value = Math.min(MAX_SCALE, Math.max(1, savedScale.value * event.scale));
-        const maxX = (stageW.value * (scale.value - 1)) / 2;
-        const maxY = (stageH.value * (scale.value - 1)) / 2;
-        tx.value = clampPan(tx.value, maxX);
-        ty.value = clampPan(ty.value, maxY);
-      })
-      .onEnd(() => {
-        savedScale.value = scale.value;
-        savedTx.value = tx.value;
-        savedTy.value = ty.value;
-      })
-      // onFinalize also fires on cancellation — a broken gesture can
-      // never leave the pager frozen at scale 1.
-      .onFinalize(() => {
-        if (scale.value <= 1.02) {
-          scale.value = withTiming(1);
-          savedScale.value = 1;
-          tx.value = withTiming(0);
-          ty.value = withTiming(0);
-          savedTx.value = 0;
-          savedTy.value = 0;
-          runOnJS(setZoomed)(false);
-        }
-      });
+    return (
+      Gesture.Pinch()
+        .simultaneousWithExternalGesture(pagerGesture)
+        .onUpdate((event) => {
+          scale.value = Math.min(MAX_SCALE, Math.max(1, savedScale.value * event.scale));
+          const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
+          tx.value = clampPan(tx.value, bounds.maxX);
+          ty.value = clampPan(ty.value, bounds.maxY);
+        })
+        .onEnd(() => {
+          savedScale.value = scale.value;
+          savedTx.value = tx.value;
+          savedTy.value = ty.value;
+        })
+        // onFinalize also fires on cancellation — a broken gesture can
+        // never strand the overlay barely above scale 1, covering the
+        // pager.
+        .onFinalize(() => {
+          if (scale.value <= 1.02) {
+            scale.value = withTiming(1);
+            savedScale.value = 1;
+            tx.value = withTiming(0);
+            ty.value = withTiming(0);
+            savedTx.value = 0;
+            savedTy.value = 0;
+          }
+        })
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pagerGesture]);
+
+  /** Pan + double-tap on the zoom overlay — touchable only while zoomed
+   * (animated pointerEvents), so the pan never competes with the pager. */
+  const zoomedGesture = useMemo(() => {
     const pan = Gesture.Pan()
-      .enabled(zoomed)
+      // A SECOND pinch lands on the overlay, which has no pinch of its
+      // own — without this link the pan can out-race and cancel the
+      // ancestor pinch, freezing the zoom level (codex r50; DeckScreen
+      // carries the same link).
+      .simultaneousWithExternalGesture(zoomGesture)
       .minPointers(1)
       .maxPointers(2)
       .averageTouches(true)
       .onUpdate((event) => {
         if (scale.value <= 1) return;
-        const maxX = (stageW.value * (scale.value - 1)) / 2;
-        const maxY = (stageH.value * (scale.value - 1)) / 2;
-        tx.value = clampPan(savedTx.value + event.translationX, maxX);
-        ty.value = clampPan(savedTy.value + event.translationY, maxY);
+        const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
+        tx.value = clampPan(savedTx.value + event.translationX, bounds.maxX);
+        ty.value = clampPan(savedTy.value + event.translationY, bounds.maxY);
       })
       .onEnd(() => {
         savedTx.value = tx.value;
         savedTy.value = ty.value;
       });
+    // Double-tap resets zoom; the timing animation carries scale back to
+    // exactly 1, which is what hides the overlay and unfreezes paging.
     const doubleTap = Gesture.Tap()
       .numberOfTaps(2)
-      .enabled(zoomed)
       .onEnd(() => {
         scale.value = withTiming(1);
         savedScale.value = 1;
@@ -190,14 +211,34 @@ export function PhotoViewer({
         ty.value = withTiming(0);
         savedTx.value = 0;
         savedTy.value = 0;
-        runOnJS(setZoomed)(false);
       });
-    return Gesture.Simultaneous(pinch, pan, doubleTap);
+    return Gesture.Simultaneous(pan, doubleTap);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pagerGesture, zoomed]);
+  }, [zoomGesture]);
 
+  // Zoomed-ness is derived from `scale` on the UI thread: the overlay
+  // fades in past 1 and swallows the pager's touches for exactly as long
+  // as it is visible; the facts panel does the inverse.
   const zoomStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: tx.value }, { translateY: ty.value }, { scale: scale.value }],
+  }));
+  const zoomOverlayStyle = useAnimatedStyle(() => ({
+    opacity: scale.value > 1 ? 1 : 0,
+  }));
+  const zoomOverlayProps = useAnimatedProps(() => ({
+    pointerEvents: (scale.value > 1 ? 'auto' : 'none') as 'auto' | 'none',
+  }));
+  const panelStyle = useAnimatedStyle(() => ({
+    opacity: scale.value > 1 ? 0 : 1,
+  }));
+  // importantForAccessibility too: opacity 0 hides the panel from eyes
+  // and pointerEvents from touch, but its "Change decision" Pressable
+  // would otherwise stay focusable to TalkBack while invisible over the
+  // zoomed photo (codex r50).
+  const panelProps = useAnimatedProps(() => ({
+    pointerEvents: (scale.value > 1 ? 'none' : 'auto') as 'auto' | 'none',
+    importantForAccessibility: (scale.value > 1 ? 'no-hide-descendants' : 'auto') as
+      'no-hide-descendants' | 'auto',
   }));
 
   useEffect(() => {
@@ -236,9 +277,23 @@ export function PhotoViewer({
     [width, cursor, items],
   );
 
+  // Double-tap zooms to the tapped point — a Pressable press on the JS
+  // thread, exactly like the deck's (the bridge comment above); there is
+  // no single-tap action here.
+  const onPagePress = useDoubleTapZoom({
+    scale,
+    savedScale,
+    tx,
+    ty,
+    savedTx,
+    savedTy,
+    stageW,
+    stageH,
+    imageAspect,
+  });
   const renderPage = useCallback(
     ({ item }: { item: ViewerItem }) => (
-      <View style={{ width, height: '100%' }}>
+      <Pressable style={{ width, height: '100%' }} onPress={onPagePress}>
         <Image
           source={{ uri: item.uri }}
           style={StyleSheet.absoluteFill}
@@ -246,29 +301,25 @@ export function PhotoViewer({
           recyclingKey={item.id}
           transition={40}
         />
-      </View>
+      </Pressable>
     ),
-    [width],
+    [width, onPagePress],
   );
 
-  const meta = facts
-    ? stateMetaFor(theme.accent)[
-        classifyPhotoState({ state: facts.state, grouped: facts.group_id !== null })
-      ]
-    : null;
-  const organizeSuperseded =
-    facts?.organize_applied_at != null &&
-    (facts.organize_state === 'queued' || facts.organize_state === 'error');
+  const meta = facts ? VERDICT_META[classifyPhotoState({ state: facts.state })] : null;
+  const organizeSuperseded = facts?.organize_applied_at != null && facts.organize_queued === 1;
   const factLines: {
     icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
     text: string;
   }[] = [];
   if (facts) {
     if (facts.is_best === 1) factLines.push({ icon: 'star', text: 'Best of its group.' });
-    if (facts.favourite_state === 'applied')
-      factLines.push({ icon: 'heart', text: 'Favourited in your gallery.' });
-    else if (facts.favourite_state === 'queued_apply')
+    if (facts.favourite_queued === 1)
       factLines.push({ icon: 'heart-outline', text: 'Favourite queued for gallery confirmation.' });
+    else if (facts.favourite_queued === 0)
+      factLines.push({ icon: 'heart-off-outline', text: 'Favourite removal queued.' });
+    if (facts.needs_edit === 1)
+      factLines.push({ icon: 'pencil-outline', text: 'In the edit queue.' });
     if (facts.edit_completed_at != null)
       factLines.push({ icon: 'pencil', text: 'Was edited via the edit queue.' });
     if (shareQueued) factLines.push({ icon: 'share-variant', text: 'In the share queue.' });
@@ -279,13 +330,11 @@ export function PhotoViewer({
           ? 'Moved to an album once, but a newer move is still pending — the shown album is superseded until it applies.'
           : 'Moved to an album.',
       });
-    else if (facts.organize_state === 'queued')
+    else if (facts.organize_queued === 1)
       factLines.push({ icon: 'folder-clock', text: 'Album move queued.' });
-    if (facts.time_attached === 1)
-      factLines.push({
-        icon: 'clock-outline',
-        text: 'Grouped by time — this photo has no image signature yet, so it joined the group of its nearest neighbour.',
-      });
+    // time_attached is deliberately NOT surfaced (m0.8.2): internal scan
+    // quality the user cannot act on; the scan rewrites it once
+    // embeddings land (docs/STATE_MODEL.md).
     if (facts.user_single === 1)
       factLines.push({ icon: 'image-move', text: 'You marked it not related — it stays single.' });
   }
@@ -313,7 +362,6 @@ export function PhotoViewer({
                 renderItem={renderPage}
                 horizontal
                 pagingEnabled
-                scrollEnabled={!zoomed}
                 showsHorizontalScrollIndicator={false}
                 initialScrollIndex={cursor}
                 getItemLayout={(_data, index) => ({
@@ -324,16 +372,33 @@ export function PhotoViewer({
                 onMomentumScrollEnd={onMomentumEnd}
               />
             </GestureDetector>
-            {zoomed && (
-              <Animated.View style={[StyleSheet.absoluteFill, zoomStyle]} pointerEvents="none">
-                <Image
-                  source={{ uri: current.uri }}
-                  style={StyleSheet.absoluteFill}
-                  contentFit="contain"
-                  recyclingKey={`zoom-${current.id}`}
-                />
+            {/* Always mounted; visibility + touchability are UI-thread
+                animated props. Same URI as the pager page underneath, so
+                expo-image serves it from cache. */}
+            <GestureDetector gesture={zoomedGesture}>
+              {/* The opaque backdrop lives on this UNtransformed layer —
+                  on the transformed one it was one rounding error away
+                  from letting the pager's photo peek out at the edge
+                  when the clamp sits exactly at the coverage bound (see
+                  DeckScreen). The photo transforms INSIDE it. */}
+              <Animated.View
+                style={[StyleSheet.absoluteFill, { backgroundColor: '#000' }, zoomOverlayStyle]}
+                animatedProps={zoomOverlayProps}
+              >
+                <Animated.View style={[StyleSheet.absoluteFill, zoomStyle]}>
+                  <Image
+                    source={{ uri: current.uri }}
+                    style={StyleSheet.absoluteFill}
+                    contentFit="contain"
+                    recyclingKey={`zoom-${current.id}`}
+                    onLoad={(event) => {
+                      const { width, height } = event.source;
+                      if (width > 0 && height > 0) imageAspect.value = width / height;
+                    }}
+                  />
+                </Animated.View>
               </Animated.View>
-            )}
+            </GestureDetector>
           </View>
         </GestureDetector>
 
@@ -349,51 +414,53 @@ export function PhotoViewer({
           </Text>
         </View>
 
-        {!zoomed && (
-          <View style={[styles.panel, { paddingBottom: insets.bottom + 12 }]}>
-            {meta && facts ? (
-              <>
-                <View style={styles.stateLine}>
-                  <View style={[styles.swatch, { backgroundColor: meta.color }]} />
-                  <Text style={styles.stateLabel}>{meta.label}</Text>
-                  <Text style={styles.stateHint}>{meta.hint}</Text>
+        <Animated.View
+          style={[styles.panel, { paddingBottom: insets.bottom + 12 }, panelStyle]}
+          animatedProps={panelProps}
+        >
+          {meta && facts ? (
+            <>
+              <View style={styles.stateLine}>
+                <View style={[styles.swatch, { backgroundColor: meta.color }]} />
+                <Text style={styles.stateLabel}>{meta.label}</Text>
+              </View>
+              {factLines.map((line) => (
+                <View key={line.icon + line.text} style={styles.factLine}>
+                  <MaterialCommunityIcons name={line.icon} size={16} color={colors.textDim} />
+                  <Text style={styles.factText}>{line.text}</Text>
                 </View>
-                {factLines.map((line) => (
-                  <View key={line.icon + line.text} style={styles.factLine}>
-                    <MaterialCommunityIcons name={line.icon} size={16} color={colors.textDim} />
-                    <Text style={styles.factText}>{line.text}</Text>
-                  </View>
-                ))}
-                <Pressable
-                  style={styles.editState}
-                  onPress={() =>
-                    setEditing({
-                      id: facts.asset_id,
-                      uri: facts.uri,
-                      takenAt: facts.taken_at,
-                      effective: classifyPhotoState({
-                        state: facts.state,
-                        grouped: facts.group_id !== null,
-                      }),
-                      dbState: facts.state,
-                    })
-                  }
-                >
-                  <MaterialCommunityIcons name="pencil-outline" size={18} color={theme.accent} />
-                  <Text style={[styles.editStateText, { color: theme.accent }]}>
-                    Change decision
-                  </Text>
-                </Pressable>
-              </>
-            ) : (
-              <Text style={styles.factText}>
-                {facts === null
-                  ? 'Not tracked yet — it enters review when the scan reaches it.'
-                  : 'Loading…'}
-              </Text>
-            )}
-          </View>
-        )}
+              ))}
+              <Pressable
+                style={styles.editState}
+                onPress={() =>
+                  setEditing({
+                    id: facts.asset_id,
+                    uri: facts.uri,
+                    takenAt: facts.taken_at,
+                    effective: classifyPhotoState({ state: facts.state }),
+                    dbState: facts.state,
+                    // Layer 2 has to travel with layer 1: without it the
+                    // sheet offers "send to the edit queue" for a photo
+                    // ALREADY in it, and taking that offer re-queues the
+                    // row and wipes mod_time/content_hash — destroying
+                    // the live cycle's detection baseline instead of
+                    // completing it.
+                    editPending: facts.needs_edit === 1,
+                  })
+                }
+              >
+                <MaterialCommunityIcons name="pencil-outline" size={18} color={theme.accent} />
+                <Text style={[styles.editStateText, { color: theme.accent }]}>Change decision</Text>
+              </Pressable>
+            </>
+          ) : (
+            <Text style={styles.factText}>
+              {facts === null
+                ? 'Not tracked yet — it enters review when the scan reaches it.'
+                : 'Loading…'}
+            </Text>
+          )}
+        </Animated.View>
 
         <StateEditorSheet
           photo={editing}

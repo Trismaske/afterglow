@@ -34,24 +34,25 @@ export interface Cluster {
 }
 
 /**
- * Mobile review states (state machine, PLAN.md). From m0.8 a keep writes
- * `done` directly at swipe time — there is no interim kept state; every
- * verdict stays revisable until the final cull confirmation:
+ * A photo's VERDICT — layer 1 of the three-layer state model
+ * (docs/STATE_MODEL.md). One per photo, mutually exclusive:
  *
  * ```
- * unreviewed ──group/single review──┬─▶ culled ─▶ confirmed ─▶ trashed
- *                                   ├─▶ to_edit ─▶ done
- *                                   └─▶ done
+ * unreviewed ──review──┬─▶ culled ─▶ trashed   (staged, then executed)
+ *                      └─▶ kept
  * ```
+ *
+ * m0.8.2 shrank this list from six to four. `to_edit` left because a
+ * photo flagged for editing is simply KEPT with a pending edit — an
+ * action, not a verdict — and `done` was renamed `kept` so the verb on
+ * the button and the value in the column are finally the same word.
+ * `confirmed` left because nothing ever wrote it.
+ *
+ * Pending actions (edit, favourite, organize, share) and annotations
+ * (grouped, time-attached, best) are separate layers and never appear
+ * here.
  */
-export const PHOTO_STATES = [
-  'unreviewed',
-  'culled',
-  'confirmed',
-  'trashed',
-  'to_edit',
-  'done',
-] as const;
+export const PHOTO_STATES = ['unreviewed', 'kept', 'culled', 'trashed'] as const;
 export type PhotoState = (typeof PHOTO_STATES)[number];
 
 /** One compare outcome (m0.1+ duel history — mined by later features).

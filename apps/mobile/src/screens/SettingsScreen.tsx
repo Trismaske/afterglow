@@ -17,11 +17,12 @@ import {
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
-import { useSQLiteContext } from 'expo-sqlite';
+import { useSQLiteContext, type SQLiteDatabase } from 'expo-sqlite';
 import { useReview } from '../review/ReviewContext';
 import Constants from 'expo-constants';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -29,8 +30,18 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { resolveSources } from '../lib/sourceCatalog';
 import {
+  COVERAGE_GOAL_CHOICES,
+  COVERAGE_GOAL_KEY,
+  COVERAGE_GOAL_LABELS,
+  parseCoverageGoal,
+  serializeCoverageGoal,
+  type CoverageGoal,
+} from '../lib/coverageGoal';
+import {
   DAILY_GOAL_CHOICES,
   DAILY_GOAL_KEY,
+  DEFAULT_DAILY_GOAL,
+  parseCustomDailyGoal,
   parseDailyGoal,
   serializeDailyGoal,
 } from '../lib/dailyGoal';
@@ -41,7 +52,15 @@ import {
   STRICTNESS_STEPS,
   type StrictnessStep,
 } from '../lib/groupingPrefs';
-import { requestRescan, supersedeScan } from '../scan/scanRunner';
+import {
+  requestRescan,
+  SCAN_VERIFIED_AT_KEY,
+  subscribeScanStatus,
+  supersedeScan,
+  type ScanStatus,
+} from '../scan/scanRunner';
+import { scanStatusLine } from '../lib/scanSkip';
+import { countTrackedPhotos } from '../db/store';
 import { applyGroupingSettingChange } from '../db/store';
 import { COMPARE_AUTO_CULL_KEY, serializeCompareAutoCull } from '../lib/comparePrefs';
 import { getSetting, setSetting } from '../db/store';
@@ -51,6 +70,27 @@ import { colors, touch, useTheme } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Settings'>;
 
+/**
+ * The two facts the Library scan row states. FAILS CLOSED, quietly: an
+ * unreadable scope returns null and the row keeps what it had, rather
+ * than counting the whole library and calling it the user's selection.
+ */
+async function readScanFacts(
+  db: SQLiteDatabase,
+  roots: readonly string[] | null,
+): Promise<{ verifiedAt: number | null; corpus: number } | null> {
+  try {
+    const [rawAt, corpus] = await Promise.all([
+      getSetting(db, SCAN_VERIFIED_AT_KEY),
+      countTrackedPhotos(db, roots),
+    ]);
+    const parsed = rawAt === null ? NaN : Number(rawAt);
+    return { verifiedAt: Number.isFinite(parsed) ? parsed : null, corpus };
+  } catch {
+    return null;
+  }
+}
+
 export function SettingsScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const db = useSQLiteContext();
@@ -59,9 +99,22 @@ export function SettingsScreen({ navigation }: Props) {
   const systemAvailable = theme.systemAccent !== null;
   const [sourceLabel, setSourceLabel] = useState<string | null>(null);
   const [goal, setGoal] = useState<number | null>(null);
+  const [coverage, setCoverage] = useState<CoverageGoal | null>(null);
   const [strictness, setStrictness] = useState<StrictnessStep | null>(null);
   const [applying, setApplying] = useState(false);
   const applyingRef = useRef(false);
+  const [customGoalOpen, setCustomGoalOpen] = useState(false);
+  const [customGoalText, setCustomGoalText] = useState('');
+  const [customGoalError, setCustomGoalError] = useState<string | null>(null);
+  // "Are my numbers current?" answered with a fact. Home already
+  // re-checks on open and on foreground return, so a bare refresh button
+  // would imply a staleness that is not the normal state (m0.8.2).
+  const [scanFacts, setScanFacts] = useState<{ verifiedAt: number | null; corpus: number } | null>(
+    null,
+  );
+  const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
+  const customGoalActive =
+    goal !== null && !(DAILY_GOAL_CHOICES as readonly number[]).includes(goal);
 
   // While a strictness change applies (setting+reset txn, refresh,
   // possibly a rollback), EVERY exit is blocked — leaving mid-apply would
@@ -78,18 +131,22 @@ export function SettingsScreen({ navigation }: Props) {
     useCallback(() => {
       let cancelled = false;
       (async () => {
-        const [rawGoal, rawStrictness] = await Promise.all([
+        const [rawGoal, rawCoverage, rawStrictness] = await Promise.all([
           getSetting(db, DAILY_GOAL_KEY),
+          getSetting(db, COVERAGE_GOAL_KEY),
           getSetting(db, GROUPING_STRICTNESS_KEY),
         ]);
         if (!cancelled) {
           setGoal(parseDailyGoal(rawGoal));
+          setCoverage(parseCoverageGoal(rawCoverage));
           setStrictness(parseStrictness(rawStrictness));
         }
         // Resolving sources needs MediaStore access; without permission
         // (or on failure) the row still navigates, just without a label.
         const src = await resolveSources(db).catch(() => null);
         if (!cancelled) setSourceLabel(src?.label ?? null);
+        const facts = await readScanFacts(db, src?.roots ?? null);
+        if (!cancelled && facts) setScanFacts(facts);
       })();
       return () => {
         cancelled = true;
@@ -97,10 +154,51 @@ export function SettingsScreen({ navigation }: Props) {
     }, [db]),
   );
 
+  // The row's whole job is answering "are my numbers current?", so it
+  // must not go stale itself: a pass finishing while Settings is open
+  // re-reads the facts rather than leaving the line it just invalidated.
+  useEffect(
+    () =>
+      subscribeScanStatus((next) => {
+        setScanStatus(next);
+        if (next.phase !== 'done') return;
+        void (async () => {
+          const src = await resolveSources(db).catch(() => null);
+          const facts = await readScanFacts(db, src?.roots ?? null);
+          if (facts) setScanFacts(facts);
+        })();
+      }),
+    [db],
+  );
+
   const pickGoal = useCallback(
     (value: number) => {
       setGoal(value);
       void setSetting(db, DAILY_GOAL_KEY, serializeDailyGoal(value));
+    },
+    [db],
+  );
+
+  const openCustomGoal = useCallback(() => {
+    setCustomGoalText(String(goal));
+    setCustomGoalError(null);
+    setCustomGoalOpen(true);
+  }, [goal]);
+
+  const saveCustomGoal = useCallback(() => {
+    const parsed = parseCustomDailyGoal(customGoalText);
+    if ('error' in parsed) {
+      setCustomGoalError(parsed.error);
+      return;
+    }
+    pickGoal(parsed.goal);
+    setCustomGoalOpen(false);
+  }, [customGoalText, pickGoal]);
+
+  const pickCoverage = useCallback(
+    (value: CoverageGoal) => {
+      setCoverage(value);
+      void setSetting(db, COVERAGE_GOAL_KEY, serializeCoverageGoal(value));
     },
     [db],
   );
@@ -211,6 +309,46 @@ export function SettingsScreen({ navigation }: Props) {
           <Text style={styles.applyingText}>Applying grouping change…</Text>
         </View>
       </Modal>
+      <Modal
+        visible={customGoalOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCustomGoalOpen(false)}
+      >
+        <View style={styles.dialogScrim}>
+          <View style={styles.dialog}>
+            <Text style={styles.dialogTitle}>Photos per day</Text>
+            <TextInput
+              value={customGoalText}
+              onChangeText={(text) => {
+                setCustomGoalText(text);
+                setCustomGoalError(null);
+              }}
+              onSubmitEditing={saveCustomGoal}
+              keyboardType="number-pad"
+              returnKeyType="done"
+              autoFocus
+              selectTextOnFocus
+              style={[styles.dialogInput, { borderColor: theme.accent }]}
+              placeholder={String(DEFAULT_DAILY_GOAL)}
+              placeholderTextColor={colors.textDim}
+            />
+            {customGoalError !== null && <Text style={styles.dialogError}>{customGoalError}</Text>}
+            <View style={styles.dialogButtons}>
+              <Pressable
+                style={styles.dialogButton}
+                onPress={() => setCustomGoalOpen(false)}
+                hitSlop={8}
+              >
+                <Text style={styles.dialogButtonText}>Cancel</Text>
+              </Pressable>
+              <Pressable style={styles.dialogButton} onPress={saveCustomGoal} hitSlop={8}>
+                <Text style={[styles.dialogButtonText, { color: theme.accent }]}>Set goal</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
       <ScrollView
         style={styles.root}
         contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
@@ -244,6 +382,44 @@ export function SettingsScreen({ navigation }: Props) {
                 ]}
               >
                 <Text style={[styles.chipText, active && { color: theme.onAccent }]}>{value}</Text>
+              </Pressable>
+            );
+          })}
+          {/* Any goal off the chips shows its number here, so the current
+              setting is never invisible. */}
+          <Pressable
+            onPress={openCustomGoal}
+            style={[
+              styles.chip,
+              customGoalActive && { backgroundColor: theme.accent, borderColor: theme.accent },
+            ]}
+          >
+            <Text style={[styles.chipText, customGoalActive && { color: theme.onAccent }]}>
+              {customGoalActive ? `${goal} · Custom` : 'Custom'}
+            </Text>
+          </Pressable>
+        </View>
+
+        <Text style={styles.sectionLabel}>Keeping up</Text>
+        <Text style={styles.hint}>
+          A second, independent goal: leave nothing unreviewed from the last day or two — or aim for
+          the whole library. Photos without a capture date count only under “All time”.
+        </Text>
+        <View style={styles.chipRow}>
+          {COVERAGE_GOAL_CHOICES.map((value) => {
+            const active = coverage === value;
+            return (
+              <Pressable
+                key={value}
+                onPress={() => pickCoverage(value)}
+                style={[
+                  styles.chip,
+                  active && { backgroundColor: theme.accent, borderColor: theme.accent },
+                ]}
+              >
+                <Text style={[styles.chipText, active && { color: theme.onAccent }]}>
+                  {COVERAGE_GOAL_LABELS[value]}
+                </Text>
               </Pressable>
             );
           })}
@@ -326,6 +502,42 @@ export function SettingsScreen({ navigation }: Props) {
           )}
         </View>
 
+        <Text style={styles.sectionLabel}>Library scan</Text>
+        <View style={styles.row}>
+          <View style={styles.rowBody}>
+            <Text style={styles.rowTitle}>
+              {scanFacts === null && scanStatus?.phase !== 'scanning'
+                ? 'Checking…'
+                : scanStatusLine({
+                    verifiedAt: scanFacts?.verifiedAt ?? null,
+                    corpus: scanFacts?.corpus ?? 0,
+                    running:
+                      scanStatus?.phase === 'scanning'
+                        ? { scanned: scanStatus.scanned, total: scanStatus.total }
+                        : null,
+                  })}
+            </Text>
+            <Text style={styles.rowHint}>
+              Afterglow re-checks your library every time you open it. A full pass re-reads every
+              photo — normally unnecessary, but it is the fix if these numbers look wrong.
+            </Text>
+          </View>
+        </View>
+        <Pressable
+          style={[styles.row, scanStatus?.phase === 'scanning' && styles.rowDisabled]}
+          disabled={scanStatus?.phase === 'scanning'}
+          onPress={() => {
+            void requestRescan(db);
+            showToast('Rescanning your library…');
+          }}
+        >
+          <View style={styles.rowBody}>
+            <Text style={[styles.rowTitle, { color: theme.accent }]}>
+              {scanStatus?.phase === 'scanning' ? 'Scan in progress' : 'Rescan library'}
+            </Text>
+          </View>
+        </Pressable>
+
         <Text style={styles.sectionLabel}>Confirmations</Text>
         <Pressable style={styles.row} onPress={resetConfirmations}>
           <View style={styles.rowBody}>
@@ -350,6 +562,7 @@ export function SettingsScreen({ navigation }: Props) {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
+  rowDisabled: { opacity: 0.5 },
   content: { padding: 20, gap: 12 },
   hint: { color: colors.textDim, fontSize: 13, lineHeight: 18, marginBottom: 4 },
   applyingOverlay: {
@@ -360,6 +573,37 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   applyingText: { color: colors.text, fontSize: 15, fontWeight: '600' },
+  dialogScrim: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  dialog: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: colors.surface,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 20,
+    gap: 14,
+  },
+  dialogTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
+  dialogInput: {
+    color: colors.text,
+    fontSize: 20,
+    fontWeight: '700',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    minHeight: touch.action,
+  },
+  dialogError: { color: colors.cull, fontSize: 13 },
+  dialogButtons: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
+  dialogButton: { minHeight: touch.action, paddingHorizontal: 16, justifyContent: 'center' },
+  dialogButtonText: { color: colors.textDim, fontSize: 15, fontWeight: '700' },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: {
     paddingHorizontal: 14,
@@ -402,34 +646,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   explainer: { color: colors.textDim, fontSize: 13, lineHeight: 19 },
-  stepWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  stepChip: {
-    minHeight: 44,
-    borderRadius: touch.radius,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-    backgroundColor: colors.surfaceRaised,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  stepChipText: { color: colors.textDim, fontSize: 14, fontWeight: '600' },
   stepHint: { color: colors.textDim, fontSize: 12, fontStyle: 'italic' },
-  switchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    minHeight: 44,
-  },
-  sliderLabelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 4,
-  },
-  sliderValueLabel: { fontSize: 13, fontWeight: '700' },
-  resetRow: { minHeight: 40, alignItems: 'center', justifyContent: 'center' },
-  resetText: { fontSize: 14, fontWeight: '700' },
   accentWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   accentChip: {
     minHeight: 44,

@@ -25,6 +25,7 @@ import { dayKey } from '../lib/dates';
 import { ensureEmbeddings, newEngineHealth, type EngineHealth } from '../lib/embeddings';
 import {
   checkMediaPresence,
+  countPhotosInRange,
   fetchPhotoPageDesc,
   getAssetDetails,
   type LoadedPhoto,
@@ -35,21 +36,58 @@ import { frozenPhotos, reconcileWindowGroups } from '../lib/regroupBoundary';
 import { createWindowAccumulator } from '../lib/scanWindows';
 import { resolveSources } from '../lib/sourceCatalog';
 import { GROUPING_STRICTNESS_KEY, parseStrictness } from '../lib/groupingPrefs';
+import { scanCanSkip, scanFingerprint } from '../lib/scanSkip';
+import {
+  getMediaChangedSince,
+  getMediaGenerations,
+  type ChangedMediaRow,
+} from '../../modules/media-store-actions';
+import { canonicalPhotoId, PRIMARY_VOLUME } from '../lib/mediaIdentity';
+import { coveredBy, describeDeltaPlan, deltaVerdict, planDeltaRanges } from '../lib/deltaScan';
 import { waitForUserWrites } from '../lib/writePriority';
 import { fileSize } from '../lib/hash';
 import { ensureEmbeddingModel } from '../db/embeddingStore';
 import {
+  countTrackedPhotos,
+  getPhotoTimestamps,
   getGroupAssignments,
   getGroupMembers,
   getMetadataGroupIds,
   getPresentAssetIds,
   getSetting,
+  setSetting,
   getStatesForAssets,
   updatePhotoUri,
   writeContinuousGroups,
 } from '../db/store';
 
 const SCAN_PAGE_SIZE = 200;
+/** Settings key: fingerprint of the last COMPLETE clean pass. */
+const SCAN_FINGERPRINT_KEY = 'scan_fingerprint';
+/** Per-volume generation the last COMPLETE clean pass observed, as JSON
+ * — the delta scan's baseline: "everything up to here is accounted
+ * for". Advanced only by a pass entitled to claim it (see finishPass). */
+const SCAN_GENERATIONS_KEY = 'scan_generations';
+/**
+ * When the library was last VERIFIED current (epoch ms, as a string).
+ *
+ * Written by a complete clean pass AND by a skip, because a skip is
+ * OS-level proof that nothing changed — just as good an answer to "are
+ * my numbers current?" as a pass, and cheaper. Recording only passes
+ * would leave a phone that verifies daily reading "last full pass 6 days
+ * ago", implying a staleness it has actually disproved every day
+ * (m0.8.2).
+ */
+export const SCAN_VERIFIED_AT_KEY = 'scan_verified_at';
+/** When the last FULL pass finished (epoch ms). Distinct from the
+ * verification stamp: only a full pass enumerates everything, so only a
+ * full pass can find a photo deleted with no trace. */
+const SCAN_FULL_AT_KEY = 'scan_full_at';
+/** A full pass runs at least this often, whatever the delta thinks.
+ * The backstop for the one deletion a delta cannot see: a PERMANENT
+ * delete (no trash) hidden behind an add, which leaves the counts equal
+ * and the change query silent. */
+const FULL_PASS_MAX_AGE_MS = 7 * 86_400_000;
 
 export interface ScanStatus {
   phase: 'idle' | 'scanning' | 'done' | 'error';
@@ -59,6 +97,17 @@ export interface ScanStatus {
   embedded: number;
   /** Merge windows grouped and persisted this run. */
   windowsGrouped: number;
+  /** THIS pass's progress denominator (m0.8.2, F3): the in-source
+   * MediaStore count for a FULL pass; null for a delta (its coverage is
+   * a handful of ranges — the line shows counts instead) and until the
+   * cheap totalCount query lands or when it failed (the scan itself
+   * never depends on it). Clamp on use: photos land mid-scan. */
+  total: number | null;
+  /** The library-size snapshot taken at pass start (F4): while a scan
+   * runs, Home's "N pictures total" line reads THIS number, so the card
+   * and the scan line can never quote two different library sizes. For
+   * a full pass it equals `total` by construction. */
+  corpusTotal: number | null;
   /** A model swap discarded stored vectors at the start of this run. */
   modelReembed: boolean;
   error?: string;
@@ -69,6 +118,8 @@ const IDLE: ScanStatus = {
   scanned: 0,
   embedded: 0,
   windowsGrouped: 0,
+  total: null,
+  corpusTotal: null,
   modelReembed: false,
 };
 
@@ -101,9 +152,13 @@ let scanGeneration = 0;
  * the run finishes. Errors land in the status (phase 'error') and never
  * throw — the next app open retries from durable state.
  */
-export function startContinuousScan(db: SQLiteDatabase): Promise<void> {
+export function startContinuousScan(
+  db: SQLiteDatabase,
+  options: { force?: boolean } = {},
+): Promise<void> {
   if (flight) return flight;
-  flight = scan(db)
+  const force = options.force ?? false;
+  flight = scan(db, force)
     .catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       console.warn('[scan] failed:', message);
@@ -113,7 +168,9 @@ export function startContinuousScan(db: SQLiteDatabase): Promise<void> {
       flight = null;
       if (rescanQueued) {
         rescanQueued = false;
-        void startContinuousScan(db);
+        // A queued rescan came from a settings apply/reset — forced (it
+        // may rewrite scan OUTPUT without changing scan INPUT).
+        void startContinuousScan(db, { force: true });
       }
     });
   return flight;
@@ -132,7 +189,10 @@ export function requestRescan(db: SQLiteDatabase): Promise<void> {
     supersedeScan();
     return flight;
   }
-  return startContinuousScan(db);
+  // FORCED: setting applies and resets rewrite scan output (groups,
+  // scopes) without necessarily changing the fingerprint's inputs —
+  // the unchanged-library skip must not swallow them.
+  return startContinuousScan(db, { force: true });
 }
 
 /**
@@ -145,7 +205,246 @@ export function supersedeScan(): void {
   scanGeneration += 1;
 }
 
-async function scan(db: SQLiteDatabase): Promise<void> {
+/** The whole library, in the shape a delta range takes — a full pass is
+ * a delta pass over one unbounded range, which is why they share code. */
+const FULL_RANGE = { startMs: 0, endMs: Number.POSITIVE_INFINITY };
+
+interface TimeRange {
+  startMs: number;
+  endMs: number;
+}
+
+/**
+ * Page these time ranges and group every merge window they close.
+ *
+ * THE SAME function serves a full pass (one unbounded range) and a delta
+ * pass (the walked windows around what changed). Sharing it is what makes
+ * "a delta produces the groups a full pass would" structural rather than
+ * a claim: the two cannot drift apart, because there is only one of them.
+ *
+ * Returns the ids enumerated, or null when a settings change superseded
+ * the run mid-flight.
+ */
+async function pageAndGroup(
+  db: SQLiteDatabase,
+  args: {
+    ranges: readonly TimeRange[];
+    albumIds: readonly string[] | undefined;
+    baseThreshold: number;
+    engine: EngineHealth;
+    superseded: () => boolean;
+  },
+): Promise<Set<string> | null> {
+  const { ranges, albumIds, baseThreshold, engine, superseded } = args;
+  const buckets: (string | undefined)[] = albumIds ? [...albumIds] : [undefined];
+  // One fetcher per (range × bucket), merged into ONE descending stream —
+  // so a window straddling two ranges still reaches the accumulator in
+  // order, exactly as it would in a single unbounded walk.
+  const fetchers: PageFetcher<LoadedPhoto, string>[] = [];
+  for (const range of ranges) {
+    for (const albumId of buckets) {
+      // INCLUSIVE bounds → EXCLUSIVE query. fetchPhotoPageDesc renders
+      // `DATE_TAKEN > start AND DATE_TAKEN < end`, but a walked window's
+      // bounds ARE photos — so querying them raw drops the window's first
+      // and last members, and a single-photo window matches nothing at
+      // all. Timestamps are whole milliseconds, so widening by 1 ms
+      // includes exactly the boundary photos and nothing else.
+      const from = range.startMs > 0 ? range.startMs - 1 : 0;
+      const to = Number.isFinite(range.endMs) ? range.endMs + 1 : range.endMs;
+      fetchers.push(async (cursor, count) => {
+        const page = await fetchPhotoPageDesc(from, to, albumId, cursor, count);
+        return { items: page.photos, nextCursor: page.hasNext ? (page.endCursor ?? null) : null };
+      });
+    }
+  }
+  const pager = createMergedDescendingPager(fetchers, (photo) => photo.item.timestamp);
+
+  const accumulator = createWindowAccumulator(ADJACENT_MERGE_MAX_GAP_MS);
+  const seenIds = new Set<string>();
+  // MediaStore orders the stream by DATE_TAKEN — undated photos land at
+  // the END with mtime-fallback timestamps that would violate the
+  // accumulator's descending contract. They get their own ordered passes
+  // in memory-bounded BATCHES: every batch sorts by effective time and
+  // windows among itself (a boundary may split a would-be window — the
+  // price of not buffering an unbounded undated set, e.g. WhatsApp
+  // libraries where DATE_TAKEN is commonly null). Nothing is discarded.
+  const undated: LoadedPhoto[] = [];
+  const UNDATED_BATCH = 5_000;
+  let stopped = false;
+  const processUndatedBatch = async (batch: LoadedPhoto[]): Promise<void> => {
+    if (batch.length === 0) return;
+    const tail = createWindowAccumulator(ADJACENT_MERGE_MAX_GAP_MS);
+    for (const photo of batch.sort((a, b) => b.item.timestamp - a.item.timestamp)) {
+      for (const window of tail.feed(photo)) {
+        if (superseded()) {
+          stopped = true;
+          return;
+        }
+        await processWindow(db, window, engine, baseThreshold, superseded);
+      }
+    }
+    for (const window of tail.flush()) {
+      if (superseded()) {
+        stopped = true;
+        return;
+      }
+      await processWindow(db, window, engine, baseThreshold, superseded);
+    }
+  };
+  for (;;) {
+    if (superseded()) return null;
+    const photos = await pager.next(SCAN_PAGE_SIZE);
+    if (photos.length === 0) break;
+    for (const photo of photos) seenIds.add(photo.item.id);
+    update({ scanned: status.scanned + photos.length });
+    for (const photo of photos) {
+      if (photo.undated) {
+        undated.push(photo);
+        if (undated.length >= UNDATED_BATCH) {
+          await processUndatedBatch(undated.splice(0));
+          if (stopped) return null;
+        }
+        continue;
+      }
+      for (const window of accumulator.feed(photo)) {
+        if (superseded()) return null;
+        await processWindow(db, window, engine, baseThreshold, superseded);
+      }
+    }
+  }
+  if (superseded()) return null;
+  for (const window of accumulator.flush()) {
+    if (superseded()) return null;
+    await processWindow(db, window, engine, baseThreshold, superseded);
+  }
+  await processUndatedBatch(undated.splice(0));
+  return stopped ? null : seenIds;
+}
+
+/** Is a full reconciliation pass overdue? Never having run one counts. */
+async function fullPassDue(db: SQLiteDatabase): Promise<boolean> {
+  const at = Number(await getSetting(db, SCAN_FULL_AT_KEY));
+  return !Number.isFinite(at) || Date.now() - at > FULL_PASS_MAX_AGE_MS;
+}
+
+interface DeltaDecision {
+  ranges: TimeRange[];
+  /** Rows MediaStore reports as trashed — deletions, made visible. */
+  trashedIds: string[];
+}
+
+/**
+ * Decide whether this pass can be a delta, and over which ranges.
+ *
+ * Returns null for "run a full pass" — every uncertainty resolves that
+ * way, because a full pass is exactly what shipped before the delta
+ * existed. A forced rescan, a model swap, a missing baseline, an
+ * unreadable change set or a cost model that says the delta is not a
+ * decisive win all land here.
+ */
+async function planPass(
+  db: SQLiteDatabase,
+  generations: Readonly<Record<string, number>>,
+  sources: { roots: readonly string[] | null; albumIds: readonly string[] | null },
+  force: boolean,
+): Promise<DeltaDecision | null> {
+  if (force) return null;
+  const roots = sources.roots;
+  try {
+    const raw = await getSetting(db, SCAN_GENERATIONS_KEY);
+    if (raw === null) return null; // no baseline: the first pass must be full
+    const previous = JSON.parse(raw) as Record<string, number>;
+    const volumes = Object.keys(generations);
+    // A volume the baseline never saw (a card inserted since) has no
+    // "since" to query from — only a full pass can take it in.
+    if (volumes.some((volume) => previous[volume] === undefined)) return null;
+    const changed: ChangedMediaRow[] = [];
+    for (const volume of volumes) {
+      if (previous[volume] === generations[volume]) continue;
+      changed.push(...(await getMediaChangedSince(volume, previous[volume])));
+    }
+    const timestamps = await getPhotoTimestamps(db, roots);
+    // COUNT TRIPWIRE. MediaStore has NO deletion tombstone: a removed row
+    // simply vanishes, and the generation counter does not say what it
+    // counted, so no change query can ever report a delete that bypassed
+    // the system trash. Holding FEWER photos than we track is the only
+    // evidence such a delete leaves. Only "fewer" trips it — more just
+    // means photos we have not ingested yet, the delta's normal input,
+    // which is why the same comparison runs AGAIN after the pass.
+    const mediaTotal = await countPhotosInRange(
+      0,
+      Number.POSITIVE_INFINITY,
+      sources.albumIds ?? undefined,
+    );
+    console.log(`[scan] delta tripwire: MediaStore ${mediaTotal} vs tracked ${timestamps.length}`);
+    if (mediaTotal < timestamps.length) {
+      console.log(
+        `[scan] delta: ${timestamps.length - mediaTotal} tracked photos are gone from ` +
+          `MediaStore with no trace — full pass to reconcile`,
+      );
+      return null;
+    }
+    const plan = planDeltaRanges(changed, timestamps, ADJACENT_MERGE_MAX_GAP_MS);
+    const verdict = deltaVerdict({
+      covered: coveredBy(timestamps, plan.ranges),
+      changed: plan.changed,
+      ranges: plan.ranges.length,
+      corpus: timestamps.length,
+    });
+    console.log(`[scan] ${describeDeltaPlan(plan, verdict)}`);
+    // An UNDATED change (neither capture nor modification time) cannot be
+    // placed in any range, so no delta can cover it — fall back rather
+    // than silently leaving it ungrouped.
+    if (plan.undated > 0) return null;
+    if (!verdict.worthIt) return null;
+    return {
+      ranges: plan.ranges,
+      // PRIMARY_VOLUME, not the row's real volume — INGESTION keys every
+      // photo that way (lib/media.ts `toLoadedPhoto`), so using the true
+      // volume here would build an id the DB has never seen and the
+      // reconcile would silently no-op for anything on an SD card. Both
+      // sides move together when identity is fixed (docs/TODO.md,
+      // "Real volume identity at ingestion").
+      trashedIds: changed
+        .filter((row) => row.isTrashed)
+        .map((row) => canonicalPhotoId(PRIMARY_VOLUME, row.rawId)),
+    };
+  } catch (error) {
+    console.log(`[scan] delta unavailable, running a full pass: ${String(error)}`);
+    return null;
+  }
+}
+
+/**
+ * Persist the "this library is current" evidence — but only for a pass
+ * that is entitled to claim it: not superseded, no engine errors (failed
+ * embeds re-attempt next pass, and a stored fingerprint would freeze
+ * their time-attached gaps), and reconciliation not capped. The
+ * fingerprint was read at pass START, so photos landing mid-scan
+ * mismatch on the next open.
+ */
+async function finishPass(
+  db: SQLiteDatabase,
+  args: {
+    superseded: () => boolean;
+    engine: EngineHealth;
+    fingerprint: string;
+    generations: Readonly<Record<string, number>>;
+    unseenOverCap: boolean;
+    wasFullPass: boolean;
+  },
+): Promise<void> {
+  const { superseded, engine, fingerprint, generations, unseenOverCap } = args;
+  if (superseded() || engine.dead || engine.engineErrors > 0 || unseenOverCap) return;
+  await setSetting(db, SCAN_FINGERPRINT_KEY, fingerprint);
+  await setSetting(db, SCAN_GENERATIONS_KEY, JSON.stringify(generations));
+  await setSetting(db, SCAN_VERIFIED_AT_KEY, String(Date.now()));
+  // Only a FULL pass may restart the weekly clock — a delta never
+  // enumerated everything, so it cannot stand in for the reconciliation.
+  if (args.wasFullPass) await setSetting(db, SCAN_FULL_AT_KEY, String(Date.now()));
+}
+
+async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   const generation = scanGeneration;
   const superseded = (): boolean => generation !== scanGeneration;
   status = { ...IDLE, phase: 'scanning' };
@@ -160,82 +459,155 @@ async function scan(db: SQLiteDatabase): Promise<void> {
   }
 
   const sources = await resolveSources(db);
-  const buckets: (string | undefined)[] = sources.albumIds ?? [undefined];
-  const fetchers: PageFetcher<LoadedPhoto, string>[] = buckets.map(
-    (albumId) => async (cursor, count) => {
-      // Open-ended: undated photos (no DATE_TAKEN) must enter the scan.
-      const page = await fetchPhotoPageDesc(0, Number.POSITIVE_INFINITY, albumId, cursor, count);
-      return { items: page.photos, nextCursor: page.hasNext ? (page.endCursor ?? null) : null };
-    },
-  );
-  const pager = createMergedDescendingPager(fetchers, (photo) => photo.item.timestamp);
+  const rawStrictness = await getSetting(db, GROUPING_STRICTNESS_KEY);
+
+  // UNCHANGED-LIBRARY SKIP (m0.8.1): a full pass costs ~6 min of CPU on
+  // a 27k corpus and used to run on EVERY app open. MediaStore's
+  // per-volume generation bumps on any insert/update/delete, so a
+  // fingerprint (generations + scope + strictness + model) matching the
+  // last COMPLETE clean pass is OS-level proof the pass is a no-op.
+  const generations = await getMediaGenerations().catch(() => ({}));
+  const fingerprint = scanFingerprint({
+    generations,
+    roots: sources.roots ?? null,
+    strictness: rawStrictness,
+    modelSha: MODEL_SHA256,
+  });
+  // PERIODIC FULL PASS, checked BEFORE the skip so it cannot be starved
+  // by it. A permanent delete (no system trash) removes the row with no
+  // tombstone and no generation record: no delta can see it, and once a
+  // later pass stores the moved generation the skip would then match
+  // forever with the stale row still in the queue. This is the guarantee
+  // that such a row is eventually reconciled.
+  const fullDue = await fullPassDue(db);
+  if (fullDue) console.log('[scan] full pass due — weekly reconciliation');
+  if (!force && !model.cleared && !fullDue) {
+    const stored = await getSetting(db, SCAN_FINGERPRINT_KEY);
+    if (scanCanSkip({ generations, stored, current: fingerprint })) {
+      update({ phase: 'done' });
+      // The skip IS the verification — record it, or Settings would
+      // report a staleness this call just disproved.
+      await setSetting(db, SCAN_VERIFIED_AT_KEY, String(Date.now()));
+      console.log('[scan] library unchanged since last complete pass — skipped');
+      return;
+    }
+  }
 
   // Grouping strictness (gate 4): the ONE user control over the engine —
   // read once per run; a change mid-run applies from the next scan.
-  const strictness = parseStrictness(await getSetting(db, GROUPING_STRICTNESS_KEY));
-
-  const accumulator = createWindowAccumulator(ADJACENT_MERGE_MAX_GAP_MS);
+  const strictness = parseStrictness(rawStrictness);
   const engine = newEngineHealth();
-  const seenIds = new Set<string>();
-  // MediaStore orders the stream by DATE_TAKEN — undated photos land at
-  // the END with mtime-fallback timestamps that would violate the
-  // accumulator's descending contract. They get their own ordered passes
-  // in memory-bounded BATCHES: every batch sorts by effective time and
-  // windows among itself (a boundary may split a would-be window — the
-  // price of not buffering an unbounded undated set, e.g. WhatsApp
-  // libraries where DATE_TAKEN is commonly null). Nothing is discarded.
-  const undated: LoadedPhoto[] = [];
-  const UNDATED_BATCH = 5_000;
-  const processUndatedBatch = async (batch: LoadedPhoto[]): Promise<void> => {
-    if (batch.length === 0) return;
-    const tail = createWindowAccumulator(ADJACENT_MERGE_MAX_GAP_MS);
-    for (const photo of batch.sort((a, b) => b.item.timestamp - a.item.timestamp)) {
-      for (const window of tail.feed(photo)) {
-        if (superseded()) return; // same fence as the dated stream
-        await processWindow(db, window, engine, strictness.baseThreshold, superseded);
-      }
-    }
-    for (const window of tail.flush()) {
-      if (superseded()) return;
-      await processWindow(db, window, engine, strictness.baseThreshold, superseded);
-    }
-  };
-  for (;;) {
-    if (superseded()) {
+
+  // Library snapshot for the status line and Home's card (m0.8.2, F3/F4)
+  // — fetched AFTER the skip check, so an unchanged open stays one
+  // native call. countPhotosInRange carries a 20 s cache, so planPass's
+  // own tripwire count below reuses this query rather than paying twice.
+  const corpusTotal = await countPhotosInRange(
+    0,
+    Number.POSITIVE_INFINITY,
+    sources.albumIds ?? undefined,
+  ).catch((error): null => {
+    console.warn(
+      '[scan] corpus count failed — progress shows counts, not a percent:',
+      String(error),
+    );
+    return null;
+  });
+  update({ corpusTotal });
+
+  // DELTA vs FULL (m0.8.2 phase 2). Both run the SAME grouping code
+  // below, differing only in which time ranges they page — which is what
+  // makes "a delta produces the groups a full pass would" a structural
+  // property rather than a hope.
+  const decision = await planPass(
+    db,
+    generations,
+    { roots: sources.roots ?? null, albumIds: sources.albumIds ?? null },
+    force || model.cleared || fullDue,
+  );
+
+  if (decision) {
+    const deltaScanned = await pageAndGroup(db, {
+      ranges: decision.ranges,
+      albumIds: sources.albumIds ?? undefined,
+      baseThreshold: strictness.baseThreshold,
+      engine,
+      superseded,
+    });
+    if (deltaScanned === null) {
       console.log('[scan] superseded by a settings change — stopping for the queued rescan');
       return;
     }
-    const photos = await pager.next(SCAN_PAGE_SIZE);
-    if (photos.length === 0) break;
-    for (const photo of photos) seenIds.add(photo.item.id);
-    update({ scanned: status.scanned + photos.length });
-    for (const photo of photos) {
-      if (photo.undated) {
-        undated.push(photo);
-        if (undated.length >= UNDATED_BATCH) await processUndatedBatch(undated.splice(0));
-        continue;
-      }
-      for (const window of accumulator.feed(photo)) {
-        if (superseded()) {
-          console.log('[scan] superseded by a settings change — stopping for the queued rescan');
-          return;
-        }
-        await processWindow(db, window, engine, strictness.baseThreshold, superseded);
-      }
+    // A DELTA enumerated only its ranges, so "not seen" means nothing and
+    // the removal reconciliation below cannot run. Deletions arrive by a
+    // different route: on Android 11+ a gallery delete TRASHES the row,
+    // which the change query reports directly (measured on device).
+    // Those rows are acted on HERE rather
+    // than by re-paging their range, because MediaStore filters trashed
+    // rows out of the paging the scan does.
+    if (decision.trashedIds.length > 0) {
+      await reconcileExternallyRemoved(db, decision.trashedIds, Date.now());
+      console.log(`[scan] delta: ${decision.trashedIds.length} trashed photos left the queue`);
     }
+    // POST-DELTA CONSISTENCY CHECK. Having just ingested everything new,
+    // the two counts must agree. The tripwire before the pass is
+    // one-directional by necessity — MediaStore holding MORE than we
+    // track is the delta's normal input — so a silently MISSED ADDITION
+    // is invisible to it and would otherwise sit until the weekly
+    // reconciliation. Checked here instead, and repaired immediately.
+    const [mediaAfter, trackedAfter] = await Promise.all([
+      countPhotosInRange(0, Number.POSITIVE_INFINITY, sources.albumIds ?? undefined),
+      countTrackedPhotos(db, sources.roots ?? null),
+    ]);
+    if (mediaAfter === trackedAfter) {
+      await finishPass(db, {
+        superseded,
+        engine,
+        fingerprint,
+        generations,
+        unseenOverCap: false,
+        wasFullPass: false,
+      });
+      update({ phase: 'done' });
+      console.log(
+        `[scan] delta done: ${status.scanned} in ${decision.ranges.length} ranges, ` +
+          `embedded ${status.embedded} fresh, ${status.windowsGrouped} windows grouped`,
+      );
+      return;
+    }
+    // Loud, and repaired NOW rather than queued: the library is provably
+    // inconsistent, and leaving it that way until the next open would
+    // show the user counts that disagree with their gallery.
+    console.warn(
+      `[scan] delta left the library inconsistent (MediaStore ${mediaAfter} vs tracked ` +
+        `${trackedAfter}) — running a full pass immediately`,
+    );
+    // The full pass is a fresh enumeration; its progress line must not
+    // continue the delta's count — and it now has a denominator, the
+    // count the consistency check just took (fresher than the snapshot).
+    // `windowsGrouped` deliberately keeps counting: the refresh
+    // subscribers diff it, and a rewind would silence them until the new
+    // run caught up past the old value.
+    update({ scanned: 0, total: mediaAfter, corpusTotal: mediaAfter });
   }
-  if (superseded()) {
+
+  // A FULL pass's denominator is the library snapshot (F3 — the percent
+  // branch); a delta keeps total null and the line shows plain counts.
+  if (status.total === null) update({ total: status.corpusTotal });
+
+  const scanned = await pageAndGroup(db, {
+    ranges: [FULL_RANGE],
+    albumIds: sources.albumIds ?? undefined,
+    baseThreshold: strictness.baseThreshold,
+    engine,
+    superseded,
+  });
+  if (scanned === null) {
     console.log('[scan] superseded by a settings change — stopping for the queued rescan');
     return;
   }
-  for (const window of accumulator.flush()) {
-    if (superseded()) {
-      console.log('[scan] superseded by a settings change — stopping for the queued rescan');
-      return;
-    }
-    await processWindow(db, window, engine, strictness.baseThreshold, superseded);
-  }
-  await processUndatedBatch(undated.splice(0));
+  const seenIds = scanned;
+
   // Backstop for tiny corpora that never reached the consecutive-error
   // threshold: a scan with engine errors and literally zero successes must
   // never end as 'done' with time-only groups posing as grouped output.
@@ -245,6 +617,7 @@ async function scan(db: SQLiteDatabase): Promise<void> {
         `0 of ${engine.attempts} fresh embeds succeeded`,
     );
   }
+
   // A COMPLETE pass enumerated every in-source MediaStore photo, so a
   // tracked present row the pager never met was removed outside Afterglow.
   // Absence-from-enumeration alone is not authoritative (photos can land
@@ -282,6 +655,15 @@ async function scan(db: SQLiteDatabase): Promise<void> {
     await reconcileExternallyRemoved(db, gone, Date.now());
     console.log(`[scan] reconciled ${gone.length} externally removed photos`);
   }
+
+  await finishPass(db, {
+    superseded,
+    engine,
+    fingerprint,
+    generations,
+    unseenOverCap: unseen.length > RECONCILE_CAP,
+    wasFullPass: true,
+  });
 
   update({ phase: 'done' });
   // One summary line per run — the only permanent scan log besides errors

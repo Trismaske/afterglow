@@ -5,15 +5,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
-import {
-  getDayReviewSummary,
-  getLifetimeStats,
-  getReviewedCountsByDay,
-  getSetting,
-  type LifetimeStats,
-} from '../db/store';
-import { dayKey, recentDayKeys } from '../lib/dates';
-import { DAILY_GOAL_KEY, goalStreaks, parseDailyGoal } from '../lib/dailyGoal';
+import type { LifetimeStats } from '../db/store';
+import { dayKey } from '../lib/dates';
+// The Stats page shares this loader — the two surfaces render the same
+// today/all-time numbers from ONE query set, so they cannot drift.
+import { loadDecisionStats } from '../lib/statsLoad';
+import { resolveSources } from '../lib/sourceCatalog';
 import { BigButton } from '../components/BigButton';
 import { colors, touch, useTheme } from '../theme';
 import { formatBytes } from '../lib/format';
@@ -31,7 +28,7 @@ export function SummaryScreen({ navigation }: Props) {
   >(null);
   const [today, setToday] = useState<{
     reviewed: number;
-    done: number;
+    kept: number;
     staged: number;
     trashed: number;
   } | null>(null);
@@ -39,25 +36,26 @@ export function SummaryScreen({ navigation }: Props) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const todayKey = dayKey(Date.now());
-      const keys = recentDayKeys(120);
-      const [reviewedByDay, rawGoal, totals, todaySummary] = await Promise.all([
-        getReviewedCountsByDay(db, keys[keys.length - 1] ?? todayKey),
-        getSetting(db, DAILY_GOAL_KEY),
-        getLifetimeStats(db),
-        // Decision-day summary: older photos reviewed today count too.
-        getDayReviewSummary(db, todayKey),
-      ]);
+      // Summary shares Home's numbers, so it must share Home's SCOPE —
+      // an unscoped "today" here beside a scoped one there would be two
+      // answers to one question. Resolution failure falls back to null
+      // rather than throwing: this screen appears straight after a cull
+      // confirmation and must not be breakable by the catalog.
+      let sources: { roots: string[] | null; albumIds: string[] | null } | null = null;
+      try {
+        const resolved = await resolveSources(db);
+        sources = { roots: resolved.roots ?? null, albumIds: resolved.albumIds ?? null };
+      } catch (error) {
+        console.warn('[summary] source resolution failed — counts unscoped:', String(error));
+      }
+      const stats = await loadDecisionStats(db, sources);
       if (cancelled) return;
-      // Streak days are GOAL-REACHED days (gate 4 definition — same math
-      // as the Home ring).
-      const streaks = goalStreaks(reviewedByDay, [...keys].reverse(), parseDailyGoal(rawGoal));
       setLifetime({
-        ...totals,
-        currentStreak: streaks.current,
-        longestStreak: streaks.longest,
+        ...stats.lifetime,
+        currentStreak: stats.streaks.current,
+        longestStreak: stats.streaks.longest,
       });
-      setToday(todaySummary);
+      setToday(stats.today);
     })();
     return () => {
       cancelled = true;
@@ -74,9 +72,10 @@ export function SummaryScreen({ navigation }: Props) {
   }
 
   return (
+    // The native header (back hidden, title "Summary") eats the top inset.
     <ScrollView
       style={styles.root}
-      contentContainerStyle={{ paddingTop: insets.top + 24, paddingBottom: insets.bottom + 16 }}
+      contentContainerStyle={{ paddingTop: 24, paddingBottom: insets.bottom + 16 }}
     >
       <View style={styles.titleRow}>
         <MaterialCommunityIcons name="weather-sunset" size={30} color={theme.accent} />
@@ -86,7 +85,7 @@ export function SummaryScreen({ navigation }: Props) {
 
       <View style={styles.grid}>
         <Stat value={String(stats.reviewed)} label="reviewed today" />
-        <Stat value={String(stats.done)} label="keepers" />
+        <Stat value={String(stats.kept)} label="keepers" />
         <Stat value={String(stats.staged)} label="staged to cull" />
         <Stat value={String(stats.trashed)} label="culled to trash" />
       </View>
@@ -170,7 +169,6 @@ const styles = StyleSheet.create({
   },
   statValue: { fontSize: 30, fontWeight: '800' },
   statLabel: { color: colors.textDim, fontSize: 13 },
-  footnote: { color: colors.textDim, fontSize: 12, marginTop: 10, paddingHorizontal: 20 },
   lifetimeCard: {
     marginHorizontal: 20,
     marginTop: 18,
@@ -188,13 +186,6 @@ const styles = StyleSheet.create({
   lifetimeValue: { color: colors.text, fontSize: 21, fontWeight: '800' },
   lifetimeLabel: { color: colors.textDim, fontSize: 11, lineHeight: 15 },
   reclaimedAllTime: { color: colors.textDim, fontSize: 13 },
-  editNote: {
-    color: colors.edit,
-    fontSize: 14,
-    marginTop: 14,
-    lineHeight: 20,
-    marginHorizontal: 20,
-  },
   warning: {
     color: colors.cull,
     fontSize: 14,

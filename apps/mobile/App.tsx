@@ -1,18 +1,15 @@
 import React, { Suspense, useEffect, useMemo } from 'react';
-import { ActivityIndicator, Alert, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { SQLiteProvider } from 'expo-sqlite';
 import { DarkTheme, NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { createBottomTabNavigator, type BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { MainTabParamList, RootStackParamList } from './src/navigation';
-import { countFavouriteQueue, countToEdit } from './src/db/store';
-import { countShareQueue } from './src/db/shareStore';
-import { countOrganizeQueue } from './src/db/organizeStore';
+import { countQueues } from './src/db/actions';
 import { DATABASE_NAME, migrateDatabase } from './src/db/database';
 import { ReviewProvider, useReview } from './src/review/ReviewContext';
 import { HomeScreen } from './src/screens/HomeScreen';
@@ -26,84 +23,89 @@ import { FavouritesQueueScreen } from './src/screens/FavouritesQueueScreen';
 import { ShareQueueScreen } from './src/screens/ShareQueueScreen';
 import { OrganizeQueueScreen } from './src/screens/OrganizeQueueScreen';
 import { HistoryScreen } from './src/screens/HistoryScreen';
+import { StatsScreen } from './src/screens/StatsScreen';
 import { DayProgressScreen } from './src/screens/DayProgressScreen';
 import { ProgressScreen } from './src/screens/ProgressScreen';
 import { SourcePickerScreen } from './src/screens/SourcePickerScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
 import { colors, ThemeProvider, useTheme } from './src/theme';
+import { MainTabBar } from './src/components/MainTabBar';
 import { AMBER_ACCENT } from './src/lib/accentTheme';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tab = createBottomTabNavigator<MainTabParamList>();
 
-const TAB_ICONS = {
-  Home: 'home-variant',
-  EditQueue: 'pencil',
-  FavouritesQueue: 'heart',
-  ShareQueue: 'share-variant',
-  OrganizeQueue: 'folder-move',
-} as const;
-
 /**
- * The five count-badged bottom tabs (m0.8 gate 4). Badges re-count on
- * every review mutation (version) and on an interval so external changes
- * (queue applies, detection) surface without a decision in between.
+ * The five count-badged bottom tabs, rendered by the custom MainTabBar
+ * (m0.8.1): Edit · Favourite · HOME (raised center circle) · Organize ·
+ * Share. Badges re-count on every review mutation (version) and when the
+ * app returns to the foreground (external editor/gallery work) — never
+ * on a timer.
  */
 function MainTabs() {
   const db = useSQLiteContext();
   const { version } = useReview();
-  const { accent } = useTheme();
   const [badges, setBadges] = React.useState<Partial<Record<keyof MainTabParamList, number>>>({});
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      const [edit, favourite, share, organize] = await Promise.all([
-        countToEdit(db),
-        countFavouriteQueue(db),
-        countShareQueue(db),
-        countOrganizeQueue(db),
-      ]);
+      // v18: one grouped query for all four badges, where there used to
+      // be four separate count functions over four different shapes.
+      const queues = await countQueues(db);
       if (cancelled) return;
       setBadges({
-        EditQueue: edit,
-        FavouritesQueue: favourite,
-        ShareQueue: share,
-        OrganizeQueue: organize,
+        EditQueue: queues.edit,
+        FavouritesQueue: queues.favourite,
+        ShareQueue: queues.share,
+        OrganizeQueue: queues.organize,
       });
     };
     void load();
-    const timer = setInterval(() => void load(), 15_000);
+    // EVENT-DRIVEN, not polled (m0.8.1): review mutations bump `version`
+    // (this effect's dep) and the only other source of change is work
+    // done OUTSIDE the app — an editor, the gallery — which always
+    // returns through an AppState 'active' transition. The old 15 s
+    // interval re-ran four COUNT queries forever while foregrounded.
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (next === 'active') void load();
+    });
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      subscription.remove();
     };
   }, [db, version]);
   const screenOptions = ({ route }: { route: { name: keyof MainTabParamList } }) => ({
     headerShown: false,
-    tabBarActiveTintColor: accent,
-    tabBarInactiveTintColor: colors.textDim,
-    tabBarStyle: { backgroundColor: colors.surface, borderTopColor: colors.border },
     tabBarBadge: badges[route.name] ? badges[route.name] : undefined,
-    tabBarBadgeStyle: { backgroundColor: accent, color: colors.background, fontSize: 11 },
-    tabBarIcon: ({ color, size }: { color: string; size: number }) => (
-      <MaterialCommunityIcons name={TAB_ICONS[route.name]} size={size} color={color} />
-    ),
   });
+  const renderTabBar = (props: BottomTabBarProps) => <MainTabBar {...props} />;
   return (
-    <Tab.Navigator screenOptions={screenOptions}>
-      <Tab.Screen name="Home" component={HomeScreen} options={{ title: 'Home' }} />
+    // Child order IS the bar order; Home is no longer first, so the
+    // initial route is pinned explicitly — and so is the BACK history
+    // (m0.8.2, F1): the router's default backBehavior seeds history with
+    // routes[0] (EditQueue since the reorder), which made Android back
+    // exit through the Edit queue. `initialRoute` makes Home the last
+    // stop before the app closes, matching what initialRouteName already
+    // promises about where the app starts.
+    <Tab.Navigator
+      initialRouteName="Home"
+      backBehavior="initialRoute"
+      screenOptions={screenOptions}
+      tabBar={renderTabBar}
+    >
       <Tab.Screen name="EditQueue" component={EditQueueScreen} options={{ title: 'Edit' }} />
       <Tab.Screen
         name="FavouritesQueue"
         component={FavouritesQueueScreen}
         options={{ title: 'Favourite' }}
       />
-      <Tab.Screen name="ShareQueue" component={ShareQueueScreen} options={{ title: 'Share' }} />
+      <Tab.Screen name="Home" component={HomeScreen} options={{ title: 'Home' }} />
       <Tab.Screen
         name="OrganizeQueue"
         component={OrganizeQueueScreen}
         options={{ title: 'Organize' }}
       />
+      <Tab.Screen name="ShareQueue" component={ShareQueueScreen} options={{ title: 'Share' }} />
     </Tab.Navigator>
   );
 }
@@ -160,7 +162,11 @@ function ThemedNavigator() {
         <Stack.Screen name="Groups" component={GroupsScreen} options={{ title: 'Review' }} />
         <Stack.Screen name="Deck" component={DeckScreen} options={{ title: 'Group review' }} />
         <Stack.Screen name="Compare" component={CompareScreen} options={{ title: 'Compare' }} />
-        <Stack.Screen name="Singles" component={SinglesDeckScreen} options={{ title: 'Singles' }} />
+        <Stack.Screen
+          name="Singles"
+          component={SinglesDeckScreen}
+          options={{ title: 'Singles review' }}
+        />
         <Stack.Screen name="CullList" component={CullListScreen} options={{ title: 'Cull list' }} />
         <Stack.Screen
           name="Summary"
@@ -168,6 +174,7 @@ function ThemedNavigator() {
           options={{ title: 'Summary', headerBackVisible: false }}
         />
         <Stack.Screen name="History" component={HistoryScreen} options={{ title: 'History' }} />
+        <Stack.Screen name="Stats" component={StatsScreen} options={{ title: 'Stats' }} />
         <Stack.Screen
           name="DayProgress"
           component={DayProgressScreen}

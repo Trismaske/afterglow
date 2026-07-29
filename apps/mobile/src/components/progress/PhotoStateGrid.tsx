@@ -21,13 +21,23 @@ import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from '
 import { Image } from 'expo-image';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { PhotoState } from '@afterglow/core';
-import { classifyPhotoState, type EffectiveState, type ProgressFilter } from '../../lib/progress';
+import {
+  classifyPhotoState,
+  isActionFilter,
+  type EffectiveState,
+  type ProgressFilter,
+} from '../../lib/progress';
 import { createMergedDescendingPager, type MergedPager } from '../../lib/progressPager';
 import { fetchPhotoPageDesc, type LoadedPhoto } from '../../lib/media';
-import { getGridPhotosByFilter, getStateRowsForAssets, type PhotoScope } from '../../db/store';
+import {
+  getGridPhotosByFilter,
+  getStateRowsForAssets,
+  scopeKeyOf,
+  type PhotoScope,
+} from '../../db/store';
 import { UNDATED_DAY_KEY } from '../../lib/dates';
 import { colors, useTheme } from '../../theme';
-import { stateMetaFor } from './stateMeta';
+import { VERDICT_META } from './stateMeta';
 
 /** One grid tile: identity + what the state editor sheet needs. */
 export interface GridPhoto {
@@ -38,14 +48,18 @@ export interface GridPhoto {
   effective: EffectiveState;
   /** The actual photos.state row value; null = never tracked. */
   dbState: PhotoState | null;
+  /** An edit ACTION is queued against it (layer 2, not a verdict). */
+  editPending?: boolean;
 }
 
 const BATCH = 48;
-const DB_FILTERS = ['in_group', 'to_edit', 'staged', 'done'] as const;
-type DbFilter = (typeof DB_FILTERS)[number];
+/** Filters the DB can answer directly. 'unreviewed' is the exception:
+ * it includes photos MediaStore has that the scan has never tracked, so
+ * it must be paged from MediaStore instead (v18). */
+const DB_FILTERS = ['kept', 'staged'] as const;
 
-function isDbFilter(filter: ProgressFilter): filter is DbFilter {
-  return (DB_FILTERS as readonly string[]).includes(filter);
+function isDbFilter(filter: ProgressFilter): boolean {
+  return (DB_FILTERS as readonly string[]).includes(filter) || isActionFilter(filter);
 }
 
 /** The Unknown-day pseudo-day pages EVERY filter from SQLite — its
@@ -83,10 +97,13 @@ export function PhotoStateGrid({
 }) {
   const db = useSQLiteContext();
   const { accent } = useTheme();
-  const stateMeta = useMemo(() => stateMetaFor(accent), [accent]);
   const [items, setItems] = useState<GridPhoto[]>([]);
   const [loading, setLoading] = useState(false);
   const [exhausted, setExhausted] = useState(false);
+  /** A page read FAILED this pass — the empty state must say so rather
+   * than claim the filter matched nothing (fail-closed). */
+  const [failed, setFailed] = useState(false);
+  const failedRef = useRef(false);
   const genRef = useRef(0);
   const loadingGenRef = useRef<number | null>(null);
   const offsetRef = useRef(0);
@@ -94,12 +111,13 @@ export function PhotoStateGrid({
 
   const rootsKey = roots ? roots.join('\0') : '';
   const albumsKey = albumIds ? albumIds.join('\0') : '';
-  const scopeKey = 'day' in scope ? `d:${scope.day}` : `r:${scope.startMs}:${scope.endMs}`;
+  const scopeKey = scopeKeyOf(scope);
 
   const loadMore = useCallback(
     async (gen: number, reset: boolean) => {
       if (loadingGenRef.current !== null) return;
       loadingGenRef.current = gen;
+      if (reset) failedRef.current = false;
       setLoading(true);
       try {
         const fresh = () => gen === genRef.current;
@@ -119,7 +137,8 @@ export function PhotoStateGrid({
             uri: r.uri,
             takenAt: r.taken_at,
             dbState: r.state,
-            effective: classifyPhotoState({ state: r.state, grouped: !!r.grouped }),
+            editPending: !!r.needs_edit,
+            effective: classifyPhotoState({ state: r.state }),
           }));
           if (rows.length < BATCH) setExhausted(true);
           setItems((prev) => (reset ? photos : [...prev, ...photos]));
@@ -155,7 +174,10 @@ export function PhotoStateGrid({
         }
       } finally {
         if (loadingGenRef.current === gen) loadingGenRef.current = null;
-        if (gen === genRef.current) setLoading(false);
+        if (gen === genRef.current) {
+          setLoading(false);
+          setFailed(failedRef.current);
+        }
       }
     },
     [db, filter, scope, roots],
@@ -174,11 +196,17 @@ export function PhotoStateGrid({
       const buckets: (string | undefined)[] = albumIds ? [...albumIds] : [undefined];
       pagerRef.current = createMergedDescendingPager<LoadedPhoto, string>(
         buckets.map((album) => async (cursor, count) => {
-          const page = await fetchPhotoPageDesc(startMs, endMs, album, cursor, count).catch(() => ({
-            photos: [],
-            endCursor: undefined,
-            hasNext: false,
-          }));
+          // FAIL CLOSED (m0.8.2): an errored page used to become an
+          // empty exhausted one, so a MediaStore hiccup rendered "No
+          // photos in this state" — a confident, wrong answer about the
+          // user's library. Record the failure and say so instead.
+          const page = await fetchPhotoPageDesc(startMs, endMs, album, cursor, count).catch(
+            (error: unknown) => {
+              console.warn('[progress] photo page failed:', String(error));
+              failedRef.current = true;
+              return { photos: [], endCursor: undefined, hasNext: false };
+            },
+          );
           return {
             items: page.photos,
             nextCursor: page.hasNext && page.endCursor !== undefined ? page.endCursor : null,
@@ -202,10 +230,19 @@ export function PhotoStateGrid({
           contentFit="cover"
           recyclingKey={item.id}
         />
-        <View style={[styles.dot, { backgroundColor: stateMeta[item.effective].color }]} />
+        <View style={styles.dots}>
+          {/* Verdict first, then the pending ACTION — the grid's own
+              order under docs/STATE_MODEL.md. Without the second dot an
+              action-filtered grid showed nothing but keep-green, giving
+              no sign of why each photo matched. */}
+          <View style={[styles.dot, { backgroundColor: VERDICT_META[item.effective].color }]} />
+          {item.editPending === true && (
+            <View style={[styles.dot, { backgroundColor: colors.edit }]} />
+          )}
+        </View>
       </Pressable>
     ),
-    [onPhotoPress, items, stateMeta],
+    [onPhotoPress, items],
   );
 
   return (
@@ -222,7 +259,13 @@ export function PhotoStateGrid({
       }}
       contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: bottomInset + 24 }}
       ListEmptyComponent={
-        !loading && exhausted ? <Text style={styles.empty}>No photos in this state.</Text> : null
+        !loading && exhausted ? (
+          <Text style={styles.empty}>
+            {failed
+              ? 'Could not read your photos just now. Pull back and reopen to try again.'
+              : 'No photos in this state.'}
+          </Text>
+        ) : null
       }
       ListFooterComponent={
         loading ? <ActivityIndicator color={accent} style={styles.footer} /> : null
@@ -239,10 +282,8 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: colors.surfaceRaised,
   },
+  dots: { position: 'absolute', right: 7, bottom: 7, flexDirection: 'row', gap: 3 },
   dot: {
-    position: 'absolute',
-    right: 7,
-    bottom: 7,
     width: 11,
     height: 11,
     borderRadius: 6,

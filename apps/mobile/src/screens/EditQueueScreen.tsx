@@ -3,9 +3,7 @@ import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
-import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { MainTabScreenProps } from '../navigation';
 import { getToEditPhotos, markEditDone, type ToEditRow } from '../db/store';
 import { withUserWritePriority } from '../lib/writePriority';
@@ -14,11 +12,12 @@ import { getEditableContentUri } from '../lib/media';
 import { launchEditor, launchViewer } from '../lib/edit';
 import { NO_EDITOR_MESSAGE, NO_EDITOR_TITLE } from '../lib/editActions';
 import { EditDiagnosticsSheet } from '../components/EditDiagnosticsSheet';
-import { PhotoViewer } from '../components/PhotoViewer';
+import { QueueViewer } from '../components/QueueViewer';
+import { useQueueRows } from '../components/useQueueRows';
 import { showToast } from '../lib/toast';
 import { labelForDayKey } from '../lib/dates';
 import { formatClock } from '../lib/format';
-import { colors, touch } from '../theme';
+import { colors, touch, useTheme } from '../theme';
 
 type Props = MainTabScreenProps<'EditQueue'>;
 
@@ -33,26 +32,16 @@ type Props = MainTabScreenProps<'EditQueue'>;
  */
 export function EditQueueScreen(_props: Props) {
   const insets = useSafeAreaInsets();
+  const theme = useTheme();
   const db = useSQLiteContext();
   const { refresh } = useReview();
-  const [rows, setRows] = useState<ToEditRow[] | null>(null);
+  const { rows, reload } = useQueueRows(useCallback(() => getToEditPhotos(db), [db]));
   const [busyId, setBusyId] = useState<string | null>(null);
   // Gate-0 (m0.7 item A): the editor-launch diagnostic matrix, opened from
   // the failure alert or by long-pressing Edit (proactive/emulator path).
   const [matrixAssetId, setMatrixAssetId] = useState<string | null>(null);
   /** In-app full-screen viewer (gate 5) — thumbnail tap. */
   const [viewerId, setViewerId] = useState<string | null>(null);
-
-  const reload = useCallback(async () => {
-    setRows(await getToEditPhotos(db));
-  }, [db]);
-
-  // Refresh whenever the screen gains focus (queue changes elsewhere).
-  useFocusEffect(
-    useCallback(() => {
-      void reload();
-    }, [reload]),
-  );
 
   const markDone = useCallback(
     async (assetId: string) => {
@@ -165,37 +154,36 @@ export function EditQueueScreen(_props: Props) {
               <Text style={styles.rowButtonText}>View only</Text>
             </Pressable>
             <Pressable
-              style={[styles.rowButton, styles.doneButton]}
+              style={[styles.rowButton, styles.doneButton, { borderColor: theme.accent }]}
               disabled={busyId !== null}
               onPress={() => void markDone(item.asset_id)}
             >
-              <MaterialCommunityIcons name="check" size={18} color={colors.keep} />
+              <MaterialCommunityIcons name="check" size={18} color={theme.accent} />
               <Text style={styles.rowButtonText}>Done</Text>
             </Pressable>
           </View>
         </View>
       </View>
     ),
-    [busyId, openEditor, openGallery, markDone],
+    [busyId, openEditor, openGallery, markDone, theme.accent],
   );
 
-  const viewerIndex =
-    viewerId !== null && rows ? rows.findIndex((r) => r.asset_id === viewerId) : -1;
-
   return (
-    <View style={[styles.root, { paddingTop: 12 }]}>
+    // Tab screens render headerless — the top inset is theirs to pad.
+    <View style={[styles.root, { paddingTop: insets.top + 12 }]}>
+      <Text style={styles.heading}>Edit queue</Text>
       <Text style={styles.subtitle}>
         {rows === null
           ? 'Loading…'
           : rows.length === 0
-            ? 'Nothing waiting to be edited.'
-            : `${rows.length} photo${rows.length === 1 ? '' : 's'} waiting · “Edit here” opens an editor that can save over the original; “View only” opens the photo read-only (use its own edit button to pick an editor)`}
+            ? 'Nothing queued to edit.'
+            : `${rows.length} queued · “Edit here” opens an editor that can save over the original; “View only” opens the photo read-only (use its own edit button to pick an editor)`}
       </Text>
       <FlatList
         data={rows ?? []}
         keyExtractor={(r) => r.asset_id}
         renderItem={renderItem}
-        contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + 16 }]}
+        contentContainerStyle={[styles.list, { paddingBottom: 16 }]}
         ListEmptyComponent={
           rows !== null && rows.length === 0 ? (
             <Text style={styles.emptyText}>
@@ -204,18 +192,17 @@ export function EditQueueScreen(_props: Props) {
           ) : null
         }
       />
-      {viewerIndex >= 0 && rows ? (
-        <PhotoViewer
-          items={rows.map((r) => ({ id: r.asset_id, uri: r.uri, takenAt: r.taken_at }))}
-          initialIndex={viewerIndex}
-          onClose={() => setViewerId(null)}
-          onChanged={() =>
-            void reload()
-              .then(refresh)
-              .catch(() => {})
-          }
-        />
-      ) : null}
+      <QueueViewer
+        rows={rows}
+        viewerId={viewerId}
+        toItem={(r) => ({ id: r.asset_id, uri: r.uri, takenAt: r.taken_at })}
+        onClose={() => setViewerId(null)}
+        onChanged={() =>
+          void reload()
+            .then(refresh)
+            .catch(() => {})
+        }
+      />
       {matrixAssetId !== null ? (
         <EditDiagnosticsSheet assetId={matrixAssetId} onClose={() => setMatrixAssetId(null)} />
       ) : null}
@@ -224,6 +211,7 @@ export function EditQueueScreen(_props: Props) {
 }
 
 const styles = StyleSheet.create({
+  heading: { color: colors.text, fontSize: 24, fontWeight: '800', marginBottom: 2 },
   root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 16 },
   subtitle: { color: colors.textDim, fontSize: 14, marginBottom: 10 },
   list: { gap: 10, flexGrow: 1 },
@@ -261,7 +249,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  doneButton: { backgroundColor: colors.keepDim, borderWidth: 1, borderColor: colors.keep },
+  // Completing an edit is NOT the keep verdict, so it does not wear
+  // keep-green (rule 2) — it is a confirm, and confirms take the accent.
+  doneButton: { backgroundColor: colors.surfaceRaised, borderWidth: 1 },
   rowButtonText: { color: colors.text, fontSize: 14, fontWeight: '700' },
   emptyText: { color: colors.textDim, fontSize: 15, textAlign: 'center', marginTop: 40 },
 });

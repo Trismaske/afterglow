@@ -5,6 +5,7 @@ import {
   CREATION_TOLERANCE_MS,
   filenamesRelated,
   matchEditedCopies,
+  mergeSiblingWindows,
 } from './editDetection';
 
 describe('classifyInPlace', () => {
@@ -142,5 +143,50 @@ describe('matchEditedCopies', () => {
       candidate({ id: 'c3', filename: 'PXL_9999.jpg', creationTime: 99 }),
     ]);
     expect(matches.map((m) => m.id)).toEqual(['c1', 'c2']);
+  });
+});
+
+describe('mergeSiblingWindows', () => {
+  const T = 1_800_000_000_000;
+
+  it('gives an isolated photo its own window at single budget', () => {
+    expect(mergeSiblingWindows([T])).toEqual([
+      { startMs: T - CREATION_TOLERANCE_MS, endMs: T + CREATION_TOLERANCE_MS, merged: 1 },
+    ]);
+  });
+
+  it('collapses an overlapping burst into ONE window that keeps every budget', () => {
+    // Three photos 1 s apart: their ±2 s windows all overlap.
+    const merged = mergeSiblingWindows([T, T + 1000, T + 2000]);
+    expect(merged).toEqual([
+      { startMs: T - CREATION_TOLERANCE_MS, endMs: T + 2000 + CREATION_TOLERANCE_MS, merged: 3 },
+    ]);
+    // The point of `merged`: the collapsed scan must carry the budget the
+    // three separate scans would have had, or merging quietly narrows
+    // coverage instead of just being faster.
+    expect(merged[0].merged).toBe(3);
+  });
+
+  it('keeps windows separate when the gap exceeds twice the tolerance', () => {
+    const merged = mergeSiblingWindows([T, T + 5 * CREATION_TOLERANCE_MS]);
+    expect(merged).toHaveLength(2);
+    expect(merged.every((w) => w.merged === 1)).toBe(true);
+  });
+
+  it('touches at the boundary and still merges', () => {
+    // Exactly 2 * tolerance apart: the windows share one edge.
+    const merged = mergeSiblingWindows([T, T + 2 * CREATION_TOLERANCE_MS]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].merged).toBe(2);
+  });
+
+  it('does not care about input order', () => {
+    expect(mergeSiblingWindows([T + 2000, T, T + 1000])).toEqual(
+      mergeSiblingWindows([T, T + 1000, T + 2000]),
+    );
+  });
+
+  it('returns nothing for no photos', () => {
+    expect(mergeSiblingWindows([])).toEqual([]);
   });
 });

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Afterglow",
     "slug": "afterglow-companion",
-    "version": "0.8.0",
+    "version": "0.8.2",
     "orientation": "portrait",
     "icon": "./assets/icon-dark.png",
     "userInterfaceStyle": "dark",
@@ -18,7 +18,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.afterglow.companion",
-      "versionCode": 7,
+      "versionCode": 9,
       "permissions": [
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",

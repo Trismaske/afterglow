@@ -187,8 +187,8 @@ export function CullListScreen({ navigation, route }: Props) {
   );
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top + 12 }]}>
-      <Text style={styles.title}>Cull list</Text>
+    // Title + back + top inset come from the native stack header.
+    <View style={[styles.root, { paddingTop: 12 }]}>
       <Text style={styles.subtitle}>
         {loadFailed
           ? 'Could not load the cull queue.'
@@ -197,7 +197,7 @@ export function CullListScreen({ navigation, route }: Props) {
             : !systemTrashSupported && staged.length > 0
               ? 'System trash requires Android 11 or later. Culls remain staged and untouched.'
               : staged.length === 0
-                ? 'Nothing staged for deletion.'
+                ? 'Nothing staged to cull.'
                 : `${staged.length} staged · tap any photo to change its decision`}
       </Text>
       <FlatList
@@ -242,8 +242,7 @@ export function CullListScreen({ navigation, route }: Props) {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 12 },
-  title: { color: colors.text, fontSize: 24, fontWeight: '800' },
-  subtitle: { color: colors.textDim, fontSize: 14, marginTop: 2, marginBottom: 10 },
+  subtitle: { color: colors.textDim, fontSize: 14, marginBottom: 10 },
   list: { gap: 6, paddingBottom: 12, flexGrow: 1 },
   column: { gap: 6 },
   tile: { flex: 1 / 3, aspectRatio: 1, borderRadius: 10, overflow: 'hidden' },

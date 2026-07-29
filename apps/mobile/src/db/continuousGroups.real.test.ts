@@ -15,6 +15,7 @@ import {
   writeContinuousGroups,
   type ContinuousPhotoUpsert,
 } from './store';
+import { getPhotoActions, queueAction } from './actions';
 import { foreignKeyCheck, openTestDb, type TestDb } from './testDb';
 
 const open: TestDb[] = [];
@@ -74,7 +75,11 @@ describe('writeContinuousGroups', () => {
     const assignments = await getGroupAssignments(db, [id('1'), id('2'), id('3')]);
     expect(assignments.get(id('1'))).toEqual(assignments.get(id('2')));
     expect(assignments.get(id('1'))!.groupId).not.toBeNull();
-    expect(assignments.get(id('3'))).toEqual({ groupId: null, userSingle: false });
+    expect(assignments.get(id('3'))).toEqual({
+      groupId: null,
+      userSingle: false,
+      timeAttached: false,
+    });
     expect(foreignKeyCheck(d)).toEqual([]);
   });
 
@@ -117,10 +122,8 @@ describe('writeContinuousGroups', () => {
       },
       AT,
     );
-    await db.runAsync(
-      "UPDATE photos SET state = 'culled', needs_edit = 1 WHERE asset_id = ?",
-      id('1'),
-    );
+    await db.runAsync("UPDATE photos SET state = 'culled' WHERE asset_id = ?", id('1'));
+    await queueAction(db, id('1'), 'edit', AT);
 
     // Rescan upserts the same photo with fresh metadata.
     const changed = {
@@ -137,18 +140,20 @@ describe('writeContinuousGroups', () => {
 
     const row = await db.getFirstAsync<{
       state: string;
-      needs_edit: number;
       taken_at: number;
       mod_time: number;
       uri: string;
-    }>('SELECT state, needs_edit, taken_at, mod_time, uri FROM photos WHERE asset_id = ?', id('1'));
+    }>('SELECT state, taken_at, mod_time, uri FROM photos WHERE asset_id = ?', id('1'));
     expect(row).toEqual({
       state: 'culled',
-      needs_edit: 1,
       taken_at: AT - 100,
       mod_time: AT + 5,
       uri: 'file:///dcim/1-v2.jpg',
     });
+    // The queued edit is a separate layer, and the scan may not touch it.
+    expect((await getPhotoActions(db, id('1'))).map((a) => [a.kind, a.state])).toEqual([
+      ['edit', 'queued'],
+    ]);
   });
 
   it('rebuilding moves assignments; a group left under 2 members dissolves', async () => {
@@ -276,7 +281,7 @@ describe('writeContinuousGroups', () => {
     expect(after.size).toBe(0);
   });
 
-  it('preserves the edit-detection mod_time baseline for to_edit rows', async () => {
+  it('preserves the edit-detection mod_time baseline for queued-edit rows', async () => {
     const d = await fresh();
     const db = asExpo(d);
     await writeContinuousGroups(
@@ -284,14 +289,11 @@ describe('writeContinuousGroups', () => {
       { photos: [upsert('1'), upsert('2')], groups: [], singles: [id('1'), id('2')] },
       AT,
     );
-    await db.runAsync(
-      "UPDATE photos SET state = 'to_edit', to_edit_at = ? WHERE asset_id = ?",
-      AT,
-      id('1'),
-    );
+    await db.runAsync("UPDATE photos SET state = 'kept' WHERE asset_id = ?", id('1'));
+    await queueAction(db, id('1'), 'edit', AT);
 
     // The rescan sees a NEWER modificationTime (the pending in-place edit);
-    // the to_edit baseline must survive, the plain row must refresh.
+    // the queued photo's baseline must survive, the plain row must refresh.
     await writeContinuousGroups(
       db,
       {
@@ -317,25 +319,28 @@ describe('writeContinuousGroups', () => {
     const d = await fresh();
     const db = asExpo(d);
     const { getDetectionTrackedAssets, insertDetectedCopyWithMatch } = await import('./store');
-    // original (to_edit) + a copy row the scan inserted before detection ran.
+    // original (kept, edit queued) + a copy row the scan inserted before
+    // detection ran.
     await writeContinuousGroups(
       db,
       { photos: [upsert('orig'), upsert('copy')], groups: [], singles: [id('orig'), id('copy')] },
       AT,
     );
     await db.runAsync(
-      "UPDATE photos SET state = 'to_edit', to_edit_at = ?, activity_at = ? WHERE asset_id = ?",
-      AT,
+      "UPDATE photos SET state = 'kept', activity_at = ? WHERE asset_id = ?",
       AT,
       id('orig'),
     );
+    await queueAction(db, id('orig'), 'edit', AT);
 
     // The scan-only copy row is NOT detection-tracked; the reviewed one is.
     const tracked = await getDetectionTrackedAssets(db, [id('orig'), id('copy')]);
     expect(tracked.has(id('orig'))).toBe(true);
     expect(tracked.has(id('copy'))).toBe(false);
 
-    // Detection records the match and flips the scan-only row to done.
+    // Detection records the match and TRACKS the scan-only row without
+    // deciding it: a copy is a new photo, so it joins the review queue
+    // like any other, and only activity_at marks it as already seen.
     const recorded = await insertDetectedCopyWithMatch(
       db,
       id('orig'),
@@ -354,7 +359,7 @@ describe('writeContinuousGroups', () => {
       'SELECT state, reviewed_at FROM photos WHERE asset_id = ?',
       id('copy'),
     );
-    expect(copyRow).toEqual({ state: 'done', reviewed_at: AT + 20 });
+    expect(copyRow).toEqual({ state: 'unreviewed', reviewed_at: null });
     // And it is now detection-tracked (no re-prompt on later runs).
     const after = await getDetectionTrackedAssets(db, [id('copy')]);
     expect(after.has(id('copy'))).toBe(true);
@@ -407,11 +412,11 @@ describe('writeContinuousGroups', () => {
       AT,
     );
     await db.runAsync(
-      "UPDATE photos SET state = 'to_edit', to_edit_at = ?, activity_at = ? WHERE asset_id = ?",
-      AT,
+      "UPDATE photos SET state = 'kept', activity_at = ? WHERE asset_id = ?",
       AT,
       id('orig'),
     );
+    await queueAction(db, id('orig'), 'edit', AT);
     // The user reviews the copy row AFTER candidate filtering: it is no
     // longer scan-only when the transaction runs.
     await db.runAsync(
@@ -465,5 +470,79 @@ describe('writeContinuousGroups', () => {
     );
     const after = await getGroupAssignments(db, [id('1'), id('2')]);
     expect(after).toEqual(before);
+  });
+});
+
+describe('identical re-writes are no-ops (m0.8.1 stable group ids)', () => {
+  it('re-landing an unchanged window keeps the SAME group id', async () => {
+    const d = await fresh();
+    const db = asExpo(d);
+    const window = {
+      photos: [upsert('1'), upsert('2'), upsert('3')],
+      groups: [{ members: [id('1'), id('2')], timeAttached: [] }],
+      singles: [id('3')],
+    };
+    await writeContinuousGroups(db, window, AT);
+    const before = await getGroupAssignments(db, [id('1'), id('2'), id('3')]);
+    await writeContinuousGroups(db, window, AT + 1000);
+    const after = await getGroupAssignments(db, [id('1'), id('2'), id('3')]);
+    expect(after.get(id('1'))!.groupId).toBe(before.get(id('1'))!.groupId);
+    expect(after.get(id('3'))).toEqual(before.get(id('3')));
+    const groups = await db.getAllAsync<{ id: number }>('SELECT id FROM photo_groups');
+    expect(groups).toHaveLength(1);
+    expect(foreignKeyCheck(d)).toEqual([]);
+  });
+
+  it('a time-attached flag change still rewrites (the clock badge must clear)', async () => {
+    const d = await fresh();
+    const db = asExpo(d);
+    await writeContinuousGroups(
+      db,
+      {
+        photos: [upsert('1'), upsert('2')],
+        groups: [{ members: [id('1'), id('2')], timeAttached: [id('2')] }],
+        singles: [],
+      },
+      AT,
+    );
+    expect((await getGroupAssignments(db, [id('2')])).get(id('2'))!.timeAttached).toBe(true);
+    await writeContinuousGroups(
+      db,
+      {
+        photos: [upsert('1'), upsert('2')],
+        groups: [{ members: [id('1'), id('2')], timeAttached: [] }],
+        singles: [],
+      },
+      AT + 1000,
+    );
+    expect((await getGroupAssignments(db, [id('2')])).get(id('2'))!.timeAttached).toBe(false);
+  });
+
+  it('a genuine membership change still produces a fresh group', async () => {
+    const d = await fresh();
+    const db = asExpo(d);
+    await writeContinuousGroups(
+      db,
+      {
+        photos: [upsert('1'), upsert('2'), upsert('3')],
+        groups: [{ members: [id('1'), id('2')], timeAttached: [] }],
+        singles: [id('3')],
+      },
+      AT,
+    );
+    const before = (await getGroupAssignments(db, [id('1')])).get(id('1'))!.groupId;
+    await writeContinuousGroups(
+      db,
+      {
+        photos: [upsert('1'), upsert('2'), upsert('3')],
+        groups: [{ members: [id('1'), id('2'), id('3')], timeAttached: [] }],
+        singles: [],
+      },
+      AT + 1000,
+    );
+    const after = await getGroupAssignments(db, [id('1'), id('2'), id('3')]);
+    expect(after.get(id('1'))!.groupId).not.toBe(before);
+    expect(after.get(id('3'))!.groupId).toBe(after.get(id('1'))!.groupId);
+    expect(foreignKeyCheck(d)).toEqual([]);
   });
 });

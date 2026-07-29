@@ -8,17 +8,21 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { migrateDatabase } from './database';
-import { UNDATED_DAY_KEY } from '../lib/dates';
+import { dayKey, rangeOfDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import {
   applyRedecision,
   applyReviewDecisions,
   countReviewQueue,
   countUndatedAlive,
   getCorpusStats,
+  getCoverageByDay,
   getDayReviewSummary,
+  getLifetimeStats,
+  getRecentDecisionStamps,
   getDaySummariesForDays,
   getGridPhotosByFilter,
   getPhotoFacts,
+  getReviewedCountsByDay,
   getReviewGroup,
   getStagedCullBytes,
   getStagedCulls,
@@ -27,10 +31,9 @@ import {
   listGroupsForDay,
   listReviewGroups,
   listSinglesFeed,
+  listSinglesForDeck,
   makePhotoSingles,
   markEditDone,
-  markFavouriteBatchApplied,
-  markFavouriteBatchError,
   resetUnreviewedGroups,
   restoreCarriedCull,
   setGroupBest,
@@ -39,6 +42,7 @@ import {
   writeContinuousGroups,
   type ContinuousPhotoUpsert,
 } from './store';
+import { getFavouriteActionStates } from './actions';
 import { foreignKeyCheck, openTestDb, type TestDb } from './testDb';
 
 const open: TestDb[] = [];
@@ -88,23 +92,40 @@ async function seed(d: TestDb, rawIds: string[], groups: string[][] = []): Promi
   );
 }
 
+/**
+ * The photo's verdict row plus its edit cycle, which v18 moved into
+ * `photo_actions`: "flagged" is a queued edit row, and that row's
+ * `queued_at` IS the cycle key `to_edit_at` used to be. Projecting them
+ * back into one shape keeps these tests about behaviour rather than
+ * about which table a fact sits in.
+ */
 function stateOf(d: TestDb, rawId: string): Record<string, unknown> {
   return d.raw
     .prepare(
-      `SELECT state, needs_edit, to_edit_at, mod_time, content_hash,
-              reviewed_at, culled_at, activity_at
-       FROM photos WHERE asset_id = ?`,
+      `SELECT p.state, p.mod_time, p.content_hash, p.reviewed_at, p.culled_at,
+              p.activity_at, p.decided_at,
+              CASE WHEN e.state IN ('queued', 'error') THEN 1 ELSE 0 END AS needs_edit,
+              CASE WHEN e.state IN ('queued', 'error') THEN e.queued_at END AS to_edit_at,
+              e.resolved_at AS edit_completed_at
+         FROM photos p
+         LEFT JOIN photo_actions e ON e.photo_id = p.asset_id AND e.kind = 'edit'
+        WHERE p.asset_id = ?`,
     )
     .get(id(rawId)) as Record<string, unknown>;
+}
+
+/** Queue an edit the way the review flow does. */
+async function flagForEdit(d: TestDb, rawId: string, at: number): Promise<void> {
+  await setNeedsEdit(asExpo(d), id(rawId), true, at);
 }
 
 describe('applyReviewDecisions (decision 2)', () => {
   it('a keep writes done at swipe time and first-stamps reviewed_at', async () => {
     const d = await fresh();
     await seed(d, ['1']);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'done']], AT + 100);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
     const row = stateOf(d, '1');
-    expect(row.state).toBe('done');
+    expect(row.state).toBe('kept');
     expect(row.reviewed_at).toBe(AT + 100);
     expect(row.activity_at).toBe(AT + 100);
     // A re-decide keeps the FIRST review stamp (lifetime stats).
@@ -115,34 +136,80 @@ describe('applyReviewDecisions (decision 2)', () => {
     expect(after.culled_at).toBe(AT + 200);
   });
 
-  it('to_edit is a reviewed verdict: flag, cycle stamp, reviewed_at', async () => {
+  it('flagging an edit queues an action and leaves the verdict alone', async () => {
+    // The whole point of v18: "to edit" stopped being a verdict, so the
+    // keep and the pending edit are two independent facts.
     const d = await fresh();
     await seed(d, ['1']);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'to_edit']], AT + 100);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
+    await flagForEdit(d, '1', AT + 120);
     const row = stateOf(d, '1');
-    expect(row.state).toBe('to_edit');
+    expect(row.state).toBe('kept');
     expect(row.needs_edit).toBe(1);
-    expect(row.to_edit_at).toBe(AT + 100);
+    expect(row.to_edit_at).toBe(AT + 120);
     expect(row.reviewed_at).toBe(AT + 100);
   });
 
-  it('a keep on a flagged photo lands on to_edit (flag survives)', async () => {
+  it('an unreviewed photo can be flagged without gaining a verdict', async () => {
     const d = await fresh();
     await seed(d, ['1']);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'to_edit']], AT + 100);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'unreviewed']], AT + 150);
-    // Flag again without a verdict, then keep: the keep must respect it.
     await applyReviewDecisions(asExpo(d), [], AT + 200, {
       needsEditChanges: [{ assetId: id('1'), needsEdit: true }],
     });
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'done']], AT + 300);
-    expect(stateOf(d, '1').state).toBe('to_edit');
+    expect(stateOf(d, '1')).toMatchObject({ state: 'unreviewed', needs_edit: 1 });
+    // ...and keeping it later does not disturb the queued edit.
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 300);
+    expect(stateOf(d, '1')).toMatchObject({ state: 'kept', needs_edit: 1 });
+    // ...nor does taking the verdict back off. Layers are independent:
+    // undoing a keep is not a statement about the pending edit.
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'unreviewed']], AT + 400);
+    expect(stateOf(d, '1')).toMatchObject({ state: 'unreviewed', needs_edit: 1 });
   });
 
-  it('clearing a completed verdict resets the edit-cycle columns', async () => {
+  it('clearing a verdict does NOT disturb a LIVE edit cycle', async () => {
+    // The layers are independent, so clearing a verdict leaves the edit
+    // queued — and wiping its detection baseline here would re-baseline
+    // against the already-edited file, silently losing the auto-detection
+    // the user is waiting on. The baseline belongs to the CYCLE.
     const d = await fresh();
     await seed(d, ['1']);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'to_edit']], AT + 100);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
+    await flagForEdit(d, '1', AT + 120);
+    d.raw
+      .prepare('UPDATE photos SET mod_time = ?, content_hash = ? WHERE asset_id = ?')
+      .run(AT + 130, 'live-cycle-hash', id('1'));
+
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'unreviewed']], AT + 200);
+    expect(stateOf(d, '1')).toMatchObject({
+      state: 'unreviewed',
+      needs_edit: 1,
+      to_edit_at: AT + 120,
+      mod_time: AT + 130,
+      content_hash: 'live-cycle-hash',
+    });
+
+    // Staging then restoring a cull takes the same care.
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 300);
+    await restoreCarriedCull(asExpo(d), id('1'), AT + 400);
+    expect(stateOf(d, '1')).toMatchObject({
+      state: 'unreviewed',
+      mod_time: AT + 130,
+      content_hash: 'live-cycle-hash',
+    });
+
+    // With NO edit queued, the reset still happens — that guarantee is
+    // what stops a later re-flag reusing a dead cycle's evidence.
+    await setNeedsEdit(asExpo(d), id('1'), false, AT + 500);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 550);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'unreviewed']], AT + 600);
+    expect(stateOf(d, '1')).toMatchObject({ mod_time: null, content_hash: null });
+  });
+
+  it('clearing a verdict resets the detection baseline and drops the edit', async () => {
+    const d = await fresh();
+    await seed(d, ['1']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
+    await flagForEdit(d, '1', AT + 120);
     d.raw.prepare('UPDATE photos SET content_hash = ? WHERE asset_id = ?').run('hash1', id('1'));
     await markEditDone(asExpo(d), id('1'), AT + 200);
     await applyReviewDecisions(asExpo(d), [[id('1'), 'unreviewed']], AT + 300);
@@ -152,6 +219,8 @@ describe('applyReviewDecisions (decision 2)', () => {
     expect(row.to_edit_at).toBeNull();
     expect(row.mod_time).toBeNull();
     expect(row.content_hash).toBeNull();
+    // The completed edit stays on the record: it happened.
+    expect(row.edit_completed_at).toBe(AT + 200);
   });
 
   it('records a duel with its group and favourite intents atomically', async () => {
@@ -164,11 +233,8 @@ describe('applyReviewDecisions (decision 2)', () => {
     const duel = d.raw.prepare('SELECT * FROM duels').get() as Record<string, unknown>;
     expect(duel.group_id).toBe('7');
     expect(duel.kept_both).toBe(0);
-    const fav = d.raw
-      .prepare('SELECT favourite_state, favourite_target FROM photos WHERE asset_id = ?')
-      .get(id('1')) as Record<string, unknown>;
-    expect(fav.favourite_state).toBe('queued_apply');
-    expect(fav.favourite_target).toBe(1);
+    const fav = (await getFavouriteActionStates(asExpo(d), [id('1')])).get(id('1'));
+    expect(fav).toEqual({ state: 'queued_apply', target: true });
     expect(stateOf(d, '2').state).toBe('culled');
     expect(foreignKeyCheck(d)).toEqual([]);
   });
@@ -178,12 +244,13 @@ describe('needs-edit cycle hardening (m0.7 carried over)', () => {
   it('re-flagging a completed edit re-queues it with a fresh detection baseline', async () => {
     const d = await fresh();
     await seed(d, ['1']);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'to_edit']], AT + 100);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
+    await flagForEdit(d, '1', AT + 110);
     d.raw.prepare('UPDATE photos SET content_hash = ? WHERE asset_id = ?').run('hash1', id('1'));
     await markEditDone(asExpo(d), id('1'), AT + 200);
     await setNeedsEdit(asExpo(d), id('1'), true, AT + 300);
     const row = stateOf(d, '1');
-    expect(row.state).toBe('to_edit');
+    expect(row.state).toBe('kept'); // the verdict never moved
     expect(row.needs_edit).toBe(1);
     expect(row.to_edit_at).toBe(AT + 300);
     expect(row.mod_time).toBeNull();
@@ -193,11 +260,12 @@ describe('needs-edit cycle hardening (m0.7 carried over)', () => {
   it('cycle-guarded markEditDone refuses stale evidence from a superseded cycle', async () => {
     const d = await fresh();
     await seed(d, ['1']);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'to_edit']], AT + 100);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
+    await flagForEdit(d, '1', AT + 100);
     await markEditDone(asExpo(d), id('1'), AT + 200);
     await setNeedsEdit(asExpo(d), id('1'), true, AT + 300); // fresh cycle
     expect(await markEditDone(asExpo(d), id('1'), AT + 400, AT + 100)).toBe(false);
-    expect(stateOf(d, '1').state).toBe('to_edit'); // the fresh cycle survives
+    expect(stateOf(d, '1').needs_edit).toBe(1); // the fresh cycle survives
     expect(await markEditDone(asExpo(d), id('1'), AT + 500, AT + 300)).toBe(true);
   });
 });
@@ -240,7 +308,7 @@ describe('makePhotoSingles (durable user ejection)', () => {
 });
 
 describe('un-staging paths (decision 2)', () => {
-  it('unstageCullDirect lands on done (to_edit when flagged)', async () => {
+  it('unstageCullDirect lands on kept, and a queued edit rides along', async () => {
     const d = await fresh();
     await seed(d, ['1', '2']);
     await applyReviewDecisions(
@@ -251,11 +319,11 @@ describe('un-staging paths (decision 2)', () => {
       ],
       AT + 100,
     );
-    d.raw.prepare('UPDATE photos SET needs_edit = 1 WHERE asset_id = ?').run(id('2'));
+    await setNeedsEdit(asExpo(d), id('2'), true, AT + 150);
     await unstageCullDirect(asExpo(d), id('1'), AT + 200, true);
     await unstageCullDirect(asExpo(d), id('2'), AT + 200, true);
-    expect(stateOf(d, '1').state).toBe('done');
-    expect(stateOf(d, '2').state).toBe('to_edit');
+    expect(stateOf(d, '1')).toMatchObject({ state: 'kept', needs_edit: 0 });
+    expect(stateOf(d, '2')).toMatchObject({ state: 'kept', needs_edit: 1 });
     expect(await getStagedCulls(asExpo(d))).toHaveLength(0);
   });
 
@@ -268,78 +336,14 @@ describe('un-staging paths (decision 2)', () => {
   });
 });
 
-describe('favourite batch commits', () => {
-  function insertFav(d: TestDb, assetId: string, state: string, target: number | null): void {
-    d.raw
-      .prepare(
-        `INSERT INTO photos (asset_id, uri, taken_at, day, state, favourite_state, favourite_target)
-         VALUES (?, 'content://x', ?, '2026-07-20', 'done', ?, ?)`,
-      )
-      .run(assetId, AT, state, target);
-  }
-
-  it('apply commits queued_apply rows: applied, target cleared, applied_at stamped', async () => {
-    const d = await fresh();
-    insertFav(d, 'p1', 'queued_apply', 1);
-    await markFavouriteBatchApplied(asExpo(d), ['p1'], true, AT + 5);
-    const row = d.raw
-      .prepare(
-        'SELECT favourite_state, favourite_target, favourite_applied_at FROM photos WHERE asset_id = ?',
-      )
-      .get('p1') as Record<string, unknown>;
-    expect(row.favourite_state).toBe('applied');
-    expect(row.favourite_target).toBeNull();
-    expect(row.favourite_applied_at).toBe(AT + 5);
-  });
-
-  it('remove commits queued_remove rows to none', async () => {
-    const d = await fresh();
-    insertFav(d, 'p1', 'queued_remove', 0);
-    await markFavouriteBatchApplied(asExpo(d), ['p1'], false, AT + 5);
-    const row = d.raw
-      .prepare('SELECT favourite_state, favourite_target FROM photos WHERE asset_id = ?')
-      .get('p1') as Record<string, unknown>;
-    expect(row.favourite_state).toBe('none');
-    expect(row.favourite_target).toBeNull();
-  });
-
-  it('a stale continuation cannot commit over a RETARGETED intent', async () => {
-    const d = await fresh();
-    insertFav(d, 'p1', 'queued_remove', 0);
-    await markFavouriteBatchApplied(asExpo(d), ['p1'], true, AT + 5);
-    const row = d.raw
-      .prepare('SELECT favourite_state, favourite_target FROM photos WHERE asset_id = ?')
-      .get('p1') as Record<string, unknown>;
-    expect(row.favourite_state).toBe('queued_remove');
-    expect(row.favourite_target).toBe(0);
-  });
-
-  it('error keeps the matching intent retryable; a retargeted one is untouched', async () => {
-    const d = await fresh();
-    insertFav(d, 'match', 'queued_apply', 1);
-    insertFav(d, 'retargeted', 'queued_remove', 0);
-    await markFavouriteBatchError(asExpo(d), ['match', 'retargeted'], true, AT + 5);
-    const rows = Object.fromEntries(
-      (
-        d.raw.prepare('SELECT asset_id, favourite_state, favourite_target FROM photos').all() as {
-          asset_id: string;
-          favourite_state: string;
-          favourite_target: number | null;
-        }[]
-      ).map((r) => [r.asset_id, r]),
-    );
-    expect(rows.match.favourite_state).toBe('error');
-    expect(rows.match.favourite_target).toBe(1); // target survives for retry
-    expect(rows.retargeted.favourite_state).toBe('queued_remove');
-    expect(rows.retargeted.favourite_target).toBe(0);
-  });
-});
+// (The favourite batch commits moved to db/actions.real.test.ts with the
+// unified action model — v18. Testing them here would test a removed interface.)
 
 describe('activity_at transitions', () => {
   it('every decision write moves activity_at', async () => {
     const d = await fresh();
     await seed(d, ['1']);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'done']], AT + 500);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 500);
     const row = d.raw.prepare('SELECT activity_at FROM photos WHERE asset_id = ?').get(id('1')) as {
       activity_at: number;
     };
@@ -391,8 +395,8 @@ describe('gate 5: singles feed + completed-group browse', () => {
       asExpo(d),
       [
         [id('1'), 'culled'],
-        [id('2'), 'done'],
-        [id('3'), 'to_edit'],
+        [id('2'), 'kept'],
+        [id('3'), 'kept'],
       ],
       AT + 1,
     );
@@ -408,16 +412,16 @@ describe('gate 5: singles feed + completed-group browse', () => {
     await applyReviewDecisions(
       asExpo(d),
       [
-        [id('1'), 'done'],
+        [id('1'), 'kept'],
         [id('2'), 'culled'],
-        [id('3'), 'done'],
+        [id('3'), 'kept'],
       ],
       AT + 1,
     );
     expect(await listReviewGroups(asExpo(d), 10)).toEqual([]);
     const group = await getReviewGroup(asExpo(d), gid);
     expect(group?.groupId).toBe(gid);
-    expect(group?.members.map((m) => m.state).sort()).toEqual(['culled', 'done', 'done']);
+    expect(group?.members.map((m) => m.state).sort()).toEqual(['culled', 'kept', 'kept']);
     expect(await getReviewGroup(asExpo(d), gid + 999)).toBeNull();
   });
 });
@@ -450,18 +454,64 @@ describe('gate 5: day queries', () => {
     await applyReviewDecisions(
       asExpo(d),
       [
-        [id('1'), 'done'],
-        [id('2'), 'done'],
+        [id('1'), 'kept'],
+        [id('2'), 'kept'],
       ],
       AT + 1,
     );
     const day18 = await listGroupsForDay(asExpo(d), '2026-07-18');
     expect(day18).toHaveLength(2);
-    // Newest group first: the 05:00 pair before the completed 01:00 pair.
-    expect(day18[0].members.map((m) => m.asset_id)).toEqual([id('3'), id('4')]);
-    expect(day18[1].members.every((m) => m.state === 'done')).toBe(true);
+    // Newest group first: the 05:00 pair before the completed 01:00 pair —
+    // and members newest-first inside it (m0.8.2, Tristan's ordering).
+    expect(day18[0].members.map((m) => m.asset_id)).toEqual([id('4'), id('3')]);
+    expect(day18[1].members.every((m) => m.state === 'kept')).toBe(true);
     expect(await listGroupsForDay(asExpo(d), '2026-07-19')).toHaveLength(1);
     expect(await listGroupsForDay(asExpo(d), '2026-07-20')).toHaveLength(0);
+  });
+
+  it("listSinglesForDeck returns ONLY that day's singles, decided photos INCLUDED, chronological", async () => {
+    const d = await fresh();
+    await seedDays(
+      d,
+      [
+        P('s1', '2026-07-18', 1),
+        P('s2', '2026-07-18', 5),
+        P('s3', '2026-07-18', 9),
+        P('g1', '2026-07-18', 2),
+        P('g2', '2026-07-18', 2),
+        P('s9', '2026-07-19', 3),
+      ],
+      [['g1', 'g2']],
+    );
+    await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('s1'), 'culled'],
+        [id('s2'), 'kept'],
+      ],
+      AT + 1,
+    );
+    const day18 = await listSinglesForDeck(asExpo(d), '2026-07-18');
+    // NEWEST first (the singles decks' page order — Tristan's call); the
+    // KEPT single stays in place badged (m0.8.2 group-deck parity) and
+    // the staged cull rides along; neither the grouped pair nor the
+    // 19th's single are here.
+    expect(day18.map((m) => m.asset_id)).toEqual([id('s3'), id('s2'), id('s1')]);
+    expect(day18.find((m) => m.asset_id === id('s1'))?.state).toBe('culled');
+    expect(day18.find((m) => m.asset_id === id('s2'))?.state).toBe('kept');
+    expect(day18.every((m) => m.day === '2026-07-18')).toBe(true);
+    // A run's taken_at range narrows the same read (timeline run decks).
+    // Bounds use P's own taken_at formula (hours 1..5 of the seeded day).
+    const hourAt = (hour: number) => AT - 10 * 86_400_000 + hour * 3_600_000;
+    const run = await listSinglesForDeck(asExpo(d), '2026-07-18', null, {
+      from: hourAt(1),
+      to: hourAt(5),
+    });
+    expect(run.map((m) => m.asset_id)).toEqual([id('s2'), id('s1')]);
+    expect((await listSinglesForDeck(asExpo(d), '2026-07-19')).map((m) => m.asset_id)).toEqual([
+      id('s9'),
+    ]);
+    expect(await listSinglesForDeck(asExpo(d), '2026-07-20')).toEqual([]);
   });
 
   it('getUnreviewedDayRows counts pending per day, newest first, and drops finished days', async () => {
@@ -472,7 +522,7 @@ describe('gate 5: day queries', () => {
       P('3', '2026-07-18', 1),
       P('4', '2026-07-19', 1),
     ]);
-    await applyReviewDecisions(asExpo(d), [[id('4'), 'done']], AT + 1);
+    await applyReviewDecisions(asExpo(d), [[id('4'), 'kept']], AT + 1);
     const rows = await getUnreviewedDayRows(asExpo(d));
     expect(rows).toEqual([
       { day: '2026-07-18', pending: 1 },
@@ -496,12 +546,12 @@ describe('gate 5: getPhotoFacts', () => {
     await seedDays(d, [P0('1'), P0('2'), P0('3'), P0('4')], [['1', '2', '3']], ['3']);
     const gid = groupIdOf(d, '1');
     await setGroupBest(asExpo(d), gid, id('1'));
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'done']], AT + 1);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 1);
     await makePhotoSingles(asExpo(d), [id('4')]);
 
     const best = await getPhotoFacts(asExpo(d), id('1'));
     expect(best).toMatchObject({
-      state: 'done',
+      state: 'kept',
       group_id: gid,
       is_best: 1,
       time_attached: 0,
@@ -533,22 +583,37 @@ describe('grid filters (schema-v13 regression)', () => {
     await applyReviewDecisions(
       asExpo(d),
       [
-        [id('3'), 'to_edit'],
+        [id('3'), 'kept'],
         [id('4'), 'culled'],
       ],
       AT + 1,
     );
     const scope = { startMs: 0, endMs: AT * 2 };
-    const inGroup = await getGridPhotosByFilter(asExpo(d), scope, null, 'in_group', 10, 0);
-    expect(inGroup.map((r) => r.asset_id).sort()).toEqual([id('1'), id('2')]);
-    expect(inGroup.every((r) => Number(r.grouped) === 1)).toBe(true);
+    await setNeedsEdit(asExpo(d), id('3'), true, AT + 2);
+    const all = await getGridPhotosByFilter(asExpo(d), scope, null, 'all', 10, 0);
+    // Grouping rides along as an annotation on every row, whatever the
+    // verdict — it is not a filter of its own.
     expect(
-      (await getGridPhotosByFilter(asExpo(d), scope, null, 'to_edit', 10, 0))[0].asset_id,
+      all
+        .filter((r) => Number(r.grouped) === 1)
+        .map((r) => r.asset_id)
+        .sort(),
+    ).toEqual([id('1'), id('2')]);
+    // Layer 2 filters carry the `act:` prefix so a verdict and an action
+    // can never be confused for one another.
+    expect(
+      (await getGridPhotosByFilter(asExpo(d), scope, null, 'act:edit', 10, 0))[0].asset_id,
     ).toBe(id('3'));
     expect((await getGridPhotosByFilter(asExpo(d), scope, null, 'staged', 10, 0))[0].asset_id).toBe(
       id('4'),
     );
-    expect(await getGridPhotosByFilter(asExpo(d), scope, null, 'done', 10, 0)).toEqual([]);
+    // The flagged photo is still simply KEPT — the edit is a second layer.
+    expect(
+      (await getGridPhotosByFilter(asExpo(d), scope, null, 'kept', 10, 0)).map((r) => r.asset_id),
+    ).toEqual([id('3')]);
+    expect(await getGridPhotosByFilter(asExpo(d), scope, null, 'unreviewed', 10, 0)).toHaveLength(
+      2,
+    );
   });
 });
 
@@ -573,7 +638,7 @@ describe('corpus stats count current verdicts', () => {
   it('a cleared verdict returns the photo to the pending pool', async () => {
     const d = await fresh();
     await seed(d, ['1', '2']);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'done']], AT + 1);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 1);
     expect((await getCorpusStats(asExpo(d))).reviewed).toBe(1);
     await applyReviewDecisions(asExpo(d), [[id('1'), 'unreviewed']], AT + 2);
     expect((await getCorpusStats(asExpo(d))).reviewed).toBe(0);
@@ -612,7 +677,11 @@ describe('source-scoped queue reads', () => {
     const groups = await listReviewGroups(asExpo(d), 10, CAMERA);
     expect(groups).toHaveLength(1);
     expect(groups[0].members.map((m) => m.asset_id).sort()).toEqual([id('c1'), id('c2')]);
-    expect(await countReviewQueue(asExpo(d), CAMERA)).toEqual({ grouped: 2, singles: 0 });
+    expect(await countReviewQueue(asExpo(d), CAMERA)).toEqual({
+      grouped: 2,
+      singles: 0,
+      groups: 1,
+    });
     expect(await listGroupsForDay(asExpo(d), '2026-07-20', CAMERA)).toHaveLength(1);
     // Singles: ejecting one member of each pair dissolves it (both become
     // singles) — the feed must list only the Camera two.
@@ -662,7 +731,7 @@ describe('resetUnreviewedGroups spares mixed groups', () => {
       ],
     );
     await makePhotoSingles(asExpo(d), [id('e')]);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'done']], AT + 1);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 1);
     await resetUnreviewedGroups(asExpo(d));
     const rows = d.raw
       .prepare('SELECT photo_id, group_id, user_single FROM photo_group_assignments')
@@ -690,15 +759,15 @@ describe('getDayReviewSummary (decision-day accounting)', () => {
     await applyReviewDecisions(
       asExpo(d),
       [
-        [id('1'), 'done'],
+        [id('1'), 'kept'],
         [id('2'), 'culled'],
-        [id('3'), 'to_edit'],
+        [id('3'), 'kept'],
       ],
       decidedAt,
     );
     const day = new Date(decidedAt).toISOString().slice(0, 10);
     const summary = await getDayReviewSummary(asExpo(d), day);
-    expect(summary).toMatchObject({ reviewed: 3, done: 1, staged: 1, trashed: 0 });
+    expect(summary).toMatchObject({ reviewed: 3, kept: 2, staged: 1, trashed: 0 });
     expect(await getDayReviewSummary(asExpo(d), '2026-07-20')).toMatchObject({ reviewed: 0 });
   });
 });
@@ -707,7 +776,7 @@ describe('corpus stats vs MediaStore denominator', () => {
   it('trashed rows (gone from MediaStore) leave the numerator', async () => {
     const d = await fresh();
     await seed(d, ['1', '2']);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'done']], AT + 1);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 1);
     d.raw
       .prepare("UPDATE photos SET state = 'trashed', is_present = 0 WHERE asset_id = ?")
       .run(id('2'));
@@ -772,8 +841,8 @@ describe('corpus stats honor the source scope', () => {
     await applyReviewDecisions(
       asExpo(d),
       [
-        [id('c1'), 'done'],
-        [id('w1'), 'done'],
+        [id('c1'), 'kept'],
+        [id('w1'), 'kept'],
       ],
       AT + 1,
     );
@@ -817,7 +886,7 @@ describe('clearing a verdict resets the full edit-cycle baseline', () => {
   it('culled → unreviewed clears to_edit_at, mod_time and content_hash', async () => {
     const d = await fresh();
     await seed(d, ['1']);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'to_edit']], AT + 100);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
     d.raw
       .prepare('UPDATE photos SET mod_time = 123, content_hash = ? WHERE asset_id = ?')
       .run('h', id('1'));
@@ -836,7 +905,7 @@ describe('clearing a verdict resets the full edit-cycle baseline', () => {
   it('restoreCarriedCull resets the baseline and can preserve pending matches', async () => {
     const d = await fresh();
     await seed(d, ['1', '9']);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'to_edit']], AT + 100);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
     await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 200);
     d.raw
       .prepare(
@@ -907,19 +976,31 @@ describe('strictness reset spares metadata groups', () => {
 // -------------------------------------------- final-review round 6
 
 describe('applyRedecision (state-aware change of mind)', () => {
-  it('Keep on a flagged to_edit photo lands on done with the flag cleared', async () => {
+  it('Keep on a staged cull rescues it WITHOUT cancelling its edit', async () => {
+    // culled -> kept must mean one thing whichever button gets you
+    // there: unstageCullDirect has always carried the edit across, so
+    // the re-decide sheet does too (m0.8.2 — this used to abandon it).
     const d = await fresh();
     await seed(d, ['1']);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'to_edit']], AT + 100);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 100);
+    await flagForEdit(d, '1', AT + 150);
     await applyRedecision(asExpo(d), id('1'), 'keep', AT + 200);
-    const row = stateOf(d, '1');
-    expect(row).toMatchObject({ state: 'done', needs_edit: 0, to_edit_at: null, mod_time: null });
+    expect(stateOf(d, '1')).toMatchObject({
+      state: 'kept',
+      needs_edit: 1,
+      to_edit_at: AT + 150,
+    });
+
+    // ...and the other route to the same transition still agrees.
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 300);
+    await unstageCullDirect(asExpo(d), id('1'), AT + 400, true);
+    expect(stateOf(d, '1')).toMatchObject({ state: 'kept', needs_edit: 1 });
   });
 
   it('Keep on a flagged staged cull lands on done, resolving its copy match', async () => {
     const d = await fresh();
     await seed(d, ['1', '9']);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'to_edit']], AT + 100);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
     await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 200);
     d.raw
       .prepare(
@@ -927,18 +1008,20 @@ describe('applyRedecision (state-aware change of mind)', () => {
          VALUES (?, ?, ?, 'pending')`,
       )
       .run(id('1'), id('9'), AT + 250);
+    await flagForEdit(d, '1', AT + 260);
     await applyRedecision(asExpo(d), id('1'), 'keep', AT + 300);
-    expect(stateOf(d, '1')).toMatchObject({ state: 'done', needs_edit: 0 });
+    expect(stateOf(d, '1')).toMatchObject({ state: 'kept', needs_edit: 1 });
     const match = d.raw
       .prepare('SELECT state FROM edit_copy_matches WHERE original_id = ?')
       .get(id('1')) as { state: string };
     expect(match.state).toBe('resolved'); // an explicit keep answers the prompt
   });
 
-  it('To edit on a done photo starts a FRESH cycle, never reusing stale evidence', async () => {
+  it('To edit on a kept photo starts a FRESH cycle, never reusing stale evidence', async () => {
     const d = await fresh();
     await seed(d, ['1']);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'to_edit']], AT + 100);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
+    await flagForEdit(d, '1', AT + 110);
     d.raw
       .prepare('UPDATE photos SET mod_time = 123, content_hash = ? WHERE asset_id = ?')
       .run('stale', id('1'));
@@ -946,7 +1029,7 @@ describe('applyRedecision (state-aware change of mind)', () => {
     await applyRedecision(asExpo(d), id('1'), 'to_edit', AT + 300);
     const row = stateOf(d, '1');
     expect(row).toMatchObject({
-      state: 'to_edit',
+      state: 'kept',
       needs_edit: 1,
       to_edit_at: AT + 300,
       mod_time: null,
@@ -954,12 +1037,16 @@ describe('applyRedecision (state-aware change of mind)', () => {
     });
   });
 
-  it('is a no-op for the already-active target state', async () => {
+  it('re-queuing an edit that is ALREADY queued restarts its cycle', async () => {
     const d = await fresh();
     await seed(d, ['1']);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'to_edit']], AT + 100);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
+    await flagForEdit(d, '1', AT + 100);
     await applyRedecision(asExpo(d), id('1'), 'to_edit', AT + 200);
-    expect(stateOf(d, '1').to_edit_at).toBe(AT + 100); // in-progress cycle untouched
+    // Deliberately NOT a no-op: an explicit "to edit" is the user saying
+    // the edit has not happened yet, so detection must start from now
+    // rather than from evidence gathered for the earlier attempt.
+    expect(stateOf(d, '1')).toMatchObject({ to_edit_at: AT + 200, mod_time: null });
   });
 });
 
@@ -1093,7 +1180,7 @@ describe('decisions reject externally removed photos', () => {
     await seed(d, ['1']);
     const { reconcileExternallyRemoved } = await import('./trashStore');
     await reconcileExternallyRemoved(asExpo(d), [id('1')], AT + 50);
-    await expect(applyReviewDecisions(asExpo(d), [[id('1'), 'done']], AT + 100)).rejects.toThrow(
+    await expect(applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100)).rejects.toThrow(
       /no longer available/,
     );
     // The trashed convergence survives — the scan restore path stays open.
@@ -1111,12 +1198,12 @@ describe('decisions reject externally removed photos', () => {
     await applyReviewDecisions(
       asExpo(d),
       [
-        [id('1'), 'done'],
-        [id('2'), 'done'],
+        [id('1'), 'kept'],
+        [id('2'), 'kept'],
       ],
       AT + 100,
     );
-    expect(stateOf(d, '2').state).toBe('done');
+    expect(stateOf(d, '2').state).toBe('kept');
     const gone = d.raw.prepare('SELECT state FROM photos WHERE asset_id = ?').get(id('1')) as {
       state: string;
     };
@@ -1181,8 +1268,8 @@ describe('stale actions against absent/regrouped photos reject', () => {
       applyReviewDecisions(
         asExpo(d),
         [
-          [id('1'), 'done'],
-          [id('2'), 'done'],
+          [id('1'), 'kept'],
+          [id('2'), 'kept'],
         ],
         AT + 100,
         { requireGroupMembership: { groupId: gid + 999, assetIds: [id('1'), id('2')] } },
@@ -1215,11 +1302,11 @@ describe('the Unknown-day pseudo-day', () => {
   it('scope, summaries, groups, and counts all resolve the sentinel', async () => {
     const d = await fresh();
     await seedUndated(d);
-    await applyReviewDecisions(asExpo(d), [[id('u3'), 'done']], AT + 1);
+    await applyReviewDecisions(asExpo(d), [[id('u3'), 'kept']], AT + 1);
 
     const counts = await getStateCountsInScope(asExpo(d), { day: UNDATED_DAY_KEY }, null);
     expect(counts.tracked).toBe(3);
-    expect(counts.done).toBe(1);
+    expect(counts.kept).toBe(1);
 
     const summaries = await getDaySummariesForDays(asExpo(d), [UNDATED_DAY_KEY, '2026-07-20']);
     expect(summaries.get(UNDATED_DAY_KEY)).toMatchObject({ tracked: 3, done: 1 });
@@ -1228,6 +1315,16 @@ describe('the Unknown-day pseudo-day', () => {
     const groups = await listGroupsForDay(asExpo(d), UNDATED_DAY_KEY);
     expect(groups).toHaveLength(1);
     expect(groups[0].members.map((m) => m.asset_id).sort()).toEqual([id('u1'), id('u2')]);
+
+    // The deck read resolves the sentinel too — 'u3' stays in the deck
+    // badged through keep AND cull (m0.8.2 group-deck parity).
+    expect(
+      (await listSinglesForDeck(asExpo(d), UNDATED_DAY_KEY)).map((m) => [m.asset_id, m.state]),
+    ).toEqual([[id('u3'), 'kept']]);
+    await applyReviewDecisions(asExpo(d), [[id('u3'), 'culled']], AT + 2);
+    expect((await listSinglesForDeck(asExpo(d), UNDATED_DAY_KEY)).map((m) => m.asset_id)).toEqual([
+      id('u3'),
+    ]);
 
     expect(await countUndatedAlive(asExpo(d))).toBe(3);
 
@@ -1238,16 +1335,45 @@ describe('the Unknown-day pseudo-day', () => {
     ]);
   });
 
+  it('the open-ended corpus scope still counts undated rows (Stats/Progress library totals)', async () => {
+    const d = await fresh();
+    await seedUndated(d);
+    await applyReviewDecisions(asExpo(d), [[id('u3'), 'kept']], AT + 1);
+
+    // Undated photos have no `day` but DO have a taken_at (mtime
+    // fallback), so the whole-corpus range covers them: 3 undated + the
+    // dated photo. Stats and the "All photos" Progress page both count
+    // this way — a `day IS NULL` exclusion here would understate both.
+    const counts = await getStateCountsInScope(
+      asExpo(d),
+      { startMs: 0, endMs: Number.POSITIVE_INFINITY },
+      null,
+    );
+    expect(counts).toMatchObject({
+      tracked: 4,
+      kept: 1,
+      unreviewed: 3,
+      grouped: { unreviewed: 2, kept: 0, staged: 0 },
+    });
+  });
+
   it('the DB-backed all/unreviewed grid filters page the pseudo-day', async () => {
     const d = await fresh();
     await seedUndated(d);
     const scope = { day: UNDATED_DAY_KEY };
     const all = await getGridPhotosByFilter(asExpo(d), scope, null, 'all', 10, 0);
     expect(all.map((r) => r.asset_id).sort()).toEqual([id('u1'), id('u2'), id('u3')]);
-    const single = await getGridPhotosByFilter(asExpo(d), scope, null, 'unreviewed', 10, 0);
-    expect(single.map((r) => r.asset_id)).toEqual([id('u3')]);
-    const grouped = await getGridPhotosByFilter(asExpo(d), scope, null, 'in_group', 10, 0);
-    expect(grouped.map((r) => r.asset_id).sort()).toEqual([id('u1'), id('u2')]);
+    // 'unreviewed' is the VERDICT, so grouped and ungrouped alike.
+    const unreviewed = await getGridPhotosByFilter(asExpo(d), scope, null, 'unreviewed', 10, 0);
+    expect(unreviewed.map((r) => r.asset_id).sort()).toEqual([id('u1'), id('u2'), id('u3')]);
+    // Grouping is an ANNOTATION, not a filter (v18): the grid reports it
+    // per row so the underline can span whichever verdicts hold it.
+    expect(
+      all
+        .filter((r) => Number(r.grouped) === 1)
+        .map((r) => r.asset_id)
+        .sort(),
+    ).toEqual([id('u1'), id('u2')]);
   });
 });
 
@@ -1268,10 +1394,203 @@ describe('exact reclaimable bytes', () => {
     // One row predates v14 sizing (NULL) — it must surface for the stat
     // fallback instead of silently missing from the sum.
     d.raw.prepare('UPDATE photos SET size_bytes = NULL WHERE asset_id = ?').run(id('2'));
-    const rows = await getStagedCullBytes(asExpo(d));
-    expect(rows).toHaveLength(2);
-    const byUri = new Map(rows.map((r) => [r.uri, r.sizeBytes]));
-    expect(byUri.get('file:///dcim/1.jpg')).toBe(1_000);
-    expect(byUri.get('file:///dcim/2.jpg')).toBeNull(); // stat fallback target
+    const staged = await getStagedCullBytes(asExpo(d));
+    // The sized row is summed in SQL; the unsized one comes back for the
+    // caller's bounded stat fallback (never silently missing).
+    expect(staged.scanned).toBe(1_000);
+    expect(staged.unsized).toEqual(['file:///dcim/2.jpg']);
+  });
+});
+
+function stateOf2(d: TestDb, rawId: string): Record<string, unknown> {
+  return d.raw
+    .prepare('SELECT state, reviewed_at, decided_at FROM photos WHERE asset_id = ?')
+    .get(id(rawId)) as Record<string, unknown>;
+}
+
+describe('decided_at (m0.8.1: the daily goal counts review ACTIONS)', () => {
+  it('re-stamps on every verdict while reviewed_at keeps the first stamp', async () => {
+    const d = await fresh();
+    await seed(d, ['1']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
+    expect(stateOf2(d, '1')).toMatchObject({ reviewed_at: AT + 100, decided_at: AT + 100 });
+    // A next-day re-decide moves decided_at but NOT reviewed_at.
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 90_000_000);
+    expect(stateOf2(d, '1')).toMatchObject({
+      reviewed_at: AT + 100,
+      decided_at: AT + 90_000_000,
+    });
+    // Clearing back to unreviewed keeps the stamp (the work happened).
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'unreviewed']], AT + 90_000_500);
+    expect(stateOf2(d, '1')).toMatchObject({ decided_at: AT + 90_000_000 });
+  });
+
+  it('redecide and unstage paths re-stamp too, and the day counts follow decided_at', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 100);
+    await applyReviewDecisions(asExpo(d), [[id('2'), 'kept']], AT + 100);
+    await unstageCullDirect(asExpo(d), id('1'), AT + 90_000_000, true);
+    await applyRedecision(asExpo(d), id('2'), 'keep', AT + 90_000_000);
+    expect(stateOf2(d, '1')).toMatchObject({ decided_at: AT + 90_000_000 });
+    expect(stateOf2(d, '2')).toMatchObject({ decided_at: AT + 90_000_000 });
+    const counts = await getReviewedCountsByDay(asExpo(d), 0);
+    // Both photos moved their stamps to the later day — the earlier day
+    // holds no decided_at anymore (one row = its latest action day).
+    expect([...counts.values()].reduce((a, b) => a + b, 0)).toBe(2);
+  });
+});
+
+describe('decision counts honour the source selection (m0.8.2)', () => {
+  it("the ring, the streaks and today's tiles count only your folders", async () => {
+    // The review queue is itself source-scoped, so a decision count over
+    // a WIDER set than the queue can serve is simply wrong — it would
+    // credit you for work on photos you cannot reach. The History feed
+    // and the all-time totals deliberately do NOT scope (statsLoad.ts).
+    const d = await fresh();
+    const inSource = { ...upsert('c1'), uri: 'file:///storage/emulated/0/DCIM/Camera/c1.jpg' };
+    const outSource = { ...upsert('w1'), uri: 'file:///storage/emulated/0/WhatsApp/Media/w1.jpg' };
+    await writeContinuousGroups(
+      asExpo(d),
+      { photos: [inSource, outSource], groups: [], singles: [id('c1'), id('w1')] },
+      AT,
+    );
+    await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('c1'), 'kept'],
+        [id('w1'), 'kept'],
+      ],
+      AT,
+    );
+    const roots = ['DCIM/Camera'];
+    const scoped = await getReviewedCountsByDay(asExpo(d), 0, roots);
+    const unscoped = await getReviewedCountsByDay(asExpo(d), 0);
+    expect([...scoped.values()].reduce((a, b) => a + b, 0)).toBe(1);
+    expect([...unscoped.values()].reduce((a, b) => a + b, 0)).toBe(2);
+
+    const day = dayKey(AT);
+    expect((await getDayReviewSummary(asExpo(d), day, roots)).reviewed).toBe(1);
+    expect((await getDayReviewSummary(asExpo(d), day)).reviewed).toBe(2);
+    expect(await getRecentDecisionStamps(asExpo(d), 2000, roots)).toHaveLength(1);
+
+    // ...while the all-time record stays whole: narrowing your sources
+    // must not rewrite work you actually finished.
+    expect((await getLifetimeStats(asExpo(d))).reviewed).toBe(2);
+  });
+});
+
+describe('getReviewedCountsByDay counts DECIDED-day, not capture-day (m0.8.1)', () => {
+  it('counts a photo captured long ago but decided today', async () => {
+    const d = await fresh();
+    // Two photos with the SAME capture day column value...
+    await seed(d, ['1', '2']);
+    // ...and an ancient capture day on one of them, to prove the query
+    // never groups or filters by photos.day. `AS day` used to shadow the
+    // real column, so this photo vanished from the goal count entirely.
+    d.raw.prepare('UPDATE photos SET day = ? WHERE asset_id = ?').run('2019-01-01', id('1'));
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT);
+    await applyReviewDecisions(asExpo(d), [[id('2'), 'kept']], AT);
+    const decidedDay = new Date(AT).toISOString().slice(0, 10);
+    const counts = await getReviewedCountsByDay(asExpo(d), 0);
+    // ONE bucket (the decided day), holding BOTH photos.
+    expect(counts.size).toBe(1);
+    expect([...counts.keys()][0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect([...counts.values()][0]).toBe(2);
+    // Sanity: the bucket is the decision date, not either capture date.
+    expect([...counts.keys()][0]).not.toBe('2019-01-01');
+    expect(decidedDay.length).toBe(10);
+  });
+
+  it('the epoch bound excludes older decisions only', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT);
+    await applyReviewDecisions(asExpo(d), [[id('2'), 'kept']], AT + 90_000_000);
+    expect((await getReviewedCountsByDay(asExpo(d), 0)).size).toBe(2);
+    const laterOnly = await getReviewedCountsByDay(asExpo(d), AT + 1);
+    expect([...laterOnly.values()].reduce((a, b) => a + b, 0)).toBe(1);
+  });
+});
+
+describe('getDayReviewSummary keys on decided_at (m0.8.1)', () => {
+  it('counts a photo re-decided today and matches the ring', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2']);
+    const dayStart = rangeOfDayKey(dayKey(AT)).startMs;
+    // Photo 1: first reviewed long before today, re-decided today.
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], dayStart - 5 * 86_400_000);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT);
+    // Photo 2: decided today for the first time.
+    await applyReviewDecisions(asExpo(d), [[id('2'), 'kept']], AT);
+    const summary = await getDayReviewSummary(asExpo(d), dayKey(AT));
+    // BOTH count — the old reviewed_at keying missed photo 1 entirely.
+    expect(summary.reviewed).toBe(2);
+    expect(summary.kept).toBe(1);
+    expect(summary.staged).toBe(1);
+    // ...and the ring's per-day counts agree for the same day.
+    const counts = await getReviewedCountsByDay(asExpo(d), 0);
+    expect(counts.get(dayKey(AT))).toBe(2);
+  });
+
+  it('includes the last millisecond of the day', async () => {
+    const d = await fresh();
+    await seed(d, ['1']);
+    const end = rangeOfDayKey(dayKey(AT)).endMs;
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], end);
+    expect((await getDayReviewSummary(asExpo(d), dayKey(AT))).reviewed).toBe(1);
+  });
+});
+
+describe('getCoverageByDay (m0.8.1 coverage goal)', () => {
+  it('groups by capture day, counts pending, and keeps the undated bucket', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3', '4']);
+    // Two capture days plus one undated photo.
+    d.raw.prepare('UPDATE photos SET day = ? WHERE asset_id = ?').run('2026-07-19', id('3'));
+    d.raw.prepare('UPDATE photos SET day = NULL WHERE asset_id = ?').run(id('4'));
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT);
+    const rows = await getCoverageByDay(asExpo(d), null);
+    const byDay = new Map(rows.map((r) => [r.day, r]));
+    expect(byDay.get('2026-07-20')).toMatchObject({ total: 2, pending: 1 });
+    expect(byDay.get('2026-07-19')).toMatchObject({ total: 1, pending: 1 });
+    expect(byDay.get(null)).toMatchObject({ total: 1, pending: 1 });
+  });
+
+  it('a sinceDay bound drops older days but NEVER the undated bucket', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2']);
+    d.raw.prepare('UPDATE photos SET day = ? WHERE asset_id = ?').run('2020-01-01', id('1'));
+    d.raw.prepare('UPDATE photos SET day = NULL WHERE asset_id = ?').run(id('2'));
+    const rows = await getCoverageByDay(asExpo(d), '2026-07-01');
+    expect(rows.map((r) => r.day)).toEqual([null]);
+  });
+
+  it('honours the photo-source scope', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2']);
+    // Same uri convention as the source-scoped queue tests above: the
+    // LIKE matches '%/DCIM/Camera/%'.
+    const setUri = (rawId: string, folder: string) =>
+      d.raw
+        .prepare('UPDATE photos SET uri = ? WHERE asset_id = ?')
+        .run(`file:///storage/emulated/0/${folder}/${rawId}.jpg`, id(rawId));
+    setUri('1', 'DCIM/Camera');
+    setUri('2', 'WhatsApp/Media');
+    const scoped = await getCoverageByDay(asExpo(d), null, ['DCIM/Camera']);
+    expect(scoped.reduce((sum, r) => sum + r.total, 0)).toBe(1);
+    const all = await getCoverageByDay(asExpo(d), null, null);
+    expect(all.reduce((sum, r) => sum + r.total, 0)).toBe(2);
+  });
+
+  it('a trashed photo is neither pending nor counted (it left MediaStore)', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2']);
+    d.raw
+      .prepare("UPDATE photos SET state = 'trashed', is_present = 0 WHERE asset_id = ?")
+      .run(id('1'));
+    const rows = await getCoverageByDay(asExpo(d), null);
+    expect(rows.reduce((sum, r) => sum + r.total, 0)).toBe(1);
+    expect(rows.reduce((sum, r) => sum + r.pending, 0)).toBe(1);
   });
 });

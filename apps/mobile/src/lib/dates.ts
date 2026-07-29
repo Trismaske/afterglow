@@ -1,7 +1,12 @@
 /**
- * Date-scope helpers for the Home screen (Today / Yesterday / custom range).
- * Pure logic, local time — clustering and review are day-scoped in the
- * user's own timezone, matching how they think about "today's photos".
+ * Day helpers. Pure logic, local time — clustering and review are
+ * day-scoped in the user's own timezone, matching how they think about
+ * "today's photos".
+ *
+ * m0.8.2: the Today/Yesterday/custom RANGE builders are gone with the
+ * range scope they served. Sessions took the UI that set an arbitrary
+ * review range, but the builders outlived it with no callers; the
+ * surviving range is `rangeOfDayKey`, which a real day still needs.
  */
 
 export interface DateRange {
@@ -25,16 +30,6 @@ export function endOfDay(d: Date): number {
   const copy = new Date(d);
   copy.setHours(23, 59, 59, 999);
   return copy.getTime();
-}
-
-export function todayRange(now: Date): DateRange {
-  return { startMs: startOfDay(now), endMs: endOfDay(now), label: 'Today' };
-}
-
-export function yesterdayRange(now: Date): DateRange {
-  const y = new Date(now);
-  y.setDate(y.getDate() - 1);
-  return { startMs: startOfDay(y), endMs: endOfDay(y), label: 'Yesterday' };
 }
 
 /**
@@ -97,19 +92,4 @@ const DAY_FORMAT: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' 
 
 export function formatDay(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, DAY_FORMAT);
-}
-
-/**
- * Custom range spanning whole days. Start/end may be given in either order;
- * the range always covers full local days.
- */
-export function customRange(a: Date, b: Date): DateRange {
-  const [from, to] = a.getTime() <= b.getTime() ? [a, b] : [b, a];
-  const startMs = startOfDay(from);
-  const endMs = endOfDay(to);
-  const label =
-    startOfDay(from) === startOfDay(to)
-      ? formatDay(startMs)
-      : `${formatDay(startMs)} – ${formatDay(endMs)}`;
-  return { startMs, endMs, label };
 }

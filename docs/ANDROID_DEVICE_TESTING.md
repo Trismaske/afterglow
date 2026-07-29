@@ -211,6 +211,28 @@ scripts/android-device.sh adb HARDWARE_SERIAL shell input text 'sample%stext'
 scripts/android-device.sh adb HARDWARE_SERIAL shell input keyevent KEYCODE_BACK
 ```
 
+Synthetic gestures fail silently: an `input swipe` that does nothing looks
+identical to "no crash / no movement" and corrupts the test's conclusion.
+Two rules keep scripted gesture work honest:
+
+- **Assert the gesture's effect** (pager indicator, breadcrumb log), never
+  just that the process survived. The UI gate's swipe step does this.
+- **Do not blame the device until the app is ruled out.** "Synthetic
+  swipes don't work on the S23" circulated as fact for two releases; it
+  was an app bug that froze the pager on any touch, and once fixed the
+  full UI gate passed on both test phones. A device-specific claim about
+  input is only real after the same script passes on another device
+  against the same build.
+
+Double taps: issue both taps in ONE `adb shell` invocation
+(`shell "input tap X Y; input tap X Y"`) — chaining two separate adb
+calls adds process round-trips that overshoot the ~300 ms double-tap
+window. For crash repros, clear the crash buffer first
+(`logcat -c -b crash`), assert the app's PID is unchanged after every
+gesture (`pidof`), and count signature lines at the end
+(`logcat -d -b crash | grep -c <marker>`) — a PID check per step turns
+"it crashed eventually" into "it crashed on exactly the Nth gesture".
+
 Capture logs for Afterglow debugging:
 
 ```bash

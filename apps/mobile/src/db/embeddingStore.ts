@@ -15,6 +15,7 @@
  * loud (callers surface the reset in the scan status).
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
+import { withWriteTransaction } from './database';
 
 const MODEL_SHA_KEY = 'embedding_model_sha256';
 
@@ -95,7 +96,7 @@ export async function ensureEmbeddingModel(
   );
   if (stored?.value === modelSha256) return { cleared: false, discarded: 0 };
   let discarded = 0;
-  await db.withExclusiveTransactionAsync(async (txn) => {
+  await withWriteTransaction(db, async (txn) => {
     const row = await txn.getFirstAsync<{ n: number }>(
       'SELECT COUNT(*) AS n FROM photo_embeddings',
     );

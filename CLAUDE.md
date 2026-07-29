@@ -34,7 +34,7 @@ Environment setup (Android toolchain/emulator, one command): [docs/DEVELOPMENT.m
 
 ## Release flow
 
-Tags trigger CI to GitHub Releases: `desktop-v*` → Windows installer (+ `.scr` screensaver) & Linux AppImage/deb (`.github/workflows/desktop-release.yml`); `mobile-m*` → release APK (`mobile-release.yml`: clean `expo prebuild` + Gradle — `apps/mobile/android` is **gitignored prebuild output**). Release scripts require exact tag/version mapping, monotonic Android versionCode, all expected artifacts, and SHA-256 manifests. GitLab delivery is deferred. Versions: `apps/desktop/package.json`; mobile `app.json` (`version` + `android.versionCode`) and `apps/mobile/package.json`. The APK signs with the standard shared debug keystore. Pre-v1 policy: no upgrade/back-compat constraints — signing, identifiers, and databases may change freely between 0.x releases (testers reinstall); this hardens at v1. Work happens on branch `initial`.
+Tags trigger CI to GitHub Releases: `desktop-v*` → Windows installer (+ `.scr` screensaver) & Linux AppImage/deb (`.github/workflows/desktop-release.yml`); `mobile-m*` → release APK (`mobile-release.yml`: clean `expo prebuild` + Gradle — `apps/mobile/android` is **gitignored prebuild output**). Release scripts require exact tag/version mapping, monotonic Android versionCode, all expected artifacts, and SHA-256 manifests. Mobile releases additionally pass the UI gate (docs/MOBILE_UI_GATE.md) on a test device first. GitLab delivery is deferred. Versions: `apps/desktop/package.json`; mobile `app.json` (`version` + `android.versionCode`) and `apps/mobile/package.json`. The APK signs with the standard shared debug keystore. Pre-v1 policy: no upgrade/back-compat constraints — signing, identifiers, and databases may change freely between 0.x releases (testers reinstall); this hardens at v1. Work happens on branch `initial`.
 
 ## Docs index (read on demand)
 
@@ -43,6 +43,8 @@ Tags trigger CI to GitHub Releases: `desktop-v*` → Windows installer (+ `.scr`
 | PLAN.md | Product vision, feature semantics, roadmap/version numbering |
 | docs/DEVELOPMENT.md | Dev env setup, emulator, run/debug commands |
 | docs/ANDROID_DEVICE_TESTING.md | Pair/control physical Android phones over wireless ADB; multi-device automation |
+| docs/MOBILE_UI_GATE.md | Automated pre-release UI walk of the companion app (`scripts/mobile-ui-gate.mjs`) + manual pass |
+| docs/STATE_MODEL.md | **Read before touching any surface that shows photo state.** The three layers (verdict · actions · annotations) and the six visual rules — shipped in m0.8.2, and the contract every state surface is held to |
 | docs/TODO.md | Open questions parked for their own investigation |
 | docs/Feedback_<version>.md / docs/Plan_<version>.md (e.g. `Plan_m0.8.md`) | Current tester feedback + the release plan answering it, named for the release they target (removed once shipped) |
 | docs/grouping-study/ | Grouping regression labels (human-judged pairs) + study tooling; local-only data gitignored (see its README) |

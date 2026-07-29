@@ -39,6 +39,7 @@ import {
   completedDuringVisit,
   destinationAfterUnit,
   findUnitIndex,
+  firstPendingUnit,
   unitDestination,
   type UnitDestination,
   type UnitRef,
@@ -72,6 +73,18 @@ type SharedProps = {
 
 const THUMB = 52;
 const MAX_SCALE = 8;
+
+/** The write-error surface for the deck's DIRECT queue writes (codex r7:
+ * toggleShare/toggleOrganize bypass the provider, so its decision alert
+ * never fires for them, and run() swallows rejections assuming it did;
+ * CompareScreen carries the same helper) — the durable row is unchanged,
+ * so the user simply retries the tap. */
+function surfaceQueueWriteError(error: unknown): void {
+  Alert.alert(
+    'Change not saved',
+    `Afterglow could not write the change to its database. Nothing was changed — please retry the action.\n\n${error instanceof Error ? error.message : String(error)}`,
+  );
+}
 
 function clampPan(value: number, max: number): number {
   'worklet';
@@ -162,14 +175,14 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   // paramless linear flow follows the timeline's FIRST unit — bound here
   // when it is a group, redirected to its run deck by the routing effect
   // when it is not (m0.8.2 merged timeline).
-  const groupId = useMemo(
-    () =>
-      singlesMode
-        ? null
-        : (explicitGroupId ??
-          (timeline[0]?.kind === 'group' ? String(timeline[0].group.groupId) : null)),
-    [explicitGroupId, timeline, singlesMode],
-  );
+  const groupId = useMemo(() => {
+    if (singlesMode) return null;
+    if (explicitGroupId) return explicitGroupId;
+    // First PENDING unit, not timeline[0]: a cull-only run (or a fully
+    // browsed head card) is not review work (lib/timeline.ts).
+    const first = firstPendingUnit(timeline);
+    return first?.kind === 'group' ? String(first.group.groupId) : null;
+  }, [explicitGroupId, timeline, singlesMode]);
   /** How THIS deck names itself against the timeline (advance flow). */
   const unitRef = useMemo<UnitRef | null>(() => {
     if (singlesMode)
@@ -198,8 +211,16 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   // Gate 5: an explicitly opened group ABSENT from the queue is fetched
   // directly — completed groups reopen in browse/re-decide mode instead
   // of bouncing back. 'missing' = the group is genuinely gone (a pair
-  // dissolved by ejection, or a stale id) — the advance effect handles it.
-  const [loadedGroup, setLoadedGroup] = useState<ReviewGroupRow | 'loading' | 'missing'>('loading');
+  // dissolved by ejection, or a stale id) — the advance effect handles
+  // it. 'failed' = the READ failed and PROVES NOTHING about the group:
+  // it renders the inline retry card and never feeds the advance
+  // routing, which would otherwise skip the unit the user opened over a
+  // transient SQLite error.
+  const [loadedGroup, setLoadedGroup] = useState<ReviewGroupRow | 'loading' | 'missing' | 'failed'>(
+    'loading',
+  );
+  // Bumped by the failure card's Retry — re-runs whichever load failed.
+  const [loadTick, setLoadTick] = useState(0);
   useEffect(() => {
     let cancelled = false;
     if (singlesMode || !explicitGroupId || queueGroup) {
@@ -211,16 +232,14 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
         if (!cancelled) setLoadedGroup(fetched ?? 'missing');
       },
       (error) => {
-        // A rejected read settles as terminal — the routing effect
-        // advances/goes back instead of stranding an empty deck.
         console.warn('[deck] group load failed:', String(error));
-        if (!cancelled) setLoadedGroup('missing');
+        if (!cancelled) setLoadedGroup('failed');
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [explicitGroupId, queueGroup, loadGroup, singlesMode, version]);
+  }, [explicitGroupId, queueGroup, loadGroup, singlesMode, version, loadTick]);
   const group: ReviewGroupRow | null =
     queueGroup ?? (typeof loadedGroup === 'object' ? loadedGroup : null);
   // m0.8.2: singles decks are day/run scoped and fetch their own rows —
@@ -228,7 +247,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   // loadGroup exists above: the queue's singles feed is a bounded
   // newest-first pending page. `version` re-fetches, so a decision's
   // patch lands here too.
-  const [deckSingles, setDeckSingles] = useState<ReviewMemberRow[] | null>(null);
+  const [deckSingles, setDeckSingles] = useState<ReviewMemberRow[] | 'failed' | null>(null);
   useEffect(() => {
     if (!singlesMode || !day) return;
     let cancelled = false;
@@ -237,18 +256,21 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
         if (!cancelled) setDeckSingles(rows);
       },
       (error) => {
-        // FAIL CLOSED: an unreadable scope settles as an EMPTY deck,
-        // which the exit effect leaves — never as some broader feed.
+        // An unreadable scope is NOT an empty one: 'failed' renders the
+        // inline retry card and keeps `singlesReady` false, so the exit
+        // effect — which treats a truly empty scope as consumed and
+        // advances past it — never routes on a transient read failure.
+        // It must also never widen to some broader feed.
         console.warn('[deck] singles load failed:', String(error));
-        if (!cancelled) setDeckSingles([]);
+        if (!cancelled) setDeckSingles('failed');
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [day, range, singlesMode, loadDeckSingles, version]);
+  }, [day, range, singlesMode, loadDeckSingles, version, loadTick]);
   /** The rows this deck reviews (singles mode). */
-  const singleRows = useMemo(() => deckSingles ?? [], [deckSingles]);
+  const singleRows = useMemo(() => (Array.isArray(deckSingles) ? deckSingles : []), [deckSingles]);
   // Derived deck info (the old core groupInfo shape, DB-backed): a group
   // absent from the queue but explicitly opened is COMPLETE (browse mode)
   // — the queue only lists groups with unreviewed members.
@@ -272,8 +294,9 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   const singlesPending = singlesMode
     ? singleRows.filter((m) => m.state === 'unreviewed').length
     : 0;
-  /** The deck's rows have landed (singles fetch is async). */
-  const singlesReady = singlesMode ? deckSingles !== null : true;
+  /** The deck's rows have landed (singles fetch is async). A FAILED
+   * fetch is not "ready" — an unloaded deck may not judge completion. */
+  const singlesReady = singlesMode ? Array.isArray(deckSingles) : true;
   // BROWSE = nothing pending in this deck (m0.8.2 unification: a
   // fully-reviewed singles run browses exactly like a completed group —
   // decided photos stay in place badged and re-decide via the chips).
@@ -346,6 +369,11 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
     ty.value = 0;
     savedTx.value = 0;
     savedTy.value = 0;
+    // The aspect belongs to the CURRENT photo: left stale across a photo
+    // change, a double tap before the new onLoad clamps pan bounds
+    // against the PREVIOUS photo's edges. 0 = not loaded, where
+    // panBounds falls back to stage-rect bounds (zoomTarget.ts).
+    imageAspect.value = 0;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -463,8 +491,14 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   const zoomOverlayStyle = useAnimatedStyle(() => ({
     opacity: scale.value > 1 ? 1 : 0,
   }));
+  // importantForAccessibility mirrors PhotoViewer's facts panel (codex
+  // r50): the always-mounted overlay is hidden by opacity +
+  // pointerEvents while unzoomed, but would otherwise stay in the
+  // accessibility tree.
   const zoomOverlayProps = useAnimatedProps(() => ({
     pointerEvents: (scale.value > 1 ? 'auto' : 'none') as 'auto' | 'none',
+    importantForAccessibility: (scale.value > 1 ? 'auto' : 'no-hide-descendants') as
+      'auto' | 'no-hide-descendants',
   }));
 
   // Page taps — a plain Pressable press (RN responder system),
@@ -480,9 +514,14 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
     if (scale.value === 1 && browse) setViewerOpen(true);
   };
   const fireStageTap = useCallback(() => stageTapRef.current(), []);
+  const currentId = current?.id ?? null;
+  // currentId scopes the tap window to one photo: the hook serves every
+  // pager page, so without it tap A → swipe → tap B inside the window
+  // read as a double tap on B.
   const onPagePress = useDoubleTapZoom(
     { scale, savedScale, tx, ty, savedTx, savedTy, stageW, stageH, imageAspect },
     fireStageTap,
+    currentId,
   );
 
   useEffect(() => {
@@ -507,7 +546,6 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
     setBrowseCursor(firstPending > 0 ? firstPending : 0);
   }, [unitKey, singlesMode, singlesReady, group, deckItems, stateOf]);
   // The zoom overlay shows the CURRENT photo — leave zoom when it changes.
-  const currentId = current?.id ?? null;
   useEffect(() => {
     resetZoom();
   }, [currentId, resetZoom]);
@@ -542,9 +580,9 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
       return;
     }
     if (groupId) return;
-    // Paramless with no group at the head: the next unit is a singles
-    // run (open it) or nothing reviewable (the cull list).
-    const first = timeline[0];
+    // Paramless with no group at the head: the next PENDING unit is a
+    // singles run (open it) or nothing reviewable (the cull list).
+    const first = firstPendingUnit(timeline);
     if (first) goToDestination(unitDestination(first));
     else navigation.replace('CullList');
   }, [
@@ -589,9 +627,10 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   }, [singlesMode, singlesReady]);
   useEffect(() => {
     if (!singlesMode || !singlesReady || busy || !isFocused) return;
-    // A scope with NO rows at all (unreadable, or the scan regrouped the
-    // last one) must not strand an empty deck: a RUN advances along the
+    // A scope with GENUINELY no rows (the scan regrouped the last one
+    // away) must not strand an empty deck: a RUN advances along the
     // timeline from its former spot, a DAY deck returns to its day page.
+    // A failed read never reaches here — `singlesReady` stays false.
     if (singleRows.length === 0) {
       if (range && unitRef)
         goToDestination(destinationAfterUnit(timeline, unitRef, completionRef.current.index));
@@ -730,9 +769,19 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   const toggleShare = useCallback(async () => {
     if (!current) return;
     const id = current.id;
-    if (queuedFor(id).share) await removeFromShareQueue(db, id, Date.now());
-    else await addToShareQueue(db, id, Date.now());
-    await refreshQueuedFor();
+    try {
+      if (queuedFor(id).share) await removeFromShareQueue(db, id, Date.now());
+      else await addToShareQueue(db, id, Date.now());
+    } catch (error) {
+      // codex r7: a rejected DIRECT store write was silent — surface it
+      // here (CompareScreen's pattern). The refresh below stays outside
+      // the guard on purpose: by then the write landed, so a "nothing
+      // was changed" alert would lie — the next refresh reconciles the
+      // chip.
+      surfaceQueueWriteError(error);
+      return;
+    }
+    await refreshQueuedFor().catch(() => {});
   }, [db, current, queuedFor, refreshQueuedFor]);
 
   // ------------------------------------------ goal celebration (F14)
@@ -754,23 +803,30 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   const toggleOrganize = useCallback(async () => {
     if (!current) return;
     const id = current.id;
-    if (queuedFor(id).organize) await unqueueOrganize(db, id, Date.now());
-    else {
-      const error = await queueOrganize(db, id, Date.now());
-      if (error) {
-        Alert.alert('Cannot organize this photo', error);
-        return;
+    try {
+      if (queuedFor(id).organize) await unqueueOrganize(db, id, Date.now());
+      else {
+        const error = await queueOrganize(db, id, Date.now());
+        if (error) {
+          Alert.alert('Cannot organize this photo', error);
+          return;
+        }
       }
+    } catch (error) {
+      surfaceQueueWriteError(error); // codex r7 — see toggleShare
+      return;
     }
-    await refreshQueuedFor();
+    await refreshQueuedFor().catch(() => {});
   }, [db, current, queuedFor, refreshQueuedFor]);
 
   const finishGroup = useCallback(() => {
     if (!group) return;
-    const pending = group.members.filter((m) => m.state === 'unreviewed').length;
     void run(async () => {
-      await keepRest(group.groupId);
-      bumpDecisions(pending);
+      // Credit what the WRITE kept (codex r10): a dissolved off-page
+      // group keeps nothing, and the rendered pending count would
+      // advance the goal for verdicts that were never written.
+      const kept = await keepRest(group.groupId);
+      bumpDecisions(kept);
     });
   }, [group, run, keepRest, bumpDecisions]);
 
@@ -842,6 +898,29 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
     [pageW, onPagePress],
   );
 
+  // A failed unit read renders the inline retry INSTEAD of the empty
+  // root below: the failure state routes nowhere (no effect consumes
+  // 'failed'), so the unit stays open until the read succeeds or the
+  // user leaves. Genuinely missing/empty units keep their routing above.
+  const loadFailed = singlesMode ? deckSingles === 'failed' : !group && loadedGroup === 'failed';
+  if (loadFailed) {
+    return (
+      <View style={[styles.root, styles.loadFailedRoot]}>
+        <Text style={styles.loadFailedText}>Could not load these photos just now.</Text>
+        <Pressable
+          style={styles.retryButton}
+          onPress={() => {
+            if (singlesMode) setDeckSingles(null);
+            else setLoadedGroup('loading');
+            setLoadTick((t) => t + 1);
+          }}
+        >
+          <Text style={[styles.retryText, { color: theme.accent }]}>Retry</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
   if (!current || (!singlesMode && (!groupId || !info))) {
     return <View style={styles.root} />;
   }
@@ -864,13 +943,17 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
     currentState === 'culled' ? 'cull' : flagged ? 'to_edit' : 'keep';
   /** Every badge a deck photo wears — the verdict AND all four actions,
    * none hiding another (m0.8.1 round 4), each at its own weight: loud
-   * while it waits for you, quiet once the photo carries it (m0.8.2). */
-  const badgesFor = (item: MediaItem): PhotoBadge[] =>
-    photoBadges({
-      state: stateOf.get(item.id) ?? 'unreviewed',
-      ...actionWeights(item.id),
+   * while it waits for you, quiet once the photo carries it (m0.8.2).
+   * The verdict rides into actionWeights so a staged cull's retained
+   * actions badge quiet — they left the queues with it. */
+  const badgesFor = (item: MediaItem): PhotoBadge[] => {
+    const state = stateOf.get(item.id) ?? 'unreviewed';
+    return photoBadges({
+      state,
+      ...actionWeights(item.id, state),
       best: !singlesMode && info?.bestId === item.id,
     });
+  };
 
   // Re-decide: tapping the ACTIVE verdict clears back to unreviewed; a
   // A DECIDED photo changing to keep/to-edit takes the state-aware path:
@@ -1102,31 +1185,36 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
           </View>
           <View style={styles.secondaryRow}>
             {/* Browse Edit re-decides (kept + fresh edit cycle) — the
-                state-aware path, unlike the live flag toggle below. */}
+                state-aware path, unlike the live flag toggle below.
+                All four chips DISABLE on a staged cull (same rule as
+                Best below): its retained action rows are what un-staging
+                restores, and a toggle here would silently destroy them —
+                a photo you are about to delete is not actionable work
+                (codex r3). */}
             <ActionChip
               kind="edit"
               active={flagged}
-              disabled={busy}
+              disabled={busy || currentState === 'culled'}
               onPress={() => void run(() => decideCurrent('to_edit'))}
             />
             {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
               <ActionChip
                 kind="favourite"
                 active={favourite}
-                disabled={busy}
+                disabled={busy || currentState === 'culled'}
                 onPress={() => void run(() => toggleFavourite(current.id))}
               />
             )}
             <ActionChip
               kind="organize"
               active={organizeQueued}
-              disabled={busy}
+              disabled={busy || currentState === 'culled'}
               onPress={() => void run(toggleOrganize)}
             />
             <ActionChip
               kind="share"
               active={shareQueued}
-              disabled={busy}
+              disabled={busy || currentState === 'culled'}
               onPress={() => void run(toggleShare)}
             />
             {!singlesMode && groupId && (
@@ -1205,31 +1293,35 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
 
           <View style={styles.secondaryRow}>
             {/* Live Edit is a FLAG toggle (both deck kinds, m0.8.2
-                unification) — the verdict layer is untouched. */}
+                unification) — the verdict layer is untouched. The live
+                deck keeps decided photos in place, so a staged cull can
+                be the current photo here too: all four chips disable on
+                it (same rule as Best) — its retained rows are what
+                un-staging restores (codex r3). */}
             <ActionChip
               kind="edit"
               active={flagged}
-              disabled={busy}
+              disabled={busy || currentState === 'culled'}
               onPress={() => void run(() => toggleNeedsEdit(current.id))}
             />
             {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
               <ActionChip
                 kind="favourite"
                 active={favourite}
-                disabled={busy}
+                disabled={busy || currentState === 'culled'}
                 onPress={() => void run(() => toggleFavourite(current.id))}
               />
             )}
             <ActionChip
               kind="organize"
               active={organizeQueued}
-              disabled={busy}
+              disabled={busy || currentState === 'culled'}
               onPress={() => void run(toggleOrganize)}
             />
             <ActionChip
               kind="share"
               active={shareQueued}
-              disabled={busy}
+              disabled={busy || currentState === 'culled'}
               onPress={() => void run(toggleShare)}
             />
           </View>
@@ -1275,9 +1367,11 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
               singlesMode
                 ? day &&
                   void run(async () => {
-                    const pending = singlesPending;
-                    await keepAllSingles(day, range ?? null);
-                    bumpDecisions(pending);
+                    // Credit what the WRITE kept, not the rendered count:
+                    // the write re-reads its scope, and a scan can have
+                    // moved singles in or out mid-view (codex r8).
+                    const kept = await keepAllSingles(day, range ?? null);
+                    bumpDecisions(kept);
                   })
                 : finishGroup()
             }
@@ -1367,6 +1461,11 @@ const styles = StyleSheet.create({
   header: { gap: 2, paddingHorizontal: 4 },
   headerTitle: { color: colors.text, fontSize: 16, fontWeight: '700' },
   headerHint: { color: colors.textDim, fontSize: 12 },
+  // Inline failure card (SourcePicker's quiet retry language).
+  loadFailedRoot: { alignItems: 'center', justifyContent: 'center' },
+  loadFailedText: { color: colors.textDim, fontSize: 14, textAlign: 'center' },
+  retryButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 16 },
+  retryText: { fontSize: 15, fontWeight: '700' },
   stage: {
     flex: 1,
     borderRadius: touch.radius,

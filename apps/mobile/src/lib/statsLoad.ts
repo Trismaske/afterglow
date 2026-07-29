@@ -318,8 +318,12 @@ export async function loadHabitStats(
     rhythm: rhythmGrid(cells),
     // The SAME sitting boundary the time estimate uses, over the same
     // stamps: two stats describing different sittings would be a bug the
-    // user could see.
-    sittings: summariseSittings(splitSittings(decisionDeltas(stamps))),
+    // user could see. ONE recorded decision has no deltas but IS one
+    // one-photo sitting — the splitter only sees deltas and cannot tell
+    // one stamp from none (codex r4).
+    sittings: summariseSittings(
+      stamps.length === 1 ? [{ deltas: [] }] : splitSittings(decisionDeltas(stamps)),
+    ),
     turnaround,
     decisiveness: decisiveness(recent, allTime),
     duels,

@@ -25,7 +25,7 @@
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { withWriteTransaction } from './database';
-import { encodeOrganizeTarget, livePhotoClause, unqueueAction } from './actions';
+import { encodeOrganizeTarget, leaveQueue, livePhotoClause } from './actions';
 import { chunk, IN_CHUNK } from './store';
 import { PRIMARY_VOLUME } from '../lib/mediaIdentity';
 
@@ -84,6 +84,9 @@ export async function queueOrganize(
   photoId: string,
   at: number,
 ): Promise<string | null> {
+  // The pre-read exists for the user-facing MESSAGES; the write below
+  // re-proves presence itself, so this read racing a scan reconcile can
+  // never queue an action on a photo that just vanished.
   const photo = await db.getFirstAsync<{ is_present: number; volume_name: string | null }>(
     'SELECT is_present, volume_name FROM photos WHERE asset_id = ?',
     photoId,
@@ -92,18 +95,35 @@ export async function queueOrganize(
   if (photo.volume_name !== null && photo.volume_name !== PRIMARY_VOLUME) {
     return 'Photos on removable storage cannot be moved in this release.';
   }
-  await db.runAsync(
-    `INSERT INTO photo_actions (photo_id, kind, state, target, queued_at)
-     VALUES (?, 'organize', 'queued', NULL, ?)
-     ON CONFLICT(photo_id, kind) DO UPDATE SET
-       state = 'queued', queued_at = excluded.queued_at`,
-    photoId,
-    at,
-  );
-  // History is ordered by activity_at and drops rows without it, so an
-  // intent change has to stamp it — the pre-v18 column write did.
-  await db.runAsync('UPDATE photos SET activity_at = ? WHERE asset_id = ?', at, photoId);
-  return null;
+  let queued = false;
+  // ONE transaction for queue truth + its History stamp: as separate
+  // autocommit statements, a death between them left the row queued with
+  // no activity_at — and History orders by activity_at and drops rows
+  // without it, so the intent change would never surface there.
+  await withWriteTransaction(db, async (txn) => {
+    // INSERT..SELECT keeps the presence guard INSIDE the write (the
+    // is_present = 1 pattern used across db/): zero rows means the photo
+    // went absent since the validate read above.
+    const result = await txn.runAsync(
+      `INSERT INTO photo_actions (photo_id, kind, state, target, queued_at)
+       SELECT asset_id, 'organize', 'queued', NULL, ?
+         FROM photos WHERE asset_id = ? AND is_present = 1
+       ON CONFLICT(photo_id, kind) DO UPDATE SET
+         state = 'queued', queued_at = excluded.queued_at,
+         -- The documented prefill survives a full completed -> requeue ->
+         -- unqueue -> requeue lap: leaveQueue's demote clears target, so
+         -- a bare preserve would prefill NULL — the applied album is the
+         -- next best memory of "probably still right" (codex r7).
+         target = COALESCE(target, applied_target)`,
+      at,
+      photoId,
+    );
+    queued = Number(result.changes) > 0;
+    if (queued) {
+      await txn.runAsync('UPDATE photos SET activity_at = ? WHERE asset_id = ?', at, photoId);
+    }
+  });
+  return queued ? null : 'That photo is no longer available.';
 }
 
 /**
@@ -135,9 +155,17 @@ export async function setOrganizeTargets(
         ...batch,
       );
       await txn.runAsync(
-        `UPDATE photos SET activity_at = ? WHERE asset_id IN (${placeholders})`,
+        // Only rows the re-target above actually touched: stamping the
+        // whole batch would bump History for photos whose organize row
+        // was concurrently unqueued or resolved.
+        `UPDATE photos SET activity_at = ?
+          WHERE asset_id IN (${placeholders})
+            AND EXISTS (SELECT 1 FROM photo_actions pa
+                         WHERE pa.photo_id = photos.asset_id AND pa.kind = 'organize'
+                           AND pa.state = 'queued' AND pa.target = ?)`,
         at,
         ...batch,
+        encoded,
       );
     }
   });
@@ -150,8 +178,17 @@ export async function unqueueOrganize(
   photoId: string,
   at: number,
 ): Promise<void> {
-  await unqueueAction(db, photoId, 'organize');
-  await db.runAsync('UPDATE photos SET activity_at = ? WHERE asset_id = ?', at, photoId);
+  // leaveQueue's two statements + the History stamp in ONE transaction
+  // (queue truth and its activity_at must land or fail together). The
+  // stamp only lands when a row actually left the queue — stamping a
+  // no-op would bump History for a photo whose intent did not change
+  // (the same only-rows-touched rule setOrganizeTargets applies).
+  await withWriteTransaction(db, async (txn) => {
+    const left = await leaveQueue(txn, photoId, 'organize');
+    if (left > 0) {
+      await txn.runAsync('UPDATE photos SET activity_at = ? WHERE asset_id = ?', at, photoId);
+    }
+  });
 }
 
 export async function getOrganizeQueue(db: SQLiteDatabase): Promise<OrganizeQueueRow[]> {
@@ -209,7 +246,7 @@ export async function commitOrganizeOutcomes(
       if (outcome.status === 'moved' || outcome.status === 'already') {
         // Guarded on the REQUESTED target: an outcome for a move the
         // user has since re-targeted must not mark the new one applied.
-        await txn.runAsync(
+        const applied = await txn.runAsync(
           `UPDATE photo_actions
               SET state = 'applied', resolved_at = ?, applied_target = target
             WHERE photo_id = ? AND kind = 'organize'
@@ -218,11 +255,18 @@ export async function commitOrganizeOutcomes(
           outcome.photoId,
           `${outcome.volumeName}\n${outcome.relativePath}`,
         );
-        await txn.runAsync(
-          'UPDATE photos SET activity_at = ? WHERE asset_id = ?',
-          at,
-          outcome.photoId,
-        );
+        // History stamps only when the intent transition ACTUALLY landed
+        // (codex r8): a stale outcome for a since-retargeted or removed
+        // intent correctly no-ops above, and bumping History for it
+        // would announce a change that did not happen. The uri repair
+        // below stays unconditional — the file really moved.
+        if (Number(applied.changes) > 0) {
+          await txn.runAsync(
+            'UPDATE photos SET activity_at = ? WHERE asset_id = ?',
+            at,
+            outcome.photoId,
+          );
+        }
         // The uri truth refreshes REGARDLESS of intent bookkeeping — the
         // file physically moved, and a stale uri would break thumbnails
         // and source filtering.

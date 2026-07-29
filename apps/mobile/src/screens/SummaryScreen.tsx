@@ -38,15 +38,19 @@ export function SummaryScreen({ navigation }: Props) {
     (async () => {
       // Summary shares Home's numbers, so it must share Home's SCOPE —
       // an unscoped "today" here beside a scoped one there would be two
-      // answers to one question. Resolution failure falls back to null
-      // rather than throwing: this screen appears straight after a cull
-      // confirmation and must not be breakable by the catalog.
-      let sources: { roots: string[] | null; albumIds: string[] | null } | null = null;
+      // answers to one question. KEEP-LAST on resolution failure
+      // (Tristan, grilling Q3): null roots means ALL FOLDERS to the
+      // loader, so a failed translation must skip the load entirely —
+      // the screen keeps its placeholders/previous values rather than
+      // showing whole-library counts as the user's selection. The
+      // retrying resolution (sourceCatalog) makes this rare.
+      let sources: { roots: string[] | null; albumIds: string[] | null };
       try {
         const resolved = await resolveSources(db);
         sources = { roots: resolved.roots ?? null, albumIds: resolved.albumIds ?? null };
       } catch (error) {
-        console.warn('[summary] source resolution failed — counts unscoped:', String(error));
+        console.warn('[summary] source resolution failed — counts kept:', String(error));
+        return;
       }
       const stats = await loadDecisionStats(db, sources);
       if (cancelled) return;

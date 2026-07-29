@@ -182,9 +182,19 @@ function foregroundPackage() {
 /** Media apps on the test phones can leave a picture-in-picture window
  * floating over the title-row icons — it steals taps WITHOUT taking the
  * foreground (device-observed: a YouTube PiP over the Stats icon failed
- * four steps). Dismiss the known offenders outright. */
+ * four steps). Dismiss every known PiP-capable offender outright:
+ * force-stopping a package that is not installed or not running is
+ * harmless (`|| true`), so the list errs wide. */
 function dismissPipOverlays() {
-  for (const pkg of ['com.google.android.youtube']) {
+  for (const pkg of [
+    'com.google.android.youtube',
+    'com.android.chrome',
+    'com.sec.android.app.sbrowser', // Samsung Internet
+    'org.videolan.vlc',
+    'com.netflix.mediaclient',
+    'com.google.android.apps.tachyon', // Google Meet
+    'com.mxtech.videoplayer.ad', // MX Player
+  ]) {
     shell(`am force-stop ${pkg} 2>/dev/null || true`);
   }
 }
@@ -208,6 +218,10 @@ let failures = 0;
 async function step(name, budgetMs, fn) {
   let start = Date.now();
   try {
+    // A PiP window steals taps WITHOUT taking the foreground, so
+    // ensureForeground alone can never see one that appeared mid-run —
+    // clear the known offenders before every step's first tap.
+    dismissPipOverlays();
     await ensureForeground();
     // Recovering from an interruption is not part of the step's latency
     // budget — those budgets are responsiveness claims about the app.
@@ -248,6 +262,12 @@ const badgeOf = (nodes, label) => {
     ? Number(numeric[0].text)
     : 0;
 };
+
+/** True when a dump actually shows the given tab (text or content-desc).
+ * badgeOf silently reads 0 without this anchor, so every badge read must
+ * first prove the anchor is present — a failed/partial dump otherwise
+ * satisfies badge assertions with synthetic zeroes. */
+const hasTab = (nodes, label) => nodes.some((n) => n.text === label || n.desc === label);
 
 // ------------------------------------------------------------ the walk
 console.log(`Afterglow UI gate → ${SERIAL}`);
@@ -349,7 +369,38 @@ await step('stats returns to Home', null, async () => {
 // is the point of the page, so both must be on screen without scrolling
 // past a state card that used to eat the first screenful.
 await step('progress page opens with both chip rows', null, async () => {
-  await tapText(/^Progress$/, 20000);
+  // Tap on POSITIVE EVIDENCE (the cull step's rule): the Progress row
+  // sits at the tab bar's edge on the shorter phone, where a tap can be
+  // eaten with nothing to show for it, and its title Text shares the
+  // S10e's intermittent zero-bounds quirk (see badgeOf) — so anchor on
+  // the title OR its subtitle, re-tap until the chip row appears, and
+  // scroll the row clear of the bar when two taps in a row do nothing
+  // (device-observed: one eaten tap failed this step with Home still on
+  // screen).
+  const deadline = Date.now() + 30000;
+  let taps = 0;
+  for (;;) {
+    const nodes = dumpUi();
+    if (nodes.length > 0 && findNode(nodes, /^Unreviewed$/)) break;
+    const anchor =
+      nodes.length > 0
+        ? (findNode(nodes, /^Progress$/) ??
+          findNode(nodes, / left · | at this pace$|^All photos · state browsing$/))
+        : null;
+    if (anchor) {
+      if (taps >= 2) {
+        scrollDown();
+        await new Promise((r) => setTimeout(r, 800));
+        taps = 0;
+        continue;
+      }
+      tap(anchor);
+      taps += 1;
+    }
+    if (Date.now() > deadline)
+      throw new Error('the Progress row would not open (taps eaten or row occluded)');
+    await new Promise((r) => setTimeout(r, 1000));
+  }
   await waitFor(/^Unreviewed$/, 20000, 'verdict chips');
   await waitFor(/^Staged cull$/, 20000, 'verdict chips');
   // Row 2 is the ACTION layer — its presence is what proves the two
@@ -366,10 +417,26 @@ await ensureForeground();
 const cta = await waitFor(/^Continue reviewing$|^All reviewed$/, 20000, 'review CTA').catch(
   () => null,
 );
-await waitFor(/^Favourite$/, 20000, 'bar labels').catch(() => null);
-home = dumpUi();
+// The `before` badge snapshot feeds the v18 equality — an unanchored
+// dump would record synthetic zeroes and let that equality pass
+// vacuously, so only a dump showing all four tab labels may be read.
+// A target that never anchors is a hard stop, not a quiet zero.
+{
+  const deadline = Date.now() + 20000;
+  for (;;) {
+    home = dumpUi();
+    if (['Edit', 'Favourite', 'Organize', 'Share'].every((t) => hasTab(home, t))) break;
+    if (Date.now() > deadline)
+      throw new Error(
+        `tab bar never anchored for the badge snapshot — cannot trust any badge read ` +
+          `(foreground: ${foregroundPackage() ?? 'unknown'})`,
+      );
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+// No `edit` entry: the v18 step explains why the edit half is asserted
+// elsewhere.
 const before = {
-  edit: badgeOf(home, 'Edit'),
   favourite: badgeOf(home, 'Favourite'),
   organize: badgeOf(home, 'Organize'),
   share: badgeOf(home, 'Share'),
@@ -382,62 +449,81 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
     await waitFor(/^Keep remaining/, 20000, 'deck');
   });
   // The deck flow below (toggle chips → cull the toggled photo → assert
-  // the badges) needs a unit with a photo AFTER the one it culls. The
-  // timeline's head unit can be a ONE-photo singles run (device-observed:
-  // the whole choreography silently degenerated and the badge assertion
-  // failed on actions that were never culled away), and the unified deck
-  // opens on its first PENDING photo, which need not be position 1. So:
-  // record where the deck actually starts, and when the unit is too
-  // small, reroute to the overview's first GROUP card — groups are ≥ 2
-  // members by construction.
-  let deckStart = 1;
-  await step('deck start position (rerouting past a too-small unit)', null, async () => {
-    let { node } = await waitFor(/^\d+\/\d+$/, 20000, 'pager indicator');
-    let [pos, total] = node.text.split('/').map(Number);
-    if (total < 2 || pos >= total) {
-      shell('input keyevent KEYCODE_BACK');
-      await waitFor(/^Daily goal$/, 20000, 'home');
-      await tapText(/\d+ to review$/, 20000);
-      await waitFor(/^Review$/, 20000, 'overview heading');
-      // Any unit with ≥ 2 PENDING photos serves the choreography — with
-      // two pendings the FIRST pending can never be the last photo, so
-      // the cull always has a following page to advance to; a
-      // multi-photo singles run reviews exactly like a group in the
-      // unified deck. Pending, not the photo count: a run of staged
-      // culls lists many photos, zero pending, and opens in BROWSE mode
-      // with no "Keep remaining" (device-observed on the S10e — the
-      // whole flow cascaded). The timeline's head can be a LONG stretch
-      // of one-photo and reviewed run cards (both phones), hence the
-      // deep scroll cap. The status node renders beside its card title —
-      // find a big-enough "N pending" and tap the title next to it.
-      const bigCard = () => {
-        const nodes = dumpUi();
-        for (let i = 0; i < nodes.length; i += 1) {
-          const pending = /^(\d+) pending$/.exec(nodes[i].text ?? '');
-          if (!pending || Number(pending[1]) < 2) continue;
-          const title = nodes
-            .slice(Math.max(0, i - 2), i)
-            .find((n) => /^(?:Group|Singles) · /.test(n.text ?? ''));
-          if (title) return title;
-        }
-        return null;
-      };
-      let card = bigCard();
-      for (let i = 0; i < 30 && !card; i += 1) {
-        scrollDown();
-        await new Promise((r) => setTimeout(r, 600));
-        card = bigCard();
+  // the badges) needs a unit with a PENDING photo after the one it culls.
+  // Pager arithmetic on the CTA-entered unit cannot prove that: `total ≥
+  // 2 && pos < total` also holds when everything after the first pending
+  // photo is already DECIDED — the "Edit on the surviving photo, then
+  // Keep" step would then land on a decided photo, where Keep CLEARS a
+  // verdict (re-decide semantics) instead of writing one. Only the
+  // overview's card subtitles state truthful queue counts, so the
+  // choreography unit is ALWAYS chosen there; the CTA step above keeps
+  // proving the direct door itself.
+  let deckStart;
+  let deckStartOk = false;
+  await step('deck start position (choreography unit chosen on the overview)', null, async () => {
+    // Any unit with ≥ 2 PENDING photos serves the choreography — with
+    // two pendings the FIRST pending can never be the last photo, so
+    // the cull always has a following page to advance to; a
+    // multi-photo singles run reviews exactly like a group in the
+    // unified deck. Pending, not the photo count: a run of staged
+    // culls lists many photos, zero pending, and opens in BROWSE mode
+    // with no "Keep remaining" (device-observed on the S10e — the
+    // whole flow cascaded). The timeline's head can be a LONG stretch
+    // of one-photo and reviewed run cards (both phones), hence the
+    // deep scroll cap. The status node renders beside its card title —
+    // find a big-enough "N pending" and tap the title next to it.
+    await waitFor(/^\d+\/\d+$/, 20000, 'pager indicator'); // the CTA landed in a deck
+    shell('input keyevent KEYCODE_BACK');
+    await waitFor(/^Daily goal$/, 20000, 'home');
+    await tapText(/\d+ to review$/, 20000);
+    await waitFor(/^Review$/, 20000, 'overview heading');
+    const bigCard = () => {
+      const nodes = dumpUi();
+      for (let i = 0; i < nodes.length; i += 1) {
+        const pending = /^(\d+) pending$/.exec(nodes[i].text ?? '');
+        if (!pending || Number(pending[1]) < 2) continue;
+        // A four-node window, not two: one extra node between title and
+        // status (a future UnitCard tweak) must not break the lookup.
+        const title = nodes
+          .slice(Math.max(0, i - 4), i)
+          .find((n) => /^(?:Group|Singles) · /.test(n.text ?? ''));
+        if (title) return title;
       }
-      if (!card) throw new Error('no unit with ≥ 3 photos in reach on the overview');
-      tap(card);
-      await waitFor(/^Keep remaining/, 20000, 'deck');
-      ({ node } = await waitFor(/^\d+\/\d+$/, 20000, 'pager indicator'));
-      [pos, total] = node.text.split('/').map(Number);
-      if (total < 2 || pos >= total)
-        throw new Error(`chosen unit still unsuitable (${pos}/${total})`);
+      return null;
+    };
+    let card = bigCard();
+    for (let i = 0; i < 30 && !card; i += 1) {
+      scrollDown();
+      await new Promise((r) => setTimeout(r, 600));
+      card = bigCard();
     }
+    if (!card) throw new Error('no unit with ≥ 2 pending photos in reach on the overview');
+    tap(card);
+    await waitFor(/^Keep remaining/, 20000, 'deck');
+    const { node } = await waitFor(/^\d+\/\d+$/, 20000, 'pager indicator');
+    const [pos, total] = node.text.split('/').map(Number);
+    if (total < 2 || pos >= total)
+      throw new Error(`chosen unit still unsuitable (${pos}/${total})`);
     deckStart = pos;
+    deckStartOk = true;
   });
+  // The choreography steps write REAL review decisions on the photo the
+  // start step selected. When it failed, the deck may not even be open —
+  // running them would decide whatever is on screen at an unknown
+  // position and then fail with misleading diagnoses. Record them as
+  // failed-skipped instead: loud, named, counted, bodies never run.
+  const dependentStep = (name, budgetMs, fn) => {
+    if (deckStartOk) return step(name, budgetMs, fn);
+    results.push({
+      name,
+      ok: false,
+      ms: 0,
+      note: 'skipped: deck-start step failed — refusing to act on an unknown photo',
+    });
+    failures += 1;
+    console.error(`  FAIL ${name}: skipped (deck-start step failed)`);
+    return Promise.resolve();
+  };
   // THE regression this gate exists for: a decision must never pin the
   // deck in a busy/"Saving…" state (m0.8 froze here for many seconds
   // while a scan held the database).
@@ -450,7 +536,7 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
   // it joins the plain-chip loop. Tapped once, it queues target-less;
   // the queue-screen picker is exercised in its own step below.
   for (const chip of ['Edit', 'Favourite', 'Organize', 'Share']) {
-    await step(`deck ${chip} responds without lingering Saving…`, null, async () => {
+    await dependentStep(`deck ${chip} responds without lingering Saving…`, null, async () => {
       await tapText(new RegExp(`^${chip}$`), 20000);
       await waitGone(/^Saving…$/, 2500, 'Saving…');
     });
@@ -460,7 +546,7 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
   // only pager test used the Cull button (touching the photo froze the
   // pager via React zoom state, since removed from the gesture path).
   // Assert the gesture itself, not just that the pager CAN advance.
-  await step('deck swipe advances the pager', null, async () => {
+  await dependentStep('deck swipe advances the pager', null, async () => {
     const { node: pager } = await waitFor(
       new RegExp(`^${deckStart}/\\d+$`),
       20000,
@@ -483,24 +569,40 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
     }
   });
 
-  await step('deck Cull advances the pager', null, async () => {
+  await dependentStep('deck Cull advances the pager', null, async () => {
     // The swipe step above legitimately leaves the pager past the start,
     // but the v18 badge assertion below depends on culling the START
     // photo — the one the Edit/Favourite/Organize/Share toggles landed
-    // on — so swipe back first. The start step guaranteed a following
+    // on — so return to it first. The start step guaranteed a following
     // page (deckStart < total).
     const first = await waitFor(/^\d+\/\d+$/, 20000, 'pager indicator');
     const total = Number(first.node.text.split('/')[1]);
     let pos = Number(first.node.text.split('/')[0]);
     const backDeadline = Date.now() + 20000;
-    while (pos > deckStart) {
-      swipeDeckRight();
-      await new Promise((r) => setTimeout(r, 1200));
-      const nodes = dumpUi();
-      const node = nodes.length > 0 ? findNode(nodes, /^\d+\/\d+$/) : null;
-      if (node) pos = Number(node.text.split('/')[0]);
+    while (pos !== deckStart) {
       if (Date.now() > backDeadline)
-        throw new Error(`could not swipe back to ${deckStart}/${total} (stuck at ${pos}/${total})`);
+        throw new Error(`could not return to ${deckStart}/${total} (at ${pos}/${total})`);
+      // Below deckStart the loop recovers FORWARD — proceeding from any
+      // earlier position would cull the wrong photo (the `advanced`
+      // regex below accepts any position ≠ deckStart).
+      if (pos > deckStart) swipeDeckRight();
+      else swipeDeckLeft();
+      await new Promise((r) => setTimeout(r, 1200));
+      // Decide the next swipe only on an OBSERVED pager: a failed dump
+      // used to leave `pos` stale, the loop re-swiped past deckStart,
+      // and the wrong photo got culled while the step passed.
+      for (;;) {
+        const node = findNode(dumpUi(), /^\d+\/\d+$/);
+        if (node) {
+          pos = Number(node.text.split('/')[0]);
+          break;
+        }
+        if (Date.now() > backDeadline)
+          throw new Error(
+            `pager unobservable returning to ${deckStart}/${total} (last seen ${pos}/${total})`,
+          );
+        await new Promise((r) => setTimeout(r, 400));
+      }
     }
     // Re-tap ONLY on positive evidence: a SUCCESSFUL dump still showing
     // the start position with the Cull button present. Blind re-taps
@@ -531,13 +633,13 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
   // AND queue the edit) and once regressed to writing the verdict alone —
   // no spinner, no error, the edit simply never queued. Tapped here on
   // the photo the cull advanced PAST, so it survives to carry its edit.
-  await step('deck Edit on the surviving photo, then Keep', null, async () => {
+  await dependentStep('deck Edit on the surviving photo, then Keep', null, async () => {
     await tapText(/^Edit$/, 20000);
     await waitGone(/^Saving…$/, 2500, 'Saving…');
     await tapText(/^Keep$/, 20000);
     await waitGone(/^Saving…$/, 2500, 'Saving…');
   });
-  await step('back home: the badges tell both halves of the v18 rule', null, async () => {
+  await dependentStep('back home: the badges tell both halves of the v18 rule', null, async () => {
     for (let i = 0; i < 4; i += 1) {
       if (findNode(dumpUi(), /^Daily goal$/)) break;
       shell('input keyevent KEYCODE_BACK');
@@ -550,8 +652,12 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
     // delete is not work waiting for you. Its action rows still exist
     // (un-staging restores them); they just stop counting.
     // Badges recount asynchronously after navigation, so this polls.
+    // The EDIT badge is deliberately absent from this equality: the deck
+    // chips are TOGGLES, so across repeat gate runs the edit deltas of
+    // the culled and the surviving photo can legitimately sum to zero —
+    // the edit wiring is asserted by the "completing an edit updates its
+    // tab badge" step instead.
     const deadline = Date.now() + 25000;
-    const hasTab = (nodes, label) => nodes.some((n) => n.text === label || n.desc === label);
     for (;;) {
       const after = dumpUi();
       // Equality only counts on a dump that actually contains both tab
@@ -588,9 +694,38 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
   // on photos the deck never loaded — so this is the only place the
   // wiring is observable. Device-observed regression: the Edit badge sat
   // on its old number until the app was backgrounded.
+  if (!deckStartOk) {
+    // The skipped v18 step is what normally navigates back to Home —
+    // best-effort return so the deck-independent steps below still start
+    // from a known screen instead of cascading misleading timeouts.
+    for (let i = 0; i < 4; i += 1) {
+      if (findNode(dumpUi(), /^Daily goal$/)) break;
+      shell('input keyevent KEYCODE_BACK');
+      await new Promise((r) => setTimeout(r, 700));
+    }
+  }
   await step('completing an edit updates its tab badge', null, async () => {
-    const start = badgeOf(dumpUi(), 'Edit');
-    if (start === 0) return; // nothing queued to complete
+    // A FAILED dump reads as badge 0 — the absent-anchor default — and
+    // the early return would then pass having asserted nothing. Only a
+    // dump that actually shows the Edit tab may report the start badge.
+    let start;
+    const anchorDeadline = Date.now() + 20000;
+    for (;;) {
+      const nodes = dumpUi();
+      if (hasTab(nodes, 'Edit')) {
+        start = badgeOf(nodes, 'Edit');
+        break;
+      }
+      if (Date.now() > anchorDeadline)
+        throw new Error('Edit tab never anchored in a dump — cannot read its badge');
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    if (start === 0) {
+      console.log(
+        '  … Edit badge anchored at 0 — nothing queued to complete, step asserts nothing',
+      );
+      return;
+    }
     await tapText(/^Edit$/, 20000); // the TAB
     await waitFor(/^Edit queue$/, 20000, 'edit queue');
     const done = findNode(dumpUi(), /^Done$/);

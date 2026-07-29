@@ -44,7 +44,7 @@ import React, {
 import { useSQLiteContext } from 'expo-sqlite';
 import { getActionBadges, type ActionBadgeMap, type BadgeActionKind } from '../db/actions';
 import { getFavouriteActionStates } from '../db/actions';
-import type { DuelRecord } from '@afterglow/core';
+import type { DuelRecord, PhotoState } from '@afterglow/core';
 import { fileSize } from '../lib/hash';
 import { runTrashAttempt } from '../lib/trashFlow';
 import { recoverTrashBatches, TRASH_BATCH_LIMIT } from '../db/trashStore';
@@ -62,7 +62,12 @@ import {
 import type { BadgeWeight } from '../lib/photoBadges';
 import { perfLog } from '../lib/perfLog';
 import { applyLocalAction, queueEquals, type LocalAction } from '../lib/reviewPatch';
-import { buildTimeline, type TimelineUnit } from '../lib/timeline';
+import {
+  buildTimeline,
+  groupAnchor,
+  type TimelinePageTails,
+  type TimelineUnit,
+} from '../lib/timeline';
 import {
   DAILY_GOAL_KEY,
   GOAL_CELEBRATED_KEY,
@@ -137,10 +142,18 @@ interface ReviewContextValue {
   /** Badge weight per action (m0.8.2): 'live' waiting, 'carried' done,
    * null absent. The BUTTONS keep asking needsEdit/queuedFor/
    * favouriteStatus, which are pending-only — a button offers work, a
-   * badge describes the photo. */
-  actionWeights: (assetId: string) => {
+   * badge describes the photo. Pass the member's verdict when it is at
+   * hand: a staged cull (or trashed photo) is not on the to-do list —
+   * the queues exclude it — so its retained actions badge QUIET
+   * (STATE_MODEL rule 6: loud = waiting, quiet = history). */
+  actionWeights: (
+    assetId: string,
+    state?: PhotoState,
+  ) => {
     edit: BadgeWeight | null;
-    favourite: BadgeWeight | null;
+    /** 'removing' = a queued un-favourite (grilling Q5): heart-off glyph
+     * at the live weight — waiting work, read apart from apply/applied. */
+    favourite: BadgeWeight | 'removing' | null;
     organize: BadgeWeight | null;
     share: BadgeWeight | null;
   };
@@ -165,6 +178,11 @@ interface ReviewContextValue {
    * loadGroup/loadDeckSingles so a stale group's ids stop riding every
    * refresh's overlay query (TODO rider, m0.8.2). */
   releaseBrowseIds: () => void;
+  /** Hydrate the badge refs for ids OUTSIDE the review snapshot without
+   * installing them as browsed (loadGroup's path, exposed): a surface
+   * listing off-page members (DayProgress's completed groups) awaits
+   * this before rendering so actionWeights can answer for them. */
+  hydrateBadges: (ids: readonly string[]) => Promise<void>;
   /** A decision write failed — the row is unchanged; retry the action. */
   writeError: string | null;
   clearWriteError: () => void;
@@ -185,7 +203,8 @@ interface ReviewContextValue {
    * resolve pending copy matches. */
   redecideDecided: (assetId: string, target: 'keep' | 'to_edit') => Promise<void>;
   /** Finish a group: every remaining unreviewed member keeps (done). */
-  keepRest: (groupId: number) => Promise<void>;
+  /** Resolves to the number actually kept (codex r10 — see keepAllSingles). */
+  keepRest: (groupId: number) => Promise<number>;
   markBest: (groupId: number, assetId: string | null) => Promise<void>;
   /** "Not related — review as single" (durable user ejection). The
    * displayed group id is validated in the transaction — a background
@@ -226,7 +245,10 @@ interface ReviewContextValue {
    * taken_at range) narrows it to the deck's own scope — and, like
    * keepRest's off-page fetch, that scope is re-read from the DB at
    * write time rather than trusted from a rendered list. */
-  keepAllSingles: (day?: string, range?: { from: number; to: number } | null) => Promise<void>;
+  /** Resolves to the number ACTUALLY kept — the write re-reads its scope
+   * fresh, so the caller's rendered pending count can be stale (codex
+   * r8: the goal counter must credit real decisions, not a snapshot). */
+  keepAllSingles: (day?: string, range?: { from: number; to: number } | null) => Promise<number>;
   /** Re-decide a STAGED cull from the cull list: keep → kept (pending
    * actions untouched), to_edit → kept with a fresh edit cycle, cull (the
    * active chip) → restore to unreviewed; keep/to_edit
@@ -304,6 +326,13 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   const loadedRef = useRef(false);
   const [groups, setGroups] = useState<ReviewGroupRow[]>([]);
   const [singles, setSingles] = useState<ReviewMemberRow[]>([]);
+  // Page TAILS are a READ-time fact (timeline.ts): optimistic patches
+  // shrink the arrays, and a tail re-derived from a patched array would
+  // either dissolve the horizon or jump it forward past loaded units.
+  const [pageTails, setPageTails] = useState<TimelinePageTails>({
+    groupsTail: null,
+    singlesTail: null,
+  });
   const [queueCounts, setQueueCounts] = useState<QueueCounts>({
     grouped: 0,
     singles: 0,
@@ -389,6 +418,23 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
         loadedRef.current = true;
         setLoaded(true);
       }
+      // Page tails commit on EVERY completed read, even a no-op one: a
+      // fresh under-limit read can exactly equal the patched arrays (the
+      // patch already removed what the DB lost), and taking the equality
+      // return with a stale tail would keep truncating units this read
+      // just disproved. Same-value reads bail out on reference equality,
+      // so quiet refreshes stay free.
+      const nextTails: TimelinePageTails = {
+        groupsTail:
+          nextGroups.length >= GROUP_PAGE ? groupAnchor(nextGroups[nextGroups.length - 1]) : null,
+        singlesTail:
+          nextSingles.length >= SINGLES_PAGE ? nextSingles[nextSingles.length - 1].taken_at : null,
+      };
+      setPageTails((old) =>
+        old.groupsTail === nextTails.groupsTail && old.singlesTail === nextTails.singlesTail
+          ? old
+          : nextTails,
+      );
       // NO-OP REFRESHES COMMIT NOTHING (m0.8.1): a decision's optimistic
       // patch already applied exactly what this read returns, and a
       // scan-driven refresh usually finds the queue unchanged. Bumping
@@ -722,21 +768,42 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
    * the instant you tap; CARRIED comes from the last read, because
    * history cannot be patched optimistically — nothing is carried until
    * the work actually completed.
+   *
+   * The optional verdict demotes: a staged cull / trashed photo is off
+   * every to-do list (livePhotoClause excludes it from the queues), so a
+   * would-be 'live' weight renders 'carried' — the photo still CARRIES
+   * the action (un-staging restores it), it just is not waiting. The
+   * shared refs stay state-blind on purpose: they are the optimistic
+   * patch model's truth (reviewPatch parity), so the demotion lives at
+   * the read, per caller-supplied state.
    */
   const actionWeights = useCallback(
     (
       assetId: string,
+      state?: PhotoState,
     ): {
       edit: BadgeWeight | null;
-      favourite: BadgeWeight | null;
+      favourite: BadgeWeight | 'removing' | null;
       organize: BadgeWeight | null;
       share: BadgeWeight | null;
     } => {
+      const suspended = state === 'culled' || state === 'trashed';
       const weigh = (live: boolean, kind: BadgeActionKind): BadgeWeight | null =>
-        live ? 'live' : carriedRef.current[kind].has(assetId) ? 'carried' : null;
+        live
+          ? suspended
+            ? 'carried'
+            : 'live'
+          : carriedRef.current[kind].has(assetId)
+            ? 'carried'
+            : null;
+      const favourite = favouriteBadgeWeight(favouriteRef.current.get(assetId) ?? NO_FAVOURITE);
       return {
         edit: weigh(needsEditRef.current.has(assetId), 'edit'),
-        favourite: favouriteBadgeWeight(favouriteRef.current.get(assetId) ?? NO_FAVOURITE),
+        // Suspended photos demote loud states to carried (rule 6): a
+        // suspended queued REMOVAL shows the carried heart — truthful,
+        // the gallery favourite still stands while the switch-off waits.
+        favourite:
+          suspended && (favourite === 'live' || favourite === 'removing') ? 'carried' : favourite,
         organize: weigh(queuedForRef.current.organize.has(assetId), 'organize'),
         share: weigh(queuedForRef.current.share.has(assetId), 'share'),
       };
@@ -933,9 +1000,9 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   );
 
   const keepRest = useCallback(
-    (groupId: number) => {
+    async (groupId: number) => {
       let kept: string[] = [];
-      return write(
+      await write(
         async () => {
           // The queue page holds only GROUP_PAGE groups — an explicitly
           // opened group (DayProgress, off-page) is fetched directly so
@@ -947,17 +1014,22 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           const changes = group.members
             .filter((m) => m.state === 'unreviewed')
             .map((m) => [m.asset_id, 'kept'] as [string, ReviewVerdict]);
-          if (changes.length > 0)
-            await applyReviewDecisions(db, changes, Date.now(), {
-              // Validated in the transaction: a warm scan can rebuild the
-              // group between render and tap — the stale member list must
-              // not freeze photos inside superseding groups.
-              requireGroupMembership: { groupId, assetIds: changes.map(([id]) => id) },
-            });
-          kept = changes.map(([id]) => id);
+          // APPLIED ids (codex r10): a dissolved off-page group silently
+          // keeps nothing, and the caller's goal credit must follow what
+          // committed, exactly like keepAllSingles.
+          kept =
+            changes.length > 0
+              ? await applyReviewDecisions(db, changes, Date.now(), {
+                  // Validated in the transaction: a warm scan can rebuild
+                  // the group between render and tap — the stale member
+                  // list must not freeze photos inside superseding groups.
+                  requireGroupMembership: { groupId, assetIds: changes.map(([id]) => id) },
+                })
+              : [];
         },
         () => (kept.length > 0 ? { kind: 'keepMany', assetIds: kept } : null),
       );
+      return kept.length;
     },
     [db, write],
   );
@@ -1007,7 +1079,10 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
         groupId: String(groupId),
         winnerId,
         loserId,
-        keptBoth,
+        // A verdict-free TRIAGE duel records NULL (v19): it is neither a
+        // keep-both nor a cull decision, and Stats' kept-both percentage
+        // reads over dialog outcomes only.
+        keptBoth: keptBoth ? (keptVerdicts ? true : null) : false,
         at: Date.now(),
       };
       // Verdicts (F15): the dialog's "Keep both" keeps BOTH; "Cull"
@@ -1186,9 +1261,9 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   );
 
   const keepAllSingles = useCallback(
-    (day?: string, range: { from: number; to: number } | null = null) => {
+    async (day?: string, range: { from: number; to: number } | null = null) => {
       let kept: string[] = [];
-      return write(
+      await write(
         async () => {
           // The deck's rows are NOT the global snapshot (they can sit
           // beyond its newest-first page), so a day/run scope re-reads its
@@ -1200,17 +1275,23 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           const changes = rows
             .filter((m) => m.state === 'unreviewed')
             .map((m) => [m.asset_id, 'kept'] as [string, ReviewVerdict]);
-          if (changes.length > 0)
-            await applyReviewDecisions(db, changes, Date.now(), {
-              // Every target must STILL be a single — a scan can move one
-              // into a group mid-tap, and keeping it would silently freeze
-              // the newly formed group.
-              requireAssignment: changes.map(([id]) => ({ assetId: id, groupId: null })),
-            });
-          kept = changes.map(([id]) => id);
+          // APPLIED ids, not planned ones (codex r9): the batch write
+          // silently skips externally-reconciled rows, and both the
+          // optimistic patch and the goal credit must follow what
+          // committed.
+          kept =
+            changes.length > 0
+              ? await applyReviewDecisions(db, changes, Date.now(), {
+                  // Every target must STILL be a single — a scan can move
+                  // one into a group mid-tap, and keeping it would
+                  // silently freeze the newly formed group.
+                  requireAssignment: changes.map(([id]) => ({ assetId: id, groupId: null })),
+                })
+              : [];
         },
         () => (kept.length > 0 ? { kind: 'keepMany', assetIds: kept } : null),
       );
+      return kept.length;
     },
     [db, write, scopedRoots],
   );
@@ -1276,46 +1357,97 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   } | null>(null);
   const celebrationPendingRef = useRef<number | null>(null);
   const [celebrationTick, setCelebrationTick] = useState(0);
+  /** Notes queue behind one chain, and the sum of not-yet-applied notes
+   * rides in a synchronous counter: two rapid decisions can BOTH commit
+   * before the first initialization read resolves, so that read includes
+   * every pending note — backing out only the caller's own `n` would
+   * double-count the rest, and two concurrent initializers could arm two
+   * celebrations or overwrite each other's counter (codex r3). */
+  const celebrationChainRef = useRef<Promise<void>>(Promise.resolve());
+  const celebrationUnappliedRef = useRef(0);
   const noteDecisions = useCallback(
     (n: number) => {
       if (n <= 0) return;
-      void (async () => {
-        const today = dayKey(Date.now());
-        let info = celebrationInfoRef.current;
-        if (!info || info.day !== today) {
-          const [rawGoal, celebratedDay, byDay] = await Promise.all([
-            getSetting(db, DAILY_GOAL_KEY),
-            getSetting(db, GOAL_CELEBRATED_KEY),
-            getReviewedCountsByDay(db, rangeOfDayKey(today).startMs),
-          ]);
-          // The write that triggered this call has already COMMITTED, so
-          // the fresh read includes it — back it out before bumping, or
-          // the crossing decision would double-count itself.
-          info = {
-            day: today,
-            goal: parseDailyGoal(rawGoal),
-            count: Math.max(0, (byDay.get(today) ?? 0) - n),
-            celebratedDay,
-          };
-          celebrationInfoRef.current = info;
-        }
-        const before = info.count;
-        info.count += n;
-        if (
-          shouldCelebrateGoal({
-            before,
-            after: info.count,
-            goal: info.goal,
-            celebratedDay: info.celebratedDay,
-            today,
-          })
-        ) {
-          info.celebratedDay = today;
-          await setSetting(db, GOAL_CELEBRATED_KEY, today).catch(() => {});
-          celebrationPendingRef.current = info.goal;
-          setCelebrationTick((tick) => tick + 1);
-        }
-      })().catch(() => {}); // no goal info = no celebration, nothing else
+      // The decision's DAY is captured synchronously at the call — the
+      // chained body can start after local midnight, and crediting an
+      // old-day decision to the new day could celebrate the wrong day
+      // and suppress the real crossing (codex r6). A stale-day note
+      // simply drops: its day is over, no celebration can fire for it.
+      const noteDay = dayKey(Date.now());
+      celebrationUnappliedRef.current += n; // synchronous, before any await
+      celebrationChainRef.current = celebrationChainRef.current
+        .then(async () => {
+          const today = dayKey(Date.now());
+          if (noteDay !== today) {
+            celebrationUnappliedRef.current -= n;
+            return;
+          }
+          let info = celebrationInfoRef.current;
+          if (!info || info.day !== today) {
+            const [rawGoal, celebratedDay, byDay] = await Promise.all([
+              getSetting(db, DAILY_GOAL_KEY),
+              getSetting(db, GOAL_CELEBRATED_KEY),
+              getReviewedCountsByDay(db, rangeOfDayKey(today).startMs),
+            ]);
+            // Every queued note's write COMMITTED before its call, so
+            // the fresh read includes them — back out the whole
+            // unapplied sum; each chained step then applies its own.
+            // RESIDUAL RACE, deliberately kept in the LATE direction
+            // (scoped review): a note registering mid-read whose write
+            // missed the snapshot is over-subtracted, so a crossing can
+            // fire one note late. The pre-read sample tried the other
+            // way and could DOUBLE-count into a false EARLY celebration
+            // that durably suppresses the real one — the worse lie. The
+            // exact fix (a per-note count re-read) is parked for the
+            // next cycle.
+            info = {
+              day: today,
+              goal: parseDailyGoal(rawGoal),
+              count: Math.max(0, (byDay.get(today) ?? 0) - celebrationUnappliedRef.current),
+              celebratedDay,
+            };
+            celebrationInfoRef.current = info;
+          } else {
+            // The GOAL re-reads on every note (one keyed row): Settings
+            // can change it mid-day, and a threshold cached at the
+            // day's first decision would celebrate against the OLD
+            // number (codex r4). The count stays cached — it is this
+            // serialized chain's own truth.
+            info.goal = parseDailyGoal(await getSetting(db, DAILY_GOAL_KEY));
+          }
+          const before = info.count;
+          info.count += n;
+          celebrationUnappliedRef.current -= n;
+          if (
+            shouldCelebrateGoal({
+              before,
+              after: info.count,
+              goal: info.goal,
+              celebratedDay: info.celebratedDay,
+              today,
+            })
+          ) {
+            // The durable marker lands BEFORE the moment arms (codex
+            // r8): an armed-but-unrecorded celebration re-fires after a
+            // restart, and once-per-day is the durable contract. The
+            // in-memory mark still sets on failure so this process never
+            // doubles; the skipped overlay is the lesser lie.
+            info.celebratedDay = today;
+            try {
+              await setSetting(db, GOAL_CELEBRATED_KEY, today);
+            } catch (error) {
+              console.warn('[review] goal celebration not recorded — skipped:', String(error));
+              return;
+            }
+            celebrationPendingRef.current = info.goal;
+            setCelebrationTick((tick) => tick + 1);
+          }
+        })
+        .catch(() => {
+          // No goal info = no celebration; the note still leaves the
+          // unapplied sum, or the next init would over-subtract it.
+          celebrationUnappliedRef.current -= n;
+        });
     },
     [db],
   );
@@ -1328,8 +1460,8 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   /** Derived, never stored: the patch model keeps operating on the two
    * pages, and the timeline re-derives after every commit or patch. */
   const timeline = useMemo(
-    () => buildTimeline(groups, singles, GROUP_PAGE, SINGLES_PAGE),
-    [groups, singles],
+    () => buildTimeline(groups, singles, pageTails),
+    [groups, singles, pageTails],
   );
 
   const value = useMemo<ReviewContextValue>(
@@ -1348,6 +1480,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       loadGroup,
       loadDeckSingles,
       releaseBrowseIds,
+      hydrateBadges: hydrateBadgeRefs,
       writeError,
       clearWriteError,
       decide,
@@ -1389,6 +1522,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       loadGroup,
       loadDeckSingles,
       releaseBrowseIds,
+      hydrateBadgeRefs,
       writeError,
       clearWriteError,
       decide,

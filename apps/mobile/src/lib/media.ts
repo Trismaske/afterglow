@@ -166,9 +166,16 @@ export async function countPhotosInRange(
   startMs: number,
   endMs: number,
   albumIds?: readonly string[] | null,
+  options?: {
+    /** Bypass the memo and take a fresh count (the result still lands in
+     * the cache). The delta tripwire needs this: its count must postdate
+     * the generation snapshot, and a cache entry another screen primed
+     * seconds earlier would let a permanent delete slip both checks. */
+    fresh?: boolean;
+  },
 ): Promise<number> {
   const key = `${startMs}|${endMs}|${albumIds ? [...albumIds].sort().join(',') : '*'}`;
-  const hit = countCache.get(key);
+  const hit = options?.fresh ? undefined : countCache.get(key);
   if (hit && Date.now() - hit.at < COUNT_TTL_MS) return hit.value;
   const pending = (async () => {
     const buckets: (string | undefined)[] = albumIds ? [...albumIds] : [undefined];

@@ -56,12 +56,15 @@ export const PHOTO_STATES = ['unreviewed', 'kept', 'culled', 'trashed'] as const
 export type PhotoState = (typeof PHOTO_STATES)[number];
 
 /** One compare outcome (m0.1+ duel history — mined by later features).
- * `keptBoth` false means the loser was culled. */
+ * `keptBoth` carries the DIALOG outcome: true = Keep both, false = the
+ * loser was culled, null = a verdict-free TRIAGE duel (3+ alive — star
+ * and history only). Stats' "kept both %" reads over non-null rows, or
+ * every burst triage would count as a keep-both decision (m0.8.2). */
 export interface DuelRecord {
   groupId: string;
   winnerId: string;
   loserId: string;
-  keptBoth: boolean;
+  keptBoth: boolean | null;
   /** Injected decision time, ms since epoch. */
   at: number;
 }

@@ -152,18 +152,20 @@ describe('getQueueTurnaround', () => {
 });
 
 describe('getDuelSummary', () => {
-  it('counts duels and how many kept both', async () => {
+  it('counts duels, dialog outcomes, and kept-both — triage (NULL) stays out of the %', async () => {
     const d = await fresh();
     const insert = d.raw.prepare(
       "INSERT INTO duels (group_id, winner_id, loser_id, kept_both, at) VALUES ('1', 'a', 'b', ?, 1)",
     );
-    for (const keptBoth of [0, 1, 1, 0, 0]) insert.run(keptBoth);
-    expect(await getDuelSummary(asExpo(d))).toEqual({ duels: 5, keptBoth: 2 });
+    // Two triage duels (v19: NULL = verdict-free) among five dialog ones:
+    // they count as compares but never as keep-both decisions.
+    for (const keptBoth of [0, 1, 1, 0, 0, null, null]) insert.run(keptBoth);
+    expect(await getDuelSummary(asExpo(d))).toEqual({ duels: 7, verdictDuels: 5, keptBoth: 2 });
   });
 
   it('is zero, not null, on an empty history', async () => {
     const d = await fresh();
-    expect(await getDuelSummary(asExpo(d))).toEqual({ duels: 0, keptBoth: 0 });
+    expect(await getDuelSummary(asExpo(d))).toEqual({ duels: 0, verdictDuels: 0, keptBoth: 0 });
   });
 });
 

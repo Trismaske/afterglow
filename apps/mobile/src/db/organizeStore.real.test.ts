@@ -185,6 +185,54 @@ describe('queue lifecycle', () => {
     expect(p1?.organize_path).toBe('Pictures/Other/');
   });
 
+  it('queueing an ABSENT photo is a no-op on both tables (write-side guard)', async () => {
+    // The validate read can race a scan reconcile; the INSERT..SELECT
+    // guard is the authority, so an absent photo gains neither a queue
+    // row nor a History stamp.
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    d.raw.prepare('UPDATE photos SET is_present = 0 WHERE asset_id = ?').run('p1');
+    expect(await queueOrganize(asExpo(d), 'p1', AT)).toMatch(/no longer available/);
+    const action = d.raw
+      .prepare("SELECT 1 FROM photo_actions WHERE photo_id = ? AND kind = 'organize'")
+      .get('p1');
+    expect(action).toBeUndefined();
+    expect(photoRow(d, 'p1').activity_at).toBeNull();
+  });
+
+  it('queue + History stamp land ATOMICALLY (a failed stamp rolls back the queue row)', async () => {
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    // Statements in queueOrganize: validate read, transaction open,
+    // BEGIN, the queue INSERT, the activity stamp — fail the 5th so the
+    // stamp dies with the insert already executed.
+    d.failAfter(5);
+    await expect(queueOrganize(asExpo(d), 'p1', AT)).rejects.toThrow('injected failure');
+    const action = d.raw
+      .prepare("SELECT 1 FROM photo_actions WHERE photo_id = ? AND kind = 'organize'")
+      .get('p1');
+    expect(action).toBeUndefined(); // rolled back with the stamp
+    expect(photoRow(d, 'p1').activity_at).toBeNull();
+    // The same call without the fault lands BOTH sides with one clock.
+    expect(await queueOrganize(asExpo(d), 'p1', AT + 1)).toBeNull();
+    expect((await getOrganizeQueue(asExpo(d))).map((r) => r.photo_id)).toEqual(['p1']);
+    expect(photoRow(d, 'p1').activity_at).toBe(AT + 1);
+  });
+
+  it('unqueue stamps History with the removal; a no-op unqueue stamps nothing', async () => {
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    insertPhoto(d, 'p2');
+    expect(await queueOrganize(asExpo(d), 'p1', AT)).toBeNull();
+    await unqueueOrganize(asExpo(d), 'p1', AT + 5);
+    expect(await getOrganizeQueue(asExpo(d))).toEqual([]);
+    expect(photoRow(d, 'p1').activity_at).toBe(AT + 5);
+    // p2 was never queued: removing it from the queue changes no intent,
+    // so its History position must not move.
+    await unqueueOrganize(asExpo(d), 'p2', AT + 6);
+    expect(photoRow(d, 'p2').activity_at).toBeNull();
+  });
+
   it('change-target is just re-assigning a new path', async () => {
     const d = await fresh();
     insertPhoto(d, 'p1');
@@ -197,6 +245,34 @@ describe('queue lifecycle', () => {
     );
     const queue = await getOrganizeQueue(asExpo(d));
     expect(queue[0].organize_path).toBe('Pictures/B/');
+  });
+
+  it('the prefill survives a completed → requeue → unqueue → requeue lap', async () => {
+    // leaveQueue's demote clears `target`; the re-queue restores it from
+    // applied_target, or the documented "last album as a prefill" dies
+    // one unqueue later (codex r7).
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    await queueWithTarget(d, 'p1', 'Pictures/Trips/', AT);
+    await commitOrganizeOutcomes(
+      asExpo(d),
+      [
+        {
+          photoId: 'p1',
+          status: 'moved',
+          message: 'verified',
+          newData: '/storage/emulated/0/Pictures/Trips/x.jpg',
+          volumeName: 'external_primary',
+          relativePath: 'Pictures/Trips/',
+        },
+      ],
+      AT + 1,
+    );
+    await queueOrganize(asExpo(d), 'p1', AT + 2);
+    await unqueueOrganize(asExpo(d), 'p1', AT + 3);
+    await queueOrganize(asExpo(d), 'p1', AT + 4);
+    const queue = await getOrganizeQueue(asExpo(d));
+    expect(queue[0].organize_path).toBe('Pictures/Trips/');
   });
 });
 

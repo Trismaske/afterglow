@@ -282,6 +282,25 @@ describe('prepareTrashBatch stageToEditMembers (edited-copy cull)', () => {
     expect(reserved).toEqual([{ photo_id: 'e1' }]);
   });
 
+  it('staging an UNREVIEWED edit-queue member stamps it like any verdict', async () => {
+    // The edited-copy prompt can cull a photo that was never reviewed
+    // (flagging to edit does not decide). The staged cull is a VERDICT,
+    // so reviewed_at first-stamps and decided_at stamps with it — or the
+    // photo stays invisible to every decided_at/reviewed_at consumer
+    // (daily goal, lifetime stats, forecast base rates) while its state
+    // says culled.
+    const d = await fresh();
+    insertPhoto(d, 'e1', 'unreviewed');
+    attach(d, 'e1', 'edit', 'queued');
+    await prepareTrashBatch(asExpo(d), [{ photoId: 'e1', measuredBytes: 42 }], AT, {
+      stageToEditMembers: true,
+    });
+    const row = d.raw
+      .prepare('SELECT state, reviewed_at, decided_at FROM photos WHERE asset_id = ?')
+      .get('e1') as { state: string; reviewed_at: number | null; decided_at: number | null };
+    expect(row).toEqual({ state: 'culled', reviewed_at: AT, decided_at: AT });
+  });
+
   it('without the option an undecided edit-queue member is skipped', async () => {
     const d = await fresh();
     insertPhoto(d, 'e1', 'kept');

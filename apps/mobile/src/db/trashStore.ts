@@ -91,11 +91,18 @@ export async function prepareTrashBatch(
     if (options.stageToEditMembers) {
       for (const member of eligible) {
         const staged = await txn.runAsync(
-          `UPDATE photos SET state = 'culled', culled_at = COALESCE(culled_at, ?), activity_at = ?
+          `UPDATE photos SET state = 'culled', culled_at = COALESCE(culled_at, ?),
+             -- A staged cull is a VERDICT, and this path can reach an
+             -- unreviewed photo (flagging to edit does not decide) — so
+             -- it stamps like every other verdict write: reviewed_at
+             -- first-stamps, decided_at re-stamps.
+             reviewed_at = COALESCE(reviewed_at, ?), decided_at = ?, activity_at = ?
            WHERE asset_id = ? AND state IN ('unreviewed', 'kept')
              AND EXISTS (SELECT 1 FROM photo_actions pa
                           WHERE pa.photo_id = photos.asset_id AND pa.kind = 'edit'
                             AND pa.state IN ('queued', 'error'))`,
+          at,
+          at,
           at,
           at,
           member.photoId,

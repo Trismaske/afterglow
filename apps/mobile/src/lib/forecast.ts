@@ -260,7 +260,9 @@ export function etaPrecision(days: number): EtaPrecision {
 // ------------------------------------------------------------ sittings
 
 export interface Sitting {
-  /** Consecutive deltas (ms) inside one sitting; length = photos − 1. */
+  /** Consecutive deltas (ms) inside one sitting; length = photos − 1, so
+   * an EMPTY array is a one-photo sitting (a decision isolated between
+   * two breaks), not an absent one. */
   deltas: number[];
 }
 
@@ -271,6 +273,15 @@ export interface Sitting {
  * of EVERY delta first: breaks are rare relative to in-sitting decisions,
  * so they live in the tail and cannot move the middle — which is exactly
  * why a self-tuned boundary is safe here.
+ *
+ * Every break-delimited segment IS a sitting, empty deltas included: n
+ * breaks always yield n + 1 sittings, and a decision isolated between two
+ * breaks is a one-photo sitting (photos = deltas + 1). Dropping those
+ * segments (as this once did) made a history of all-isolated decisions
+ * yield ZERO sittings and biased the count and median-photos figures
+ * upward. Consumers that need only INTERNAL deltas — the timing estimate
+ * flattens `deltas` — are unaffected by construction: a one-photo sitting
+ * contributes nothing to flatten.
  */
 export function splitSittings(deltas: readonly number[]): Sitting[] {
   if (deltas.length === 0) return [];
@@ -283,7 +294,7 @@ export function splitSittings(deltas: readonly number[]): Sitting[] {
     }
     sittings[sittings.length - 1].deltas.push(delta);
   }
-  return sittings.filter((sitting) => sitting.deltas.length > 0);
+  return sittings;
 }
 
 /** The self-tuned break threshold in ms, clamped at both ends. */

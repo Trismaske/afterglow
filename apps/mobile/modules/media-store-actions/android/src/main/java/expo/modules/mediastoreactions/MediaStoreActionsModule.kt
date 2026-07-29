@@ -121,13 +121,24 @@ class MediaStoreActionsModule : Module() {
       // MediaStore's per-volume change counter (API 30+): bumps on ANY
       // insert/update/delete, so an unchanged generation is an OS-level
       // guarantee the library did not change — the scan skip's evidence.
+      //
+      // KEYED "<volume>|<version>": generations are comparable ONLY while
+      // MediaStore.getVersion is unchanged (the contract requires a full
+      // re-sync when it moves — a provider rebuild resets counters, so an
+      // equal number would be a coincidence, not a proof). Baking the
+      // version into the key makes a rebuild mismatch every stored key:
+      // the skip fingerprint differs and the delta planner sees an
+      // unknown volume, both of which land on a full pass with no
+      // version-aware logic anywhere in JS. Volume names never contain
+      // '|'; JS recovers the raw name as everything before the first '|'.
       val context = appContext.reactContext
         ?: throw IllegalStateException("Android context unavailable")
       val out = mutableMapOf<String, Double>()
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
         for (volume in MediaStore.getExternalVolumeNames(context)) {
           try {
-            out[volume] = MediaStore.getGeneration(context, volume).toDouble()
+            val version = MediaStore.getVersion(context, volume)
+            out["$volume|$version"] = MediaStore.getGeneration(context, volume).toDouble()
           } catch (error: Exception) {
             // FAIL THE WHOLE CALL. This map is the scan skip's PROOF that
             // nothing changed, and a proof missing a volume is not a
@@ -233,7 +244,7 @@ class MediaStoreActionsModule : Module() {
         val uri = MediaStore.Images.Media.getContentUri(volume)
         val counts = HashMap<Long, Triple<String, String, Int>>()
         try {
-          context.contentResolver.query(
+          val cursorOrNull = context.contentResolver.query(
             uri,
             arrayOf(
               MediaStore.Images.Media.BUCKET_ID,
@@ -243,7 +254,13 @@ class MediaStoreActionsModule : Module() {
             null,
             null,
             null,
-          )?.use { cursor ->
+          )
+          // A NULL cursor is a failed query, not an empty volume — the
+          // `?.use` shortcut silently produced a partial catalog that
+          // passed as complete, the exact all-volumes-or-none violation
+          // the catch below exists to prevent (codex r5).
+          ?: throw IllegalStateException("album query returned null cursor for volume $volume")
+          cursorOrNull.use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_ID)
             val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
             val pathCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.RELATIVE_PATH)

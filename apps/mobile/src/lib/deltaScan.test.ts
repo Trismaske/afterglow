@@ -98,17 +98,20 @@ describe('planDeltaRanges', () => {
     expect(plan.ranges).toEqual([{ startMs: timestamps[0], endMs: timestamps[499], changed: 1 }]);
   });
 
-  it('falls back to MTIME exactly as the scan does, not to "undated"', () => {
+  it('counts an MTIME-only row as undated — no range query can fetch it', () => {
     // Device-measured: WhatsApp images have datetaken=NULL, and the scan
-    // timestamps them `creationTime || modificationTime`. Treating them
-    // as unrangeable would make the delta skip photos a full pass groups.
+    // GROUPS them by `creationTime || modificationTime` — but the range
+    // re-page filters on DATE_TAKEN alone, so a range built from the
+    // mtime fallback would claim coverage the query cannot deliver and
+    // the modification would silently never be re-ingested. Unrangeable
+    // rows must force the full-pass fallback instead.
     const plan = planDeltaRanges(
       [row({ dateTakenMs: null, dateModifiedSec: T / 1000 })],
       lib(0),
       GAP,
     );
-    expect(plan.undated).toBe(0);
-    expect(plan.ranges).toEqual([{ startMs: T, endMs: T, changed: 1 }]);
+    expect(plan.undated).toBe(1);
+    expect(plan.ranges).toEqual([]);
   });
 
   it('counts a row with NEITHER stamp as undated — nothing can place it', () => {

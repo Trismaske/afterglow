@@ -138,16 +138,23 @@ export function StatsScreen({ navigation }: Props) {
       let cancelled = false;
       const started = Date.now();
       void (async () => {
-        const sources = await sourcesOrNull();
-        const stats = await loadDecisionStats(db, sources);
-        if (cancelled) return;
-        setDecisions(stats);
-        // Marked loaded only on a COMPLETE load. A source-resolution
-        // failure leaves coverage null (fail-closed), and caching that
-        // would keep the chart missing until the next review mutation
-        // — re-entering the page has to be able to recover.
-        if (sources !== null) markLoaded('activity', version);
-        perfLog(() => `stats tab activity: ${Date.now() - started}ms`);
+        try {
+          // Null = resolution FAILED (a resolved all-folders selection is
+          // a non-null StatsSources with null roots): loading anyway would
+          // pass an all-folders scope and replace scoped stats with global
+          // ones. Skip the load — prior contents (or the loading state)
+          // stay, and the unmarked `loadedAt` lets a re-focus recover.
+          const sources = await sourcesOrNull();
+          if (sources === null) return;
+          const stats = await loadDecisionStats(db, sources);
+          if (cancelled) return;
+          setDecisions(stats);
+          markLoaded('activity', version);
+          perfLog(() => `stats tab activity: ${Date.now() - started}ms`);
+        } catch (error) {
+          // Fail closed: keep whatever is on screen rather than blank it.
+          console.warn('[stats] activity unavailable — previous kept:', String(error));
+        }
       })();
       return () => {
         cancelled = true;
@@ -706,7 +713,15 @@ function HabitsTab({
           <Text style={styles.cardHint}>
             {`${habits.duels.duels.toLocaleString()} head-to-head compare${
               habits.duels.duels === 1 ? '' : 's'
-            } · you kept both ${Math.round((habits.duels.keptBoth / habits.duels.duels) * 100)}% of the time`}
+            }` +
+              // The percentage reads over DIALOG outcomes only: a triage
+              // duel (3+ alive) decides nothing, and counting it as a
+              // keep-both inflated the figure (v19).
+              (habits.duels.verdictDuels > 0
+                ? ` · you kept both ${Math.round(
+                    (habits.duels.keptBoth / habits.duels.verdictDuels) * 100,
+                  )}% of the time`
+                : '')}
           </Text>
         )}
       </View>

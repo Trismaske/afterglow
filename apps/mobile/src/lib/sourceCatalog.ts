@@ -104,6 +104,20 @@ export async function listSourceDirs(force = false): Promise<SourceDir[]> {
     return catalogCache.dirs;
   }
   if (!force && catalogBuild) return catalogBuild;
+  if (force) {
+    // Fence AND clear down to the raw album cache (codex r4+r5): a
+    // rebuild over the same stale bucket list would only launder its
+    // staleness, and an ORDINARY build already in flight must not land
+    // after this forced one and repopulate the caches it bypassed. The
+    // bump happens BEFORE the build captures its generation, so the
+    // forced result itself still commits.
+    cacheGeneration += 1;
+    catalogCache = null;
+    albumsCache = null;
+    albumsInFlight = null;
+    resolvedCache = null;
+    resolvedInFlight = null;
+  }
   const build = buildCatalog();
   catalogBuild = build;
   // Every sharer sees the SAME rejection (fail-closed: callers keep
@@ -126,6 +140,11 @@ let albumsInFlight: Promise<VolumeAlbum[]> | null = null;
 
 export async function listImageAlbumsCached(force = false): Promise<VolumeAlbum[]> {
   if (force) {
+    // Bump the generation, not just the caches: an ORDINARY query
+    // already in flight would otherwise land after this forced one and
+    // repopulate every cache with the stale bucket set the force exists
+    // to bypass (codex r5) — same fence as invalidateSourceCatalog.
+    cacheGeneration += 1;
     albumsCache = null;
     albumsInFlight = null;
   }
@@ -156,6 +175,8 @@ async function buildCatalog(): Promise<SourceDir[]> {
     return dirs;
   };
   if (mediaStoreActionsAvailable()) {
+    // A forced listSourceDirs cleared the album cache before this build,
+    // so the plain call is fresh exactly when freshness was demanded.
     const albums = await listImageAlbumsCached();
     const byDir = new Map<string, SourceDir>();
     for (const album of albums) {
@@ -266,10 +287,25 @@ export interface ResolvedSources {
  * lives under it, otherwise "All folders". The default stays dynamic
  * until the user saves an explicit choice in the picker.
  */
-export async function resolveSources(db: SQLiteDatabase): Promise<ResolvedSources> {
-  if (resolvedCache && Date.now() - resolvedCache.at < RESOLVED_TTL_MS) return resolvedCache.value;
-  if (resolvedInFlight) return resolvedInFlight;
-  const pending = resolveSourcesUncached(db);
+export async function resolveSources(
+  db: SQLiteDatabase,
+  options?: {
+    /** Bypass BOTH caches down to the raw bucket walk. The scan resolves
+     * fresh before an actual pass (codex r4): a ten-minute-old catalog
+     * can miss a brand-new bucket under a recursive root, and a pass
+     * that then advances the generation baseline would claim it verified
+     * photos it never enumerated. Costs one native catalog walk — paid
+     * only when a pass actually runs, never on the skip path. */
+    fresh?: boolean;
+  },
+): Promise<ResolvedSources> {
+  const fresh = options?.fresh === true;
+  if (!fresh) {
+    if (resolvedCache && Date.now() - resolvedCache.at < RESOLVED_TTL_MS)
+      return resolvedCache.value;
+    if (resolvedInFlight) return resolvedInFlight;
+  }
+  const pending = resolveSourcesWithRetry(db, fresh);
   const generation = cacheGeneration;
   resolvedInFlight = pending;
   void pending
@@ -284,7 +320,32 @@ export async function resolveSources(db: SQLiteDatabase): Promise<ResolvedSource
   return pending;
 }
 
-async function resolveSourcesUncached(db: SQLiteDatabase): Promise<ResolvedSources> {
+/** Transient catalog failures RETRY before anyone falls back (Tristan's
+ * call): a busy provider usually answers on the second ask, and going
+ * straight to keep-last is not trying hard enough. Failures are never
+ * cached, so plain re-attempts are safe; the retries live INSIDE the
+ * single flight, so concurrent callers share one retrying resolution. */
+const RESOLVE_ATTEMPTS = 5;
+const RESOLVE_RETRY_MS = 100;
+
+async function resolveSourcesWithRetry(
+  db: SQLiteDatabase,
+  force: boolean,
+): Promise<ResolvedSources> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < RESOLVE_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, RESOLVE_RETRY_MS));
+    try {
+      return await resolveSourcesUncached(db, force);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  console.warn(`[sources] resolution failed after ${RESOLVE_ATTEMPTS} attempts`);
+  throw lastError;
+}
+
+async function resolveSourcesUncached(db: SQLiteDatabase, force = false): Promise<ResolvedSources> {
   const stored = parsePhotoSourceSetting(await getSetting(db, PHOTO_SOURCES_KEY));
   if (stored?.mode === 'all') {
     return {
@@ -295,7 +356,7 @@ async function resolveSourcesUncached(db: SQLiteDatabase): Promise<ResolvedSourc
       label: sourceLabel(stored),
     };
   }
-  const dirs = await listSourceDirs();
+  const dirs = await listSourceDirs(force);
   if (stored) {
     return {
       setting: stored,

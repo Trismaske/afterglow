@@ -252,6 +252,31 @@ describe('sittings', () => {
     expect(sittings[1].deltas).toEqual([3_000, 3_000]);
   });
 
+  it('keeps two isolated decisions hours apart as two one-photo sittings', () => {
+    // One break delta joins two decisions: photos = deltas + 1 per
+    // segment, so each side is a sitting of one photo — not zero
+    // sittings, which is what filtering empty segments used to yield.
+    const sittings = splitSittings([4 * 3_600_000]);
+    expect(sittings).toHaveLength(2);
+    expect(sittings[0].deltas).toEqual([]);
+    expect(sittings[1].deltas).toEqual([]);
+  });
+
+  it('retains a final isolated decision after a run', () => {
+    const sittings = splitSittings([3_000, 3_000, 4 * 3_600_000]);
+    expect(sittings).toHaveLength(2);
+    expect(sittings[0].deltas).toEqual([3_000, 3_000]);
+    expect(sittings[1].deltas).toEqual([]);
+  });
+
+  it('yields n + 1 one-photo sittings from n all-break deltas', () => {
+    // A history of nothing but isolated decisions is still a history of
+    // sittings — hiding it biased the count and median upward.
+    const sittings = splitSittings([4 * 3_600_000, 4 * 3_600_000]);
+    expect(sittings).toHaveLength(3);
+    expect(sittings.every((sitting) => sitting.deltas.length === 0)).toBe(true);
+  });
+
   it('keeps a long think inside the sitting for a fast reviewer', () => {
     // 45 s would exceed 15x a 2 s median, but the floor keeps it in.
     const sittings = splitSittings([2_000, 2_000, 45_000, 2_000]);

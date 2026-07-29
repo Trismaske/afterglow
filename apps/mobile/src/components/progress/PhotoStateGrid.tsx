@@ -48,8 +48,15 @@ export interface GridPhoto {
   effective: EffectiveState;
   /** The actual photos.state row value; null = never tracked. */
   dbState: PhotoState | null;
-  /** An edit ACTION is queued against it (layer 2, not a verdict). */
+  /** Pending ACTIONS (layer 2, never verdicts) — one dot each, so an
+   * action-filtered grid shows why each photo matched. The MediaStore
+   * engine leaves them undefined (its filters are verdict-only).
+   * favPending is directional at the SQL layer: only a favourite waiting
+   * TOWARD TRUE shows (a queued removal wears no heart). */
   editPending?: boolean;
+  favPending?: boolean;
+  organizePending?: boolean;
+  sharePending?: boolean;
 }
 
 const BATCH = 48;
@@ -117,11 +124,20 @@ export function PhotoStateGrid({
     async (gen: number, reset: boolean) => {
       if (loadingGenRef.current !== null) return;
       loadingGenRef.current = gen;
-      if (reset) failedRef.current = false;
+      const dbEngine = isDbFilter(filter) || isUndatedScope(scope);
+      // The DB engine clears the flag EVERY page (its retry re-reads the
+      // same offset, so a later success really has recovered); the
+      // MediaStore engine only clears on reset — a failed bucket's page
+      // is gone from this pass, so the truncation must stay visible even
+      // when later pages from healthy buckets succeed.
+      if (reset || dbEngine) failedRef.current = false;
       setLoading(true);
       try {
         const fresh = () => gen === genRef.current;
-        if (isDbFilter(filter) || isUndatedScope(scope)) {
+        if (dbEngine) {
+          // FAIL CLOSED, mirroring the MediaStore engine below: a
+          // rejected query must not become a silent blank grid claiming
+          // "No photos in this state".
           const rows = await getGridPhotosByFilter(
             db,
             scope,
@@ -129,7 +145,11 @@ export function PhotoStateGrid({
             filter,
             BATCH,
             offsetRef.current,
-          );
+          ).catch((error: unknown) => {
+            console.warn('[progress] grid query failed:', String(error));
+            failedRef.current = true;
+            return [];
+          });
           if (!fresh()) return;
           offsetRef.current += rows.length;
           const photos: GridPhoto[] = rows.map((r) => ({
@@ -138,21 +158,37 @@ export function PhotoStateGrid({
             takenAt: r.taken_at,
             dbState: r.state,
             editPending: !!r.needs_edit,
+            favPending: !!r.fav_pending,
+            organizePending: !!r.organize_pending,
+            sharePending: !!r.share_pending,
             effective: classifyPhotoState({ state: r.state }),
           }));
-          if (rows.length < BATCH) setExhausted(true);
+          // A failed page must NOT read as the end of the data: the
+          // offset only advanced by rows actually returned, so leaving
+          // `exhausted` unset lets the next scroll retry the same page.
+          if (rows.length < BATCH && !failedRef.current) setExhausted(true);
           setItems((prev) => (reset ? photos : [...prev, ...photos]));
         } else {
           const pager = pagerRef.current;
           if (!pager) return;
+          const failedBefore = failedRef.current;
           const collected: GridPhoto[] = [];
           while (collected.length < BATCH && !pager.exhausted()) {
             const raw = await pager.next(BATCH);
             if (raw.length === 0) break;
+            // FAIL CLOSED like the page fetch beside it: a rejected
+            // state join must not fall through `finally` as a silently
+            // blank (or silently complete) grid — the same sticky
+            // failure state renders the footer/empty copy (codex r4).
             const states = await getStateRowsForAssets(
               db,
               raw.map((p) => p.item.id),
-            );
+            ).catch((error: unknown) => {
+              console.warn('[progress] grid state join failed:', String(error));
+              failedRef.current = true;
+              return null;
+            });
+            if (states === null) break;
             if (!fresh()) return;
             for (const p of raw) {
               const row = states.get(p.item.id);
@@ -169,7 +205,12 @@ export function PhotoStateGrid({
             }
           }
           if (!fresh()) return;
-          if (pager.exhausted()) setExhausted(true);
+          // A page that JUST failed must not seal the grid as complete —
+          // the failure footer/empty copy renders first, and only a
+          // later page may mark exhaustion (the sticky flag keeps the
+          // truncation visible in the footer either way).
+          const failedThisPage = failedRef.current && !failedBefore;
+          if (pager.exhausted() && !failedThisPage) setExhausted(true);
           setItems((prev) => (reset ? collected : [...prev, ...collected]));
         }
       } finally {
@@ -231,13 +272,23 @@ export function PhotoStateGrid({
           recyclingKey={item.id}
         />
         <View style={styles.dots}>
-          {/* Verdict first, then the pending ACTION — the grid's own
-              order under docs/STATE_MODEL.md. Without the second dot an
-              action-filtered grid showed nothing but keep-green, giving
-              no sign of why each photo matched. */}
+          {/* Verdict first, then every pending ACTION in photoBadges.ts
+              order — the grid's own order under docs/STATE_MODEL.md.
+              Without the action dots an action-filtered grid showed
+              nothing but keep-green, giving no sign of why each photo
+              matched. Each dot takes its kind's reserved hue (rule 2). */}
           <View style={[styles.dot, { backgroundColor: VERDICT_META[item.effective].color }]} />
           {item.editPending === true && (
             <View style={[styles.dot, { backgroundColor: colors.edit }]} />
+          )}
+          {item.favPending === true && (
+            <View style={[styles.dot, { backgroundColor: colors.fav }]} />
+          )}
+          {item.organizePending === true && (
+            <View style={[styles.dot, { backgroundColor: colors.organize }]} />
+          )}
+          {item.sharePending === true && (
+            <View style={[styles.dot, { backgroundColor: colors.share }]} />
           )}
         </View>
       </Pressable>
@@ -259,7 +310,7 @@ export function PhotoStateGrid({
       }}
       contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: bottomInset + 24 }}
       ListEmptyComponent={
-        !loading && exhausted ? (
+        !loading && (exhausted || failed) ? (
           <Text style={styles.empty}>
             {failed
               ? 'Could not read your photos just now. Pull back and reopen to try again.'
@@ -268,7 +319,19 @@ export function PhotoStateGrid({
         ) : null
       }
       ListFooterComponent={
-        loading ? <ActivityIndicator color={accent} style={styles.footer} /> : null
+        loading ? (
+          <ActivityIndicator color={accent} style={styles.footer} />
+        ) : failed && items.length > 0 ? (
+          // A truncated grid must SAY it is truncated (fail closed): the
+          // failure copy used to live only in the empty state, so a
+          // LATER page's failure read as "that's everything". The copy
+          // promises only what BOTH engines deliver — the MediaStore
+          // pager drains a failed bucket's cursor, so an in-place scroll
+          // retry is not universally true (codex r3); reopening is.
+          <Text style={styles.empty}>
+            Could not read all of your photos just now — pull back and reopen to try again.
+          </Text>
+        ) : null
       }
     />
   );

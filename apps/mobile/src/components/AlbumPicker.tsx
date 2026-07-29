@@ -2,8 +2,10 @@
  * THE album picker (m0.8.2): one bottom-sheet component for choosing an
  * organize target — extracted from three drifting copies (deck, queue
  * screen) when F6 moved album choice into the organize queue. Owns its
- * own catalog load (native volume-aware album list, fail-closed to what
- * the query proved, primary volume only), the search-or-create input
+ * own catalog load (native volume-aware album list, primary volume only,
+ * with loading / failed / proven-empty kept DISTINCT — an outage renders
+ * its own line plus a retry, never "No albums found", which would invite
+ * duplicate albums), the search-or-create input
  * (typing filters live; Create makes `Pictures/<name>/` from the same
  * text), and the duplicate-name rule: two MediaStore buckets can share a
  * displayName (observed: two "Receipts" folders), so any colliding row
@@ -33,15 +35,30 @@ export function AlbumPicker({
   onClose: () => void;
 }) {
   const insets = useSafeAreaInsets();
-  const [albums, setAlbums] = useState<VolumeAlbum[]>([]);
+  /** null = load in flight; [] only ever means the query PROVED empty. */
+  const [albums, setAlbums] = useState<VolumeAlbum[] | null>(null);
+  /** The catalog load failed — its own state, never conflated with an
+   * empty catalog (an outage reading "No albums found — create one
+   * below" invites duplicates). */
+  const [failed, setFailed] = useState(false);
+  /** Bumped by Retry to re-run the catalog load. */
+  const [loadNonce, setLoadNonce] = useState(0);
   const [name, setName] = useState('');
+
+  // The search text resets when the sheet OPENS — not on a retry, which
+  // must keep whatever the user typed.
+  useEffect(() => {
+    if (visible) setName('');
+  }, [visible]);
 
   useEffect(() => {
     if (!visible) return;
     let cancelled = false;
-    setName('');
+    setAlbums(null);
+    setFailed(false);
     // Fail-closed (C#8): a catalog error never widens choices — the
-    // picker simply shows what the native query proved.
+    // picker shows what the native query proved, and a failure says so
+    // (errors are not cached, so Retry really re-queries).
     void listImageAlbumsCached().then(
       (catalog) => {
         if (cancelled) return;
@@ -52,21 +69,22 @@ export function AlbumPicker({
         );
       },
       () => {
-        if (!cancelled) setAlbums([]);
+        if (!cancelled) setFailed(true);
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [visible]);
+  }, [visible, loadNonce]);
 
   const newPath = useMemo(() => newAlbumPath(name), [name]);
   // The one input searches AND names: typing filters the catalog live;
   // Create makes a new album from the same text (m0.8.1 tester ask).
   const visibleAlbums = useMemo(() => {
+    const loaded = albums ?? [];
     const query = name.trim().toLowerCase();
-    if (!query) return albums;
-    return albums.filter(
+    if (!query) return loaded;
+    return loaded.filter(
       (a) =>
         a.displayName.toLowerCase().includes(query) || a.relativePath.toLowerCase().includes(query),
     );
@@ -75,7 +93,7 @@ export function AlbumPicker({
    * their relativePath as a subtitle so they stay distinguishable. */
   const collidingNames = useMemo(() => {
     const seen = new Map<string, number>();
-    for (const a of albums) seen.set(a.displayName, (seen.get(a.displayName) ?? 0) + 1);
+    for (const a of albums ?? []) seen.set(a.displayName, (seen.get(a.displayName) ?? 0) + 1);
     return new Set([...seen].filter(([, n]) => n > 1).map(([n]) => n));
   }, [albums]);
 
@@ -103,11 +121,24 @@ export function AlbumPicker({
               </Pressable>
             )}
             ListEmptyComponent={
-              <Text style={styles.albumEmpty}>
-                {albums.length === 0
-                  ? 'No albums found — create one below.'
-                  : 'No albums match — Create makes a new one.'}
-              </Text>
+              failed ? (
+                // Failure is its own state — search and Create above/below
+                // stay usable, and Retry re-runs the catalog load.
+                <View style={styles.catalogFailed}>
+                  <Text style={styles.albumEmpty}>Could not read your albums just now.</Text>
+                  <Pressable style={styles.button} onPress={() => setLoadNonce((n) => n + 1)}>
+                    <Text style={styles.buttonText}>Retry</Text>
+                  </Pressable>
+                </View>
+              ) : albums === null ? (
+                <Text style={styles.albumEmpty}>Loading albums…</Text>
+              ) : (
+                <Text style={styles.albumEmpty}>
+                  {albums.length === 0
+                    ? 'No albums found — create one below.'
+                    : 'No albums match — Create makes a new one.'}
+                </Text>
+              )
             }
           />
           <View style={styles.newRow}>
@@ -160,6 +191,7 @@ const styles = StyleSheet.create({
   albumPath: { color: colors.textDim, fontSize: 12 },
   albumCount: { color: colors.textDim, fontSize: 13 },
   albumEmpty: { color: colors.textDim, fontSize: 14, paddingVertical: 12 },
+  catalogFailed: { alignItems: 'flex-start', gap: 2, paddingBottom: 10 },
   newRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   newInput: {
     flex: 1,

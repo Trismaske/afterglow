@@ -200,6 +200,11 @@ export function applyLocalAction(s: ReviewSnapshot, action: LocalAction): Review
       // nothing about the edit and therefore leaves it exactly as it is
       // (m0.8.2 — it used to abandon it, for a reason that no longer
       // exists; see the store's header).
+      // Same guard as the SQL (`state IN ('culled','kept')`): a stale
+      // sheet on a photo that left the decided states patches nothing,
+      // exactly as the UPDATE matches no row.
+      const located = findMember(s, action.assetId);
+      if (located && located.member.state !== 'culled' && located.member.state !== 'kept') return s;
       const next = action.target === 'to_edit' ? withFlag(s, action.assetId, true) : s;
       return patchMember(next, action.assetId, {
         state: 'kept',

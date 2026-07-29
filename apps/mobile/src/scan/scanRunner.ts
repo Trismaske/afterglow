@@ -48,8 +48,10 @@ import { waitForUserWrites } from '../lib/writePriority';
 import { fileSize } from '../lib/hash';
 import { ensureEmbeddingModel } from '../db/embeddingStore';
 import {
+  countPresentPhotos,
   countTrackedPhotos,
   getPhotoTimestamps,
+  getTakenAtForAssets,
   getGroupAssignments,
   getGroupMembers,
   getMetadataGroupIds,
@@ -331,6 +333,11 @@ interface DeltaDecision {
   ranges: TimeRange[];
   /** Rows MediaStore reports as trashed — deletions, made visible. */
   trashedIds: string[];
+  /** MediaStore's pass-START photo count. The post-delta consistency
+   * check compares against THIS, pinned, so its behaviour cannot depend
+   * on whether the pass outlived a query cache TTL — photos captured
+   * mid-pass belong to the next open, not to a spurious full pass. */
+  mediaTotalAtStart: number;
 }
 
 /**
@@ -355,32 +362,100 @@ async function planPass(
     if (raw === null) return null; // no baseline: the first pass must be full
     const previous = JSON.parse(raw) as Record<string, number>;
     const volumes = Object.keys(generations);
+    // Mirror scanCanSkip's rule: an EMPTY generation map means the native
+    // read FAILED, not that nothing changed. Without this a failed read
+    // planned a zero-range delta that scanned nothing and stamped the
+    // pass verified.
+    if (volumes.length === 0) return null;
     // A volume the baseline never saw (a card inserted since) has no
     // "since" to query from — only a full pass can take it in.
     if (volumes.some((volume) => previous[volume] === undefined)) return null;
     const changed: ChangedMediaRow[] = [];
     for (const volume of volumes) {
       if (previous[volume] === generations[volume]) continue;
-      changed.push(...(await getMediaChangedSince(volume, previous[volume])));
+      // Keys are "<volume>|<MediaStore version>" (the native module bakes
+      // the version in so a provider rebuild mismatches every key); the
+      // change query wants the raw volume name.
+      changed.push(...(await getMediaChangedSince(volume.split('|')[0], previous[volume])));
     }
     const timestamps = await getPhotoTimestamps(db, roots);
+    // NON-PRIMARY changes force a full pass. Ingestion keys every photo
+    // under PRIMARY_VOLUME (lib/media.ts `toLoadedPhoto`; docs/TODO.md,
+    // "Real volume identity at ingestion"), and raw MediaStore ids can
+    // COLLIDE across volumes — so an id-keyed reconcile of an SD-card
+    // trash could authoritatively mutate an unrelated primary photo's
+    // row. A full pass reconciles by enumeration instead, which aliasing
+    // cannot misdirect. Both sides move together when identity is fixed.
+    const foreign = changed.filter((row) => row.volumeName !== PRIMARY_VOLUME);
+    if (foreign.length > 0) {
+      console.log(
+        `[scan] delta: ${foreign.length} changes on non-primary volumes — ` +
+          `full pass (id-keyed reconcile cannot be trusted across volumes)`,
+      );
+      return null;
+    }
+    const trashedIds = changed
+      .filter((row) => row.isTrashed)
+      .map((row) => canonicalPhotoId(PRIMARY_VOLUME, row.rawId));
+    // Gallery-trashed rows are already hidden from the MediaStore count
+    // below but stay tracked as present until THIS pass reconciles them —
+    // subtract the overlap, or every external delete (a culling app's
+    // most common library change) reads as an untraced loss and the
+    // delta's whole deletion path goes unreachable.
+    const trashedTracked = trashedIds.length > 0 ? await countPresentPhotos(db, trashedIds) : 0;
+    // A MOVED DATE_TAKEN re-pages only the NEW window; the OLD window's
+    // survivors would keep their stale grouping while the counts still
+    // agree and the baseline advances. Only a full pass rewindows both
+    // sides (and covers an old position that lived in the undated
+    // batch, which no range can reach). Rare event — the documented
+    // degrade path is the honest answer. TRASHED rows are compared too:
+    // a row that moved AND was trashed still strands its old window's
+    // survivors, and the tripwire balances (codex r3).
+    const movedCandidates = changed.filter((row) => row.dateTakenMs !== null);
+    if (movedCandidates.length > 0) {
+      const stored = await getTakenAtForAssets(
+        db,
+        movedCandidates.map((row) => canonicalPhotoId(PRIMARY_VOLUME, row.rawId)),
+      );
+      const moved = movedCandidates.filter((row) => {
+        const oldAt = stored.get(canonicalPhotoId(PRIMARY_VOLUME, row.rawId));
+        return oldAt !== undefined && oldAt !== row.dateTakenMs;
+      });
+      if (moved.length > 0) {
+        console.log(
+          `[scan] delta: ${moved.length} changed photos moved their DATE_TAKEN — ` +
+            `full pass to rewindow both sides`,
+        );
+        return null;
+      }
+    }
     // COUNT TRIPWIRE. MediaStore has NO deletion tombstone: a removed row
     // simply vanishes, and the generation counter does not say what it
     // counted, so no change query can ever report a delete that bypassed
-    // the system trash. Holding FEWER photos than we track is the only
-    // evidence such a delete leaves. Only "fewer" trips it — more just
-    // means photos we have not ingested yet, the delta's normal input,
-    // which is why the same comparison runs AGAIN after the pass.
+    // the system trash. Holding FEWER photos than we track (net of the
+    // trashed rows the change query DID report) is the only evidence such
+    // a delete leaves. Only "fewer" trips it — more just means photos we
+    // have not ingested yet, the delta's normal input, which is why the
+    // same comparison runs AGAIN after the pass.
     const mediaTotal = await countPhotosInRange(
       0,
       Number.POSITIVE_INFINITY,
       sources.albumIds ?? undefined,
+      // FRESH, never the memo: this count must postdate the generation
+      // snapshot. A cache entry primed by Home seconds before a
+      // permanent delete would equal the tracked total, and with no
+      // tombstone in the change set both checks would pass and the
+      // baseline would advance over the deletion.
+      { fresh: true },
     );
-    console.log(`[scan] delta tripwire: MediaStore ${mediaTotal} vs tracked ${timestamps.length}`);
-    if (mediaTotal < timestamps.length) {
+    console.log(
+      `[scan] delta tripwire: MediaStore ${mediaTotal} vs tracked ${timestamps.length}` +
+        (trashedTracked > 0 ? ` (${trashedTracked} trashed in-flight)` : ''),
+    );
+    if (mediaTotal < timestamps.length - trashedTracked) {
       console.log(
-        `[scan] delta: ${timestamps.length - mediaTotal} tracked photos are gone from ` +
-          `MediaStore with no trace — full pass to reconcile`,
+        `[scan] delta: ${timestamps.length - trashedTracked - mediaTotal} tracked photos are ` +
+          `gone from MediaStore with no trace — full pass to reconcile`,
       );
       return null;
     }
@@ -397,18 +472,7 @@ async function planPass(
     // than silently leaving it ungrouped.
     if (plan.undated > 0) return null;
     if (!verdict.worthIt) return null;
-    return {
-      ranges: plan.ranges,
-      // PRIMARY_VOLUME, not the row's real volume — INGESTION keys every
-      // photo that way (lib/media.ts `toLoadedPhoto`), so using the true
-      // volume here would build an id the DB has never seen and the
-      // reconcile would silently no-op for anything on an SD card. Both
-      // sides move together when identity is fixed (docs/TODO.md,
-      // "Real volume identity at ingestion").
-      trashedIds: changed
-        .filter((row) => row.isTrashed)
-        .map((row) => canonicalPhotoId(PRIMARY_VOLUME, row.rawId)),
-    };
+    return { ranges: plan.ranges, trashedIds, mediaTotalAtStart: mediaTotal };
   } catch (error) {
     console.log(`[scan] delta unavailable, running a full pass: ${String(error)}`);
     return null;
@@ -498,14 +562,27 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   const strictness = parseStrictness(rawStrictness);
   const engine = newEngineHealth();
 
+  // A pass is RUNNING — re-resolve the source scope FRESH, past every
+  // catalog cache (codex r4): a ten-minute-old bucket set can miss a
+  // brand-new album under a recursive root, and the pass would then
+  // enumerate, count and BASELINE around photos it never saw. The skip
+  // path above deliberately used the cached resolution (its proof is
+  // the generations, and the fingerprint's roots are durable settings).
+  // NO cached fallback here (codex r5): a pass run over a possibly-stale
+  // scope that then advances the baseline is exactly the hole the fresh
+  // read closes — failing the scan (phase 'error', retried next open)
+  // is the only answer that cannot stamp a lie.
+  const passSources = await resolveSources(db, { fresh: true });
+
   // Library snapshot for the status line and Home's card (m0.8.2, F3/F4)
   // — fetched AFTER the skip check, so an unchanged open stays one
-  // native call. countPhotosInRange carries a 20 s cache, so planPass's
-  // own tripwire count below reuses this query rather than paying twice.
+  // native call. Display-only, so the 20 s count cache may serve it;
+  // planPass's tripwire takes its own FRESH count (it must postdate the
+  // generation snapshot).
   const corpusTotal = await countPhotosInRange(
     0,
     Number.POSITIVE_INFINITY,
-    sources.albumIds ?? undefined,
+    passSources.albumIds ?? undefined,
   ).catch((error): null => {
     console.warn(
       '[scan] corpus count failed — progress shows counts, not a percent:',
@@ -522,14 +599,14 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   const decision = await planPass(
     db,
     generations,
-    { roots: sources.roots ?? null, albumIds: sources.albumIds ?? null },
+    { roots: passSources.roots ?? null, albumIds: passSources.albumIds ?? null },
     force || model.cleared || fullDue,
   );
 
   if (decision) {
     const deltaScanned = await pageAndGroup(db, {
       ranges: decision.ranges,
-      albumIds: sources.albumIds ?? undefined,
+      albumIds: passSources.albumIds ?? undefined,
       baseThreshold: strictness.baseThreshold,
       engine,
       superseded,
@@ -549,16 +626,18 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
       await reconcileExternallyRemoved(db, decision.trashedIds, Date.now());
       console.log(`[scan] delta: ${decision.trashedIds.length} trashed photos left the queue`);
     }
-    // POST-DELTA CONSISTENCY CHECK. Having just ingested everything new,
-    // the two counts must agree. The tripwire before the pass is
-    // one-directional by necessity — MediaStore holding MORE than we
-    // track is the delta's normal input — so a silently MISSED ADDITION
-    // is invisible to it and would otherwise sit until the weekly
-    // reconciliation. Checked here instead, and repaired immediately.
-    const [mediaAfter, trackedAfter] = await Promise.all([
-      countPhotosInRange(0, Number.POSITIVE_INFINITY, sources.albumIds ?? undefined),
-      countTrackedPhotos(db, sources.roots ?? null),
-    ]);
+    // POST-DELTA CONSISTENCY CHECK. Having just ingested everything the
+    // change set held, tracked must have caught up to the PASS-START
+    // MediaStore count (pinned in the decision — a fresh query here would
+    // make the check's behaviour depend on pass duration vs the count
+    // cache's TTL, and photos captured mid-pass belong to the next open).
+    // The tripwire before the pass is one-directional by necessity —
+    // MediaStore holding MORE than we track is the delta's normal input —
+    // so a silently MISSED ADDITION is invisible to it and would
+    // otherwise sit until the weekly reconciliation. Checked here
+    // instead, and repaired immediately.
+    const mediaAfter = decision.mediaTotalAtStart;
+    const trackedAfter = await countTrackedPhotos(db, passSources.roots ?? null);
     if (mediaAfter === trackedAfter) {
       await finishPass(db, {
         superseded,
@@ -583,11 +662,10 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
         `${trackedAfter}) — running a full pass immediately`,
     );
     // The full pass is a fresh enumeration; its progress line must not
-    // continue the delta's count — and it now has a denominator, the
-    // count the consistency check just took (fresher than the snapshot).
-    // `windowsGrouped` deliberately keeps counting: the refresh
-    // subscribers diff it, and a rewind would silence them until the new
-    // run caught up past the old value.
+    // continue the delta's count — the pass-start snapshot serves as its
+    // denominator. `windowsGrouped` deliberately keeps counting: the
+    // refresh subscribers diff it, and a rewind would silence them until
+    // the new run caught up past the old value.
     update({ scanned: 0, total: mediaAfter, corpusTotal: mediaAfter });
   }
 
@@ -597,7 +675,7 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
 
   const scanned = await pageAndGroup(db, {
     ranges: [FULL_RANGE],
-    albumIds: sources.albumIds ?? undefined,
+    albumIds: passSources.albumIds ?? undefined,
     baseThreshold: strictness.baseThreshold,
     engine,
     superseded,
@@ -624,7 +702,7 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   // mid-scan behind the cursor), so each candidate gets the tri-state
   // presence check and only verified 'trashed'/'absent' rows converge —
   // exactly the History reconciliation contract.
-  const tracked = await getPresentAssetIds(db, sources.roots ?? null);
+  const tracked = await getPresentAssetIds(db, passSources.roots ?? null);
   const unseen = tracked.filter((id) => !seenIds.has(id));
   const RECONCILE_CAP = 500;
   if (unseen.length > RECONCILE_CAP) {
@@ -635,6 +713,7 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   }
   const gone: string[] = [];
   let movedUris = 0;
+  let unresolved = 0;
   for (const id of unseen.slice(0, RECONCILE_CAP)) {
     const presence = await checkMediaPresence(id);
     if (presence === 'trashed' || presence === 'absent') {
@@ -647,10 +726,25 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
       if (details?.uri) {
         await updatePhotoUri(db, id, details.uri);
         movedUris += 1;
+      } else {
+        // Present but its details would not load — the row is neither
+        // reconciled nor repaired. Counted below: a pass with unresolved
+        // rows must not stamp its baseline as if it settled them
+        // (codex r8).
+        unresolved += 1;
       }
+    } else {
+      // 'unknown' — the tri-state check could not decide. Same rule.
+      unresolved += 1;
     }
   }
   if (movedUris > 0) console.log(`[scan] refreshed ${movedUris} moved photo paths`);
+  if (unresolved > 0) {
+    console.warn(
+      `[scan] ${unresolved} unseen photos could not be verified — ` +
+        `baseline withheld; the next pass retries them`,
+    );
+  }
   if (gone.length > 0) {
     await reconcileExternallyRemoved(db, gone, Date.now());
     console.log(`[scan] reconciled ${gone.length} externally removed photos`);
@@ -661,7 +755,7 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     engine,
     fingerprint,
     generations,
-    unseenOverCap: unseen.length > RECONCILE_CAP,
+    unseenOverCap: unseen.length > RECONCILE_CAP || unresolved > 0,
     wasFullPass: true,
   });
 

@@ -259,3 +259,66 @@ or other docs quote the title, never the number**.
     `pageAndGroup` against `ranges.length` and `covered` across real
     passes — the `[scan] delta …` line already prints both terms.
 
+18. **Compare: keeping photos in TRIAGE mode** (Tristan, 2026-07-29
+    device pass). With 3+ undecided members a duel is verdict-free by
+    design, so Compare offers no way to KEEP a photo there — "N is
+    better" stars and records only, and the keep-both/cull dialog
+    appears once the pair covers the undecided remainder. Tristan found
+    the pull-toward-culling flow acceptable but wants a keep path from
+    Compare. Needs design: a direct "Keep N" chip mirroring "Cull N"
+    (plain verdict, no whole-table claim)? Or fold into item 20.
+
+19. **Retire "best of group" in favour of a plain Keep?** (Tristan,
+    2026-07-29). The star may be confusing things: marking best is the
+    only "positive" act a triage duel offers, and it drags the user
+    toward the cull dialog rather than a keep. Deciding whether best
+    survives at all (it also freezes groups against regrouping — that
+    role needs a new home if it goes) is its own design pass; the
+    m0.8.2 state model deliberately left the star's future open
+    (docs/STATE_MODEL.md, annotations). Further motivation (grilling
+    Q11): the star keeps generating hue/semantics confusion — "N is
+    better" wore keep-green while able to cull (fixed to accent), and
+    the star is the accent-as-data offender TODO's accent entry already
+    tracks. Issues like these are why Tristan leans toward removal.
+
+20. **A source that matches no live bucket reads "0 pictures total"**
+    (sweep review, 2026-07-29; parked in the grilling). When the stored
+    source dirs match nothing — typically a source folder on an
+    unmounted SD card — resolution SUCCEEDS with `albumIds: []` while
+    `roots` stays set, so the MediaStore side confidently counts zero
+    ("0 pictures total") beside a correctly scoped DB side. Not a
+    resolution failure, so keep-last/retry never engages. The UI should
+    NAME the state ("your folder isn't reachable right now") rather
+    than show zeros or silently keep-last. Same population as item 1
+    (real volume identity) — ride that investigation.
+
+21. **Action-layer coherence pass: favourite event log, one queue
+    action language, full grid action hydration** (Tristan, 2026-07-29
+    grilling — three merged items, one next-minor work package).
+    (a) FAVOURITE EVENT LOG + external IS_FAVORITE reconciliation: the
+    favourite surfaces are directional current-state projections of one
+    photo_actions row — the honest reading of that model, but lifetime
+    "favourites applied" is really *current verified favourites*,
+    History shows favourite state rather than events (an Afterglow-side
+    un-favourite erases an unreviewed photo's only trace once
+    verified), and external gallery favourite changes never reach
+    Afterglow (IS_FAVORITE is read only during our own apply
+    verification). An event log mirroring share's batch log, plus a
+    scan-hook reconcile, answers all three. Until then the directional
+    predicates (FAVOURITE_HELD, the lifetime COALESCE(applied_target,
+    target) read, the heart-off 'removing' badge) are settled behavior.
+    (b) ONE QUEUE ACTION LANGUAGE: the four queue screens share their
+    grid substrate (QueueGrid/QueueViewer/useQueueRows) but the ACTIONS
+    drifted — Share has a confirmed bottom "Clear queue" (+ never-
+    shared warning), Organize an unconfirmed "Remove all N" chip, Edit
+    and Favourite no removal affordance at all. Build the action bar as
+    one shared component (confirmation semantics included — probably:
+    confirm any whole-queue destructive action, matching Share) so the
+    queues stay aligned BY DESIGN, the ActionChip/UnitCard reasoning.
+    (c) FULL GRID ACTION HYDRATION (the review cycle's one parked
+    finding): Progress grids show only PENDING action dots and
+    only on DB-backed filters — no carried dots anywhere, and the
+    MediaStore-backed All/Unreviewed paths hydrate no action data at
+    all. Hydrate both paths with the weighted set (live/carried/
+    removing), and solve the dot-scale design question (dots cannot
+    render the heart-off glyph).

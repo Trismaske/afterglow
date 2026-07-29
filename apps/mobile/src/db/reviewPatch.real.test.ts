@@ -116,7 +116,7 @@ async function expectParity(
   d: TestDb,
   before: ReviewSnapshot,
   action: LocalAction,
-  write: () => Promise<void>,
+  write: () => Promise<unknown>,
 ): Promise<ReviewSnapshot> {
   const patched = applyLocalAction(before, action);
   await write();
@@ -291,6 +291,18 @@ describe('reviewPatch parity with db/store.ts', () => {
     expect(after.needsEdit.has(id('1'))).toBe(true);
   });
 
+  it('redecide on an unreviewed member is a stale-sheet no-op in BOTH layers', async () => {
+    // The SQL guards on state IN ('culled','kept') and matches no row —
+    // the patch must refuse identically, or the deck shows a phantom
+    // kept until the reconciling refresh reverts it.
+    const d = await fresh();
+    await seed(d, ['1', '2'], [['1', '2']]);
+    const before = await snapshot(d);
+    await expectParity(d, before, { kind: 'redecide', assetId: id('1'), target: 'keep' }, () =>
+      applyRedecision(asExpo(d), id('1'), 'keep', AT + 200),
+    );
+  });
+
   it('unstage lands on done (feed exit) or to_edit when flagged', async () => {
     const d = await fresh();
     await seed(d, ['1', '2', '3']);
@@ -337,6 +349,9 @@ describe('reviewPatch parity with db/store.ts', () => {
   it('compare-cull: loser culled and winner starred in one transaction', async () => {
     const d = await fresh();
     await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
+    // Member 3 is kept first: a verdict-writing duel claims the whole
+    // table, so every alive member must be an endpoint (F15).
+    await applyReviewDecisions(asExpo(d), [[id('3'), 'kept']], AT + 50);
     const before = await snapshot(d);
     const groupId = before.groups[0]!.groupId;
     await expectParity(

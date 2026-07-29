@@ -53,6 +53,7 @@ import {
   type StrictnessStep,
 } from '../lib/groupingPrefs';
 import {
+  getScanStatus,
   requestRescan,
   SCAN_VERIFIED_AT_KEY,
   subscribeScanStatus,
@@ -62,7 +63,7 @@ import {
 import { scanStatusLine } from '../lib/scanSkip';
 import { countTrackedPhotos } from '../db/store';
 import { applyGroupingSettingChange } from '../db/store';
-import { COMPARE_AUTO_CULL_KEY, serializeCompareAutoCull } from '../lib/comparePrefs';
+import { COMPARE_AUTO_CULL_KEY, serializeCompareDuelPref } from '../lib/comparePrefs';
 import { getSetting, setSetting } from '../db/store';
 import { ACCENT_PRESETS } from '../lib/accentTheme';
 import { showToast } from '../lib/toast';
@@ -112,7 +113,10 @@ export function SettingsScreen({ navigation }: Props) {
   const [scanFacts, setScanFacts] = useState<{ verifiedAt: number | null; corpus: number } | null>(
     null,
   );
-  const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
+  // Seeded from the LIVE snapshot (codex r7): subscribe-only missed an
+  // already-running scan, leaving "Rescan library" enabled — pressing it
+  // superseded and discarded real scan work.
+  const [scanStatus, setScanStatus] = useState<ScanStatus>(getScanStatus);
   const customGoalActive =
     goal !== null && !(DAILY_GOAL_CHOICES as readonly number[]).includes(goal);
 
@@ -137,15 +141,36 @@ export function SettingsScreen({ navigation }: Props) {
           getSetting(db, GROUPING_STRICTNESS_KEY),
         ]);
         if (!cancelled) {
-          setGoal(parseDailyGoal(rawGoal));
-          setCoverage(parseCoverageGoal(rawCoverage));
+          // FENCED against user writes (codex r9): a selection made while
+          // this read was in flight must not be overwritten by the read's
+          // older value — the write generations say whether the user has
+          // acted since focus.
+          if (goalWriteGen.current === 0) {
+            const durableGoal = parseDailyGoal(rawGoal);
+            durableGoalRef.current = durableGoal;
+            setGoal(durableGoal);
+          }
+          if (coverageWriteGen.current === 0) {
+            const durableCoverage = parseCoverageGoal(rawCoverage);
+            durableCoverageRef.current = durableCoverage;
+            setCoverage(durableCoverage);
+          }
           setStrictness(parseStrictness(rawStrictness));
         }
         // Resolving sources needs MediaStore access; without permission
         // (or on failure) the row still navigates, just without a label.
-        const src = await resolveSources(db).catch(() => null);
+        // A FAILED resolution also bypasses the facts read entirely:
+        // passing null roots there means "whole library" (readScanFacts'
+        // contract), which would replace the selected-source corpus count
+        // with the global one. A successfully resolved all-folders
+        // selection legitimately carries null roots and still reads.
+        const src = await resolveSources(db).catch((error): null => {
+          console.warn('[settings] source resolution failed — scan facts kept:', String(error));
+          return null;
+        });
         if (!cancelled) setSourceLabel(src?.label ?? null);
-        const facts = await readScanFacts(db, src?.roots ?? null);
+        if (src === null) return;
+        const facts = await readScanFacts(db, src.roots);
         if (!cancelled && facts) setScanFacts(facts);
       })();
       return () => {
@@ -163,20 +188,63 @@ export function SettingsScreen({ navigation }: Props) {
         setScanStatus(next);
         if (next.phase !== 'done') return;
         void (async () => {
-          const src = await resolveSources(db).catch(() => null);
-          const facts = await readScanFacts(db, src?.roots ?? null);
+          // Same guard as the focus loader: a failed resolution must not
+          // widen the facts read to the whole library — keep the line.
+          const src = await resolveSources(db).catch((error): null => {
+            console.warn('[settings] source resolution failed — scan facts kept:', String(error));
+            return null;
+          });
+          if (src === null) return;
+          const facts = await readScanFacts(db, src.roots);
           if (facts) setScanFacts(facts);
         })();
       }),
     [db],
   );
 
+  // Goal/coverage persists handle rejection (codex r7): fired-and-
+  // forgotten, a failed write left the UI showing an unsaved value.
+  // On rejection the local state reverts to the last durable value and
+  // the standard "Change not saved" alert says so.
+  const surfaceSettingWriteError = useCallback((error: unknown) => {
+    Alert.alert(
+      'Change not saved',
+      `Afterglow could not write the change to its database. Nothing was changed — please retry the action.\n\n${error instanceof Error ? error.message : String(error)}`,
+    );
+  }, []);
+
+  // GENERATION-FENCED rollbacks (codex r8) anchored to DURABLE state
+  // (codex r9): the chips stay actionable while a write is in flight, so
+  // a STALE write's rejection must not roll back a NEWER choice — and a
+  // rollback must land on the last value known PERSISTED, never on an
+  // earlier optimistic render that may itself have failed.
+  const goalWriteGen = useRef(0);
+  const durableGoalRef = useRef<number | null>(null);
+  /** The write generation the durable ref reflects: a SUPERSEDED write's
+   * success must still advance the baseline when it is newer than the
+   * last recorded one (codex r10 — tap A, tap B: A commits after B was
+   * allocated; if B then rejects, the rollback must land on A, which IS
+   * durable, not on the pre-A value). */
+  const durableGoalGen = useRef(0);
   const pickGoal = useCallback(
     (value: number) => {
+      const gen = ++goalWriteGen.current;
       setGoal(value);
-      void setSetting(db, DAILY_GOAL_KEY, serializeDailyGoal(value));
+      void setSetting(db, DAILY_GOAL_KEY, serializeDailyGoal(value)).then(
+        () => {
+          if (gen > durableGoalGen.current) {
+            durableGoalGen.current = gen;
+            durableGoalRef.current = value;
+          }
+        },
+        (error: unknown) => {
+          if (gen !== goalWriteGen.current) return; // superseded — the newer write owns the state
+          if (durableGoalRef.current !== null) setGoal(durableGoalRef.current);
+          surfaceSettingWriteError(error);
+        },
+      );
     },
-    [db],
+    [db, surfaceSettingWriteError],
   );
 
   const openCustomGoal = useCallback(() => {
@@ -195,12 +263,28 @@ export function SettingsScreen({ navigation }: Props) {
     setCustomGoalOpen(false);
   }, [customGoalText, pickGoal]);
 
+  const coverageWriteGen = useRef(0);
+  const durableCoverageRef = useRef<CoverageGoal | null>(null);
+  const durableCoverageGen = useRef(0);
   const pickCoverage = useCallback(
     (value: CoverageGoal) => {
+      const gen = ++coverageWriteGen.current;
       setCoverage(value);
-      void setSetting(db, COVERAGE_GOAL_KEY, serializeCoverageGoal(value));
+      void setSetting(db, COVERAGE_GOAL_KEY, serializeCoverageGoal(value)).then(
+        () => {
+          if (gen > durableCoverageGen.current) {
+            durableCoverageGen.current = gen;
+            durableCoverageRef.current = value;
+          }
+        },
+        (error: unknown) => {
+          if (gen !== coverageWriteGen.current) return; // superseded (codex r8/r9/r10 — see pickGoal)
+          if (durableCoverageRef.current !== null) setCoverage(durableCoverageRef.current);
+          surfaceSettingWriteError(error);
+        },
+      );
     },
-    [db],
+    [db, surfaceSettingWriteError],
   );
 
   const pickStrictness = useCallback(
@@ -292,8 +376,15 @@ export function SettingsScreen({ navigation }: Props) {
   );
 
   const resetConfirmations = useCallback(() => {
-    void setSetting(db, COMPARE_AUTO_CULL_KEY, serializeCompareAutoCull(false)).then(() =>
-      showToast('Confirmation dialogs will ask again'),
+    // The toast only fires on a COMMITTED write; a rejection says so
+    // instead of silently keeping auto-cull on (codex r7 sibling of the
+    // goal/coverage persist handling).
+    void setSetting(db, COMPARE_AUTO_CULL_KEY, serializeCompareDuelPref('ask')).then(
+      () => showToast('Confirmation dialogs will ask again'),
+      (error: unknown) => {
+        console.warn('[settings] confirmation reset failed:', String(error));
+        showToast('Could not save — confirmation dialogs unchanged');
+      },
     );
   }, [db]);
 
@@ -506,13 +597,13 @@ export function SettingsScreen({ navigation }: Props) {
         <View style={styles.row}>
           <View style={styles.rowBody}>
             <Text style={styles.rowTitle}>
-              {scanFacts === null && scanStatus?.phase !== 'scanning'
+              {scanFacts === null && scanStatus.phase !== 'scanning'
                 ? 'Checking…'
                 : scanStatusLine({
                     verifiedAt: scanFacts?.verifiedAt ?? null,
                     corpus: scanFacts?.corpus ?? 0,
                     running:
-                      scanStatus?.phase === 'scanning'
+                      scanStatus.phase === 'scanning'
                         ? { scanned: scanStatus.scanned, total: scanStatus.total }
                         : null,
                   })}
@@ -524,8 +615,8 @@ export function SettingsScreen({ navigation }: Props) {
           </View>
         </View>
         <Pressable
-          style={[styles.row, scanStatus?.phase === 'scanning' && styles.rowDisabled]}
-          disabled={scanStatus?.phase === 'scanning'}
+          style={[styles.row, scanStatus.phase === 'scanning' && styles.rowDisabled]}
+          disabled={scanStatus.phase === 'scanning'}
           onPress={() => {
             void requestRescan(db);
             showToast('Rescanning your library…');
@@ -533,7 +624,7 @@ export function SettingsScreen({ navigation }: Props) {
         >
           <View style={styles.rowBody}>
             <Text style={[styles.rowTitle, { color: theme.accent }]}>
-              {scanStatus?.phase === 'scanning' ? 'Scan in progress' : 'Rescan library'}
+              {scanStatus.phase === 'scanning' ? 'Scan in progress' : 'Rescan library'}
             </Text>
           </View>
         </Pressable>

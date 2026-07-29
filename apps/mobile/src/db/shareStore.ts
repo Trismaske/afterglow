@@ -66,6 +66,19 @@ export async function addToShareQueue(
       photoId,
     );
     if (existing) return;
+    // A cycle only carries across a NON-EMPTY LIVE queue. Culling the
+    // last live shared photo empties the visible queue without any share
+    // code running (verdict writes never touch this module), so a stale
+    // open cycle can linger — close it before choosing one, or the next
+    // queued photo inherits the old cycle's pass history instead of
+    // starting a fresh empty→non-empty cycle (codex r4).
+    await txn.runAsync(
+      `UPDATE share_cycles SET ended_at = ? WHERE ended_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM photo_actions
+                          WHERE kind = 'share' AND state IN ('queued', 'error')
+                            AND ${livePhotoClause('photo_actions.photo_id')})`,
+      at,
+    );
     const open = await txn.getFirstAsync<{ id: number }>(
       'SELECT id FROM share_cycles WHERE ended_at IS NULL ORDER BY id DESC LIMIT 1',
     );
@@ -92,11 +105,15 @@ export async function addToShareQueue(
 }
 
 /** End the open cycle when the queue just became empty (N#5) — shared by
- * every queue-emptying path; also exported for the trash-cleanup path. */
+ * every queue-emptying path; also exported for the trash-cleanup path.
+ * LIVE rows only: a staged cull's retained action is not queue
+ * membership (STATE_MODEL.md) and must not hold a cycle open. */
 export async function closeShareCycleIfQueueEmpty(db: SQLiteDatabase, at: number): Promise<void> {
   await db.runAsync(
     `UPDATE share_cycles SET ended_at = ? WHERE ended_at IS NULL
-       AND NOT EXISTS (SELECT 1 FROM photo_actions WHERE kind = 'share' AND state IN ('queued', 'error'))`,
+       AND NOT EXISTS (SELECT 1 FROM photo_actions
+                        WHERE kind = 'share' AND state IN ('queued', 'error')
+                          AND ${livePhotoClause('photo_actions.photo_id')})`,
     at,
   );
 }
@@ -173,11 +190,21 @@ export async function createShareBatch(
     const cycle = await txn.getFirstAsync<{ cycle_id: number }>(
       'SELECT id AS cycle_id FROM share_cycles WHERE ended_at IS NULL ORDER BY id DESC LIMIT 1',
     );
-    if (!cycle) throw new Error('createShareBatch: photos are not queued');
+    // No open cycle with LIVE queued work present is a legal state
+    // (codex r9): a staged cull's retained share row becomes live again
+    // on un-staging WITHOUT passing through addToShareQueue, and the
+    // empty-tab visit in between closed the old cycle. That resurfacing
+    // is its own empty→non-empty transition — mint the cycle here.
+    const cycleId =
+      cycle?.cycle_id ??
+      Number(
+        (await txn.runAsync('INSERT INTO share_cycles (started_at) VALUES (?)', at))
+          .lastInsertRowId,
+      );
     const batch = await txn.runAsync(
       `INSERT INTO share_batches (cycle_id, attempted_at, state)
        VALUES (?, ?, 'launching')`,
-      cycle.cycle_id,
+      cycleId,
       at,
     );
     batchId = Number(batch.lastInsertRowId);
@@ -296,9 +323,13 @@ export async function clearShareQueue(
   const neverShared = await countNeverShared(db);
   let cleared = 0;
   await withWriteTransaction(db, async (txn) => {
-    // Counted as the user SAW the queue, but the delete below takes every
-    // queued share row — including a staged cull's, which the queue screen
-    // hides and which nothing else would ever remove.
+    // LIVE rows only, on BOTH legs — exactly the rows this count reports
+    // and the screen showed (Tristan, grilling Q12): a staged cull's
+    // hidden retained row SURVIVES the clear, because STATE_MODEL
+    // promises un-staging returns a photo to every queue it was in. The
+    // old "nothing else would ever remove it" worry is obsolete — the
+    // trash-verification cleanup demotes/deletes it when the cull
+    // completes, and a resurfaced row mints its own cycle (codex r9).
     const row = await txn.getFirstAsync<{ n: number }>(
       `SELECT COUNT(*) AS n FROM photo_actions
         WHERE kind = 'share' AND state IN ('queued', 'error')
@@ -312,11 +343,16 @@ export async function clearShareQueue(
     // queue never reads as empty and the next queue-up silently rejoins
     // the closed cycle instead of starting a new one.
     await txn.runAsync(
-      `DELETE FROM photo_actions WHERE kind = 'share' AND state = 'queued' AND resolved_at IS NULL`,
+      // IN ('queued','error') like clearQueue: an errored-but-never-sent
+      // row is still a queue exit, and 'queued' alone would strand it.
+      `DELETE FROM photo_actions
+        WHERE kind = 'share' AND state IN ('queued', 'error') AND resolved_at IS NULL
+          AND ${livePhotoClause('photo_actions.photo_id')}`,
     );
     await txn.runAsync(
       `UPDATE photo_actions SET state = 'applied', target = NULL
-        WHERE kind = 'share' AND state IN ('queued', 'error') AND resolved_at IS NOT NULL`,
+        WHERE kind = 'share' AND state IN ('queued', 'error') AND resolved_at IS NOT NULL
+          AND ${livePhotoClause('photo_actions.photo_id')}`,
     );
     await txn.runAsync('UPDATE share_cycles SET ended_at = ? WHERE ended_at IS NULL', at);
   });

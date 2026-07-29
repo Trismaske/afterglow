@@ -216,8 +216,37 @@ describe('getLifetimeStats', () => {
     );
     // "Ever completed", which is why it survives the queue being emptied.
     expect(stats.editsCompleted).toBe(resolved('edit'));
-    expect(stats.favouritesApplied).toBe(resolved('favourite'));
+    // DIRECTIONAL: a verified un-favourite resolves too, but it is not a
+    // favourite (the fixture points a tenth of them the other way for
+    // exactly this assertion).
+    expect(stats.favouritesApplied).toBe(
+      history.photos.filter((photo) =>
+        photo.actions.some(
+          (action) =>
+            action.kind === 'favourite' && action.resolvedAt !== null && action.target === '1',
+        ),
+      ).length,
+    );
     expect(stats.reclaimedBytes).toBe(4096);
+  });
+
+  it('favouritesApplied follows the VERIFIED direction, not a queued intent', async () => {
+    // A queued reversal has not changed what the gallery holds: applied
+    // '1' + queued '0' still counts; only the VERIFIED removal drops it.
+    const history = buildReviewHistory();
+    const d = await fresh();
+    seed(d, history.photos.slice(0, 1));
+    const photoId = history.photos[0].assetId;
+    d.raw.prepare('DELETE FROM photo_actions').run();
+    d.raw
+      .prepare(
+        `INSERT INTO photo_actions (photo_id, kind, state, target, applied_target, queued_at, resolved_at)
+         VALUES (?, 'favourite', 'queued', '0', '1', 100, 50)`,
+      )
+      .run(photoId);
+    expect((await getLifetimeStats(asExpo(d))).favouritesApplied).toBe(1);
+    d.raw.prepare("UPDATE photo_actions SET state = 'applied', applied_target = '0'").run();
+    expect((await getLifetimeStats(asExpo(d))).favouritesApplied).toBe(0);
   });
 
   it('normalizes an empty database to zeroes', async () => {

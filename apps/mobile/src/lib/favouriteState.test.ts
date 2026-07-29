@@ -91,16 +91,17 @@ describe('badge weight (m0.8.2)', () => {
     expect(favouriteBadgeWeight({ state: 'applied', target: null })).toBe('carried');
   });
 
-  it('shows NO heart for a removal, queued or verified', () => {
-    // The heart leaves the moment you ask for it to, and a verified
-    // removal is an applied row — the one action that points backwards.
-    expect(favouriteBadgeWeight({ state: 'queued_remove', target: false })).toBeNull();
+  it('a QUEUED removal shows the heart-off badge; a verified one shows nothing', () => {
+    // Grilling Q5 (Tristan): three states must read apart — queued
+    // apply (heart, live), applied (heart, carried), queued removal
+    // (heart-off, live). Only a VERIFIED removal drops the badge.
+    expect(favouriteBadgeWeight({ state: 'queued_remove', target: false })).toBe('removing');
     expect(favouriteBadgeWeight({ state: 'applied', target: false })).toBeNull();
     expect(favouriteBadgeWeight({ state: 'none', target: null })).toBeNull();
   });
 
-  it('keeps a retryable APPLY failure live, but not a failed removal', () => {
+  it('retryable failures keep their direction: apply stays live, removal stays removing', () => {
     expect(favouriteBadgeWeight({ state: 'error', target: true })).toBe('live');
-    expect(favouriteBadgeWeight({ state: 'error', target: false })).toBeNull();
+    expect(favouriteBadgeWeight({ state: 'error', target: false })).toBe('removing');
   });
 });

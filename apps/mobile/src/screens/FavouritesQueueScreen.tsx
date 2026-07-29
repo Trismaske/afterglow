@@ -25,7 +25,7 @@ import {
   getQueue,
   resolveActions,
 } from '../db/actions';
-import { useQueueRows } from '../components/useQueueRows';
+import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
 
 /** The row shape this screen renders (was a store type). */
 interface FavouriteQueueRow {
@@ -44,7 +44,7 @@ export function FavouritesQueueScreen() {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const { refreshFavouriteStates } = useReview();
-  const { rows, reload } = useQueueRows<FavouriteQueueRow>(
+  const { rows, failed, reload } = useQueueRows<FavouriteQueueRow>(
     useCallback(async () => {
       // v18: one action queue; the DIRECTION that used to be a five-value
       // enum is now the action's target.
@@ -93,9 +93,30 @@ export function FavouritesQueueScreen() {
             // re-toggled while the consent dialog was up must not be
             // recorded as having had the new direction applied.
             const executed = encodeFavouriteTarget(target);
-            await resolveActions(db, batch, 'favourite', Date.now(), executed, executed);
+            try {
+              await resolveActions(db, batch, 'favourite', Date.now(), executed, executed);
+            } catch {
+              // codex r9: Android has ALREADY applied this batch — a
+              // bookkeeping rejection here used to escape as an unhandled
+              // rejection, leaving the rows durably queued with no word
+              // to the user; the next run re-applies to Android (harmless
+              // but confusing, so it must not be silent). Stop the run —
+              // further batches would hit the same store — and let the
+              // reload below show the durable truth.
+              Alert.alert(
+                'Applied, but not recorded',
+                'Applied in your gallery, but Afterglow could not record it — it will retry next time.',
+              );
+              break;
+            }
           } else if (result.status === 'failed') {
-            await failActions(db, batch, 'favourite', encodeFavouriteTarget(target));
+            // codex r9: the durable error mark is bookkeeping too — if it
+            // rejects, the retry alert must still fire and the run still
+            // stop; the row stays 'queued', which retries on the next
+            // apply just the same as 'error'.
+            await failActions(db, batch, 'favourite', encodeFavouriteTarget(target)).catch(
+              () => {},
+            );
             Alert.alert(
               'Favourite changes need retry',
               result.error ?? 'Android did not verify them.',
@@ -112,7 +133,10 @@ export function FavouritesQueueScreen() {
           }
         }
         await reload();
-        await refreshFavouriteStates();
+        // codex r9: reload never rejects, but the badge refresh can — it
+        // must not escape the void handler (the durable rows are already
+        // committed; the next focus re-reads them anyway).
+        await refreshFavouriteStates().catch(() => {});
       } finally {
         setBusyTarget(null);
       }
@@ -129,12 +153,23 @@ export function FavouritesQueueScreen() {
       {!supported && (
         <Text style={styles.unsupported}>Gallery favourites require Android 11 or later.</Text>
       )}
+      {failed && rows !== null ? (
+        // codex r9: the reload kept the last rows on a failed read — the
+        // list may be stale, and it has to say so.
+        <Text style={styles.refreshFailed}>{QUEUE_REFRESH_FAILED}</Text>
+      ) : null}
       <FlatList
         data={rows ?? []}
         keyExtractor={(row) => row.asset_id}
         contentContainerStyle={styles.list}
         ListEmptyComponent={
-          rows !== null ? <Text style={styles.empty}>No favourite changes queued.</Text> : null
+          rows !== null ? (
+            <Text style={styles.empty}>No favourite changes queued.</Text>
+          ) : failed ? (
+            // codex r9: an initial reload failure would have loaded
+            // forever — the empty-state area says what happened.
+            <Text style={styles.empty}>{QUEUE_REFRESH_FAILED}</Text>
+          ) : null
         }
         renderItem={({ item }) => (
           <View style={styles.row}>
@@ -196,6 +231,8 @@ const styles = StyleSheet.create({
   unsupported: { color: colors.cull, marginBottom: 10 },
   list: { gap: 10, paddingBottom: 12, flexGrow: 1 },
   empty: { color: colors.textDim, fontSize: 14, textAlign: 'center', marginTop: 40 },
+  // codex r9: quiet stale-rows notice — dim like every read-failure line.
+  refreshFailed: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginBottom: 8 },
   row: {
     minHeight: 72,
     flexDirection: 'row',

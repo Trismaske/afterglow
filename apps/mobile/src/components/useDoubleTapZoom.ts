@@ -30,9 +30,24 @@ export interface ZoomSharedValues {
   imageAspect: SharedValue<number>;
 }
 
-/** Returns the Pressable onPress handler. */
-export function useDoubleTapZoom(zoom: ZoomSharedValues, onSingleTap?: () => void) {
+/** Returns the Pressable onPress handler. `resetKey` (the current photo
+ * id) scopes the tap window to ONE page: the hook instance serves every
+ * pager page, so without it tap A → swipe → tap B inside DOUBLE_TAP_MS
+ * reads as a double tap on B. */
+export function useDoubleTapZoom(
+  zoom: ZoomSharedValues,
+  onSingleTap?: () => void,
+  resetKey?: unknown,
+) {
   const pending = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A key change cancels an armed window WITHOUT firing its single-tap
+  // action — that tap belonged to a page no longer shown.
+  useEffect(() => {
+    if (pending.current) {
+      clearTimeout(pending.current);
+      pending.current = null;
+    }
+  }, [resetKey]);
   useEffect(
     () => () => {
       if (pending.current) clearTimeout(pending.current);

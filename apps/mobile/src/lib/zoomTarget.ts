@@ -49,7 +49,9 @@ export function panBounds(
 
 /** Translation that keeps the tapped point (x, y) stationary while the
  * stage (width × height) scales about its centre, clamped to the pan
- * bounds of the target scale. */
+ * bounds of the target scale.
+ * Not 'worklet'-annotated: JS-only today (page Pressables) — annotate it
+ * before ever calling it from a gesture worklet. */
 export function doubleTapZoomTarget(
   x: number,
   y: number,

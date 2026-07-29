@@ -1,6 +1,6 @@
 # Photo state model & visual language
 
-**Status:** shipped in m0.8.2 (schema v18). This is the contract, not a proposal — the code implements it and the tests hold it there.
+**Status:** shipped in m0.8.2 (schema v19). This is the contract, not a proposal — the code implements it and the tests hold it there.
 **Audience:** anyone adding a surface that shows what has happened to a photo.
 **Why it exists:** three unrelated ideas were being drawn in one visual vocabulary, so "in a group" (a scan fact) was painted like a decision and counted as progress. This document is the single answer, so it never has to be re-derived.
 
@@ -30,7 +30,7 @@ Pre-m0.8 there was a distinct `kept` state that later became `done`; m0.8.2 rena
 **`to_edit` is not a verdict.**
 It used to be one, which is why "keep vs done vs to-edit" was confusing: a photo flagged for editing is simply **kept, with an edit pending**.
 
-**A compare duel writes verdicts only when it is the whole table** (m0.8.2): any singles duel, or a group whose undecided remainder it settles (≤ 2 alive).
+**A compare duel writes verdicts only when it is the whole table** (m0.8.2): any singles duel, or a group duel whose two endpoints include EVERY undecided member (zero undecided — a browse duel between kept members — is vacuously covered). A count alone is not the test: kept endpoints are legal duelists, so a kept-vs-kept duel with an undecided member watching from outside stays triage. The store re-validates the claim inside the write transaction against a racing scan.
 There, the dialog's "Keep both" marks both participants kept, and "Cull" stages the loser while leaving the winner untouched — a cull judgment says nothing about keeping.
 A duel with three or more alive is triage: best star and duel history only, no verdict, because repeatedly duelling through a burst picks best/worst — it does not keep.
 
@@ -56,7 +56,7 @@ photo_actions(photo_id, kind, state, target, queued_at, resolved_at)
 - All four drain to empty. A queue with nothing in it is the normal resting state.
 
 **The ground principle: the four actions align.**
-Where edit, favourite, organize and share can behave the same way, they must — one shape, one predicate, one badge language. Divergence needs a reason inherent to the action itself, and there is exactly one: **favourite is the only action that can point backwards**. A verified un-favourite is an `applied` row whose target is false, so the heart alone must read `target` (`favouriteBadgeWeight`, lib/favouriteState.ts). The other three cannot be undone, so they never need direction. When a future change touches one of the four, the default is to change all four.
+Where edit, favourite, organize and share can behave the same way, they must — one shape, one predicate, one badge language. Divergence needs a reason inherent to the action itself, and there is exactly one: **favourite is the only action that can point backwards**. A verified un-favourite is an `applied` row whose target is false, so the heart alone must read `target` (`favouriteBadgeWeight`, lib/favouriteState.ts). Direction gives the favourite badge a THIRD state: a queued removal renders the **heart-off glyph** in the favourite hue at the live weight — waiting work, read apart from queued-apply (heart, live) and applied (heart, carried); only a *verified* removal drops the badge entirely. Lifetime "favourites applied" reads the VERIFIED direction (`applied_target` first): a merely queued reversal has not changed what the gallery holds. The other three actions cannot be undone, so they never need direction. When a future change touches one of the four, the default is to change all four.
 
 **THREE questions, one vocabulary.** Two is the intuitive answer and it is wrong; the third row is where every mistake in this area has come from.
 
@@ -106,7 +106,7 @@ Six rules. They apply to every surface that paints a state.
    **A data series takes the hue of what it counts.** Heat over reviewing is keep-green; the reviewed series in a chart is keep-green. If the counted thing has no hue of its own — photos *arriving*, which is not an action you took — it takes **near-white** (`colors.text`), the one strong colour that means nothing else. Never the accent: a series drawn opposite a fixed hue must stay distinguishable under every accent the user can choose, and one of the presets is a green.
 4. **Selection is an outline, never a fill.** A selected item must never adopt a colour that also means a state.
 5. **Annotations live on a separate plane.** Grouping is drawn as a rule *under* the bar marking its extent, never as a shade inside a verdict's colour — a lighter green inside "kept" reads as a different decision, not as an annotation.
-6. **Strength = lifecycle, and only for actions.** A `live` action badge is the full hue on its tinted disc; a `carried` one is the *same* hue at ~65% on a plain disc. Loud badges are your to-do list, quiet ones are the photo's history. Never desaturate toward grey: a greyed action reads as disabled. Verdicts and the best star have no lifecycle and always render at full strength.
+6. **Strength = lifecycle, and only for actions.** A `live` action badge is the full hue on its tinted disc; a `carried` one is the *same* hue at ~65% on a plain disc. Loud badges are your to-do list, quiet ones are the photo's history. Never desaturate toward grey: a greyed action reads as disabled — a queued un-favourite says "switching off" with the heart-off *glyph*, never with grey. **Suspension demotes to quiet:** a staged cull's retained actions are off every to-do list, so their would-be live badges render carried (a suspended queued removal shows the carried heart — the gallery favourite still stands), and the deck's action chips disable on a staged cull entirely — its retained rows are exactly what un-staging restores. Verdicts and the best star have no lifecycle and always render at full strength.
 
 ### What this means per surface
 

@@ -26,7 +26,8 @@ Exit code 0 = gate passed; any FAIL line exits 1 and captures a screenshot.
 - Every queue tab opens within budget and shows its heading.
 - Stats: all THREE tabs. Each loads its own query set on first open, so each is walked separately — a tab that only renders after another one loaded would otherwise pass unnoticed. Activity (30-day chart + shooting-vs-reviewing), Forecast (a finish line or an explicit refusal, never a blank card), Habits (rhythm + the turnaround-carrying queue rows).
 - Progress: both chip rows on screen — verdicts AND pending actions — with the grid header, which is what proves the two layers still render as two rows.
-- Deck: Edit / Favourite / Share respond without a lingering "Saving…", Organize opens the album picker, Cull advances the pager (decided photos stay in the deck badged), Keep completes — all while any background scan runs.
+- Deck: all four action chips (Edit / Favourite / Organize / Share — Organize is a pure toggle, m0.8.2 F5) respond without a lingering "Saving…", a swipe advances the pager, Cull advances the pager (decided photos stay in the deck badged), Keep completes — all while any background scan runs. The choreography unit is chosen from the timeline overview by its truthful pending count, so the walk never depends on the head unit's shape.
+- Organize queue: hosts the album picker (open and cancel, mutation-free), where album assignment lives now.
 
 Responsiveness budgets are wall-clock from tap to the expected UI state appearing in a `uiautomator` dump (~0.3–0.8 s per dump), so they are deliberately coarse (1.5–3 s): they catch the stuck-busy class of regression (m0.8's multi-second "Saving…" under scan load), not frame-level latency.
 

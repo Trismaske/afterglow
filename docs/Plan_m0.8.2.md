@@ -53,9 +53,10 @@ If F9 or F6/F7 turns out deeper than explored mid-build, stop and renegotiate sc
 7. **Stats + celebration** (F13, F14). Rider: repo-wide terminology sweep against the three vocabulary rules.
 8. **Release gate**: statics + tests, Metro bundle proof, release APK, UI gate 26/26 on both devices (S10e + S23), Tristan's manual pass. Check the README's 24.5-minute re-analysis note survives. The full-tree Codex review is its own later session — not here.
 
-## Autonomous decisions (appendix)
+## Autonomous decisions (appendix) — ALL VETTED (grilling, 2026-07-29)
 
 Numbered as they are implemented; planning-stage flags above are the pre-implementation log.
+**Vetting outcome:** every entry below is settled — explicitly approved earlier (1, 4, 6, 28, 34), settled in the closing grilling (11: no-selection convention accepted + queue-alignment TODO; 16: superseded by the endpoints-cover-alive whole-table rule; 17: "N is better" moved to the accent), superseded by accepted review-round rework (3: read-time tails; 9/15/21/32: the gate choreography was rewritten over them), or exercised without objection across nine review rounds and Tristan's device passes (the remainder). Nothing here is an open assumption; the file deletes whole when m0.8.2 ships.
 
 1. **(Phase 1) Undated photos interleave by their fallback timestamp**, superseding the planning flag "undated sort last": every photo carries `taken_at = DATE_TAKEN ?? DATE_MODIFIED`, the feed already orders undated rows by it, and forcing them last would break the merge order. They form runs under the undated pseudo-day wherever their timestamps land. **Approved (Tristan, 2026-07-29).**
 2. **(Phase 1) Timeline ties break toward the single**: a single sharing a group's anchor timestamp closes its run before the group, keeping a burst's stragglers ahead of the burst. Either order is defensible; this one is pinned by test.

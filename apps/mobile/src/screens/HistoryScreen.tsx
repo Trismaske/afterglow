@@ -26,7 +26,8 @@ import { reconcileExternallyRemoved } from '../db/trashStore';
 import { mapWithConcurrency } from '../lib/concurrency';
 import { checkMediaPresence } from '../lib/media';
 import { formatDayClock } from '../lib/format';
-import { DecisionBadge, type DecisionKind } from '../components/DecisionBadge';
+import { DecisionBadge } from '../components/DecisionBadge';
+import { photoBadges, type BadgeWeight, type PhotoBadge } from '../lib/photoBadges';
 import { PhotoViewer } from '../components/PhotoViewer';
 import { useReview } from '../review/ReviewContext';
 import { colors, touch, useTheme } from '../theme';
@@ -43,15 +44,32 @@ const FILTERS: { key: HistoryFilter; label: string }[] = [
   { key: 'shared', label: 'Sheet opened' },
 ];
 
-/** Every badge the row wears, verdict FIRST then its pending actions —
- * the one order photoBadges.ts defines. Replacing the keep badge with an
- * edit badge (as this did) hid the verdict behind an action. */
-function badgesOf(row: Extract<HistoryRow, { kind: 'photo' }>): DecisionKind[] {
-  const badges: DecisionKind[] = [];
-  if (row.state === 'culled') badges.push('cull');
-  else if (row.state === 'kept') badges.push('keep');
-  if (row.needs_edit === 1) badges.push('edit');
-  return badges;
+/** Every badge the row wears, through the shared weighted vocabulary
+ * (lib/photoBadges.ts): verdict first, then all four actions in the one
+ * order, each loud while it WAITS and quiet once merely CARRIED
+ * (STATE_MODEL rule 6) — the same badges the grid and deck draw. Live
+ * wins over carried per kind, so a superseding queued action renders
+ * loud over its earlier applied one; a staged cull's live actions demote
+ * to quiet, because they are off every to-do list (livePhotoClause). */
+function badgesOf(row: Extract<HistoryRow, { kind: 'photo' }>): PhotoBadge[] {
+  const suspended = row.state === 'culled' || row.state === 'trashed';
+  const weigh = (live: number, carried: boolean): BadgeWeight | null =>
+    live === 1 ? (suspended ? 'carried' : 'live') : carried ? 'carried' : null;
+  return photoBadges({
+    state: row.state,
+    edit: weigh(row.needs_edit, row.edit_applied === 1),
+    // A queued REMOVAL wears the heart-off badge (grilling Q5); when
+    // suspended it demotes to the carried heart — the gallery favourite
+    // still stands while the switch-off waits.
+    favourite:
+      row.favourite_removing === 1
+        ? suspended
+          ? 'carried'
+          : 'removing'
+        : weigh(row.favourite_live, row.favourite_carried === 1),
+    organize: weigh(row.organize_pending, row.organize_applied_at != null),
+    share: weigh(row.share_live, row.share_applied === 1),
+  });
 }
 
 export function HistoryScreen(_props: Props) {
@@ -64,6 +82,12 @@ export function HistoryScreen(_props: Props) {
   const [rows, setRows] = useState<HistoryRow[] | null>(null);
   const [next, setNext] = useState<HistoryCursor | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  // codex r9: a rejected read no longer escapes as an unhandled
+  // rejection or flattens into "empty"/"complete". Whatever rows are on
+  // screen stay (rows null → the empty-state area says the read failed;
+  // rows present → a quiet footer says the feed may be truncated), and
+  // the next successful read clears it.
+  const [failed, setFailed] = useState(false);
   const [viewerId, setViewerId] = useState<string | null>(null);
   // Monotonic request token: a reload invalidates every in-flight fetch
   // (an older filter's result finishing last must not win the state).
@@ -98,11 +122,19 @@ export function HistoryScreen(_props: Props) {
   const reload = useCallback(
     async (which: HistoryFilter) => {
       const token = ++requestRef.current;
-      const page = await getHistoryPage(db, which, null);
-      const rowsNow = await reconcilePage(page.rows);
-      if (requestRef.current !== token) return; // superseded by a newer reload
-      setRows(rowsNow);
-      setNext(page.next);
+      try {
+        const page = await getHistoryPage(db, which, null);
+        const rowsNow = await reconcilePage(page.rows);
+        if (requestRef.current !== token) return; // superseded by a newer reload
+        setRows(rowsNow);
+        setNext(page.next);
+        setFailed(false);
+      } catch {
+        // codex r9: an initial rejection left the screen blank forever
+        // with an unhandled rejection; a focus-refresh rejection kept a
+        // stale feed silently. Mark it and keep what is shown.
+        if (requestRef.current === token) setFailed(true);
+      }
     },
     [db, reconcilePage],
   );
@@ -127,6 +159,12 @@ export function HistoryScreen(_props: Props) {
       if (requestRef.current !== token) return;
       setRows((old) => [...(old ?? []), ...rowsNow]);
       setNext(page.next);
+      setFailed(false);
+    } catch {
+      // codex r9: a later page's rejection silently truncated the feed.
+      // `next` deliberately stays set — the feed is NOT complete — and
+      // the footer below says so; a later scroll or reopen retries.
+      if (requestRef.current === token) setFailed(true);
     } finally {
       setLoadingMore(false);
     }
@@ -164,24 +202,9 @@ export function HistoryScreen(_props: Props) {
         <View style={styles.rowBody}>
           <Text style={styles.rowTime}>{formatDayClock(item.activity_at)}</Text>
           <View style={styles.badges}>
-            {badges.map((kind) => (
-              <DecisionBadge key={kind} kind={kind} size={20} />
+            {badges.map((badge) => (
+              <DecisionBadge key={badge.kind} kind={badge.kind} size={20} weight={badge.weight} />
             ))}
-            {item.favourited === 1 && <DecisionBadge kind="fav" size={20} />}
-            {item.organize_applied_at != null && (
-              // folder-clock: organized once, but a NEWER move intent is
-              // pending/erroring — the shown fact is superseded until it
-              // applies (history keeps the event either way).
-              <MaterialCommunityIcons
-                name={
-                  item.organized === 1 && item.organize_applied_at == null
-                    ? 'folder-clock'
-                    : 'folder-move'
-                }
-                size={18}
-                color={colors.textDim}
-              />
-            )}
           </View>
         </View>
       </Pressable>
@@ -200,6 +223,9 @@ export function HistoryScreen(_props: Props) {
             ]}
             onPress={() => {
               setRows(null);
+              // codex r9: a fresh fetch starts — do not show the old
+              // failure line over its loading state.
+              setFailed(false);
               if (f.key === filter) {
                 // Same filter tapped again: the focus effect keys on
                 // `filter` and will NOT re-run — reload explicitly.
@@ -226,9 +252,25 @@ export function HistoryScreen(_props: Props) {
         onEndReachedThreshold={0.4}
         contentContainerStyle={{ gap: 8, paddingBottom: insets.bottom + 16 }}
         ListEmptyComponent={
-          rows !== null ? (
+          failed ? (
+            // codex r9: the initial read failed — say so with the
+            // empty-state styling instead of a blank screen.
+            <Text style={styles.empty}>
+              Could not read your history just now — pull back and reopen to try again.
+            </Text>
+          ) : rows !== null ? (
             <Text style={styles.empty}>
               Decisions land here as you review — photos deleted outside Afterglow drop out.
+            </Text>
+          ) : null
+        }
+        ListFooterComponent={
+          failed && rows !== null && rows.length > 0 ? (
+            // codex r9: a truncated feed must SAY it is truncated (the
+            // PhotoStateGrid footer's copy family) — and the cursor stays
+            // set, so the feed is never marked complete by a failure.
+            <Text style={styles.empty}>
+              Could not read more of your history just now — pull back and reopen to try again.
             </Text>
           ) : null
         }

@@ -54,7 +54,7 @@ import {
 } from '../scan/scanRunner';
 import { Ghost } from '../components/Ghost';
 import { GoalRing } from '../components/GoalRing';
-import { unitDestination } from '../lib/timeline';
+import { firstPendingUnit, unitDestination } from '../lib/timeline';
 import { useReview } from '../review/ReviewContext';
 import { BigButton } from '../components/BigButton';
 import { StateProgressBar } from '../components/StateProgressBar';
@@ -244,18 +244,23 @@ export function HomeScreen({ navigation }: Props) {
             console.warn('[home] source resolution failed — corpus stats skipped:', String(error));
           }
         }
+        // KEEP-LAST on resolution failure (Tristan, grilling Q3): the
+        // store reads null roots as ALL FOLDERS, so a failed translation
+        // of the selected source must not broaden the ring/streaks to
+        // the whole library. The unresolved reads are skipped, the last
+        // rendered values stand, and the retrying resolution
+        // (sourceCatalog) recovers on the next load. Without permission
+        // src is legitimately null and the unscoped reads proceed.
+        const resolutionFailed = (permission?.granted ?? false) && src === null;
         const [rawGoal, rawCoverage, reviewedByDay, totals, stats, total] = await Promise.all([
           getSetting(db, DAILY_GOAL_KEY),
           getSetting(db, COVERAGE_GOAL_KEY),
           // Source-scoped like everything else about the current library
-          // (statsLoad.ts header). `src` is null only with no permission
-          // or a failed resolution; the ring then counts everything,
-          // which is what it did before scoping and is visible beside
-          // the source label on this same screen.
-          getReviewedCountsByDay(db, sinceMs, src?.roots ?? null),
+          // (statsLoad.ts header).
+          resolutionFailed ? null : getReviewedCountsByDay(db, sinceMs, src?.roots ?? null),
           // m0.8.2: the forecast's decision floor and pace denominator —
           // one indexed aggregate, not the full base-rate pass.
-          getDecisionTotals(db, src?.roots ?? null),
+          resolutionFailed ? null : getDecisionTotals(db, src?.roots ?? null),
           permission?.granted && src ? getCorpusStats(db, src.roots) : null,
           // null = the MediaStore count FAILED — keep the last rendered
           // stats rather than presenting an authoritative-looking zero.
@@ -304,7 +309,7 @@ export function HomeScreen({ navigation }: Props) {
           const captured = new Map<string, number>();
           for (const row of rows) if (row.day !== null) captured.set(row.day, row.total);
           nextFinish =
-            remaining === null
+            remaining === null || reviewedByDay === null || totals === null
               ? null
               : finishLine({
                   remaining,
@@ -323,14 +328,19 @@ export function HomeScreen({ navigation }: Props) {
         // repaints. (This effect used to commit twice, split by the
         // coverage await above.)
         setGoal(currentGoal);
-        setReviewedToday(reviewedByDay.get(today) ?? 0);
-        setStreaks(goalStreaks(reviewedByDay, keys, currentGoal));
+        // Keep-last: a skipped (failed-resolution) read leaves the ring,
+        // streaks and the loaded latch exactly as they were — on a cold
+        // start that means the "–" placeholder, never a wrong number.
+        if (reviewedByDay !== null) {
+          setReviewedToday(reviewedByDay.get(today) ?? 0);
+          setStreaks(goalStreaks(reviewedByDay, keys, currentGoal));
+          setGoalLoaded(true);
+        }
         setCoverage(coverageGoal);
         if (nextCoverageStatus !== undefined) setCoverageStatus(nextCoverageStatus);
         if (nextFinish !== undefined) setFinish(nextFinish);
         if (stats && total !== null)
           setCorpus({ total, groupsFound: stats.groupsFound, reviewed: stats.reviewed });
-        setGoalLoaded(true);
       })();
       return () => {
         cancelled = true;
@@ -427,7 +437,23 @@ export function HomeScreen({ navigation }: Props) {
                   }
                 }
                 next();
-              })(),
+              })().catch((error: unknown) => {
+                // A rejection anywhere above must not vanish with the
+                // dismissed system alert (codex r10): say so, and keep
+                // walking the remaining prompts — the durable rows are
+                // unchanged or recoverable, so retrying later is safe.
+                console.warn('[detect] cull-original failed:', String(error));
+                // next() waits for OK: Android shows one alert at a time,
+                // and the following copy prompt would dismiss this one
+                // unseen. The copy stays honest about the one sub-path
+                // where state DID move (staged, rollback failed): the
+                // cull list is the visible, recoverable home for it.
+                Alert.alert(
+                  'Could not finish handling this copy',
+                  'If the original now appears in the cull list, it stays staged there until you restore or confirm it; otherwise nothing was changed. The prompt will ask again on the next check.',
+                  [{ text: 'OK', onPress: () => next() }],
+                );
+              }),
           },
           {
             text: 'Keep original',
@@ -438,7 +464,14 @@ export function HomeScreen({ navigation }: Props) {
                 await markEditDone(db, head.originalAssetId);
                 await reviewRefresh().catch(() => {});
                 next();
-              })(),
+              })().catch((error: unknown) => {
+                console.warn('[detect] keep-original failed:', String(error));
+                Alert.alert(
+                  'Could not record the keep',
+                  'Nothing was changed — the prompt will ask again on the next check.',
+                  [{ text: 'OK', onPress: () => next() }],
+                );
+              }),
           },
         ],
       );
@@ -557,7 +590,14 @@ export function HomeScreen({ navigation }: Props) {
             days.map(async (day) => {
               if (day === UNDATED_DAY_KEY || !permission?.granted) return 0;
               const range = rangeOfDayKey(day);
-              return countPhotosInRange(range.startMs, range.endMs, src?.albumIds ?? null);
+              // INCLUSIVE day range → EXCLUSIVE MediaStore query — widen
+              // by 1 ms so an exact-midnight photo stays in its day's
+              // count (same correction as the scan's range pager).
+              return countPhotosInRange(
+                range.startMs > 0 ? range.startMs - 1 : 0,
+                range.endMs + 1,
+                src?.albumIds ?? null,
+              );
             }),
           );
           const rows: DayRow[] = [];
@@ -854,7 +894,9 @@ export function HomeScreen({ navigation }: Props) {
             // page with a nonzero DB count (all pending beyond the
             // horizon) falls back to the overview.
             onPress={() => {
-              const first = review.timeline[0];
+              // First PENDING unit — a cull-only run at the head is a
+              // browseable card, not review work (lib/timeline.ts).
+              const first = firstPendingUnit(review.timeline);
               if (!first) {
                 navigation.navigate('Groups');
                 return;

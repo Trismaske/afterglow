@@ -11,7 +11,7 @@ import { BadgeCluster } from '../components/DecisionBadge';
 import { colors, useTheme } from '../theme';
 import { formatClock } from '../lib/format';
 import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
-import { unitDestination, type TimelineUnit } from '../lib/timeline';
+import { firstPendingUnit, unitDestination, type TimelineUnit } from '../lib/timeline';
 import { photoBadges, type PhotoBadge } from '../lib/photoBadges';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Groups'>;
@@ -38,14 +38,18 @@ export function GroupsScreen({ navigation }: Props) {
     return map;
   }, [timeline]);
   /** Same badge set as the deck (m0.8.1 round 4): verdict plus every
-   * action, none hiding another, each at its own weight (m0.8.2). */
+   * action, none hiding another, each at its own weight (m0.8.2). The
+   * verdict rides into actionWeights so a staged cull's retained actions
+   * badge quiet — they left the queues with it. */
   const badgesFor = useCallback(
-    (assetId: string, bestPhotoId: string | null): PhotoBadge[] =>
-      photoBadges({
-        state: stateOf.get(assetId) ?? 'unreviewed',
-        ...actionWeights(assetId),
+    (assetId: string, bestPhotoId: string | null): PhotoBadge[] => {
+      const state = stateOf.get(assetId) ?? 'unreviewed';
+      return photoBadges({
+        state,
+        ...actionWeights(assetId, state),
         best: assetId === bestPhotoId,
-      }),
+      });
+    },
     [actionWeights, stateOf],
   );
 
@@ -118,7 +122,9 @@ export function GroupsScreen({ navigation }: Props) {
     [badgesFor, openUnit, theme.accent],
   );
 
-  const first = timeline[0] ?? null;
+  // First PENDING unit: a cull-only run stays a browseable card, but
+  // the overview CTA must open review work (lib/timeline.ts).
+  const first = firstPendingUnit(timeline);
   const total = queueCounts.grouped + queueCounts.singles;
 
   return (

@@ -40,14 +40,20 @@ export function isFavouriteSelected(status: FavouriteStatus): boolean {
  * is the only action that can point backwards.
  *
  * - `live` — a favourite is waiting to be applied (or its attempt failed
- *   and is retryable). A queued REMOVAL is deliberately not live: the
- *   heart leaves the moment you ask for it to.
+ *   and is retryable).
+ * - `removing` — a REMOVAL is waiting (or its attempt failed): the badge
+ *   renders the heart-off glyph in the favourite hue at the live weight
+ *   (Tristan, grilling Q5) — still favourited in the gallery, with the
+ *   switch-off queued, and the three states must read apart everywhere.
  * - `carried` — the gallery favourite is applied and still stands.
  * - `null` — no heart: never favourited, or verifiably un-favourited.
  */
-export function favouriteBadgeWeight(status: FavouriteStatus): 'live' | 'carried' | null {
+export function favouriteBadgeWeight(
+  status: FavouriteStatus,
+): 'live' | 'removing' | 'carried' | null {
   if (status.state === 'queued_apply') return 'live';
-  if (status.state === 'error') return status.target === true ? 'live' : null;
+  if (status.state === 'error') return status.target === true ? 'live' : 'removing';
+  if (status.state === 'queued_remove') return 'removing';
   if (status.state === 'applied') return status.target === false ? null : 'carried';
   return null;
 }

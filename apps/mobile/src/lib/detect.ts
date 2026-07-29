@@ -174,9 +174,13 @@ export async function runEditDetection(
   const merged = mergeSiblingWindows(live.map((l) => l.row.taken_at));
   const scans = await mapWithConcurrency(merged, 4, async (window) => {
     const cap = MAX_SIBLING_SCAN * window.merged;
+    // INCLUSIVE window → EXCLUSIVE MediaStore query: widen by 1 ms, or a
+    // copy whose cloned capture time sits EXACTLY at the ±tolerance edge
+    // is excluded before matching ever sees it (the same correction the
+    // scan pager and the progress ranges carry — codex r4).
     const found = await loadCandidatesCreatedBetween(
-      window.startMs,
-      window.endMs,
+      window.startMs > 0 ? window.startMs - 1 : 0,
+      window.endMs + 1,
       cap,
       sources.albumIds,
     );

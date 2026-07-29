@@ -62,9 +62,12 @@ describe('sittingLine', () => {
     expect(sittingLine({ count: 0, medianPhotos: 0, medianDurationMs: 0 })).toBeNull();
   });
 
-  it('agrees with itself in the singular', () => {
-    expect(sittingLine({ count: 1, medianPhotos: 1, medianDurationMs: 30_000 })).toBe(
-      '1 sitting in your recent history · typically 1 photo over under a minute',
+  it('drops the duration when the typical sitting is a single photo', () => {
+    // A one-photo median (splitSittings retains isolated decisions as
+    // one-photo sittings) has a 0 ms span — "over under a minute" would
+    // dress a figure around nothing.
+    expect(sittingLine({ count: 1, medianPhotos: 1, medianDurationMs: 0 })).toBe(
+      '1 sitting in your recent history · typically a single photo at a time',
     );
   });
 });

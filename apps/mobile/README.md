@@ -61,6 +61,10 @@ carry you to inbox zero.
 > And swiping between a group's photos — broken since 0.8 — works
 > again: **double-tap now zooms** (tap-point centred; double-tap again
 > resets) in the deck and the full-screen viewer, alongside pinch.
+> A queued **un-favourite now shows a slashed heart** so you can tell
+> "removing" apart from "favourited" and "queueing" at a glance, and
+> Compare's "Don't ask again" now sticks with **whichever choice you
+> make** — always cull, or always keep both.
 >
 > **Installing 0.8.2 resets the app's local database** (review history,
 > queues, settings — your photos are untouched) and re-analyzes the

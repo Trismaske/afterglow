@@ -514,6 +514,34 @@ describe('gate 5: day queries', () => {
     expect(await listSinglesForDeck(asExpo(d), '2026-07-20')).toEqual([]);
   });
 
+  it('a WHOLE-DAY deck read returns every single — no hidden page cap on a >500-photo day', async () => {
+    // "Review this day" / keepAllSingles promise the entire day; the old
+    // default LIMIT 500 silently truncated a bigger day. Run-range reads
+    // are uncapped too (codex r10): the cull-wall continuation means a
+    // legitimate run can exceed 500 rows, and a capped range read would
+    // cut exactly the pending tail the run exists to reach.
+    const d = await fresh();
+    const base = AT - 10 * 86_400_000;
+    await seedDays(
+      d,
+      Array.from({ length: 520 }, (_, i) => ({
+        rawId: `b${i}`,
+        day: '2026-07-18',
+        takenAt: base + i * 1000,
+      })),
+    );
+    const wholeDay = await listSinglesForDeck(asExpo(d), '2026-07-18');
+    expect(wholeDay).toHaveLength(520);
+    // Still newest-first, first to last.
+    expect(wholeDay[0].asset_id).toBe(id('b519'));
+    expect(wholeDay[519].asset_id).toBe(id('b0'));
+    const run = await listSinglesForDeck(asExpo(d), '2026-07-18', null, {
+      from: base,
+      to: base + 519 * 1000,
+    });
+    expect(run).toHaveLength(520); // the range bounds it; no hidden cap
+  });
+
   it('getUnreviewedDayRows counts pending per day, newest first, and drops finished days', async () => {
     const d = await fresh();
     await seedDays(d, [
@@ -567,6 +595,105 @@ describe('gate 5: getPhotoFacts', () => {
 
     expect(await getPhotoFacts(asExpo(d), id('nope'))).toBeNull();
     expect(foreignKeyCheck(d)).toEqual([]);
+  });
+
+  it('projects the favourite through its lifecycle — queued, carried, removed', async () => {
+    // The viewer's facts must carry a VERIFIED favourite after the queue
+    // empties (codex r2 G13), and the projection is directional: a
+    // verified removal is no favourite at all.
+    const d = await fresh();
+    await seedDays(d, [P0('1')]);
+    const { queueAction, resolveActions } = await import('./actions');
+    await queueAction(asExpo(d), id('1'), 'favourite', AT + 10, '1');
+    let facts = await getPhotoFacts(asExpo(d), id('1'));
+    expect(facts).toMatchObject({ favourite_queued: 1, favourite_applied: 0 });
+    await resolveActions(asExpo(d), [id('1')], 'favourite', AT + 20, '1');
+    facts = await getPhotoFacts(asExpo(d), id('1'));
+    expect(facts).toMatchObject({ favourite_queued: null, favourite_applied: 1 });
+    // Verified un-favourite: resolved toward false — no heart anywhere.
+    await queueAction(asExpo(d), id('1'), 'favourite', AT + 30, '0');
+    await resolveActions(asExpo(d), [id('1')], 'favourite', AT + 40, '0');
+    facts = await getPhotoFacts(asExpo(d), id('1'));
+    expect(facts).toMatchObject({ favourite_queued: null, favourite_applied: 0 });
+  });
+
+  it('projects organize targets through queue, apply and re-queue (codex r7)', async () => {
+    // The viewer shows the FULL album path, so the facts must carry the
+    // raw encoded target for BOTH halves: the pending intent and the
+    // last applied move.
+    const d = await fresh();
+    await seedDays(d, [P0('1')]);
+    const { queueOrganize, setOrganizeTargets, commitOrganizeOutcomes } =
+      await import('./organizeStore');
+    // Target-less queue row (m0.8.2 F6): queued, no paths yet.
+    expect(await queueOrganize(asExpo(d), id('1'), AT + 10)).toBeNull();
+    let facts = await getPhotoFacts(asExpo(d), id('1'));
+    expect(facts).toMatchObject({
+      organize_queued: 1,
+      organize_applied_at: null,
+      organize_target: null,
+      organize_applied_target: null,
+    });
+    // Album assigned: the encoded volume+path projects raw.
+    expect(
+      await setOrganizeTargets(
+        asExpo(d),
+        [id('1')],
+        { volumeName: 'external_primary', relativePath: 'Pictures/Trips/' },
+        AT + 20,
+      ),
+    ).toBeNull();
+    facts = await getPhotoFacts(asExpo(d), id('1'));
+    expect(facts?.organize_target).toBe('external_primary\nPictures/Trips/');
+    // Applied: resolved_at lands and applied_target carries the album.
+    await commitOrganizeOutcomes(
+      asExpo(d),
+      [
+        {
+          photoId: id('1'),
+          status: 'moved',
+          message: 'ok',
+          volumeName: 'external_primary',
+          relativePath: 'Pictures/Trips/',
+        },
+      ],
+      AT + 30,
+    );
+    facts = await getPhotoFacts(asExpo(d), id('1'));
+    expect(facts).toMatchObject({
+      organize_queued: 0,
+      organize_applied_at: AT + 30,
+      organize_applied_target: 'external_primary\nPictures/Trips/',
+    });
+    // Superseded (applied + re-queued): both targets project — the
+    // requeue prefill keeps the applied album as the pending one.
+    expect(await queueOrganize(asExpo(d), id('1'), AT + 40)).toBeNull();
+    facts = await getPhotoFacts(asExpo(d), id('1'));
+    expect(facts).toMatchObject({
+      organize_queued: 1,
+      organize_applied_at: AT + 30,
+      organize_target: 'external_primary\nPictures/Trips/',
+      organize_applied_target: 'external_primary\nPictures/Trips/',
+    });
+  });
+
+  it('projects the carried share once a pass resolved it (codex r7)', async () => {
+    // The panel's carried line ("Was shared from the share queue.")
+    // reads this — mirroring edit_completed_at for the edit pair.
+    const d = await fresh();
+    await seedDays(d, [P0('1')]);
+    const { addToShareQueue, createShareBatch, promoteShareBatch, removeFromShareQueue } =
+      await import('./shareStore');
+    expect(await addToShareQueue(asExpo(d), id('1'), AT + 10)).toBe(true);
+    let facts = await getPhotoFacts(asExpo(d), id('1'));
+    expect(facts?.share_carried).toBe(0); // queued but never sent
+    const batchId = await createShareBatch(asExpo(d), [id('1')], AT + 20);
+    await promoteShareBatch(asExpo(d), batchId, AT + 20);
+    facts = await getPhotoFacts(asExpo(d), id('1'));
+    expect(facts?.share_carried).toBe(1); // resolved while still queued
+    await removeFromShareQueue(asExpo(d), id('1'), AT + 30);
+    facts = await getPhotoFacts(asExpo(d), id('1'));
+    expect(facts?.share_carried).toBe(1); // leaveQueue demotes, never forgets
   });
 });
 
@@ -688,6 +815,32 @@ describe('source-scoped queue reads', () => {
     await makePhotoSingles(asExpo(d), [id('c1'), id('w1')]);
     const feed = await listSinglesFeed(asExpo(d), 10, CAMERA);
     expect(feed.map((m) => m.asset_id).sort()).toEqual([id('c1'), id('c2')]);
+  });
+
+  it('listGroupsForDay flags each member with in_source (codex r7)', async () => {
+    // A MIXED group queues whole via its one in-source member; the
+    // DayProgress CTA needs the per-member flag to keep an out-of-source
+    // unreviewed member from qualifying the group as this day's work.
+    const d = await fresh();
+    const photo = (rawId: string, folder: string) => ({
+      ...upsert(rawId),
+      uri: `file:///storage/emulated/0/${folder}/${rawId}.jpg`,
+    });
+    await writeContinuousGroups(
+      asExpo(d),
+      {
+        photos: [photo('m1', 'DCIM/Camera'), photo('m2', 'WhatsApp/Media')],
+        groups: [{ members: [id('m1'), id('m2')], timeAttached: [] }],
+        singles: [],
+      },
+      AT,
+    );
+    const [mixed] = await listGroupsForDay(asExpo(d), '2026-07-20', CAMERA);
+    expect(mixed.members.find((m) => m.asset_id === id('m1'))?.in_source).toBe(1);
+    expect(mixed.members.find((m) => m.asset_id === id('m2'))?.in_source).toBe(0);
+    // Unfiltered (roots null): every member is in source by definition.
+    const [unfiltered] = await listGroupsForDay(asExpo(d), '2026-07-20');
+    expect(unfiltered.members.map((m) => m.in_source)).toEqual([1, 1]);
   });
 });
 
@@ -1048,6 +1201,90 @@ describe('applyRedecision (state-aware change of mind)', () => {
     // rather than from evidence gathered for the earlier attempt.
     expect(stateOf(d, '1')).toMatchObject({ to_edit_at: AT + 200, mod_time: null });
   });
+
+  it('Keep preserves a LIVE edit cycle’s detection baseline', async () => {
+    // The keep carries the queued edit across — and the baseline is that
+    // cycle's detection evidence. Wiping it here re-baselined against
+    // the already-edited file, so a completed edit was never detected
+    // (the same guard applyReviewDecisions carries; unstageCullDirect
+    // never touched the baseline).
+    const d = await fresh();
+    await seed(d, ['1']);
+    await flagForEdit(d, '1', AT + 100);
+    d.raw
+      .prepare('UPDATE photos SET mod_time = 123, content_hash = ? WHERE asset_id = ?')
+      .run('banked', id('1'));
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 200);
+    await applyRedecision(asExpo(d), id('1'), 'keep', AT + 300);
+    expect(stateOf(d, '1')).toMatchObject({
+      state: 'kept',
+      needs_edit: 1,
+      mod_time: 123,
+      content_hash: 'banked',
+    });
+  });
+
+  it('a STALE restore or un-stage is a complete no-op — no copy match resolves', async () => {
+    // Photo 1 is unreviewed (never culled): both culled→ transitions
+    // match no row, so the pending edited-copy prompt must survive —
+    // consuming it for a decision that did not happen is the bug
+    // applyRedecision's guard pins, here on its two sibling paths.
+    const d = await fresh();
+    await seed(d, ['1', '9']);
+    d.raw
+      .prepare(
+        `INSERT INTO edit_copy_matches (original_id, copy_id, detected_at, state)
+         VALUES (?, ?, ?, 'pending')`,
+      )
+      .run(id('1'), id('9'), AT + 10);
+    await restoreCarriedCull(asExpo(d), id('1'), AT + 100);
+    await unstageCullDirect(asExpo(d), id('1'), AT + 200, true);
+    const match = d.raw
+      .prepare('SELECT state FROM edit_copy_matches WHERE original_id = ?')
+      .get(id('1')) as { state: string };
+    expect(match.state).toBe('pending');
+    expect(stateOf(d, '1').state).toBe('unreviewed');
+  });
+
+  it('a full page of staged culls does not hide older pending singles', async () => {
+    // The feed keeps decided singles in place, so the newest `limit`
+    // singles can all be staged culls — without the unreviewed
+    // continuation the timeline holds no pending unit while the counts
+    // say otherwise, and every continue door dead-ends (codex r9).
+    const d = await fresh();
+    await seed(d, ['p1', 'p2', 'w1', 'w2', 'w3']);
+    d.raw
+      .prepare(
+        `UPDATE photos SET state = 'culled', reviewed_at = 1, decided_at = 1, culled_at = 1
+          WHERE asset_id IN (?, ?, ?)`,
+      )
+      .run(id('w1'), id('w2'), id('w3'));
+    // Wall newest, pending oldest.
+    d.raw.prepare('UPDATE photos SET taken_at = 900 WHERE asset_id = ?').run(id('w1'));
+    d.raw.prepare('UPDATE photos SET taken_at = 800 WHERE asset_id = ?').run(id('w2'));
+    d.raw.prepare('UPDATE photos SET taken_at = 700 WHERE asset_id = ?').run(id('w3'));
+    d.raw.prepare('UPDATE photos SET taken_at = 600 WHERE asset_id = ?').run(id('p1'));
+    d.raw.prepare('UPDATE photos SET taken_at = 500 WHERE asset_id = ?').run(id('p2'));
+    const { listSinglesFeed } = await import('./store');
+    const rows = await listSinglesFeed(asExpo(d), 3);
+    expect(rows.map((r) => r.asset_id)).toEqual([id('w1'), id('w2'), id('w3'), id('p1'), id('p2')]);
+    expect(rows.filter((r) => r.state === 'unreviewed').map((r) => r.asset_id)).toEqual([
+      id('p1'),
+      id('p2'),
+    ]);
+  });
+
+  it('un-staging stamps reviewed_at when the cull path never did', async () => {
+    // Belt and braces for the "reviewed_at first-stamps on any verdict"
+    // rule: kept is a verdict, so a culled row that somehow reached this
+    // transition unstamped leaves it stamped.
+    const d = await fresh();
+    await seed(d, ['1']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 100);
+    d.raw.prepare('UPDATE photos SET reviewed_at = NULL WHERE asset_id = ?').run(id('1'));
+    await unstageCullDirect(asExpo(d), id('1'), AT + 200, true);
+    expect(stateOf(d, '1')).toMatchObject({ state: 'kept', reviewed_at: AT + 200 });
+  });
 });
 
 // -------------------------------------------- final-review round 7
@@ -1227,6 +1464,92 @@ describe('stale actions against absent/regrouped photos reject', () => {
           winnerId: id('1'),
           loserId: id('2'),
           keptBoth: false,
+          at: AT + 100,
+        },
+        setBest: { groupId: gid, assetId: id('1') },
+      }),
+    ).rejects.toThrow(/changed while comparing/);
+    expect(d.raw.prepare('SELECT COUNT(*) AS n FROM duels').get()).toEqual({ n: 0 });
+  });
+
+  it('a duel with a KEPT endpoint writes — kept members rejoin duels (F11)', async () => {
+    // Compare eligibility is undecided-or-kept, so the in-transaction
+    // guard must accept kept endpoints too; requiring 'unreviewed' made
+    // every compare-with-a-kept-photo abort as "group changed". Member 3
+    // is kept so the duel really is the whole table (alive = {2}).
+    const d = await fresh();
+    await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
+    const gid = groupIdOf(d, '1');
+    await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('1'), 'kept'],
+        [id('3'), 'kept'],
+      ],
+      AT + 50,
+    );
+    await applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 100, {
+      duel: {
+        groupId: String(gid),
+        winnerId: id('1'),
+        loserId: id('2'),
+        keptBoth: false,
+        at: AT + 100,
+      },
+      setBest: { groupId: gid, assetId: id('1') },
+    });
+    expect(d.raw.prepare('SELECT COUNT(*) AS n FROM duels').get()).toEqual({ n: 1 });
+    expect(stateOf(d, '2').state).toBe('culled');
+  });
+
+  it('a verdict-writing duel aborts when an undecided member sits OUTSIDE the pair', async () => {
+    // The whole-table claim (F15) is re-validated in the transaction: a
+    // warm scan can add an undecided member between Compare's load and
+    // the write, and a verdict would close a question the duel never
+    // asked. Triage duels (no verdicts) make no such claim.
+    const d = await fresh();
+    await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
+    const gid = groupIdOf(d, '1');
+    await expect(
+      applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 100, {
+        duel: {
+          groupId: String(gid),
+          winnerId: id('1'),
+          loserId: id('2'),
+          keptBoth: false,
+          at: AT + 100,
+        },
+        setBest: { groupId: gid, assetId: id('1') },
+      }),
+    ).rejects.toThrow(/changed while comparing/);
+    // The same duel WITHOUT verdicts is triage and writes fine.
+    await applyReviewDecisions(asExpo(d), [], AT + 200, {
+      duel: {
+        groupId: String(gid),
+        winnerId: id('1'),
+        loserId: id('2'),
+        keptBoth: true,
+        at: AT + 200,
+      },
+      setBest: { groupId: gid, assetId: id('1') },
+    });
+    expect(d.raw.prepare('SELECT COUNT(*) AS n FROM duels').get()).toEqual({ n: 1 });
+  });
+
+  it('a duel against a STAGED-CULL endpoint still aborts', async () => {
+    // Staged culls stay out of Compare on both endpoints (F11) — the
+    // widened guard must not widen past kept.
+    const d = await fresh();
+    await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
+    const gid = groupIdOf(d, '1');
+    await applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 50);
+    await expect(
+      applyReviewDecisions(asExpo(d), [], AT + 100, {
+        duel: {
+          groupId: String(gid),
+          winnerId: id('1'),
+          loserId: id('2'),
+          keptBoth: true,
           at: AT + 100,
         },
         setBest: { groupId: gid, assetId: id('1') },

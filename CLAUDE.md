@@ -46,6 +46,7 @@ Tags trigger CI to GitHub Releases: `desktop-v*` → Windows installer (+ `.scr`
 | docs/MOBILE_UI_GATE.md | Automated pre-release UI walk of the companion app (`scripts/mobile-ui-gate.mjs`) + manual pass |
 | docs/STATE_MODEL.md | **Read before touching any surface that shows photo state.** The three layers (verdict · actions · annotations) and the six visual rules — shipped in m0.8.2, and the contract every state surface is held to |
 | docs/TODO.md | Open questions parked for their own investigation |
+| docs/REVIEW_CLASSES.md | The recurring defect-class checklist — the self-review input before any `codex-review` round |
 | docs/Feedback_<version>.md / docs/Plan_<version>.md (e.g. `Plan_m0.8.md`) | Current tester feedback + the release plan answering it, named for the release they target (removed once shipped) |
 | docs/grouping-study/ | Grouping regression labels (human-judged pairs) + study tooling; local-only data gitignored (see its README) |
 | README.md | User/tester-facing: formats, key bindings, install notes |

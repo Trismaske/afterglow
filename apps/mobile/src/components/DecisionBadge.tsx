@@ -41,7 +41,8 @@ import type { BadgeWeight, PhotoBadge } from '../lib/photoBadges';
  * their single state glyph, where a pencil means "in the edit queue"
  * rather than a flag beside a verdict.
  */
-export type DecisionKind = 'cull' | 'keep' | 'edit' | 'best' | 'fav' | 'share' | 'organize';
+export type DecisionKind =
+  'cull' | 'keep' | 'edit' | 'best' | 'fav' | 'fav_off' | 'share' | 'organize';
 
 export const DECISION_GLYPHS: Record<
   DecisionKind,
@@ -52,6 +53,10 @@ export const DECISION_GLYPHS: Record<
   edit: 'pencil',
   best: 'star',
   fav: 'heart',
+  // Queued REMOVAL (Tristan, grilling Q5): the slash says the direction
+  // — favourite-pink at the live weight, because the removal is waiting
+  // work in the favourites queue. Never grey (rule 6).
+  fav_off: 'heart-off',
   share: 'share-variant',
   organize: 'folder-move',
 };
@@ -62,6 +67,7 @@ const BADGE_COLORS: Record<DecisionKind, { fg: string; bg: string }> = {
   edit: { fg: colors.edit, bg: colors.editDim },
   best: { fg: colors.text, bg: colors.surfaceRaised }, // fg overridden by accent
   fav: { fg: colors.fav, bg: colors.favDim },
+  fav_off: { fg: colors.fav, bg: colors.favDim },
   share: { fg: colors.share, bg: colors.shareDim },
   organize: { fg: colors.organize, bg: colors.organizeDim },
 };

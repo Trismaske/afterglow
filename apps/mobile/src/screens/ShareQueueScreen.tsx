@@ -39,7 +39,7 @@ import { showToast } from '../lib/toast';
 import { colors, touch, useTheme } from '../theme';
 import { Chip, QueueGridCell } from '../components/QueueGrid';
 import { QueueViewer } from '../components/QueueViewer';
-import { useQueueRows } from '../components/useQueueRows';
+import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
 import { useReview } from '../review/ReviewContext';
 
 type Props = MainTabScreenProps<'ShareQueue'>;
@@ -49,9 +49,11 @@ export function ShareQueueScreen(_props: Props) {
   const theme = useTheme();
   const db = useSQLiteContext();
   const { refreshQueuedFor } = useReview();
-  const { rows, reload: reloadRows } = useQueueRows<ShareQueueRow>(
-    useCallback(() => getShareQueue(db), [db]),
-  );
+  const {
+    rows,
+    failed,
+    reload: reloadRows,
+  } = useQueueRows<ShareQueueRow>(useCallback(() => getShareQueue(db), [db]));
   /** Every mutation here also moves the share BADGE on review surfaces
    * (deck, Groups) — the provider's membership map is their source. */
   const reload = useCallback(async () => {
@@ -102,15 +104,37 @@ export function ShareQueueScreen(_props: Props) {
     const fire = async () => {
       setBusy(true);
       try {
+        // REVALIDATE at press time (codex r10 P1): the rendered rows can
+        // be STALE — useQueueRows deliberately keeps them when a reload
+        // fails — and a share must never dispatch photos a successful
+        // clear/unqueue already removed. The durable queue is the truth;
+        // the selection filters it.
+        const freshIds = (await getShareQueue(db)).map((r) => r.photo_id);
+        const freshSet = new Set(freshIds);
+        const ids = selected.size > 0 ? shareIds.filter((id) => freshSet.has(id)) : freshIds;
+        if (ids.length === 0) {
+          showToast('Nothing to share — the queue changed under this screen');
+          await reload();
+          return;
+        }
         // C#10 at-most-once: durable `launching` row BEFORE dispatch;
         // promote immediately after the native dispatch report. A
         // REJECTED dispatch (bridge failure) fails the batch like a
         // reported error — otherwise the durable row would stay stuck in
         // `launching` until the next process restart's recovery.
-        const batchId = await createShareBatch(db, shareIds, Date.now());
-        const uris = await Promise.all(shareIds.map(getEditableContentUri));
+        const batchId = await createShareBatch(db, ids, Date.now());
         let dispatch: Awaited<ReturnType<typeof shareMediaUris>>;
         try {
+          // codex r9: URI preparation sits INSIDE the failure handling —
+          // the batch is already durably `launching`, so a rejected
+          // getEditableContentUri must fail the batch exactly like a
+          // dispatch error, not escape the void handler and leave the
+          // queue looking stuck until startup recovery.
+          // The REVALIDATED ids, not the rendered ones (scoped review
+          // P1): the batch above records `ids`, and dispatching a
+          // different set would send removed photos and record members
+          // that never went out.
+          const uris = await Promise.all(ids.map(getEditableContentUri));
           dispatch = await shareMediaUris(uris);
         } catch (error) {
           dispatch = {
@@ -120,7 +144,7 @@ export function ShareQueueScreen(_props: Props) {
         }
         if (dispatch.result === 'dispatched') {
           await promoteShareBatch(db, batchId, Date.now());
-          showToast(`Sheet opened for ${shareIds.length} — queue kept for more sharing`);
+          showToast(`Sheet opened for ${ids.length} — queue kept for more sharing`);
           setSelected(new Set());
           setLabelText('');
           setLabelBatchId(batchId);
@@ -129,6 +153,18 @@ export function ShareQueueScreen(_props: Props) {
           Alert.alert('Share failed', dispatch.message);
         }
         await reload();
+      } catch (error) {
+        // Bookkeeping rejections (create/promote/fail) must not escape
+        // the void handler (codex r10): a promote failure after the
+        // sheet opened leaves the batch at 'launching' until startup
+        // recovery reconciles it to error — say so, and reload durable
+        // truth.
+        console.warn('[share] batch bookkeeping failed:', String(error));
+        Alert.alert(
+          'Share not fully recorded',
+          'The sheet may have opened, but Afterglow could not record the pass — it will reconcile on the next app start.',
+        );
+        await reload().catch(() => {});
       } finally {
         setBusy(false);
       }
@@ -145,7 +181,7 @@ export function ShareQueueScreen(_props: Props) {
       return;
     }
     await fire();
-  }, [busy, db, shareIds, reload]);
+  }, [busy, db, shareIds, selected, reload]);
 
   const saveLabel = useCallback(
     async (label: string) => {
@@ -213,7 +249,11 @@ export function ShareQueueScreen(_props: Props) {
       <Text style={styles.heading}>Share queue</Text>
       <Text style={styles.subtitle}>
         {rows === null
-          ? 'Loading…'
+          ? // codex r9: an initial reload failure would have said
+            // "Loading…" forever — the empty-state line says what happened.
+            failed
+            ? QUEUE_REFRESH_FAILED
+            : 'Loading…'
           : count === 0
             ? 'Queue photos with Share during review, then send them in passes.'
             : selectionMode
@@ -230,6 +270,11 @@ export function ShareQueueScreen(_props: Props) {
           <Chip label="Unshared" onPress={selectUnshared} />
           {selectionMode ? <Chip label="Remove" onPress={() => void removeSelected()} /> : null}
         </View>
+      ) : null}
+      {failed && rows !== null ? (
+        // codex r9: the reload kept the last rows on a failed read — the
+        // grid may be stale, and it has to say so.
+        <Text style={styles.refreshFailed}>{QUEUE_REFRESH_FAILED}</Text>
       ) : null}
       <FlatList
         data={rows ?? []}
@@ -304,6 +349,8 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 12 },
   subtitle: { color: colors.textDim, fontSize: 14, marginBottom: 10 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
+  // codex r9: quiet stale-rows notice — dim like every read-failure line.
+  refreshFailed: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginBottom: 8 },
   passBadge: {
     position: 'absolute',
     top: 4,

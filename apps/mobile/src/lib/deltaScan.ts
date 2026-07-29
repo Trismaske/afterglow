@@ -16,13 +16,19 @@
  * ≤gap steps and can run for hours, so its bounds have to be walked from
  * the library's own timestamps rather than assumed (see planDeltaRanges).
  *
- * TIMESTAMPS MUST MATCH THE SCAN'S. `lib/media.ts` timestamps a photo
- * `creationTime || modificationTime || 0`, so a photo with no DATE_TAKEN
- * is NOT undated to this app — it groups by its mtime, and a WhatsApp
- * image (no EXIF) is the common case, not an edge case. Deriving ranges
- * from DATE_TAKEN alone would silently skip exactly those photos and the
- * delta would stop equalling a full pass, which is the one property the
- * design cannot lose. Only a row with neither stamp is truly unrangeable.
+ * RANGES ARE QUERIED BY DATE_TAKEN ALONE. `lib/media.ts` timestamps a
+ * photo `creationTime || modificationTime || 0` for GROUPING, but the
+ * re-page query a range is handed to filters on `DATE_TAKEN`
+ * (fetchPhotoPageDesc) — so a changed photo with no DATE_TAKEN (a
+ * WhatsApp image is the common case, not an edge case) can never be
+ * returned by any range, wherever its mtime would place it. Deriving a
+ * range from the mtime fallback claims coverage the query cannot
+ * deliver: the modification is never re-ingested, the generation
+ * advances past it, and the delta silently stops equalling a full pass —
+ * which is the one property the design cannot lose. Every changed row
+ * without a DATE_TAKEN therefore counts as `undated` and forces the
+ * full-pass fallback (a full pass's unbounded query does return those
+ * rows, batched by effective time).
  *
  * Everything here was measured on real devices before anything routed
  * through it — the trash finding, the mtime fallback and the window-walk
@@ -42,8 +48,10 @@ export interface DeltaRange {
 export interface DeltaPlan {
   /** Ranges to re-page, ascending, non-overlapping. */
   ranges: DeltaRange[];
-  /** Changed rows with NEITHER a capture nor a modification time — the
-   * only rows no range can cover (the scan cannot place them either). */
+  /** Changed rows with no DATE_TAKEN — no range can cover them, because
+   * the re-page query filters on DATE_TAKEN alone (an mtime-only row is
+   * placeable in the timeline but not fetchable by range). Any of these
+   * forces the full-pass fallback. */
   undated: number;
   /** Changed rows carrying IS_TRASHED — a deletion made VISIBLE. */
   trashed: number;
@@ -147,12 +155,11 @@ export function planDeltaRanges(
   let trashed = 0;
   for (const row of changed) {
     if (row.isTrashed) trashed += 1;
-    // The scan's own fallback, unit-corrected: DATE_TAKEN is ms,
-    // DATE_MODIFIED is SECONDS.
-    const takenAt =
-      row.dateTakenMs ?? (row.dateModifiedSec === null ? null : row.dateModifiedSec * 1000);
-    if (takenAt === null) undated += 1;
-    else changedAts.push(takenAt);
+    // DATE_TAKEN only — the range query cannot fetch anything else (see
+    // header). This includes trashed rows: their surviving neighbours
+    // need rewindowing, which is range work too.
+    if (row.dateTakenMs === null) undated += 1;
+    else changedAts.push(row.dateTakenMs);
   }
   changedAts.sort((a, b) => a - b);
   const ranges: DeltaRange[] = [];

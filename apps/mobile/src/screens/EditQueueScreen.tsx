@@ -13,7 +13,7 @@ import { launchEditor, launchViewer } from '../lib/edit';
 import { NO_EDITOR_MESSAGE, NO_EDITOR_TITLE } from '../lib/editActions';
 import { EditDiagnosticsSheet } from '../components/EditDiagnosticsSheet';
 import { QueueViewer } from '../components/QueueViewer';
-import { useQueueRows } from '../components/useQueueRows';
+import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
 import { showToast } from '../lib/toast';
 import { labelForDayKey } from '../lib/dates';
 import { formatClock } from '../lib/format';
@@ -35,7 +35,7 @@ export function EditQueueScreen(_props: Props) {
   const theme = useTheme();
   const db = useSQLiteContext();
   const { refresh } = useReview();
-  const { rows, reload } = useQueueRows(useCallback(() => getToEditPhotos(db), [db]));
+  const { rows, failed, reload } = useQueueRows(useCallback(() => getToEditPhotos(db), [db]));
   const [busyId, setBusyId] = useState<string | null>(null);
   // Gate-0 (m0.7 item A): the editor-launch diagnostic matrix, opened from
   // the failure alert or by long-pressing Edit (proactive/emulator path).
@@ -174,11 +174,20 @@ export function EditQueueScreen(_props: Props) {
       <Text style={styles.heading}>Edit queue</Text>
       <Text style={styles.subtitle}>
         {rows === null
-          ? 'Loading…'
+          ? // codex r9: an initial reload failure would have said
+            // "Loading…" forever — the empty-state line says what happened.
+            failed
+            ? QUEUE_REFRESH_FAILED
+            : 'Loading…'
           : rows.length === 0
             ? 'Nothing queued to edit.'
             : `${rows.length} queued · “Edit here” opens an editor that can save over the original; “View only” opens the photo read-only (use its own edit button to pick an editor)`}
       </Text>
+      {failed && rows !== null ? (
+        // codex r9: the reload kept the last rows on a failed read — the
+        // list may be stale, and it has to say so.
+        <Text style={styles.refreshFailed}>{QUEUE_REFRESH_FAILED}</Text>
+      ) : null}
       <FlatList
         data={rows ?? []}
         keyExtractor={(r) => r.asset_id}
@@ -254,4 +263,6 @@ const styles = StyleSheet.create({
   doneButton: { backgroundColor: colors.surfaceRaised, borderWidth: 1 },
   rowButtonText: { color: colors.text, fontSize: 14, fontWeight: '700' },
   emptyText: { color: colors.textDim, fontSize: 15, textAlign: 'center', marginTop: 40 },
+  // codex r9: quiet stale-rows notice — dim like every read-failure line.
+  refreshFailed: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginBottom: 8 },
 });

@@ -227,7 +227,12 @@ export async function applyReviewDecisions(
   changes: readonly [assetId: string, verdict: ReviewVerdict][],
   at: number,
   extras: PersistDecisionExtras = {},
-): Promise<void> {
+): Promise<string[]> {
+  // The ids whose verdict UPDATE actually landed (codex r9): a batch
+  // deliberately skips externally-reconciled rows without throwing, so
+  // callers crediting counts (goal notes, optimistic patches) must be
+  // told what committed, not what was requested.
+  const appliedIds: string[] = [];
   await withWriteTransaction(db, async (txn) => {
     for (const expected of extras.requireAssignment ?? []) {
       const row = await txn.getFirstAsync<{ group_id: number | null }>(
@@ -267,17 +272,39 @@ export async function applyReviewDecisions(
         `SELECT a.photo_id FROM photo_group_assignments a
          JOIN photos p ON p.asset_id = a.photo_id
          WHERE a.group_id = ? AND a.photo_id IN (?, ?)
-           -- Both endpoints must still be REVIEWABLE: an externally
-           -- removed (or already-decided) endpoint would record a duel
-           -- and could star an unavailable photo, metadata-freezing the
-           -- group around it.
-           AND p.is_present = 1 AND p.state = 'unreviewed'`,
+           -- Both endpoints must still be DUELABLE — undecided or kept
+           -- (F11 lets kept members rejoin a duel; staged culls stay
+           -- out on both endpoints): an externally removed, trashed or
+           -- staged endpoint would record a duel and could star an
+           -- unavailable photo, metadata-freezing the group around it.
+           AND p.is_present = 1 AND p.state IN ('unreviewed', 'kept')`,
         extras.setBest.groupId,
         extras.duel.winnerId,
         extras.duel.loserId,
       );
       if (members.length !== 2) {
         throw new Error('This group changed while comparing — reopen it and try again.');
+      }
+      // A duel that WRITES verdicts claims to be the whole table (F15):
+      // every alive member must be one of the two endpoints. Compare
+      // checks this before offering the dialog, but a warm scan can add
+      // an undecided member between its load and this write — a verdict
+      // would then close a question the duel never asked. Triage duels
+      // (no verdicts) skip this: they make no whole-table claim.
+      if (changes.length > 0) {
+        const outsider = await txn.getFirstAsync<{ photo_id: string }>(
+          `SELECT a.photo_id FROM photo_group_assignments a
+           JOIN photos p ON p.asset_id = a.photo_id
+           WHERE a.group_id = ? AND a.photo_id NOT IN (?, ?)
+             AND p.is_present = 1 AND p.state = 'unreviewed'
+           LIMIT 1`,
+          extras.setBest.groupId,
+          extras.duel.winnerId,
+          extras.duel.loserId,
+        );
+        if (outsider) {
+          throw new Error('This group changed while comparing — reopen it and try again.');
+        }
       }
     }
     for (const change of extras.needsEditChanges ?? []) {
@@ -364,6 +391,7 @@ export async function applyReviewDecisions(
         staleChanges += 1;
         continue;
       }
+      appliedIds.push(assetId);
       if (verdict === 'culled') {
         // A staged cull is not ALIVE — a star pointing at it would show a
         // cull as best and freeze the group via the metadata boundary.
@@ -400,7 +428,8 @@ export async function applyReviewDecisions(
         extras.duel.groupId,
         extras.duel.winnerId,
         extras.duel.loserId,
-        extras.duel.keptBoth ? 1 : 0,
+        // null = verdict-free triage — excluded from the kept-both stat.
+        extras.duel.keptBoth === null ? null : extras.duel.keptBoth ? 1 : 0,
         extras.duel.at,
       );
     }
@@ -453,6 +482,7 @@ export async function applyReviewDecisions(
       );
     }
   });
+  return appliedIds;
 }
 
 /**
@@ -621,6 +651,12 @@ export interface ReviewMemberRow {
   state: PhotoState;
   needs_edit: number;
   time_attached: number;
+  /** 1 = the member itself matches the active source filter (always 1
+   * when unfiltered). Projected ONLY by listGroupsForDay, for the
+   * DayProgress CTA's eligibility check: a group queues whole via any
+   * in-source member, so out-of-source members must not qualify it
+   * (codex r7). */
+  in_source?: number;
 }
 
 /** One reviewable cull group from the continuous grouping run. */
@@ -763,7 +799,7 @@ async function listSinglesFeedIn(
   roots: readonly string[] | null,
 ): Promise<ReviewMemberRow[]> {
   const src = sourceClause(roots, 'p.uri');
-  return txn.getAllAsync<ReviewMemberRow>(
+  const page = await txn.getAllAsync<ReviewMemberRow>(
     `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
@@ -773,6 +809,33 @@ async function listSinglesFeedIn(
     ...src.params,
     limit,
   );
+  // A WALL of staged culls must not hide older pending work (codex r9):
+  // the feed keeps decided singles in place, so a full page can be all
+  // staged culls — the timeline then holds no pending unit while the
+  // queue counts say otherwise, and every "continue" door dead-ends on
+  // the overview. When a FULL page carries no unreviewed row, append a
+  // bounded unreviewed-only continuation from past the tail; every
+  // appended row is older than the whole page, so the newest-first
+  // ordering (and the timeline's read-time tail) stays truthful.
+  if (page.length >= limit && !page.some((row) => row.state === 'unreviewed')) {
+    const tail = page[page.length - 1];
+    const pending = await txn.getAllAsync<ReviewMemberRow>(
+      `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+       FROM photo_group_assignments a
+       JOIN photos p ON p.asset_id = a.photo_id
+       WHERE a.group_id IS NULL AND p.state = 'unreviewed' AND p.is_present = 1${src.sql}
+         AND (p.taken_at < ? OR (p.taken_at = ? AND p.asset_id < ?))
+       ORDER BY p.taken_at DESC, p.asset_id DESC
+       LIMIT ?`,
+      ...src.params,
+      tail.taken_at,
+      tail.taken_at,
+      tail.asset_id,
+      limit,
+    );
+    return [...page, ...pending];
+  }
+  return page;
 }
 
 /** Public wrapper (tests, ad-hoc reads); ReviewContext uses
@@ -797,28 +860,38 @@ export async function listSinglesFeed(
  * global feed is a bounded newest-first page — an older day's singles
  * are simply not in it (m0.8.2 day decks), and a run is one day's
  * slice by construction.
+ *
+ * A WHOLE-DAY read (no range) is UNCAPPED: the day itself bounds it, and
+ * the routes that take it — DayProgress "Review this day", the day deck,
+ * keepAllSingles — promise the entire day, so a hidden page cap would
+ * silently truncate a >cap-photo day while the header claims
+ * completeness. A RUN read keeps the cap as insurance only: runs are cut
+ * from the bounded pending feed, so a legitimate run can never reach it.
  */
 export async function listSinglesForDeck(
   db: SQLiteDatabase,
   day: string,
   roots: readonly string[] | null = null,
   range: { from: number; to: number } | null = null,
-  limit = 500,
 ): Promise<ReviewMemberRow[]> {
   const src = sourceClause(roots, 'p.uri');
   const dayPredicate = day === UNDATED_DAY_KEY ? ' AND p.day IS NULL' : ' AND p.day = ?';
+  // UNCAPPED for range reads too (codex r10): the cull-wall continuation
+  // means a legitimate run CAN exceed the old 500-row insurance cap —
+  // its range then spans a wall of staged culls plus the pending photos
+  // past it, and a capped read would cut exactly the pending tail the
+  // run exists to reach. Both scopes are naturally bounded (a day, a
+  // run's inclusive range).
   const rangePredicate = range ? ' AND p.taken_at BETWEEN ? AND ?' : '';
   return db.getAllAsync<ReviewMemberRow>(
     `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
      WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled', 'kept') AND p.is_present = 1${src.sql}${dayPredicate}${rangePredicate}
-     ORDER BY p.taken_at DESC, p.asset_id DESC
-     LIMIT ?`,
+     ORDER BY p.taken_at DESC, p.asset_id DESC`,
     ...src.params,
     ...(day === UNDATED_DAY_KEY ? [] : [day]),
     ...(range ? [range.from, range.to] : []),
-    limit,
   );
 }
 
@@ -835,6 +908,17 @@ export async function listGroupsForDay(
 ): Promise<ReviewGroupRow[]> {
   const src = sourceClause(roots, 'p.uri');
   const dayPredicate = day === UNDATED_DAY_KEY ? 'p.day IS NULL' : 'p.day = ?';
+  // Per-member in_source projection (codex r7): the SAME containment
+  // match the group-selection filter above uses, applied to each member
+  // — a group queues whole via any in-source member, and the DayProgress
+  // CTA must not count the out-of-source ones as eligible work.
+  const memberInSource =
+    !roots || roots.length === 0
+      ? { sql: '1', params: [] as string[] }
+      : {
+          sql: `(CASE WHEN ${roots.map(() => "p.uri LIKE ? ESCAPE '\\'").join(' OR ')} THEN 1 ELSE 0 END)`,
+          params: roots.map(sourceLikePattern),
+        };
   // ONE snapshot for ids + headers + members (m0.8.1 — the previous
   // one-transaction-per-group shape opened a fresh SQLite connection per
   // group, a visible per-day cost on older devices).
@@ -858,11 +942,12 @@ export async function listGroupsForDay(
         ...batch,
       );
       const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
-        `SELECT a.group_id, p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+        `SELECT a.group_id, p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, ${memberInSource.sql} AS in_source
          FROM photo_group_assignments a
          JOIN photos p ON p.asset_id = a.photo_id
          WHERE a.group_id IN (${placeholders}) AND p.is_present = 1
          ORDER BY p.taken_at DESC, p.asset_id DESC`,
+        ...memberInSource.params,
         ...batch,
       );
       const byGroup = new Map<number, ReviewMemberRow[]>();
@@ -875,6 +960,7 @@ export async function listGroupsForDay(
           state: m.state,
           needs_edit: m.needs_edit,
           time_attached: m.time_attached,
+          in_source: m.in_source,
         };
         const bucket = byGroup.get(Number(m.group_id));
         if (bucket) bucket.push(row);
@@ -906,10 +992,29 @@ export interface PhotoFacts {
   needs_edit: number;
   /** Favourite direction currently queued: 1 apply, 0 remove, null none. */
   favourite_queued: number | null;
+  /** Carried favourite: a RESOLVED apply whose direction still points at
+   * favourited — the resolved half of FAVOURITE_HELD (directional; a
+   * verified removal is not a favourite). Without it the panel would go
+   * blank the moment a queued favourite applies, while the photo's badge
+   * and History keep showing the carried heart. */
+  favourite_applied: number;
   /** An organize move is waiting. */
   organize_queued: number;
   /** When the last organize move actually landed. */
   organize_applied_at: number | null;
+  /** The organize row's RAW encoded target (volume + newline + path;
+   * decodeOrganizeTarget in db/actions.ts). Null = no row, or a
+   * target-less queue row (m0.8.2 F6). The panel shows the full album
+   * path — the one place it lives one long-press away (codex r7). */
+  organize_target: string | null;
+  /** The last APPLIED move's raw encoded target (null before any
+   * apply) — survives re-queues, so the superseded line can name the
+   * album the photo actually sits in (codex r7). */
+  organize_applied_target: string | null;
+  /** A share pass resolved this photo at least once (resolved_at set) —
+   * the carried half of the share pair, mirroring edit_completed_at
+   * (codex r7). */
+  share_carried: number;
   reviewed_at: number | null;
   /** Last completed edit cycle (the edit action's resolved_at). */
   edit_completed_at: number | null;
@@ -934,11 +1039,21 @@ export async function getPhotoFacts(
             (SELECT CAST(f.target AS INTEGER) FROM photo_actions f
               WHERE f.photo_id = p.asset_id AND f.kind = 'favourite'
                 AND f.state IN ('queued', 'error')) AS favourite_queued,
+            (EXISTS (SELECT 1 FROM photo_actions fv WHERE fv.photo_id = p.asset_id
+                      AND fv.kind = 'favourite' AND fv.resolved_at IS NOT NULL
+                      AND COALESCE(fv.target, fv.applied_target) = '1'))
+              AS favourite_applied,
             (EXISTS (SELECT 1 FROM photo_actions o WHERE o.photo_id = p.asset_id
                       AND o.kind = 'organize' AND o.state IN ('queued', 'error')))
               AS organize_queued,
             (SELECT o2.resolved_at FROM photo_actions o2 WHERE o2.photo_id = p.asset_id
               AND o2.kind = 'organize') AS organize_applied_at,
+            (SELECT o3.target FROM photo_actions o3 WHERE o3.photo_id = p.asset_id
+              AND o3.kind = 'organize') AS organize_target,
+            (SELECT o4.applied_target FROM photo_actions o4 WHERE o4.photo_id = p.asset_id
+              AND o4.kind = 'organize') AS organize_applied_target,
+            (EXISTS (SELECT 1 FROM photo_actions s WHERE s.photo_id = p.asset_id
+                      AND s.kind = 'share' AND s.resolved_at IS NOT NULL)) AS share_carried,
             (SELECT e2.resolved_at FROM photo_actions e2 WHERE e2.photo_id = p.asset_id
               AND e2.kind = 'edit') AS edit_completed_at,
             a.group_id, COALESCE(a.time_attached, 0) AS time_attached,
@@ -981,9 +1096,14 @@ export async function applyRedecision(
 ): Promise<void> {
   await withWriteTransaction(db, async (txn) => {
     if (target === 'keep') {
+      // The detection baseline (mod_time/content_hash) is NOT touched:
+      // keep carries a queued edit across (header above), and the
+      // baseline is that edit cycle's evidence — wiping it would
+      // re-baseline against the already-edited file and silently lose
+      // the detection the user is waiting on (the same guard
+      // applyReviewDecisions carries on its 'unreviewed' reset).
       const moved = await txn.runAsync(
         `UPDATE photos SET state = 'kept',
-           mod_time = NULL, content_hash = NULL,
            reviewed_at = COALESCE(reviewed_at, ?), decided_at = ?, activity_at = ?
          WHERE asset_id = ? AND state IN ('culled', 'kept')`,
         at,
@@ -1796,7 +1916,12 @@ export async function getStatesForAssets(
   return states;
 }
 
-/** Which of the given assets currently carry the needs-edit flag. */
+/** Which of the given assets carry the needs-edit flag. STATE-BLIND on
+ * purpose: this set is the optimistic patch model's flag truth (the
+ * patch carries a flag across cull/restore, and a live-only read would
+ * disagree with it after every refresh — reviewPatch parity pins this).
+ * The DECK disables the chip itself for a staged cull; the queues and
+ * badges apply their own liveness where their question demands it. */
 export async function getNeedsEditAssets(
   db: SQLiteDatabase,
   assetIds: readonly string[],
@@ -2046,10 +2171,26 @@ export interface HistoryPhotoRow {
   uri: string;
   taken_at: number;
   state: PhotoState;
+  /** Per-kind LIVE (`state IN ('queued','error')`; favourite additionally
+   * directional, target = '1') and CARRIED (`resolved_at IS NOT NULL`;
+   * favourite: COALESCE(target, applied_target) = '1') facts — the two
+   * halves every badge weight is built from (docs/STATE_MODEL.md, layer
+   * 2), so History rows render the same weighted vocabulary as the
+   * grid/deck. Live and carried stay separate columns because a
+   * superseding queued action must render loud over its earlier applied
+   * one. */
   needs_edit: number;
-  favourited: number;
-  organized: number;
+  edit_applied: number;
+  favourite_live: number;
+  /** A queued REMOVAL (target '0') — renders the heart-off badge at the
+   * live weight (grilling Q5): waiting work, read apart from apply. */
+  favourite_removing: number;
+  favourite_carried: number;
+  organize_pending: number;
+  /** Latest applied move (MAX resolved_at), null when none ever applied. */
   organize_applied_at: number | null;
+  share_live: number;
+  share_applied: number;
   day: string | null;
   activity_at: number;
 }
@@ -2103,13 +2244,18 @@ const EDIT_QUEUED = `EXISTS (SELECT 1 FROM photo_actions pa_edit
   WHERE pa_edit.photo_id = photos.asset_id AND pa_edit.kind = 'edit'
     AND pa_edit.state IN ('queued', 'error'))`;
 
-/** "A favourite was ever queued or ever applied" — the pinned formula. */
-const FAVOURITE_TOUCHED = `(EXISTS (SELECT 1 FROM photo_actions pa_favourite
+/** "This photo holds (or is gaining) a favourite" — DIRECTIONAL, the SQL
+ * mirror of `favouriteBadgeWeight` (lib/favouriteState.ts): favourite is
+ * the only action that can point backwards, so a queued or verified
+ * REMOVAL must not read as a favourite (STATE_MODEL.md). Same predicate
+ * family as getForecastBaseRates. */
+const FAVOURITE_HELD = `(EXISTS (SELECT 1 FROM photo_actions pa_favourite
   WHERE pa_favourite.photo_id = photos.asset_id AND pa_favourite.kind = 'favourite'
-    AND pa_favourite.state IN ('queued', 'error'))
+    AND pa_favourite.state IN ('queued', 'error') AND pa_favourite.target = '1')
   OR EXISTS (SELECT 1 FROM photo_actions pv_favourite
   WHERE pv_favourite.photo_id = photos.asset_id AND pv_favourite.kind = 'favourite'
-    AND pv_favourite.resolved_at IS NOT NULL))`;
+    AND pv_favourite.resolved_at IS NOT NULL
+    AND COALESCE(pv_favourite.target, pv_favourite.applied_target) = '1'))`;
 
 /**
  * One keyset page of the History feed. Photo rows require presence
@@ -2137,7 +2283,7 @@ export async function getHistoryPage(
         : filter === 'to_edit'
           ? `AND ${EDIT_QUEUED}`
           : filter === 'favourite'
-            ? `AND ${FAVOURITE_TOUCHED}`
+            ? `AND ${FAVOURITE_HELD}`
             : filter === 'organized'
               ? // The retained applied marker, NOT the live queue state:
                 // re-queueing another move must not erase the photo's
@@ -2152,7 +2298,7 @@ export async function getHistoryPage(
                 `AND (state <> 'unreviewed'
                    OR ${ORGANIZE_APPLIED}
                    OR ${EDIT_QUEUED}
-                   OR ${FAVOURITE_TOUCHED})`;
+                   OR ${FAVOURITE_HELD})`;
   const photoPos: HistoryCursor['photo'] = filter === 'shared' ? 'end' : (after?.photo ?? 'top');
   const sharePos: HistoryCursor['share'] =
     filter === 'all' || filter === 'shared' ? (after?.share ?? 'top') : 'end';
@@ -2171,10 +2317,15 @@ export async function getHistoryPage(
       : await db.getAllAsync<Omit<HistoryPhotoRow, 'kind'>>(
           `SELECT asset_id, uri, taken_at, state, day, activity_at,
                   EXISTS (SELECT 1 FROM photo_actions pa_edit WHERE pa_edit.photo_id = photos.asset_id AND pa_edit.kind = 'edit' AND pa_edit.state IN ('queued', 'error')) AS needs_edit,
-                  (EXISTS (SELECT 1 FROM photo_actions pa_favourite WHERE pa_favourite.photo_id = photos.asset_id AND pa_favourite.kind = 'favourite' AND pa_favourite.state IN ('queued', 'error')) OR EXISTS (SELECT 1 FROM photo_actions pv_favourite WHERE pv_favourite.photo_id = photos.asset_id AND pv_favourite.kind = 'favourite' AND pv_favourite.resolved_at IS NOT NULL)) AS favourited,
-                  (EXISTS (SELECT 1 FROM photo_actions pa_organize WHERE pa_organize.photo_id = photos.asset_id AND pa_organize.kind = 'organize' AND pa_organize.state IN ('queued', 'error')) OR EXISTS (SELECT 1 FROM photo_actions pv_organize WHERE pv_organize.photo_id = photos.asset_id AND pv_organize.kind = 'organize' AND pv_organize.resolved_at IS NOT NULL)) AS organized,
-                  (SELECT o.resolved_at FROM photo_actions o WHERE o.photo_id = photos.asset_id
-                    AND o.kind = 'organize') AS organize_applied_at
+                  EXISTS (SELECT 1 FROM photo_actions pc_edit WHERE pc_edit.photo_id = photos.asset_id AND pc_edit.kind = 'edit' AND pc_edit.resolved_at IS NOT NULL) AS edit_applied,
+                  EXISTS (SELECT 1 FROM photo_actions pl_fav WHERE pl_fav.photo_id = photos.asset_id AND pl_fav.kind = 'favourite' AND pl_fav.state IN ('queued', 'error') AND pl_fav.target = '1') AS favourite_live,
+                  EXISTS (SELECT 1 FROM photo_actions pr_fav WHERE pr_fav.photo_id = photos.asset_id AND pr_fav.kind = 'favourite' AND pr_fav.state IN ('queued', 'error') AND pr_fav.target = '0') AS favourite_removing,
+                  EXISTS (SELECT 1 FROM photo_actions pc_fav WHERE pc_fav.photo_id = photos.asset_id AND pc_fav.kind = 'favourite' AND pc_fav.resolved_at IS NOT NULL AND COALESCE(pc_fav.target, pc_fav.applied_target) = '1') AS favourite_carried,
+                  EXISTS (SELECT 1 FROM photo_actions pa_organize WHERE pa_organize.photo_id = photos.asset_id AND pa_organize.kind = 'organize' AND pa_organize.state IN ('queued', 'error')) AS organize_pending,
+                  (SELECT MAX(o.resolved_at) FROM photo_actions o WHERE o.photo_id = photos.asset_id
+                    AND o.kind = 'organize') AS organize_applied_at,
+                  EXISTS (SELECT 1 FROM photo_actions pl_share WHERE pl_share.photo_id = photos.asset_id AND pl_share.kind = 'share' AND pl_share.state IN ('queued', 'error')) AS share_live,
+                  EXISTS (SELECT 1 FROM photo_actions pc_share WHERE pc_share.photo_id = photos.asset_id AND pc_share.kind = 'share' AND pc_share.resolved_at IS NOT NULL) AS share_applied
            FROM photos
            WHERE is_present = 1 AND activity_at IS NOT NULL ${filterSql} ${photoKeyset}
            ORDER BY activity_at DESC, asset_id DESC
@@ -2353,6 +2504,13 @@ export async function getStateRowsForAssets(
 export interface GridPhotoRow {
   /** An edit action is queued (layer 2). */
   needs_edit: number;
+  /** A favourite is waiting TOWARD TRUE (directional — a queued removal
+   * wears no heart, favouriteState.ts). */
+  fav_pending: number;
+  /** An organize action is queued. */
+  organize_pending: number;
+  /** A share action is queued. */
+  share_pending: number;
   asset_id: string;
   uri: string;
   taken_at: number;
@@ -2403,13 +2561,24 @@ export async function getGridPhotosByFilter(
 ): Promise<GridPhotoRow[]> {
   const where = scopeClause(scope);
   const src = sourceClause(roots);
+  // Explicit over implicit: an unknown key must not silently broaden to
+  // the whole library (the chip's number would still claim a filter).
+  const filterSql = GRID_FILTER_SQL[filter];
+  if (filterSql === undefined) throw new Error(`unknown grid filter: ${filter}`);
   return db.getAllAsync<GridPhotoRow>(
     `SELECT asset_id, uri, taken_at, state,
             EXISTS (SELECT 1 FROM photo_group_assignments a
                     WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped,
             EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = photos.asset_id
-                     AND pa.kind = 'edit' AND pa.state IN ('queued', 'error')) AS needs_edit
-     FROM photos WHERE ${where.sql} AND (${GRID_FILTER_SQL[filter] ?? GRID_FILTER_SQL.all})${src.sql}
+                     AND pa.kind = 'edit' AND pa.state IN ('queued', 'error')) AS needs_edit,
+            EXISTS (SELECT 1 FROM photo_actions pf WHERE pf.photo_id = photos.asset_id
+                     AND pf.kind = 'favourite' AND pf.state IN ('queued', 'error')
+                     AND pf.target = '1') AS fav_pending,
+            EXISTS (SELECT 1 FROM photo_actions po WHERE po.photo_id = photos.asset_id
+                     AND po.kind = 'organize' AND po.state IN ('queued', 'error')) AS organize_pending,
+            EXISTS (SELECT 1 FROM photo_actions ps WHERE ps.photo_id = photos.asset_id
+                     AND ps.kind = 'share' AND ps.state IN ('queued', 'error')) AS share_pending
+     FROM photos WHERE ${where.sql} AND (${filterSql})${src.sql}
      ORDER BY taken_at DESC, asset_id DESC LIMIT ? OFFSET ?`,
     ...where.params,
     ...src.params,
@@ -2470,7 +2639,7 @@ export async function restoreCarriedCull(
   resolvePendingMatches = true,
 ): Promise<void> {
   await withWriteTransaction(db, async (txn) => {
-    await txn.runAsync(
+    const moved = await txn.runAsync(
       // Same rule as the verdict path: a LIVE edit cycle keeps its
       // detection baseline, because the verdict says nothing about it.
       `UPDATE photos SET state = 'unreviewed',
@@ -2481,6 +2650,11 @@ export async function restoreCarriedCull(
       at,
       assetId,
     );
+    // A stale restore (the photo left 'culled' concurrently) is a
+    // complete no-op: resolving copy matches for a decision that did
+    // not happen would silently consume the edited-copy prompt (the
+    // same rule applyRedecision pins).
+    if (Number(moved.changes) === 0) return;
     if (resolvePendingMatches) {
       await txn.runAsync(
         "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
@@ -2509,16 +2683,25 @@ export async function unstageCullDirect(
   restoreStars: readonly { groupId: number; photoId: string }[] = [],
 ): Promise<void> {
   await withWriteTransaction(db, async (txn) => {
-    await txn.runAsync(
+    const moved = await txn.runAsync(
       `UPDATE photos
        SET state = 'kept',
+           -- reviewed_at first-stamps like every verdict write: a cull
+           -- staged from the edited-copy prompt can land on a photo that
+           -- was never reviewed, and kept is a verdict.
+           reviewed_at = COALESCE(reviewed_at, ?),
            decided_at = ?,
            activity_at = ?
        WHERE asset_id = ? AND state = 'culled'`,
       at,
       at,
+      at,
       assetId,
     );
+    // A stale un-stage is a complete no-op across every layer — a
+    // resolved copy match or a restored star for a transition that did
+    // not happen is the same bug applyRedecision's guard prevents.
+    if (Number(moved.changes) === 0) return;
     if (resolveCopyMatches) {
       await txn.runAsync(
         "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
@@ -2712,6 +2895,45 @@ export async function getUnreviewedDayRows(
  * sorts via a temp B-tree. Paid once per delta decision, against a pass
  * it may save entirely.
  */
+/** Stored effective timestamps for these ids (absent ids omitted) — the
+ * delta planner compares them against each changed row's current
+ * DATE_TAKEN: a moved timestamp means the OLD window's survivors need
+ * rewindowing too, which only a full pass can deliver. */
+export async function getTakenAtForAssets(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  for (const batch of chunk(assetIds, IN_CHUNK)) {
+    const rows = await db.getAllAsync<{ asset_id: string; taken_at: number }>(
+      `SELECT asset_id, taken_at FROM photos
+        WHERE is_present = 1 AND asset_id IN (${batch.map(() => '?').join(',')})`,
+      ...batch,
+    );
+    for (const row of rows) result.set(row.asset_id, Number(row.taken_at));
+  }
+  return result;
+}
+
+/** How many of these ids are still tracked as present — the delta
+ * tripwire's correction term for gallery-trashed rows that MediaStore
+ * already hides but the DB still holds (scanRunner.planPass). */
+export async function countPresentPhotos(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+): Promise<number> {
+  let present = 0;
+  for (const batch of chunk(assetIds, IN_CHUNK)) {
+    const row = await db.getFirstAsync<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM photos
+        WHERE is_present = 1 AND asset_id IN (${batch.map(() => '?').join(',')})`,
+      ...batch,
+    );
+    present += Number(row?.n ?? 0);
+  }
+  return present;
+}
+
 export async function getPhotoTimestamps(
   db: SQLiteDatabase,
   roots: readonly string[] | null = null,
@@ -3027,15 +3249,26 @@ export async function getQueueTurnaround(db: SQLiteDatabase): Promise<QueueTurna
 
 /** Compare-screen history: how often a duel ended in keeping both. */
 export interface DuelSummary {
+  /** Every duel, triage included — the "N head-to-head compares" count. */
   duels: number;
+  /** Duels that carried a DIALOG outcome (kept_both non-null, v19) — the
+   * kept-both percentage's denominator. Triage writes no verdict and
+   * counting it as a keep-both decision inflated the figure. */
+  verdictDuels: number;
   keptBoth: number;
 }
 
 export async function getDuelSummary(db: SQLiteDatabase): Promise<DuelSummary> {
-  const row = await db.getFirstAsync<{ duels: number; keptBoth: number }>(
-    `SELECT COUNT(*) AS duels, SUM(kept_both) AS keptBoth FROM duels`,
+  const row = await db.getFirstAsync<{ duels: number; verdictDuels: number; keptBoth: number }>(
+    `SELECT COUNT(*) AS duels, COUNT(kept_both) AS verdictDuels,
+            SUM(kept_both) AS keptBoth
+       FROM duels`,
   );
-  return { duels: Number(row?.duels ?? 0), keptBoth: Number(row?.keptBoth ?? 0) };
+  return {
+    duels: Number(row?.duels ?? 0),
+    verdictDuels: Number(row?.verdictDuels ?? 0),
+    keptBoth: Number(row?.keptBoth ?? 0),
+  };
 }
 
 /** Decisions and culls since a timestamp — the decisiveness trend's
@@ -3260,7 +3493,14 @@ export async function getLifetimeStats(db: SQLiteDatabase): Promise<LifetimeStat
        (SELECT COUNT(*) FROM photo_actions
          WHERE kind = 'edit' AND resolved_at IS NOT NULL) AS editsCompleted,
        (SELECT COUNT(*) FROM photo_actions
-         WHERE kind = 'favourite' AND resolved_at IS NOT NULL) AS favouritesApplied
+         -- Directional AND verified (STATE_MODEL.md): a verified
+         -- un-favourite resolves too, but it is not a favourite. The
+         -- VERIFIED direction (applied_target) outranks the current
+         -- intent (target) here, unlike the heart/forecast predicates:
+         -- "applied" is a statement about what the gallery holds, and a
+         -- merely QUEUED reversal has not changed that yet (codex r4).
+         WHERE kind = 'favourite' AND resolved_at IS NOT NULL
+           AND COALESCE(applied_target, target) = '1') AS favouritesApplied
      FROM photos`,
   );
   return {

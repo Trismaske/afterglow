@@ -40,7 +40,10 @@ export interface PhotoBadgeInput {
   state: PhotoState;
   /** Per-action weight, or null when the photo carries no such action. */
   edit: BadgeWeight | null;
-  favourite: BadgeWeight | null;
+  /** Favourite adds a third state (grilling Q5): 'removing' renders the
+   * heart-off glyph at the live weight — a queued switch-off is waiting
+   * work, and it must read apart from queued-apply and applied. */
+  favourite: BadgeWeight | 'removing' | null;
   organize: BadgeWeight | null;
   share: BadgeWeight | null;
   /** Best-of-group star (group surfaces only). */
@@ -55,7 +58,8 @@ export function photoBadges(input: PhotoBadgeInput): PhotoBadge[] {
   else if (input.state === 'kept') badges.push({ kind: 'keep', weight: 'live' });
   if (input.best) badges.push({ kind: 'best', weight: 'live' });
   if (input.edit) badges.push({ kind: 'edit', weight: input.edit });
-  if (input.favourite) badges.push({ kind: 'fav', weight: input.favourite });
+  if (input.favourite === 'removing') badges.push({ kind: 'fav_off', weight: 'live' });
+  else if (input.favourite) badges.push({ kind: 'fav', weight: input.favourite });
   if (input.organize) badges.push({ kind: 'organize', weight: input.organize });
   if (input.share) badges.push({ kind: 'share', weight: input.share });
   return badges;

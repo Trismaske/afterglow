@@ -159,9 +159,14 @@ export async function requestMediaWriteAccess(
 }
 
 /** The volume-aware album catalog (C#2). Empty on non-Android. */
-/** Per-volume MediaStore generations (API 30+; {} = unavailable). An
- * unchanged generation is an OS guarantee the volume's library did not
- * change — the continuous scan's skip evidence.
+/** Per-volume MediaStore generations (API 30+; {} = unavailable),
+ * keyed "<volume>|<MediaStore version>". An unchanged generation is an
+ * OS guarantee the volume's library did not change — the continuous
+ * scan's skip evidence — but ONLY within one MediaStore version:
+ * generations reset when the provider database is rebuilt, so the
+ * version rides in the key and a rebuild mismatches every stored key
+ * (no version-aware logic needed downstream; split on the first '|'
+ * for the raw volume name).
  *
  * ALL VOLUMES OR NONE (m0.8.2): the native side THROWS if any enumerated
  * volume is unreadable, because a partial map is indistinguishable from

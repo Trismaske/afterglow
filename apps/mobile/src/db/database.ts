@@ -30,7 +30,7 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 export const DATABASE_NAME = 'afterglow.db';
 
 /** Bump on ANY schema change before v1 — the open path resets mismatches. */
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 export const BASELINE_DDL = `
   CREATE TABLE photos (
@@ -118,7 +118,9 @@ export const BASELINE_DDL = `
     group_id   TEXT NOT NULL,
     winner_id  TEXT NOT NULL,
     loser_id   TEXT NOT NULL,
-    kept_both  INTEGER NOT NULL,
+    -- NULL = a verdict-free TRIAGE duel (3+ alive): star + history
+    -- only, excluded from the kept-both statistic (v19).
+    kept_both  INTEGER,
     at         INTEGER NOT NULL
   );
 

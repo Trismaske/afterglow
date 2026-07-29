@@ -48,10 +48,29 @@ function MainTabs() {
   const [badges, setBadges] = React.useState<Partial<Record<keyof MainTabParamList, number>>>({});
   useEffect(() => {
     let cancelled = false;
+    // ONE retry per trigger (codex r8): a retry whose own failure
+    // rescheduled again was an unbounded 4 s polling loop against a
+    // persistently failing database.
+    let retried = false;
     const load = async () => {
       // v18: one grouped query for all four badges, where there used to
       // be four separate count functions over four different shapes.
-      const queues = await countQueues(db);
+      // FAIL CLOSED (codex r5): a rejected count keeps the last rendered
+      // badges (absent renders as zero, and four synthetic zeroes would
+      // hide real waiting work) and retries once shortly — beyond that,
+      // the next review mutation or foreground return retries anyway.
+      let queues: Awaited<ReturnType<typeof countQueues>>;
+      try {
+        queues = await countQueues(db);
+      } catch (error) {
+        console.warn('[tabs] queue badge count failed — badges kept:', String(error));
+        if (!cancelled && !retried) {
+          retried = true;
+          setTimeout(() => void load(), 4000);
+        }
+        return;
+      }
+      retried = false;
       if (cancelled) return;
       setBadges({
         EditQueue: queues.edit,

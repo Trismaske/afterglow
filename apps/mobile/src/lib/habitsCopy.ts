@@ -44,11 +44,13 @@ export function rhythmLine(grid: RhythmGrid): string | null {
 /** "12 sittings · typically 34 photos over 4 min", or null when empty. */
 export function sittingLine(summary: SittingSummary): string | null {
   if (summary.count === 0) return null;
-  return (
-    `${summary.count} sitting${summary.count === 1 ? '' : 's'} in your recent history · ` +
-    `typically ${summary.medianPhotos} photo${summary.medianPhotos === 1 ? '' : 's'} ` +
-    `over ${durationLabel(summary.medianDurationMs)}`
-  );
+  const head = `${summary.count} sitting${summary.count === 1 ? '' : 's'} in your recent history · `;
+  // A one-photo median means most sittings are a single isolated decision
+  // (splitSittings keeps them since the singleton fix). Their span is
+  // 0 ms, so appending a duration would print "over under a minute" —
+  // a figure dressed around nothing.
+  if (summary.medianPhotos <= 1) return `${head}typically a single photo at a time`;
+  return `${head}typically ${summary.medianPhotos} photos over ${durationLabel(summary.medianDurationMs)}`;
 }
 
 /** The turnaround half of a queue row: what happens to work you queue. */

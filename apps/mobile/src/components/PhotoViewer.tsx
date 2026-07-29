@@ -4,8 +4,9 @@
  * Horizontal paging over the host's loaded items, pinch-zoom with
  * one-finger pan + double-tap reset (the deck's gesture language), and a
  * per-photo decision-detail panel — the home for facts the small badges
- * only hint at (state + hint, time-attached grouping, superseded
- * organize intents, share/favourite queue membership). "Change decision"
+ * only hint at (state + hint, time-attached grouping, organize intents
+ * with their full album paths, queued and carried share/favourite
+ * facts). "Change decision"
  * opens the standard StateEditorSheet; its writes bubble up through
  * `onChanged` so hosts reload.
  */
@@ -34,6 +35,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useReview } from '../review/ReviewContext';
 import { getPhotoFacts, type PhotoFacts } from '../db/store';
+import { decodeOrganizeTarget } from '../db/actions';
 import { isInShareQueue } from '../db/shareStore';
 import { classifyPhotoState } from '../lib/progress';
 import { dayKey, labelForDayKey } from '../lib/dates';
@@ -81,6 +83,7 @@ export function PhotoViewer({
   const [cursor, setCursor] = useState(Math.min(initialIndex, Math.max(0, items.length - 1)));
   // undefined = loading, null = never tracked.
   const [facts, setFacts] = useState<PhotoFacts | null | undefined>(undefined);
+  const [factsFailed, setFactsFailed] = useState(false);
   const [shareQueued, setShareQueued] = useState(false);
   const [editing, setEditing] = useState<GridPhoto | null>(null);
   const [factsTick, setFactsTick] = useState(0);
@@ -139,6 +142,11 @@ export function PhotoViewer({
     ty.value = 0;
     savedTx.value = 0;
     savedTy.value = 0;
+    // The aspect belongs to the CURRENT photo: left stale across a photo
+    // change, a double tap before the new onLoad clamps pan bounds
+    // against the PREVIOUS photo's edges. 0 = not loaded, where
+    // panBounds falls back to stage-rect bounds (zoomTarget.ts).
+    imageAspect.value = 0;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -165,6 +173,11 @@ export function PhotoViewer({
         // never strand the overlay barely above scale 1, covering the
         // pager.
         .onFinalize(() => {
+          // Follows onBegin, so it fires for plain taps too — do nothing
+          // when there was never a zoom to unwind (DeckScreen's guard):
+          // a tap's finalize otherwise races the JS double-tap zoom
+          // (useDoubleTapZoom's withTiming from ~1) and snaps it back.
+          if (scale.value === 1 && savedScale.value === 1) return;
           if (scale.value <= 1.02) {
             scale.value = withTiming(1);
             savedScale.value = 1;
@@ -225,8 +238,13 @@ export function PhotoViewer({
   const zoomOverlayStyle = useAnimatedStyle(() => ({
     opacity: scale.value > 1 ? 1 : 0,
   }));
+  // importantForAccessibility mirrors the facts panel below (codex r50):
+  // the always-mounted overlay is hidden by opacity + pointerEvents while
+  // unzoomed, but would otherwise stay in the accessibility tree.
   const zoomOverlayProps = useAnimatedProps(() => ({
     pointerEvents: (scale.value > 1 ? 'auto' : 'none') as 'auto' | 'none',
+    importantForAccessibility: (scale.value > 1 ? 'auto' : 'no-hide-descendants') as
+      'auto' | 'no-hide-descendants',
   }));
   const panelStyle = useAnimatedStyle(() => ({
     opacity: scale.value > 1 ? 0 : 1,
@@ -249,6 +267,7 @@ export function PhotoViewer({
   useEffect(() => {
     let cancelled = false;
     setFacts(undefined);
+    setFactsFailed(false);
     setShareQueued(false);
     if (currentId) {
       void Promise.all([getPhotoFacts(db, currentId), isInShareQueue(db, currentId)]).then(
@@ -256,6 +275,13 @@ export function PhotoViewer({
           if (cancelled) return;
           setFacts(f);
           setShareQueued(queued);
+        },
+        (error: unknown) => {
+          // FAIL CLOSED with a retry (codex r10): an unhandled rejection
+          // left the panel on "Loading…" forever with "Change decision"
+          // unreachable. Tapping the failure line retries via factsTick.
+          console.warn('[viewer] facts read failed:', String(error));
+          if (!cancelled) setFactsFailed(true);
         },
       );
     }
@@ -279,18 +305,13 @@ export function PhotoViewer({
 
   // Double-tap zooms to the tapped point — a Pressable press on the JS
   // thread, exactly like the deck's (the bridge comment above); there is
-  // no single-tap action here.
-  const onPagePress = useDoubleTapZoom({
-    scale,
-    savedScale,
-    tx,
-    ty,
-    savedTx,
-    savedTy,
-    stageW,
-    stageH,
-    imageAspect,
-  });
+  // no single-tap action here. currentId scopes the tap window to one
+  // photo (the hook serves every pager page).
+  const onPagePress = useDoubleTapZoom(
+    { scale, savedScale, tx, ty, savedTx, savedTy, stageW, stageH, imageAspect },
+    undefined,
+    currentId,
+  );
   const renderPage = useCallback(
     ({ item }: { item: ViewerItem }) => (
       <Pressable style={{ width, height: '100%' }} onPress={onPagePress}>
@@ -313,25 +334,93 @@ export function PhotoViewer({
     text: string;
   }[] = [];
   if (facts) {
+    // SUSPENDED (codex r6): a staged cull or trashed photo keeps its
+    // action rows, but it is in no queue (STATE_MODEL.md — the badges
+    // demote to carried for the same reason). The lines describe the
+    // retained intent instead of claiming live queue membership; every
+    // queue claim below routes through these.
+    const suspended = facts.state === 'culled' || facts.state === 'trashed';
+    const queued = (liveText: string, retainedText: string) =>
+      suspended ? retainedText : liveText;
     if (facts.is_best === 1) factLines.push({ icon: 'star', text: 'Best of its group.' });
+    // Favourite is DIRECTIONAL (STATE_MODEL.md): the queued row wins the
+    // line while one waits — including a queued removal, under which the
+    // carried heart must not show — else the resolved apply carries it
+    // (FAVOURITE_HELD's resolved half), like the edit pair below.
     if (facts.favourite_queued === 1)
-      factLines.push({ icon: 'heart-outline', text: 'Favourite queued for gallery confirmation.' });
+      factLines.push({
+        icon: 'heart-outline',
+        text: queued(
+          'Favourite queued for gallery confirmation.',
+          'Favourite request rides along — resumes if the photo is un-staged.',
+        ),
+      });
     else if (facts.favourite_queued === 0)
-      factLines.push({ icon: 'heart-off-outline', text: 'Favourite removal queued.' });
+      factLines.push({
+        icon: 'heart-off-outline',
+        text: queued(
+          'Favourite removal queued.',
+          'Favourite removal rides along — resumes if the photo is un-staged.',
+        ),
+      });
+    else if (facts.favourite_applied === 1)
+      factLines.push({ icon: 'heart', text: 'Favourited in your gallery.' });
     if (facts.needs_edit === 1)
-      factLines.push({ icon: 'pencil-outline', text: 'In the edit queue.' });
+      factLines.push({
+        icon: 'pencil-outline',
+        text: queued(
+          'In the edit queue.',
+          'Edit request rides along — back in the queue if the photo is un-staged.',
+        ),
+      });
     if (facts.edit_completed_at != null)
       factLines.push({ icon: 'pencil', text: 'Was edited via the edit queue.' });
-    if (shareQueued) factLines.push({ icon: 'share-variant', text: 'In the share queue.' });
-    if (facts.organize_applied_at != null)
+    if (shareQueued)
+      factLines.push({
+        icon: 'share-variant',
+        text: queued(
+          'In the share queue.',
+          'Share request rides along — back in the queue if the photo is un-staged.',
+        ),
+      });
+    // Carried share (codex r7): mirrors the edit pair above — the queued
+    // line while the queue holds it, the resolved fact once it let go.
+    else if (facts.share_carried === 1)
+      factLines.push({ icon: 'share-variant', text: 'Was shared from the share queue.' });
+    // The organize lines carry the FULL album path (codex r7): the
+    // decision appendix promises it lives one long-press away, here. A
+    // target-less queue row (m0.8.2 F6) keeps the pathless copy.
+    const pendingAlbum = decodeOrganizeTarget(facts.organize_target)?.path ?? null;
+    const appliedAlbum = decodeOrganizeTarget(facts.organize_applied_target)?.path ?? null;
+    if (facts.organize_applied_at != null) {
+      const movedOnce = appliedAlbum ? `Moved to ${appliedAlbum} once` : 'Moved to an album once';
+      const newerMove = pendingAlbum ? `a newer move to ${pendingAlbum}` : 'a newer move';
       factLines.push({
         icon: organizeSuperseded ? 'folder-clock' : 'folder-move',
         text: organizeSuperseded
-          ? 'Moved to an album once, but a newer move is still pending — the shown album is superseded until it applies.'
-          : 'Moved to an album.',
+          ? // codex r7: the superseded branch bypassed the suspended
+            // wording, claiming a live pending move on a staged cull.
+            queued(
+              `${movedOnce}, but ${newerMove} is still pending — the shown album is superseded until it applies.`,
+              `${movedOnce}, and ${newerMove} rides along — back in the queue if the photo is un-staged.`,
+            )
+          : appliedAlbum
+            ? `Moved to ${appliedAlbum}.`
+            : 'Moved to an album.',
       });
-    else if (facts.organize_queued === 1)
-      factLines.push({ icon: 'folder-clock', text: 'Album move queued.' });
+    } else if (facts.organize_queued === 1)
+      factLines.push({
+        icon: 'folder-clock',
+        text: pendingAlbum
+          ? queued(
+              `Album move queued → ${pendingAlbum}`,
+              `Album move to ${pendingAlbum} rides along — back in the queue if the photo is un-staged.`,
+            )
+          : queued(
+              'Album move queued.',
+              'Album move rides along — back in the queue if the photo is un-staged.',
+            ),
+      });
     // time_attached is deliberately NOT surfaced (m0.8.2): internal scan
     // quality the user cannot act on; the scan rewrites it once
     // embeddings land (docs/STATE_MODEL.md).
@@ -453,6 +542,12 @@ export function PhotoViewer({
                 <Text style={[styles.editStateText, { color: theme.accent }]}>Change decision</Text>
               </Pressable>
             </>
+          ) : factsFailed ? (
+            <Pressable onPress={() => setFactsTick((t) => t + 1)}>
+              <Text style={styles.factText}>
+                Could not read this photo's details just now — tap to retry.
+              </Text>
+            </Pressable>
           ) : (
             <Text style={styles.factText}>
               {facts === null

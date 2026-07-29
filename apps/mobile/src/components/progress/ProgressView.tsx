@@ -266,8 +266,10 @@ function resolveTarget(target: ProgressTarget): {
   return {
     heading: range.label,
     scope: { day: target.day },
-    startMs: range.startMs,
-    endMs: range.endMs,
+    // INCLUSIVE range → EXCLUSIVE MediaStore query (see the month filter
+    // below): widen by 1 ms so an exact-midnight photo stays counted.
+    startMs: range.startMs > 0 ? range.startMs - 1 : 0,
+    endMs: range.endMs + 1,
   };
 }
 
@@ -298,20 +300,38 @@ export function ProgressView({
     return {
       heading: base.heading,
       scope: { startMs: range.startMs, endMs: range.endMs } as PhotoScope,
-      startMs: range.startMs,
-      endMs: range.endMs,
+      // INCLUSIVE bounds → EXCLUSIVE MediaStore query: the DB side takes
+      // the scope's BETWEEN inclusively, but countPhotosInRange renders
+      // `DATE_TAKEN > start AND DATE_TAKEN < end` — a photo at exactly
+      // midnight on the month boundary would vanish from the denominator
+      // only. Widen by 1 ms, exactly as the scan's range pager does.
+      startMs: range.startMs > 0 ? range.startMs - 1 : 0,
+      endMs: range.endMs + 1,
     };
   }, [base, month]);
   const insets = useSafeAreaInsets();
   const db = useSQLiteContext();
   const { accent } = useTheme();
   const [src, setSrc] = useState<ResolvedSrc | null>(null);
-  const [data, setData] = useState<{ breakdown: StateBreakdown; trashed: number } | null>(null);
+  // Tagged with the scopeKey that PRODUCED it: the fail-closed keep-last
+  // below holds counts across a failed refresh, but only within the SAME
+  // scope — a histogram-month tap must not keep rendering the broader
+  // scope's totals over the narrowed grid (and a failed narrow count must
+  // read as loading, not as the old scope's numbers forever).
+  const [data, setData] = useState<{
+    scopeKey: string;
+    breakdown: StateBreakdown;
+    trashed: number;
+  } | null>(null);
   const [filter, setFilter] = useState<ProgressFilter>('all');
   const [viewer, setViewer] = useState<{ items: ViewerItem[]; index: number } | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
   const scopeKey = scopeKeyOf(scope);
+  /** The counts, only when they describe the CURRENT scope; otherwise
+   * the loading presentation renders. Keep-last still works within an
+   * unchanged scope, where the tag matches by construction. */
+  const scopedData = data !== null && data.scopeKey === scopeKey ? data : null;
 
   useFocusEffect(
     useCallback(() => {
@@ -349,7 +369,11 @@ export function ProgressView({
         ]);
         if (cancelled || msTotal === null) return;
         setSrc({ roots, albumIds });
-        setData({ breakdown: computeBreakdown(msTotal, counts), trashed: counts.trashed });
+        setData({
+          scopeKey,
+          breakdown: computeBreakdown(msTotal, counts),
+          trashed: counts.trashed,
+        });
       })();
       return () => {
         cancelled = true;
@@ -404,8 +428,8 @@ export function ProgressView({
   const onChanged = useCallback(() => setRefreshTick((t) => t + 1), []);
 
   const header = useMemo(() => {
-    if (!data) return <View />;
-    const b = data.breakdown;
+    if (!scopedData) return <View />;
+    const b = scopedData.breakdown;
     const reviewed = reviewedOf(b);
     const pct = reviewedPct(b);
     return (
@@ -519,8 +543,8 @@ export function ProgressView({
         <View style={styles.gridLabelRow}>
           <Text style={styles.gridLabel}>
             {filter === 'all' ? 'Photos · all states' : `Photos · ${filterLabel(filter)}`}
-            {filter === 'kept' && data.trashed > 0
-              ? `  (${data.trashed} trashed — files gone, not shown)`
+            {filter === 'kept' && scopedData.trashed > 0
+              ? `  (${scopedData.trashed} trashed — files gone, not shown)`
               : ''}
           </Text>
           {/* An explicit way out of a month filter. Tapping the bar again
@@ -539,9 +563,9 @@ export function ProgressView({
         </View>
       </View>
     );
-  }, [data, heading, filter, toggleFilter, renderCta, accent, insights, month, target.kind]);
+  }, [scopedData, heading, filter, toggleFilter, renderCta, accent, insights, month, target.kind]);
 
-  if (!data || !src) {
+  if (!scopedData || !src) {
     return (
       <View style={[styles.loadingRoot]}>
         <Text style={styles.loadingText}>Loading…</Text>

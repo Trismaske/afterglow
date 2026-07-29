@@ -38,7 +38,7 @@ import { colors, touch, useTheme } from '../theme';
 import { AlbumPicker } from '../components/AlbumPicker';
 import { Chip, QueueGridCell } from '../components/QueueGrid';
 import { QueueViewer } from '../components/QueueViewer';
-import { useQueueRows } from '../components/useQueueRows';
+import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
 import { useReview } from '../review/ReviewContext';
 import { requestRescan } from '../scan/scanRunner';
 
@@ -50,14 +50,29 @@ function albumLabel(path: string): string {
   return segments[segments.length - 1] || path;
 }
 
+/** The rejection surface for this screen's queue writes (CompareScreen's
+ * surfaceQueueWriteError family): every mutation here can reject after
+ * the tap — including a SQLite commit failing AFTER native moves
+ * succeeded — and an unhandled rejection would mean no error, no reload,
+ * stale metadata. The caller reloads alongside, so retryable rows stay
+ * visible and the screen reflects the durable rows as they stand. */
+function surfaceQueueWriteError(detail: string, error: unknown): void {
+  Alert.alert(
+    'Change not saved',
+    `${detail}\n\n${error instanceof Error ? error.message : String(error)}`,
+  );
+}
+
 export function OrganizeQueueScreen(_props: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const db = useSQLiteContext();
   const { refresh: refreshReview, refreshQueuedFor } = useReview();
-  const { rows, reload: reloadRows } = useQueueRows<OrganizeQueueRow>(
-    useCallback(() => getOrganizeQueue(db), [db]),
-  );
+  const {
+    rows,
+    failed,
+    reload: reloadRows,
+  } = useQueueRows<OrganizeQueueRow>(useCallback(() => getOrganizeQueue(db), [db]));
   /** Every mutation here also moves the organize BADGE on review
    * surfaces (deck, Groups) — the provider's membership map is their
    * source. */
@@ -109,28 +124,50 @@ export function OrganizeQueueScreen(_props: Props) {
   const chooseAlbum = useCallback(
     async (relativePath: string) => {
       if (busyRef.current || targetIds.length === 0) return;
-      const error = await setOrganizeTargets(
-        db,
-        targetIds,
-        { volumeName: PRIMARY_VOLUME, relativePath },
-        Date.now(),
-      );
-      setPickerOpen(false);
-      if (error) {
-        Alert.alert('Cannot use that album', error);
-        return;
+      try {
+        const error = await setOrganizeTargets(
+          db,
+          targetIds,
+          { volumeName: PRIMARY_VOLUME, relativePath },
+          Date.now(),
+        );
+        setPickerOpen(false);
+        if (error) {
+          Alert.alert('Cannot use that album', error);
+          return;
+        }
+        setSelected(new Set());
+        await reload();
+      } catch (error) {
+        setPickerOpen(false);
+        surfaceQueueWriteError(
+          'Afterglow could not finish saving that album assignment. The tags below show what actually stands — please retry.',
+          error,
+        );
+        // The alert already carries the failure; a second rejection here
+        // has nothing further to say (the focus effect re-reads anyway).
+        await reload().catch(() => {});
       }
-      setSelected(new Set());
-      await reload();
     },
     [db, targetIds, reload],
   );
 
-  const removeSelected = useCallback(async () => {
-    for (const id of selected) await unqueueOrganize(db, id, Date.now());
-    setSelected(new Set());
-    await reload();
-  }, [db, selected, reload]);
+  /** Remove from the queue: the selection, else EVERYONE — the same
+   * no-selection-means-everyone convention Choose album follows, with
+   * the blast radius said in the chip's copy ("Remove all N"). */
+  const removeQueued = useCallback(async () => {
+    try {
+      for (const id of targetIds) await unqueueOrganize(db, id, Date.now());
+      setSelected(new Set());
+      await reload();
+    } catch (error) {
+      surfaceQueueWriteError(
+        'Afterglow could not finish removing those photos from the queue. The grid below shows what actually stands — please retry.',
+        error,
+      );
+      await reload().catch(() => {});
+    }
+  }, [db, targetIds, reload]);
 
   const applyAll = useCallback(async () => {
     if (busy || busyRef.current) return;
@@ -142,11 +179,23 @@ export function OrganizeQueueScreen(_props: Props) {
       // landing (same-connection FIFO makes this read see it). Only
       // TARGETED rows can move; the rest are reported, not skipped
       // silently.
-      const freshRows = (await getOrganizeQueue(db)).filter(
+      const freshQueue = await getOrganizeQueue(db);
+      const freshRows = freshQueue.filter(
         (row): row is OrganizeQueueRow & { organize_path: string; organize_volume: string } =>
           row.organize_path !== null && row.organize_volume !== null,
       );
-      if (freshRows.length === 0) return;
+      // Untargeted rows are REPORTED from the same fresh read the apply
+      // uses — the rendered count can predate an assignment still
+      // landing, and a report from a different snapshot than the apply
+      // would mislabel what actually stayed.
+      const freshUntargeted = freshQueue.length - freshRows.length;
+      if (freshRows.length === 0) {
+        // The button was enabled off rendered rows the durable intents no
+        // longer back — say so rather than returning silently.
+        showToast('Nothing to move — no queued photo has an album yet');
+        await reload();
+        return;
+      }
       // Group queued photos by target path; apply per target in bounded
       // batches (each batch = one consent + one verified move set).
       const byTarget = new Map<string, (typeof freshRows)[number][]>();
@@ -233,7 +282,7 @@ export function OrganizeQueueScreen(_props: Props) {
           ).length;
         }
       }
-      const skipped = untargetedCount > 0 ? ` · ${untargetedCount} without an album stayed` : '';
+      const skipped = freshUntargeted > 0 ? ` · ${freshUntargeted} without an album stayed` : '';
       showToast(
         declined
           ? `Moved ${moved} — the rest stay queued`
@@ -249,11 +298,22 @@ export function OrganizeQueueScreen(_props: Props) {
         await refreshReview().catch(() => {});
         void requestRescan(db);
       }
+    } catch (error) {
+      // A native move can succeed and its SQLite commit still fail —
+      // without this surface that was an unhandled rejection: no error,
+      // no reload, stale tags. Everything still queued is retryable, and
+      // an already-moved photo is repaired (read-only precheck →
+      // 'already') on the next Move.
+      surfaceQueueWriteError(
+        'Afterglow could not finish recording the move. Some photos may already have moved — everything still queued below is picked up again on the next Move.',
+        error,
+      );
+      await reload().catch(() => {});
     } finally {
       setBusy(false);
       busyRef.current = false;
     }
-  }, [busy, db, reload, refreshReview, untargetedCount]);
+  }, [busy, db, reload, refreshReview]);
 
   const renderItem = useCallback(
     ({ item }: { item: OrganizeQueueRow }) => (
@@ -295,7 +355,11 @@ export function OrganizeQueueScreen(_props: Props) {
       <Text style={styles.heading}>Organize queue</Text>
       <Text style={styles.subtitle}>
         {rows === null
-          ? 'Loading…'
+          ? // codex r9: an initial reload failure would have said
+            // "Loading…" forever — the empty-state line says what happened.
+            failed
+            ? QUEUE_REFRESH_FAILED
+            : 'Loading…'
           : count === 0
             ? 'Queue photos with Organize during review, then assign albums here.'
             : selectionMode
@@ -310,8 +374,16 @@ export function OrganizeQueueScreen(_props: Props) {
           />
           <Chip label="None" onPress={() => setSelected(new Set())} />
           {untargetedCount > 0 ? <Chip label="No album" onPress={selectUntargeted} /> : null}
-          {selectionMode ? <Chip label="Remove" onPress={() => void removeSelected()} /> : null}
+          <Chip
+            label={selectionMode ? 'Remove' : `Remove all ${count}`}
+            onPress={() => void removeQueued()}
+          />
         </View>
+      ) : null}
+      {failed && rows !== null ? (
+        // codex r9: the reload kept the last rows on a failed read — the
+        // grid may be stale, and it has to say so.
+        <Text style={styles.refreshFailed}>{QUEUE_REFRESH_FAILED}</Text>
       ) : null}
       <FlatList
         data={rows ?? []}
@@ -368,6 +440,8 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 12 },
   subtitle: { color: colors.textDim, fontSize: 14, marginBottom: 10 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
+  // codex r9: quiet stale-rows notice — dim like every read-failure line.
+  refreshFailed: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginBottom: 8 },
   // The cell's album tag: the organize hue marks an assigned target
   // (rule 2 — the hue identifies the kind); "No album" stays neutral.
   targetTag: {

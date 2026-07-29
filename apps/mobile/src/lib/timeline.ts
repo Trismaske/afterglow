@@ -65,9 +65,6 @@ export type UnitDestination =
   | { screen: 'Singles'; day: string; from: number; to: number }
   | { screen: 'CullList' };
 
-// Members are newest-first (store order) — the anchor is the head.
-const groupAnchor = (group: ReviewGroupRow): number => group.members[0]?.taken_at ?? 0;
-
 const dayOf = (member: ReviewMemberRow): string => member.day ?? UNDATED_DAY_KEY;
 
 export function unitRefOf(unit: TimelineUnit): UnitRef {
@@ -92,18 +89,56 @@ export function findUnitIndex(units: readonly TimelineUnit[], ref: UnitRef): num
   return units.findIndex((unit) => sameUnit(unit, ref));
 }
 
+/** Does this unit still hold REVIEW WORK? The singles feed deliberately
+ * keeps staged culls in place (badged), so a run whose last unreviewed
+ * member was culled stays on the timeline as a browseable card — but
+ * "continue" and the auto-advance must never land on it: the deck would
+ * open in browse mode and stop advancing (codex r3). */
+export function unitHasPending(unit: TimelineUnit): boolean {
+  const members = unit.kind === 'group' ? unit.group.members : unit.members;
+  return members.some((member) => member.state === 'unreviewed');
+}
+
+/** The first unit holding review work — what every "Continue reviewing"
+ * door opens (Home's CTA, the overview's, the deck's fallback). */
+export function firstPendingUnit(units: readonly TimelineUnit[]): TimelineUnit | null {
+  return units.find(unitHasPending) ?? null;
+}
+
+/** Each FULL page's read-time TAIL timestamp (null = the page was not
+ * full, so nothing truncates on its account). Captured when the arrays
+ * were READ and carried through optimistic patches: the horizon is a
+ * fact about the SOURCE — what may remain unloaded past the tail — and
+ * the patched arrays can neither re-derive it (a decision removing the
+ * tail row would jump the horizon forward and hide already-loaded
+ * pending units between the old and new tails from the advance, codex
+ * r7) nor dissolve it (removing rows from a full page loads nothing).
+ * Only the next completed read moves a tail. */
+export interface TimelinePageTails {
+  groupsTail: number | null;
+  singlesTail: number | null;
+}
+
+/** A group's merge anchor — its newest member's taken_at. Exported so
+ * the read commit can capture the tail group's anchor with the same
+ * definition the merge uses. */
+export const groupAnchor = (group: ReviewGroupRow): number => group.members[0]?.taken_at ?? 0;
+
 /**
- * Merge the two newest-first pages into the unit timeline. `groupPage` /
- * `singlesPage` are the page LIMITS the arrays were read with — a full
- * page means the source continues past its tail, which is what arms the
- * truncation described in the header.
+ * Merge the two newest-first pages into the unit timeline. `tails` are
+ * each full page's read-time tail timestamps — a non-null tail means
+ * the source continues past it, which is what arms the truncation
+ * described in the header.
  */
 export function buildTimeline(
-  groups: readonly ReviewGroupRow[],
+  rawGroups: readonly ReviewGroupRow[],
   singles: readonly ReviewMemberRow[],
-  groupPage: number,
-  singlesPage: number,
+  tails: TimelinePageTails,
 ): TimelineUnit[] {
+  // A group with no members has no anchor and cannot be placed — the
+  // store never emits one, but a defensive `?? 0` anchor would sort it
+  // to the epoch and could collapse the truncation horizon.
+  const groups = rawGroups.filter((group) => group.members.length > 0);
   const units: TimelineUnit[] = [];
   let run: ReviewMemberRow[] = [];
   const closeRun = () => {
@@ -141,10 +176,10 @@ export function buildTimeline(
   closeRun();
 
   // Truncate below the horizon: with a FULL page, anything older than
-  // its tail may have unloaded units between it and the tail.
-  const groupTail = groups.length >= groupPage ? groupAnchor(groups[groups.length - 1]) : null;
-  const singlesTail = singles.length >= singlesPage ? singles[singles.length - 1].taken_at : null;
-  const horizon = Math.max(groupTail ?? -Infinity, singlesTail ?? -Infinity);
+  // its READ-TIME tail may have unloaded units between it and the tail.
+  // The tails come from the read commit, never from the patched arrays
+  // — see TimelinePageTails.
+  const horizon = Math.max(tails.groupsTail ?? -Infinity, tails.singlesTail ?? -Infinity);
   if (horizon === -Infinity) return units;
   const kept: TimelineUnit[] = [];
   for (const unit of units) {
@@ -200,10 +235,21 @@ export function destinationAfterUnit(
 ): UnitDestination {
   if (units.length === 0) return { screen: 'CullList' };
   const found = findUnitIndex(units, completed);
+  // A unit MATCHING the completed ref can still hold pending work: run
+  // identity is range OVERLAP, and a scan can dissolve a neighbouring
+  // group mid-deck, merging two runs into one wider unit that matches
+  // the finished range (codex r4) — new work IN PLACE is the immediate
+  // next destination, not a skip. A genuinely completed unit fails
+  // unitHasPending (its members were patched decided), so it cannot
+  // loop back into itself.
+  if (found >= 0 && unitHasPending(units[found])) return unitDestination(units[found]);
   const start = found >= 0 ? found : formerIndex >= 0 ? formerIndex - 1 : -1;
   for (let offset = 1; offset <= units.length; offset += 1) {
     const unit = units[(((start + offset) % units.length) + units.length) % units.length];
-    if (!sameUnit(unit, completed)) return unitDestination(unit);
+    // Pending units only: a cull-only run is a still-listed card, not a
+    // destination — routing into it opens a browse deck that never
+    // advances (see unitHasPending).
+    if (unitHasPending(unit)) return unitDestination(unit);
   }
   return { screen: 'CullList' };
 }

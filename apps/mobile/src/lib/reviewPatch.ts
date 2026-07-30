@@ -329,6 +329,10 @@ export function queueEquals(a: ReviewSnapshot, b: ReviewSnapshot): boolean {
     const ga = a.groups[i];
     const gb = b.groups[i];
     if (ga.groupId !== gb.groupId || ga.bestPhotoId !== gb.bestPhotoId) return false;
+    // Hidden-member metadata is queue state (final cycle T6): forgetting
+    // an away card changes a group's "N on unmounted SD card" header
+    // while its visible members stay identical.
+    if ((ga.unreachableCount ?? 0) !== (gb.unreachableCount ?? 0)) return false;
     if (ga.members.length !== gb.members.length) return false;
     for (let m = 0; m < ga.members.length; m += 1) {
       if (!memberEquals(ga.members[m], gb.members[m])) return false;

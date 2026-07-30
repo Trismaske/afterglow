@@ -21,36 +21,60 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { ADJACENT_MERGE_MAX_GAP_MS, groupByEmbedding, MOMENTS_GAP_MS } from '@afterglow/core';
 import { MODEL_SHA256 } from '../../modules/image-embedder';
-import { dayKey } from '../lib/dates';
+import { dayKey, exifDateTimeToMs } from '../lib/dates';
 import { ensureEmbeddings, newEngineHealth, type EngineHealth } from '../lib/embeddings';
 import {
   checkMediaPresence,
   countPhotosInRange,
   fetchPhotoPageDesc,
   getAssetDetails,
+  getEditableContentUri,
   type LoadedPhoto,
 } from '../lib/media';
 import { reconcileExternallyRemoved } from '../db/trashStore';
 import { createMergedDescendingPager, type PageFetcher } from '../lib/progressPager';
-import { frozenPhotos, reconcileWindowGroups } from '../lib/regroupBoundary';
+import { reconcileWindowGroups, windowFreeze } from '../lib/regroupBoundary';
 import { createWindowAccumulator } from '../lib/scanWindows';
 import { resolveSources } from '../lib/sourceCatalog';
+import type { SourceRoot } from '../lib/sources';
 import { GROUPING_STRICTNESS_KEY, parseStrictness } from '../lib/groupingPrefs';
-import { scanCanSkip, scanFingerprint } from '../lib/scanSkip';
 import {
+  SCAN_FINGERPRINT_KEY,
+  SCAN_GENERATIONS_KEY,
+  scanCanSkip,
+  scanFingerprint,
+} from '../lib/scanSkip';
+import {
+  exifReadAvailable,
+  getImageCountsByVolume,
   getMediaChangedSince,
   getMediaGenerations,
+  getMountedVolumes,
+  readExifDateTimeOriginal,
   type ChangedMediaRow,
 } from '../../modules/media-store-actions';
-import { canonicalPhotoId, PRIMARY_VOLUME } from '../lib/mediaIdentity';
+import { canonicalPhotoId, volumeOf } from '../lib/mediaIdentity';
+import {
+  filterGenerationsToVolumes,
+  mergeGenerationBaselines,
+  neverSeenVolumes,
+  missingGenerationVolumes,
+  rawVolumeOfKey,
+  scopeRelevantVolumes,
+  volumesDisagreeingAfterDelta,
+  volumesWithUntracedLoss,
+  type VolumeCountRow,
+} from '../lib/volumeScan';
 import { coveredBy, describeDeltaPlan, deltaVerdict, planDeltaRanges } from '../lib/deltaScan';
+import { mapWithConcurrency } from '../lib/concurrency';
 import { waitForUserWrites } from '../lib/writePriority';
 import { fileSize } from '../lib/hash';
 import { ensureEmbeddingModel } from '../db/embeddingStore';
 import {
   countPresentPhotos,
-  countTrackedPhotos,
+  countTrackedByVolume,
   getPhotoTimestamps,
+  getRescueBaselines,
   getTakenAtForAssets,
   getGroupAssignments,
   getGroupMembers,
@@ -64,12 +88,6 @@ import {
 } from '../db/store';
 
 const SCAN_PAGE_SIZE = 200;
-/** Settings key: fingerprint of the last COMPLETE clean pass. */
-const SCAN_FINGERPRINT_KEY = 'scan_fingerprint';
-/** Per-volume generation the last COMPLETE clean pass observed, as JSON
- * — the delta scan's baseline: "everything up to here is accounted
- * for". Advanced only by a pass entitled to claim it (see finishPass). */
-const SCAN_GENERATIONS_KEY = 'scan_generations';
 /**
  * When the library was last VERIFIED current (epoch ms, as a string).
  *
@@ -235,9 +253,23 @@ async function pageAndGroup(
     baseThreshold: number;
     engine: EngineHealth;
     superseded: () => boolean;
+    /** Raw volume names mounted at pass start (m0.8.3, D7) — REQUIRED
+     * (acquisition failure aborts the pass before this runs). A parsed
+     * volume outside the set is skipped fail-closed and counted, like an
+     * unparseable one. */
+    mountedVolumes: ReadonlySet<string>;
   },
-): Promise<Set<string> | null> {
-  const { ranges, albumIds, baseThreshold, engine, superseded } = args;
+): Promise<{ seenIds: Set<string>; skipped: number; exifFailed: number } | null> {
+  const { ranges, albumIds, baseThreshold, engine, superseded, mountedVolumes } = args;
+  // Fail-closed drops this pass: unparseable volumes (counted by the
+  // adapter per page) plus parsed volumes outside the mounted set. Any
+  // skip makes the pass ineligible to advance its baselines (finishPass).
+  let skipped = 0;
+  // EXIF reads attempted but never completed (codex r2): the pass may
+  // finish, but storing its fingerprint would let the unchanged-library
+  // skip hide the promised retry.
+  let exifFailed = 0;
+  const unmountedWarned = new Set<string>();
   const buckets: (string | undefined)[] = albumIds ? [...albumIds] : [undefined];
   // One fetcher per (range × bucket), merged into ONE descending stream —
   // so a window straddling two ranges still reaches the accumulator in
@@ -255,6 +287,7 @@ async function pageAndGroup(
       const to = Number.isFinite(range.endMs) ? range.endMs + 1 : range.endMs;
       fetchers.push(async (cursor, count) => {
         const page = await fetchPhotoPageDesc(from, to, albumId, cursor, count);
+        skipped += page.skipped;
         return { items: page.photos, nextCursor: page.hasNext ? (page.endCursor ?? null) : null };
       });
     }
@@ -275,6 +308,10 @@ async function pageAndGroup(
   let stopped = false;
   const processUndatedBatch = async (batch: LoadedPhoto[]): Promise<void> => {
     if (batch.length === 0) return;
+    // D15 EXIF date rescue, BEFORE the batch sorts and windows: rescued
+    // photos window among the batch under their REAL timestamps, and the
+    // write below lands the real day.
+    exifFailed += await applyExifDateRescue(db, batch);
     const tail = createWindowAccumulator(ADJACENT_MERGE_MAX_GAP_MS);
     for (const photo of batch.sort((a, b) => b.item.timestamp - a.item.timestamp)) {
       for (const window of tail.feed(photo)) {
@@ -282,7 +319,7 @@ async function pageAndGroup(
           stopped = true;
           return;
         }
-        await processWindow(db, window, engine, baseThreshold, superseded);
+        await processWindow(db, window, engine, baseThreshold, superseded, mountedVolumes);
       }
     }
     for (const window of tail.flush()) {
@@ -290,13 +327,30 @@ async function pageAndGroup(
         stopped = true;
         return;
       }
-      await processWindow(db, window, engine, baseThreshold, superseded);
+      await processWindow(db, window, engine, baseThreshold, superseded, mountedVolumes);
     }
   };
   for (;;) {
     if (superseded()) return null;
-    const photos = await pager.next(SCAN_PAGE_SIZE);
-    if (photos.length === 0) break;
+    const paged = await pager.next(SCAN_PAGE_SIZE);
+    if (paged.length === 0) break;
+    // Mounted-set validation (m0.8.3, D7): a parsed volume the OS does
+    // not currently enumerate is fail-closed — MediaStore returning rows
+    // for it would contradict the pass-start snapshot, and ingesting
+    // them would stamp identity the scan cannot verify.
+    const photos = paged.filter((photo) => {
+      if (mountedVolumes.has(photo.volumeName)) return true;
+      skipped += 1;
+      if (!unmountedWarned.has(photo.volumeName)) {
+        unmountedWarned.add(photo.volumeName);
+        console.warn(
+          `[scan] volume '${photo.volumeName}' is not in the mounted set — ` +
+            `its photos are skipped this pass`,
+        );
+      }
+      return false;
+    });
+    if (photos.length === 0) continue;
     for (const photo of photos) seenIds.add(photo.item.id);
     update({ scanned: status.scanned + photos.length });
     for (const photo of photos) {
@@ -310,17 +364,40 @@ async function pageAndGroup(
       }
       for (const window of accumulator.feed(photo)) {
         if (superseded()) return null;
-        await processWindow(db, window, engine, baseThreshold, superseded);
+        await processWindow(db, window, engine, baseThreshold, superseded, mountedVolumes);
       }
     }
   }
   if (superseded()) return null;
   for (const window of accumulator.flush()) {
     if (superseded()) return null;
-    await processWindow(db, window, engine, baseThreshold, superseded);
+    await processWindow(db, window, engine, baseThreshold, superseded, mountedVolumes);
   }
   await processUndatedBatch(undated.splice(0));
-  return stopped ? null : seenIds;
+  return stopped ? null : { seenIds, skipped, exifFailed };
+}
+
+/**
+ * The mid-pass mount fence (m0.8.3 phase 2, codex): the mounted set is
+ * snapshotted at pass start, and a card ejected (or inserted) AFTER that
+ * snapshot silently changes what merged paging returns while the
+ * snapshot-based reachability freeze still trusts the old world. Every
+ * write boundary re-reads the live set and ABORTS the pass on any
+ * difference — persisted progress survives (interrupt-safe by design),
+ * baselines are never stored, and the next open rescans under the new
+ * reality. Throws also when the live read itself fails: a fence that
+ * cannot see is not a fence.
+ */
+async function assertMountedUnchanged(baseline: ReadonlySet<string>): Promise<void> {
+  const now = new Set(await getMountedVolumes());
+  const changed = now.size !== baseline.size || [...baseline].some((v) => !now.has(v));
+  if (changed) {
+    throw new Error(
+      `storage volumes changed mid-scan (was ${[...baseline].join(',')}; now ${[...now].join(
+        ',',
+      )}) — pass aborted; the next open rescans`,
+    );
+  }
 }
 
 /** Is a full reconciliation pass overdue? Never having run one counts. */
@@ -331,13 +408,42 @@ async function fullPassDue(db: SQLiteDatabase): Promise<boolean> {
 
 interface DeltaDecision {
   ranges: TimeRange[];
-  /** Rows MediaStore reports as trashed — deletions, made visible. */
+  /** Rows MediaStore reports as trashed — deletions, made visible. Only
+   * mounted volumes contribute (their change queries are the source), so
+   * a deletion is never concluded for an absent volume (invariant 6). */
   trashedIds: string[];
-  /** MediaStore's pass-START photo count. The post-delta consistency
-   * check compares against THIS, pinned, so its behaviour cannot depend
-   * on whether the pass outlived a query cache TTL — photos captured
-   * mid-pass belong to the next open, not to a spurious full pass. */
-  mediaTotalAtStart: number;
+  /** MediaStore's pass-START count PER VOLUME (m0.8.3 phase 2). The
+   * post-delta agreement compares against THESE, pinned, so its
+   * behaviour cannot depend on whether the pass outlived a query cache
+   * TTL — photos captured mid-pass belong to the next open, not to a
+   * spurious full pass. */
+  mediaByVolumeAtStart: Record<string, number>;
+}
+
+/**
+ * MediaStore's source-scoped count per volume (invariant 1's left side).
+ * A dirs scope counts its own buckets (a bucket belongs to one volume);
+ * "All folders" asks the native per-volume counter. Throws propagate to
+ * planPass's catch → full pass.
+ */
+async function mediaCountsByVolume(
+  volumes: readonly string[],
+  albumIdsByVolume: Readonly<Record<string, string[]>> | null,
+): Promise<Record<string, number>> {
+  if (albumIdsByVolume !== null) {
+    const out: Record<string, number> = {};
+    for (const volume of volumes) {
+      const albumIds = albumIdsByVolume[volume] ?? [];
+      out[volume] =
+        albumIds.length === 0
+          ? 0
+          : // FRESH, never the memo: these counts must postdate the
+            // generation snapshot (same rule as the old global tripwire).
+            await countPhotosInRange(0, Number.POSITIVE_INFINITY, albumIds, { fresh: true });
+    }
+    return out;
+  }
+  return getImageCountsByVolume([...volumes]);
 }
 
 /**
@@ -351,8 +457,15 @@ interface DeltaDecision {
  */
 async function planPass(
   db: SQLiteDatabase,
-  generations: Readonly<Record<string, number>>,
-  sources: { roots: readonly string[] | null; albumIds: readonly string[] | null },
+  /** Generations restricted to SCOPE-RELEVANT mounted volumes (plan §4
+   * invariant 7) — an out-of-scope card's activity never reaches this
+   * function, and an unmounted volume simply is not in the map
+   * (invariant 2: skipped, never compared, baseline retained). */
+  filteredGenerations: Readonly<Record<string, number>>,
+  sources: {
+    roots: readonly SourceRoot[] | null;
+    albumIdsByVolume: Readonly<Record<string, string[]>> | null;
+  },
   force: boolean,
 ): Promise<DeltaDecision | null> {
   if (force) return null;
@@ -361,48 +474,56 @@ async function planPass(
     const raw = await getSetting(db, SCAN_GENERATIONS_KEY);
     if (raw === null) return null; // no baseline: the first pass must be full
     const previous = JSON.parse(raw) as Record<string, number>;
-    const volumes = Object.keys(generations);
+    const keys = Object.keys(filteredGenerations);
     // Mirror scanCanSkip's rule: an EMPTY generation map means the native
-    // read FAILED, not that nothing changed. Without this a failed read
-    // planned a zero-range delta that scanned nothing and stamped the
-    // pass verified.
-    if (volumes.length === 0) return null;
-    // A volume the baseline never saw (a card inserted since) has no
-    // "since" to query from — only a full pass can take it in.
-    if (volumes.some((volume) => previous[volume] === undefined)) return null;
-    const changed: ChangedMediaRow[] = [];
-    for (const volume of volumes) {
-      if (previous[volume] === generations[volume]) continue;
-      // Keys are "<volume>|<MediaStore version>" (the native module bakes
-      // the version in so a provider rebuild mismatches every key); the
-      // change query wants the raw volume name.
-      changed.push(...(await getMediaChangedSince(volume.split('|')[0], previous[volume])));
-    }
-    const timestamps = await getPhotoTimestamps(db, roots);
-    // NON-PRIMARY changes force a full pass. Ingestion keys every photo
-    // under PRIMARY_VOLUME (lib/media.ts `toLoadedPhoto`; docs/TODO.md,
-    // "Real volume identity at ingestion"), and raw MediaStore ids can
-    // COLLIDE across volumes — so an id-keyed reconcile of an SD-card
-    // trash could authoritatively mutate an unrelated primary photo's
-    // row. A full pass reconciles by enumeration instead, which aliasing
-    // cannot misdirect. Both sides move together when identity is fixed.
-    const foreign = changed.filter((row) => row.volumeName !== PRIMARY_VOLUME);
-    if (foreign.length > 0) {
+    // read FAILED (or no scope-relevant volume is mounted) — either way
+    // there is nothing to prove a delta against.
+    if (keys.length === 0) return null;
+    // A scope-relevant volume the baseline never saw (a card inserted or
+    // a folder on it newly selected) has no "since" to query from — only
+    // a full pass can take it in (invariant 5; the picker save already
+    // forces the rescan for the newly-added-folder case).
+    const unseenVolumes = neverSeenVolumes(keys, previous);
+    if (unseenVolumes.length > 0) {
       console.log(
-        `[scan] delta: ${foreign.length} changes on non-primary volumes — ` +
-          `full pass (id-keyed reconcile cannot be trusted across volumes)`,
+        `[scan] delta: never-seen in-scope volume(s) ${unseenVolumes.join(', ')} — full pass`,
       );
       return null;
     }
+    const changed: ChangedMediaRow[] = [];
+    for (const key of keys) {
+      if (previous[key] === filteredGenerations[key]) continue;
+      // Keys are "<volume>|<MediaStore version>" (the native module bakes
+      // the version in so a provider rebuild mismatches every key); the
+      // change query wants the raw volume name. Spike A finding 1: the
+      // generation counter is SHARED across external volumes, so a
+      // per-volume "changed" can be a false positive from another
+      // volume's writes — harmless (the change query returns nothing).
+      changed.push(...(await getMediaChangedSince(rawVolumeOfKey(key), previous[key])));
+    }
+    const timestamps = await getPhotoTimestamps(db, roots);
+    // Canonical ids carry each row's REAL volume (m0.8.3 phase 2): the
+    // old aliasing hazard died with volume-qualified identity, so
+    // cross-volume change sets reconcile directly — no full-pass detour.
     const trashedIds = changed
       .filter((row) => row.isTrashed)
-      .map((row) => canonicalPhotoId(PRIMARY_VOLUME, row.rawId));
-    // Gallery-trashed rows are already hidden from the MediaStore count
+      .map((row) => canonicalPhotoId(row.volumeName, row.rawId));
+    // Gallery-trashed rows are already hidden from the MediaStore counts
     // below but stay tracked as present until THIS pass reconciles them —
-    // subtract the overlap, or every external delete (a culling app's
-    // most common library change) reads as an untraced loss and the
-    // delta's whole deletion path goes unreachable.
-    const trashedTracked = trashedIds.length > 0 ? await countPresentPhotos(db, trashedIds) : 0;
+    // subtract the overlap PER VOLUME, or every external delete (a
+    // culling app's most common library change) reads as an untraced
+    // loss and the delta's whole deletion path goes unreachable.
+    const trashedTrackedByVolume: Record<string, number> = {};
+    const trashedByVolume = new Map<string, string[]>();
+    for (const id of trashedIds) {
+      const volume = volumeOf(id);
+      const list = trashedByVolume.get(volume) ?? [];
+      list.push(id);
+      trashedByVolume.set(volume, list);
+    }
+    for (const [volume, ids] of trashedByVolume) {
+      trashedTrackedByVolume[volume] = await countPresentPhotos(db, ids);
+    }
     // A MOVED DATE_TAKEN re-pages only the NEW window; the OLD window's
     // survivors would keep their stale grouping while the counts still
     // agree and the baseline advances. Only a full pass rewindows both
@@ -415,10 +536,10 @@ async function planPass(
     if (movedCandidates.length > 0) {
       const stored = await getTakenAtForAssets(
         db,
-        movedCandidates.map((row) => canonicalPhotoId(PRIMARY_VOLUME, row.rawId)),
+        movedCandidates.map((row) => canonicalPhotoId(row.volumeName, row.rawId)),
       );
       const moved = movedCandidates.filter((row) => {
-        const oldAt = stored.get(canonicalPhotoId(PRIMARY_VOLUME, row.rawId));
+        const oldAt = stored.get(canonicalPhotoId(row.volumeName, row.rawId));
         return oldAt !== undefined && oldAt !== row.dateTakenMs;
       });
       if (moved.length > 0) {
@@ -429,33 +550,42 @@ async function planPass(
         return null;
       }
     }
-    // COUNT TRIPWIRE. MediaStore has NO deletion tombstone: a removed row
-    // simply vanishes, and the generation counter does not say what it
-    // counted, so no change query can ever report a delete that bypassed
-    // the system trash. Holding FEWER photos than we track (net of the
-    // trashed rows the change query DID report) is the only evidence such
-    // a delete leaves. Only "fewer" trips it — more just means photos we
-    // have not ingested yet, the delta's normal input, which is why the
-    // same comparison runs AGAIN after the pass.
-    const mediaTotal = await countPhotosInRange(
-      0,
-      Number.POSITIVE_INFINITY,
-      sources.albumIds ?? undefined,
-      // FRESH, never the memo: this count must postdate the generation
-      // snapshot. A cache entry primed by Home seconds before a
-      // permanent delete would equal the tracked total, and with no
-      // tombstone in the change set both checks would pass and the
-      // baseline would advance over the deletion.
-      { fresh: true },
-    );
+    // COUNT TRIPWIRES, PER VOLUME (invariant 1). MediaStore has NO
+    // deletion tombstone: a removed row simply vanishes, and the
+    // generation counter does not say what it counted, so no change query
+    // can ever report a delete that bypassed the system trash. A volume
+    // holding FEWER photos than we track on it (net of the trashed rows
+    // the change query DID report) is the only evidence such a delete
+    // leaves. Only "fewer" trips it — more just means photos we have not
+    // ingested yet, the delta's normal input, which is why the same
+    // comparison runs AGAIN per volume after the pass. Mounted volumes
+    // only, by construction: the keys ARE the mounted scope-relevant set.
+    const volumes = keys.map(rawVolumeOfKey);
+    const mediaByVolume = await mediaCountsByVolume(volumes, sources.albumIdsByVolume);
+    const trackedByVolume = await countTrackedByVolume(db, roots);
+    const counts: Record<string, VolumeCountRow> = {};
+    for (const volume of volumes) {
+      counts[volume] = {
+        media: mediaByVolume[volume] ?? 0,
+        tracked: trackedByVolume[volume] ?? 0,
+        trashedInFlight: trashedTrackedByVolume[volume] ?? 0,
+      };
+    }
     console.log(
-      `[scan] delta tripwire: MediaStore ${mediaTotal} vs tracked ${timestamps.length}` +
-        (trashedTracked > 0 ? ` (${trashedTracked} trashed in-flight)` : ''),
+      `[scan] delta tripwire (per volume): ` +
+        volumes
+          .map(
+            (v) =>
+              `${v}: MediaStore ${counts[v].media} vs tracked ${counts[v].tracked}` +
+              (counts[v].trashedInFlight > 0 ? ` (${counts[v].trashedInFlight} trashed)` : ''),
+          )
+          .join(' · '),
     );
-    if (mediaTotal < timestamps.length - trashedTracked) {
+    const losses = volumesWithUntracedLoss(counts);
+    if (losses.length > 0) {
       console.log(
-        `[scan] delta: ${timestamps.length - trashedTracked - mediaTotal} tracked photos are ` +
-          `gone from MediaStore with no trace — full pass to reconcile`,
+        `[scan] delta: tracked photos gone from MediaStore with no trace on ` +
+          `${losses.join(', ')} — full pass to reconcile`,
       );
       return null;
     }
@@ -472,7 +602,7 @@ async function planPass(
     // than silently leaving it ungrouped.
     if (plan.undated > 0) return null;
     if (!verdict.worthIt) return null;
-    return { ranges: plan.ranges, trashedIds, mediaTotalAtStart: mediaTotal };
+    return { ranges: plan.ranges, trashedIds, mediaByVolumeAtStart: mediaByVolume };
   } catch (error) {
     console.log(`[scan] delta unavailable, running a full pass: ${String(error)}`);
     return null;
@@ -493,15 +623,57 @@ async function finishPass(
     superseded: () => boolean;
     engine: EngineHealth;
     fingerprint: string;
+    /** This pass's SCOPE-RELEVANT mounted volumes' generations — merged
+     * over the stored baselines below, never overwriting an absent
+     * volume's entry (invariant 2). */
     generations: Readonly<Record<string, number>>;
     unseenOverCap: boolean;
+    /** Fail-closed volume skips this pass (m0.8.3, D7): any skip means
+     * the pass did not achieve its claimed coverage — baselines are
+     * withheld and the next launch retries. */
+    skipped: number;
+    /** EXIF reads attempted but never completed (codex r2): storing the
+     * fingerprint over them would let the unchanged-library skip hide
+     * the promised retry until an unrelated media change. */
+    exifFailed: number;
     wasFullPass: boolean;
   },
 ): Promise<void> {
-  const { superseded, engine, fingerprint, generations, unseenOverCap } = args;
+  const { superseded, engine, fingerprint, generations, unseenOverCap, skipped, exifFailed } = args;
+  if (skipped > 0) {
+    console.warn(
+      `[scan] ${skipped} photos were skipped fail-closed (volume unparseable or unmounted) — ` +
+        `baseline withheld; the next pass retries them`,
+    );
+    return;
+  }
+  if (exifFailed > 0) {
+    console.warn(
+      `[scan] ${exifFailed} EXIF date reads did not complete — ` +
+        `baseline withheld; the next pass retries them`,
+    );
+    return;
+  }
   if (superseded() || engine.dead || engine.engineErrors > 0 || unseenOverCap) return;
   await setSetting(db, SCAN_FINGERPRINT_KEY, fingerprint);
-  await setSetting(db, SCAN_GENERATIONS_KEY, JSON.stringify(generations));
+  // Re-checked between writes (final cycle S6): Forget supersedes and
+  // then DELETES these keys in its own transaction — a pass past the
+  // check above must not re-create them behind it. The check-then-queue
+  // is synchronous, so a supersede seen here means our later writes
+  // would land after Forget's delete.
+  if (superseded()) return;
+  // MERGED, never overwritten (m0.8.3 phase 2, invariant 2): this pass's
+  // scope-relevant mounted volumes replace their own entries; a stored
+  // baseline for an unmounted (or out-of-scope) volume is retained
+  // untouched, so remount resumes its delta exactly where it left off
+  // (invariant 4).
+  const storedRaw = await getSetting(db, SCAN_GENERATIONS_KEY);
+  const merged = mergeGenerationBaselines(
+    storedRaw === null ? null : (JSON.parse(storedRaw) as Record<string, number>),
+    generations,
+  );
+  if (superseded()) return; // S6, same rule — never past a supersede
+  await setSetting(db, SCAN_GENERATIONS_KEY, JSON.stringify(merged));
   await setSetting(db, SCAN_VERIFIED_AT_KEY, String(Date.now()));
   // Only a FULL pass may restart the weekly clock — a delta never
   // enumerated everything, so it cannot stand in for the reconciliation.
@@ -531,8 +703,33 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   // fingerprint (generations + scope + strictness + model) matching the
   // last COMPLETE clean pass is OS-level proof the pass is a no-op.
   const generations = await getMediaGenerations().catch(() => ({}));
+  // The mounted-volume set is REQUIRED (codex phase-2 round): the
+  // regroup freeze, the reconcile scope, and page validation must never
+  // run blind — "unknown" aborting here (the throw fails the scan,
+  // phase 'error', retried next open) is the only answer that cannot
+  // treat an ejected card's photos as reachable. Independent of the
+  // generation read on purpose: generations are API 30+, this works
+  // from API 24.
+  const mounted = await getMountedVolumes();
+  // SCOPE-RELEVANT volumes only, mounted only (m0.8.3 phase 2,
+  // invariants 2 + 7): an out-of-scope card's activity must not defeat
+  // the skip, and an unmounted volume's entry simply is not there — the
+  // fingerprint after an eject differs once (one pass runs, stores the
+  // narrower map) and then skips again while the card stays out.
+  const relevantVolumes = new Set(scopeRelevantVolumes(mounted, sources.roots ?? null));
+  const relevantGenerations = filterGenerationsToVolumes(generations, relevantVolumes);
+  // SNAPSHOT CONSISTENCY (final cycle Q1): generations were read BEFORE
+  // the mounted set — a card mounting between the two native calls is in
+  // `mounted` but absent from the map, so the filtered fingerprint can
+  // equal a stored pre-card pass and falsely skip the card's ingestion.
+  // A relevant mounted volume without a generation entry disqualifies
+  // the skip; the pass itself proceeds and covers the card.
+  const generationGap = missingGenerationVolumes(generations, relevantVolumes).length > 0;
+  if (generationGap && Object.keys(generations).length > 0) {
+    console.log('[scan] a mounted volume has no generation entry — skip disqualified');
+  }
   const fingerprint = scanFingerprint({
-    generations,
+    generations: relevantGenerations,
     roots: sources.roots ?? null,
     strictness: rawStrictness,
     modelSha: MODEL_SHA256,
@@ -545,15 +742,24 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   // that such a row is eventually reconciled.
   const fullDue = await fullPassDue(db);
   if (fullDue) console.log('[scan] full pass due — weekly reconciliation');
-  if (!force && !model.cleared && !fullDue) {
+  if (!force && !model.cleared && !fullDue && !generationGap) {
     const stored = await getSetting(db, SCAN_FINGERPRINT_KEY);
-    if (scanCanSkip({ generations, stored, current: fingerprint })) {
-      update({ phase: 'done' });
-      // The skip IS the verification — record it, or Settings would
-      // report a staleness this call just disproved.
-      await setSetting(db, SCAN_VERIFIED_AT_KEY, String(Date.now()));
-      console.log('[scan] library unchanged since last complete pass — skipped');
-      return;
+    if (scanCanSkip({ generations: relevantGenerations, stored, current: fingerprint })) {
+      // The skip CLAIMS verification, so it takes the same fence a
+      // completing pass does (final cycle T3): a card hot-mounting
+      // after the mounted read above is in neither the fingerprint nor
+      // the gap check — re-read and compare before accepting.
+      const nowMounted = new Set(await getMountedVolumes());
+      if (nowMounted.size !== mounted.length || !mounted.every((v) => nowMounted.has(v))) {
+        console.log('[scan] mounted volumes changed during startup — skip disqualified');
+      } else {
+        update({ phase: 'done' });
+        // The skip IS the verification — record it, or Settings would
+        // report a staleness this call just disproved.
+        await setSetting(db, SCAN_VERIFIED_AT_KEY, String(Date.now()));
+        console.log('[scan] library unchanged since last complete pass — skipped');
+        return;
+      }
     }
   }
 
@@ -592,26 +798,44 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   });
   update({ corpusTotal });
 
+  // The pass's own scope-relevant slice, from the FRESH resolution (the
+  // fingerprint above deliberately used the cached one).
+  const passRelevantGenerations = filterGenerationsToVolumes(
+    generations,
+    new Set(scopeRelevantVolumes(mounted, passSources.roots ?? null)),
+  );
+
   // DELTA vs FULL (m0.8.2 phase 2). Both run the SAME grouping code
   // below, differing only in which time ranges they page — which is what
   // makes "a delta produces the groups a full pass would" a structural
   // property rather than a hope.
   const decision = await planPass(
     db,
-    generations,
-    { roots: passSources.roots ?? null, albumIds: passSources.albumIds ?? null },
-    force || model.cleared || fullDue,
+    passRelevantGenerations,
+    { roots: passSources.roots ?? null, albumIdsByVolume: passSources.albumIdsByVolume ?? null },
+    // generationGap forces FULL (final cycle R2): a volume that mounted
+    // between the generation and mounted reads has no entry, so a delta
+    // planned from the older keys could complete "verified" without
+    // ever enumerating the card.
+    force || model.cleared || fullDue || generationGap,
   );
 
+  // The mounted-volume set at pass start (m0.8.3, D7): ALL mounted
+  // volumes (scope filtering is the query's job — a photo on any mounted
+  // volume is validly stamped). Never null: acquisition failure aborted
+  // the pass above.
+  const mountedVolumes: ReadonlySet<string> = new Set(mounted);
+
   if (decision) {
-    const deltaScanned = await pageAndGroup(db, {
+    const deltaResult = await pageAndGroup(db, {
       ranges: decision.ranges,
       albumIds: passSources.albumIds ?? undefined,
       baseThreshold: strictness.baseThreshold,
       engine,
       superseded,
+      mountedVolumes,
     });
-    if (deltaScanned === null) {
+    if (deltaResult === null) {
       console.log('[scan] superseded by a settings change — stopping for the queued rescan');
       return;
     }
@@ -623,28 +847,39 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     // than by re-paging their range, because MediaStore filters trashed
     // rows out of the paging the scan does.
     if (decision.trashedIds.length > 0) {
-      await reconcileExternallyRemoved(db, decision.trashedIds, Date.now());
+      // Fence + mounted-aware repair (codex phase-2): a deletion is only
+      // concluded against the live mounted world, and the membership
+      // repair defers groups still holding an unreachable member.
+      await assertMountedUnchanged(mountedVolumes);
+      // Gallery trashes are 30-day-restorable — no permanentIds: their
+      // duel history survives a restore (grilling Q13).
+      await reconcileExternallyRemoved(db, decision.trashedIds, Date.now(), [...mountedVolumes]);
       console.log(`[scan] delta: ${decision.trashedIds.length} trashed photos left the queue`);
     }
-    // POST-DELTA CONSISTENCY CHECK. Having just ingested everything the
-    // change set held, tracked must have caught up to the PASS-START
-    // MediaStore count (pinned in the decision — a fresh query here would
-    // make the check's behaviour depend on pass duration vs the count
-    // cache's TTL, and photos captured mid-pass belong to the next open).
-    // The tripwire before the pass is one-directional by necessity —
-    // MediaStore holding MORE than we track is the delta's normal input —
-    // so a silently MISSED ADDITION is invisible to it and would
-    // otherwise sit until the weekly reconciliation. Checked here
-    // instead, and repaired immediately.
-    const mediaAfter = decision.mediaTotalAtStart;
-    const trackedAfter = await countTrackedPhotos(db, passSources.roots ?? null);
-    if (mediaAfter === trackedAfter) {
+    // POST-DELTA CONSISTENCY CHECK, PER VOLUME (invariant 1's second
+    // half). Having just ingested everything the change set held, each
+    // mounted scope-relevant volume's tracked count must equal its
+    // PASS-START MediaStore count (pinned in the decision — a fresh
+    // query here would make the check's behaviour depend on pass
+    // duration vs the count cache's TTL, and photos captured mid-pass
+    // belong to the next open). The tripwire before the pass is
+    // one-directional by necessity — MediaStore holding MORE than we
+    // track is the delta's normal input — so a silently MISSED ADDITION
+    // is invisible to it and would otherwise sit until the weekly
+    // reconciliation. Checked here instead, and repaired immediately.
+    const trackedAfter = await countTrackedByVolume(db, passSources.roots ?? null);
+    const disagreeing = volumesDisagreeingAfterDelta(decision.mediaByVolumeAtStart, trackedAfter);
+    if (disagreeing.length === 0) {
+      // Final fence: baselines must describe the world they were read in.
+      await assertMountedUnchanged(mountedVolumes);
       await finishPass(db, {
         superseded,
         engine,
         fingerprint,
-        generations,
+        generations: passRelevantGenerations,
         unseenOverCap: false,
+        skipped: deltaResult.skipped,
+        exifFailed: deltaResult.exifFailed,
         wasFullPass: false,
       });
       update({ phase: 'done' });
@@ -658,33 +893,42 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     // inconsistent, and leaving it that way until the next open would
     // show the user counts that disagree with their gallery.
     console.warn(
-      `[scan] delta left the library inconsistent (MediaStore ${mediaAfter} vs tracked ` +
-        `${trackedAfter}) — running a full pass immediately`,
+      `[scan] delta left the library inconsistent on ${disagreeing.join(', ')} ` +
+        `(MediaStore at start: ${disagreeing
+          .map((v) => `${v}=${decision.mediaByVolumeAtStart[v]}`)
+          .join(', ')} vs tracked: ${disagreeing
+          .map((v) => `${v}=${trackedAfter[v] ?? 0}`)
+          .join(', ')}) — running a full pass immediately`,
     );
     // The full pass is a fresh enumeration; its progress line must not
     // continue the delta's count — the pass-start snapshot serves as its
     // denominator. `windowsGrouped` deliberately keeps counting: the
     // refresh subscribers diff it, and a rewind would silence them until
     // the new run caught up past the old value.
-    update({ scanned: 0, total: mediaAfter, corpusTotal: mediaAfter });
+    const mediaAtStartTotal = Object.values(decision.mediaByVolumeAtStart).reduce(
+      (sum, n) => sum + n,
+      0,
+    );
+    update({ scanned: 0, total: mediaAtStartTotal, corpusTotal: mediaAtStartTotal });
   }
 
   // A FULL pass's denominator is the library snapshot (F3 — the percent
   // branch); a delta keeps total null and the line shows plain counts.
   if (status.total === null) update({ total: status.corpusTotal });
 
-  const scanned = await pageAndGroup(db, {
+  const fullResult = await pageAndGroup(db, {
     ranges: [FULL_RANGE],
     albumIds: passSources.albumIds ?? undefined,
     baseThreshold: strictness.baseThreshold,
     engine,
     superseded,
+    mountedVolumes,
   });
-  if (scanned === null) {
+  if (fullResult === null) {
     console.log('[scan] superseded by a settings change — stopping for the queued rescan');
     return;
   }
-  const seenIds = scanned;
+  const seenIds = fullResult.seenIds;
 
   // Backstop for tiny corpora that never reached the consecutive-error
   // threshold: a scan with engine errors and literally zero successes must
@@ -696,13 +940,19 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     );
   }
 
-  // A COMPLETE pass enumerated every in-source MediaStore photo, so a
-  // tracked present row the pager never met was removed outside Afterglow.
-  // Absence-from-enumeration alone is not authoritative (photos can land
-  // mid-scan behind the cursor), so each candidate gets the tri-state
-  // presence check and only verified 'trashed'/'absent' rows converge —
-  // exactly the History reconciliation contract.
-  const tracked = await getPresentAssetIds(db, passSources.roots ?? null);
+  // A COMPLETE pass enumerated every in-source MediaStore photo ON
+  // MOUNTED VOLUMES, so a tracked present row the pager never met was
+  // removed outside Afterglow — but ONLY for rows whose volume was
+  // mounted (invariants 2 + 6): an unmounted volume's photos are absent
+  // from enumeration because the VOLUME is away (merged queries silently
+  // drop them, spike A finding 2), which is no evidence about the
+  // photos. They are excluded up front — never probed, never marked,
+  // never blocking the baseline. Absence-from-enumeration alone is not
+  // authoritative even on mounted volumes (photos can land mid-scan
+  // behind the cursor), so each candidate gets the tri-state presence
+  // check and only verified 'trashed'/'absent' rows converge — exactly
+  // the History reconciliation contract.
+  const tracked = await getPresentAssetIds(db, passSources.roots ?? null, [...mountedVolumes]);
   const unseen = tracked.filter((id) => !seenIds.has(id));
   const RECONCILE_CAP = 500;
   if (unseen.length > RECONCILE_CAP) {
@@ -712,12 +962,17 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     );
   }
   const gone: string[] = [];
+  // Quad-state 'absent' = permanently gone (no system-trash row): the
+  // one case whose duel history dies with the sweep (grilling Q13);
+  // 'trashed' is 30-day-restorable and keeps it.
+  const permanentlyGone = new Set<string>();
   let movedUris = 0;
   let unresolved = 0;
   for (const id of unseen.slice(0, RECONCILE_CAP)) {
     const presence = await checkMediaPresence(id);
     if (presence === 'trashed' || presence === 'absent') {
       gone.push(id);
+      if (presence === 'absent') permanentlyGone.add(id);
     } else if (presence === 'present') {
       // Present but NOT enumerated: the photo moved (same MediaStore id,
       // new path — e.g. out of the selected source). Refresh its uri so
@@ -746,16 +1001,23 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     );
   }
   if (gone.length > 0) {
-    await reconcileExternallyRemoved(db, gone, Date.now());
+    // Fence + mounted-aware repair (codex phase-2), same as the delta's
+    // trashed reconcile above.
+    await assertMountedUnchanged(mountedVolumes);
+    await reconcileExternallyRemoved(db, gone, Date.now(), [...mountedVolumes], permanentlyGone);
     console.log(`[scan] reconciled ${gone.length} externally removed photos`);
   }
 
+  // Final fence: baselines must describe the world they were read in.
+  await assertMountedUnchanged(mountedVolumes);
   await finishPass(db, {
     superseded,
     engine,
     fingerprint,
-    generations,
+    generations: passRelevantGenerations,
     unseenOverCap: unseen.length > RECONCILE_CAP || unresolved > 0,
+    skipped: fullResult.skipped,
+    exifFailed: fullResult.exifFailed,
     wasFullPass: true,
   });
 
@@ -768,6 +1030,101 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   );
 }
 
+/**
+ * D15 EXIF date rescue (m0.8.3): any photo landing UNDATED at ingestion
+ * gets one native ExifInterface read of DateTimeOriginal — found → the
+ * timestamp and day become real (naive local time, device timezone —
+ * clustering's standing best-effort stance); absent → the photo stays
+ * honestly undated (a WhatsApp-stripped JPEG keeps its Unknown day).
+ *
+ * ONCE PER PHOTO, via the stored row: MediaStore reports these photos
+ * undated on EVERY pass, and the scan's upsert rewrites taken_at/day from
+ * the ingested values — so a known, unmodified photo must REUSE its
+ * stored values (a NEF rescued last pass would otherwise be clobbered
+ * back to the mtime fallback), and a stored undated verdict (day NULL,
+ * same mod_time) means the header was already read and had nothing.
+ * READ-ONLY by contract: the app never modifies original photo bytes.
+ *
+ * Mutates the batch in place (timestamp + undated flag). Returns the
+ * count of FAILED reads (attempted but never completed): the pass must
+ * not store its skip fingerprint or baselines over them, or the
+ * unchanged-library skip would hide the promised retry until an
+ * unrelated media change (codex r2). Module absent → no attempt at all
+ * and zero failures — a failure that can never succeed must not defeat
+ * the skip forever on devices without the native module.
+ */
+async function applyExifDateRescue(db: SQLiteDatabase, batch: LoadedPhoto[]): Promise<number> {
+  if (!exifReadAvailable()) return 0;
+  const stored = await getRescueBaselines(
+    db,
+    batch.map((photo) => photo.item.id),
+  );
+  const toProbe: LoadedPhoto[] = [];
+  for (const photo of batch) {
+    const row = stored.get(photo.item.id);
+    // Reuse ONLY on the rescue's own completed-read marker (codex r1):
+    // photos.mod_time belongs to edit detection, and a row without the
+    // marker (new, content changed, or a past read that FAILED) probes.
+    if (row && row.exifCheckedModTime !== null && row.exifCheckedModTime === photo.modTime) {
+      // The stored row IS the rescue verdict for this content version —
+      // carried EXPLICITLY (final cycle Q3): the upsert clears the
+      // marker on dated rows that arrive without one, because those are
+      // MediaStore-dated; a reused rescue must not look like one.
+      photo.item.timestamp = row.takenAt;
+      photo.undated = row.day === null;
+      photo.exifCheckedModTime = row.exifCheckedModTime;
+    } else {
+      toProbe.push(photo);
+    }
+  }
+  if (toProbe.length === 0) return 0;
+  let rescued = 0;
+  let failed = 0;
+  const PROBE_CHUNK = 100;
+  for (let i = 0; i < toProbe.length; i += PROBE_CHUNK) {
+    const chunkPhotos = toProbe.slice(i, i + PROBE_CHUNK);
+    let results;
+    try {
+      // Bounded like every other per-item native round trip (m0.8.1,
+      // lib/concurrency.ts) — 100 concurrent uri resolutions would spike
+      // the module queue for no throughput gain.
+      const uris = await mapWithConcurrency(chunkPhotos, 6, (photo) =>
+        getEditableContentUri(photo.item.id),
+      );
+      results = await readExifDateTimeOriginal(uris);
+    } catch (error) {
+      failed += chunkPhotos.length;
+      console.warn(`[scan] exif rescue read failed for a chunk: ${String(error)}`);
+      continue;
+    }
+    for (let j = 0; j < chunkPhotos.length; j++) {
+      const result = results[j];
+      if (!result || result.error !== null) {
+        // The read never completed — no marker, so the next pass
+        // retries. Locking the photo undated on a transient failure
+        // would be silent data loss of a recoverable date (codex r1).
+        failed += 1;
+        continue;
+      }
+      // COMPLETED read (found or honestly absent): stamp the marker.
+      chunkPhotos[j].exifCheckedModTime = chunkPhotos[j].modTime;
+      const ms = result.dateTimeOriginal ? exifDateTimeToMs(result.dateTimeOriginal) : null;
+      if (ms !== null) {
+        chunkPhotos[j].item.timestamp = ms;
+        chunkPhotos[j].undated = false;
+        rescued += 1;
+      }
+    }
+  }
+  if (rescued > 0 || failed > 0) {
+    console.log(
+      `[scan] exif rescue: ${rescued} of ${toProbe.length} undated photos got real dates` +
+        (failed > 0 ? ` (${failed} reads failed — retried next pass)` : ''),
+    );
+  }
+  return failed;
+}
+
 /** Embed, group, reconcile, and persist one closed merge window. */
 async function processWindow(
   db: SQLiteDatabase,
@@ -775,10 +1132,20 @@ async function processWindow(
   engine: EngineHealth,
   baseThreshold: number,
   stale?: () => boolean,
+  /** Mounted volumes at pass start — feeds the regroup boundary's
+   * unreachable-member freeze (m0.8.3 phase 2): a group this pass can
+   * only half-see (a member's volume is out) is never rebuilt. */
+  mountedVolumes?: ReadonlySet<string> | null,
 ): Promise<void> {
   // WRITE PRIORITY (vetted): a pending user decision reaches SQLite
   // before this window's transactions.
   await waitForUserWrites();
+  // Fence BEFORE the embed phase too (final cycle M4): ensureEmbeddings
+  // persists embeddings/hashes per photo as it goes, so an eject during
+  // a long decode would otherwise write satellite rows under a stale
+  // mounted snapshot. The pre-write fence below still guards the group
+  // write itself.
+  if (mountedVolumes) await assertMountedUnchanged(mountedVolumes);
   const ids = window.map((p) => p.item.id);
 
   // dHash floor input rides the embed pipeline (module-computed from the
@@ -828,23 +1195,41 @@ async function processWindow(
   for (const memberIds of members.values()) for (const id of memberIds) stateIds.add(id);
   const states = await getStatesForAssets(db, [...stateIds]);
 
-  const frozen = frozenPhotos(ids, {
+  const freeze = windowFreeze(ids, {
     states,
     assignments,
     groupMembers: members,
     metadataGroups: await getMetadataGroupIds(db, touchedGroups),
+    ...(mountedVolumes
+      ? { reachable: (photoId: string) => mountedVolumes.has(volumeOf(photoId)) }
+      : {}),
   });
+  // Grow-only (Tristan, m0.8.3 grilling): a new photo the engine
+  // clusters with an unreachable-frozen group's reachable members joins
+  // that group instead of minting a neighboring unit.
   const plan = reconcileWindowGroups(
     groups.map((g) => ({
       members: g.items.map((item) => item.id),
       timeAttached: g.timeAttached,
     })),
-    frozen,
+    freeze.frozen,
+    freeze.growable,
   );
+  for (const append of plan.appends) {
+    console.log(
+      `[scan] grow-only: +${append.members.length} photo(s) into frozen group ${append.groupId}`,
+    );
+  }
 
   // Re-check right before the write — a user write may have started
-  // while the embed/regroup reads above were running.
+  // while the embed/regroup reads above were running — and re-verify the
+  // MOUNTED SET (codex phase-2; ordered AFTER the user-write wait, final
+  // cycle round 2: the wait itself is a window): an eject after the
+  // pass-start snapshot silently empties merged paging while the
+  // snapshot-based freeze above still trusts the old world; the fence
+  // aborts before any write can act on that stale picture.
   await waitForUserWrites();
+  if (mountedVolumes) await assertMountedUnchanged(mountedVolumes);
   await writeContinuousGroups(
     db,
     {
@@ -861,15 +1246,19 @@ async function processWindow(
         // v14: recorded so reclaimable bytes is an exact SUM (0 = the
         // stat failed → NULL keeps the row in the transient stat-fallback).
         sizeBytes: fileSize(p.item.uri) || null,
+        // NULL unless the D15 rescue completed a read this pass — the
+        // upsert's COALESCE then retains any stored marker.
+        exifCheckedModTime: p.exifCheckedModTime ?? null,
       })),
       groups: plan.groups,
       singles: plan.singles,
+      appends: plan.appends,
     },
     Date.now(),
     // Checked INSIDE the exclusive transaction: a window superseded
     // mid-embed must not commit after the strictness reset cleared the
     // queue (the entry fence alone leaves that race open).
-    { abortIf: stale },
+    { abortIf: stale, mountedVolumes: mountedVolumes ? [...mountedVolumes] : null },
   );
   update({ windowsGrouped: status.windowsGrouped + 1 });
 }

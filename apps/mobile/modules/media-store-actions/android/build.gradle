@@ -20,4 +20,6 @@ android {
 dependencies {
   // Same activity-result dependency/version used by Expo Media Library 57.
   implementation 'androidx.activity:activity-ktx:1.11.0'
+  // Same ExifInterface version Expo Media Library 57 ships (D15 date rescue).
+  implementation 'androidx.exifinterface:exifinterface:1.4.1'
 }

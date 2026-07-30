@@ -7,11 +7,15 @@
  * Destructive actions deliberately bypass the legacy delete API and use the
  * app's Android 11+ MediaStore trash-request module below.
  */
+import { Platform } from 'react-native';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import type { MediaItem } from '@afterglow/core';
 import {
   getMediaPresence,
+  getMountedVolumes,
+  imageDetailsAvailable,
   mediaStoreActionsAvailable,
+  queryImageDetailsByUri,
   trashMedia,
   type MediaStoreActionStatus,
 } from '../../modules/media-store-actions';
@@ -20,13 +24,22 @@ import {
  * Canonical volume-qualified identity (m0.7 gate 1, P4#2): every photo id
  * that leaves this adapter is `<volume>/<raw MediaStore id>`. This is THE
  * ingestion boundary (P5#1) — the legacy Expo asset's bare raw id never
- * reaches the core model or SQLite keys. Until the gate-3 native catalog
- * adds multi-volume awareness, everything the legacy Expo query returns is
- * primary external storage **(autonomous: single-volume assumption,
- * refined in gate 3)**.
+ * reaches the core model or SQLite keys. The volume is REAL (m0.8.3, D7):
+ * parsed from the asset's uri path by mechanism D (`volumeOfUriPath`),
+ * never assumed primary. FAIL CLOSED: an asset whose volume cannot be
+ * parsed is skipped LOUDLY (dropped from the page, warned once per
+ * directory shape, counted in the page's `skipped`) — the scan reads the
+ * count and withholds its baselines, because a pass must not claim
+ * coverage it did not achieve.
  */
 export { PRIMARY_VOLUME, canonicalPhotoId, rawIdOf, volumeOf } from './mediaIdentity';
-import { PRIMARY_VOLUME, canonicalPhotoId, rawIdOf, volumeOf } from './mediaIdentity';
+import {
+  canonicalContentUri,
+  canonicalPhotoId,
+  rawIdOf,
+  volumeOf,
+  volumeOfUriPath,
+} from './mediaIdentity';
 
 /** A camera-roll photo: the core item plus MediaStore extras we persist.
  * `item.id` is the canonical volume-qualified id. */
@@ -42,14 +55,38 @@ export interface LoadedPhoto {
    * modification-time fallback, and MediaStore sorted it at the end of
    * a DATE_TAKEN-descending stream (the scan handles these separately). */
   undated: boolean;
+  /** Set by the D15 rescue when an EXIF read COMPLETED for this photo
+   * this pass (found or absent): the modTime the read covered. The scan
+   * upsert persists it as the once-per-content marker; unset = no read
+   * this pass (dated photo, reuse, or a failed read → retry). */
+  exifCheckedModTime?: number;
 }
 
 const PAGE_SIZE = 200;
 
-function toLoadedPhoto(asset: MediaLibrary.Asset): LoadedPhoto {
+/** Unparseable-volume warn, once per directory shape per process — loud
+ * without flooding (a whole odd folder shares one line). */
+const warnedUnparseableDirs = new Set<string>();
+const WARNED_DIRS_CAP = 20;
+
+function warnUnparseableVolume(uri: string): void {
+  const dir = uri.slice(0, uri.lastIndexOf('/') + 1) || uri;
+  if (warnedUnparseableDirs.has(dir) || warnedUnparseableDirs.size >= WARNED_DIRS_CAP) return;
+  warnedUnparseableDirs.add(dir);
+  console.warn(`[media] no volume parseable from uri shape ${dir} — photos there are skipped`);
+}
+
+function toLoadedPhoto(asset: MediaLibrary.Asset): LoadedPhoto | null {
+  // Mechanism D (m0.8.3, D7): the REAL volume, from the uri path. Null =
+  // fail closed — the caller drops the asset and counts the skip.
+  const volumeName = volumeOfUriPath(asset.uri);
+  if (volumeName === null) {
+    warnUnparseableVolume(asset.uri);
+    return null;
+  }
   return {
     item: {
-      id: canonicalPhotoId(PRIMARY_VOLUME, asset.id),
+      id: canonicalPhotoId(volumeName, asset.id),
       // Some sources report 0 creationTime; fall back to modification
       // time so clustering stays best-effort instead of lumping them
       // all at epoch.
@@ -58,13 +95,29 @@ function toLoadedPhoto(asset: MediaLibrary.Asset): LoadedPhoto {
       kind: 'photo',
     },
     rawId: asset.id,
-    volumeName: PRIMARY_VOLUME,
+    volumeName,
     filename: asset.filename,
     modTime: asset.modificationTime,
     undated: !asset.creationTime,
     width: asset.width,
     height: asset.height,
   };
+}
+
+/** Map one MediaStore page, dropping fail-closed assets; `skipped` is the
+ * page's unparseable-volume count (the scan's baseline-withholding input). */
+function toLoadedPage(assets: readonly MediaLibrary.Asset[]): {
+  photos: LoadedPhoto[];
+  skipped: number;
+} {
+  const photos: LoadedPhoto[] = [];
+  let skipped = 0;
+  for (const asset of assets) {
+    const photo = toLoadedPhoto(asset);
+    if (photo) photos.push(photo);
+    else skipped += 1;
+  }
+  return { photos, skipped };
 }
 
 /**
@@ -93,7 +146,7 @@ export async function pagePhotosInRange(
       mediaType: MediaLibrary.MediaType.photo,
       sortBy: [[MediaLibrary.SortBy.creationTime, !descending]],
     });
-    const keepGoing = await onPage(page.assets.map(toLoadedPhoto));
+    const keepGoing = await onPage(toLoadedPage(page.assets).photos);
     if (!keepGoing || !page.hasNextPage || !page.endCursor) break;
     after = page.endCursor;
   }
@@ -102,6 +155,9 @@ export async function pagePhotosInRange(
 /** One newest-first page of photos (progress grids, m0.4 stage 3). */
 export interface DescendingPhotoPage {
   photos: LoadedPhoto[];
+  /** Assets dropped fail-closed (no parseable volume, m0.8.3 D7). A scan
+   * pass that saw any must not advance its baselines. */
+  skipped: number;
   /** Cursor for the next page; undefined when there is none. */
   endCursor: string | undefined;
   hasNext: boolean;
@@ -135,8 +191,10 @@ export async function fetchPhotoPageDesc(
     mediaType: MediaLibrary.MediaType.photo,
     sortBy: [[MediaLibrary.SortBy.creationTime, false]],
   });
+  const mapped = toLoadedPage(page.assets);
   return {
-    photos: page.assets.map(toLoadedPhoto),
+    photos: mapped.photos,
+    skipped: mapped.skipped,
     endCursor: page.endCursor ?? undefined,
     hasNext: !!page.hasNextPage && !!page.endCursor,
   };
@@ -219,12 +277,47 @@ export interface AssetDetails {
 /**
  * Re-query one asset. Returns null when the asset no longer exists (or the
  * lookup fails) — callers treat that as "no detection signal".
+ *
+ * VOLUME GUARD (m0.8.3, codex r1): Expo resolves the RAW id against the
+ * merged external collection, and raw MediaStore ids can collide across
+ * volumes — so a lookup for an SD photo's id can return a primary row.
+ * The returned uri must parse to the canonical id's own volume; anything
+ * else is treated as "no signal" rather than risk repairing this row
+ * with another volume's path (updatePhotoUri) or feeding edit detection
+ * another photo's times.
  */
 export async function getAssetDetails(assetId: string): Promise<AssetDetails | null> {
+  // CANONICAL lookup first (final cycle Q2): query the volume-qualified
+  // content URI natively — immune to cross-volume raw-id collisions,
+  // where the merged lookup below can only fail closed to null and leave
+  // the row permanently unresolvable (edit detection silent, the full
+  // pass withholding its baseline every run). The merged path survives
+  // as the module-absent fallback.
+  if (imageDetailsAvailable()) {
+    try {
+      const [row] = await queryImageDetailsByUri([await getEditableContentUri(assetId)]);
+      if (row.status !== 'found') return null;
+      // No DATA path or no DATE_MODIFIED = no usable repair/detection
+      // signal — same "no signal" contract as a failed lookup.
+      if (!row.data || row.dateModifiedMs == null) return null;
+      const fileUri = `file://${row.data}`;
+      return {
+        id: assetId,
+        filename: row.displayName ?? '',
+        creationTime: row.dateTakenMs ?? 0,
+        modificationTime: row.dateModifiedMs,
+        uri: fileUri,
+        localUri: fileUri,
+      };
+    } catch {
+      return null;
+    }
+  }
   try {
     // Accepts canonical volume-qualified ids; Expo wants the raw id.
     const info = await MediaLibrary.getAssetInfoAsync(rawIdOf(assetId));
     if (!info) return null;
+    if (volumeOfUriPath(info.uri) !== volumeOf(assetId)) return null;
     return {
       id: canonicalPhotoId(volumeOf(assetId), info.id),
       filename: info.filename,
@@ -277,8 +370,15 @@ export async function loadCandidatesCreatedBetween(
       });
       for (const asset of page.assets) {
         loaded++;
+        // Same fail-closed volume rule as toLoadedPhoto: an unparseable
+        // asset just yields no detection candidate.
+        const volumeName = volumeOfUriPath(asset.uri);
+        if (volumeName === null) {
+          warnUnparseableVolume(asset.uri);
+          continue;
+        }
         out.push({
-          id: canonicalPhotoId(PRIMARY_VOLUME, asset.id),
+          id: canonicalPhotoId(volumeName, asset.id),
           filename: asset.filename,
           creationTime: asset.creationTime,
           modificationTime: asset.modificationTime,
@@ -299,34 +399,29 @@ export async function loadCandidatesCreatedBetween(
 /**
  * The `content://` URI for an asset — what ACTION_EDIT needs (external
  * editors can't be granted access to a raw `file://` path on modern
- * Android). Falls back to constructing the standard external-images URI
- * from the MediaStore id if the native lookup fails.
+ * Android). CONSTRUCTED from the canonical id (m0.8.3, codex r1), never
+ * resolved through Expo: the reverse lookup queries the merged external
+ * collection by raw `_ID` alone, and raw ids can collide across volumes
+ * — a resolved uri can silently address another volume's photo, and
+ * every action (trash, favourite, edit, share, presence, EXIF read)
+ * flows through here. Below Android 10 there are no named volumes and
+ * only the legacy `external` authority resolves (codex r2) — the one
+ * Platform check lives here, at the impure boundary.
  */
-/** How a content URI was obtained. The synthetic fallback shape matches the
- * URI in the captured Samsung editor failure, so gate-0 diagnostics must
- * know which path produced it. */
 export interface EditableContentUri {
   uri: string;
-  source: 'expo' | 'synthetic-fallback';
-  resolveError?: string;
+  source: 'canonical';
 }
 
+/** Named MediaStore volumes exist from Android 10 (API 29). */
+const LEGACY_MERGED_COLLECTION = Platform.OS === 'android' && Number(Platform.Version) < 29;
+
 export async function getEditableContentUriDetailed(assetId: string): Promise<EditableContentUri> {
-  // Accepts canonical volume-qualified ids; Expo wants the raw id.
-  const rawId = rawIdOf(assetId);
-  try {
-    return { uri: await MediaLibrary.getAssetContentUriAsync(rawId), source: 'expo' };
-  } catch (error) {
-    return {
-      uri: `content://media/${volumeOf(assetId)}/images/media/${rawId}`,
-      source: 'synthetic-fallback',
-      resolveError: error instanceof Error ? error.message : String(error),
-    };
-  }
+  return { uri: canonicalContentUri(assetId, LEGACY_MERGED_COLLECTION), source: 'canonical' };
 }
 
 export async function getEditableContentUri(assetId: string): Promise<string> {
-  return (await getEditableContentUriDetailed(assetId)).uri;
+  return canonicalContentUri(assetId, LEGACY_MERGED_COLLECTION);
 }
 
 /**
@@ -360,7 +455,20 @@ export async function checkMediaPresence(
 ): Promise<'present' | 'trashed' | 'absent' | 'unknown'> {
   if (!mediaStoreActionsAvailable()) return 'unknown';
   try {
-    return await getMediaPresence(await getEditableContentUri(assetId));
+    const presence = await getMediaPresence(await getEditableContentUri(assetId));
+    if (presence !== 'absent') return presence;
+    // 'absent' (a successful EMPTY cursor) is authoritative only while
+    // the row's volume is actually mounted (final cycle V1) — cross-OEM
+    // insurance, kept deliberately (Tristan, grilling Q5): our S10e
+    // (Android 12) provably THROWS "Volume not found" for an ejected
+    // volume's URI (measured 2026-07-30, sm-simulated eject), but
+    // Android does not specify empty-vs-throw, and a provider answering
+    // empty-success would let every 'absent' consumer — History
+    // reconciliation, copy cleanup, trash recovery — sweep state the
+    // eject contract preserves. LIVE read, not the burst cache: this
+    // gates destructive conclusions.
+    const live = await getMountedVolumes();
+    return live.includes(volumeOf(assetId)) ? 'absent' : 'unknown';
   } catch {
     return 'unknown';
   }

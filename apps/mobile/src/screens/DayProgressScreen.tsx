@@ -10,7 +10,9 @@
 import React, { useCallback, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import { useExternalRefresh } from '../components/useExternalRefresh';
 import { useSQLiteContext } from 'expo-sqlite';
+import { mountedVolumeSet } from '../lib/mountedVolumes';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { formatClock } from '../lib/format';
@@ -38,6 +40,11 @@ export function DayProgressScreen({ route, navigation }: Props) {
   // group" sent the user to the day's singles deck — a wrong-but-
   // plausible destination.
   const [groups, setGroups] = useState<ReviewGroupRow[] | 'loading' | 'failed'>('loading');
+  // Foreground return re-reads the day's group list (final cycle P4):
+  // the child ProgressView refreshes its own counts/grid, but this list
+  // is loaded here and `version` may not move on a card swap.
+  const [foregroundTick, setForegroundTick] = useState(0);
+  useExternalRefresh(() => setForegroundTick((t) => t + 1));
 
   useFocusEffect(
     useCallback(() => {
@@ -49,7 +56,7 @@ export function DayProgressScreen({ route, navigation }: Props) {
         // known-empty day (see the state comment above).
         try {
           const roots = (await resolveSources(db)).roots ?? null;
-          const rows = await listGroupsForDay(db, day, roots);
+          const rows = await listGroupsForDay(db, day, roots, await mountedVolumeSet());
           // A completed group here can sit entirely OUTSIDE the review
           // snapshot, where actionWeights knows nothing — hydrate the
           // badge refs for every member BEFORE the list renders (the
@@ -73,7 +80,7 @@ export function DayProgressScreen({ route, navigation }: Props) {
       // must follow without a leave-and-return (a closing Modal does not
       // refocus the screen).
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [db, day, version, hydrateBadges]),
+    }, [db, day, version, hydrateBadges, foregroundTick]),
   );
 
   /** Same badge set as the review overview (GroupsScreen): the verdict
@@ -165,11 +172,17 @@ export function DayProgressScreen({ route, navigation }: Props) {
               {loaded.map((group) => {
                 const pending = group.members.filter((m) => m.state === 'unreviewed').length;
                 const first = group.members[0];
+                const away =
+                  (group.unreachableCount ?? 0) > 0
+                    ? ` · ${group.unreachableCount} on unmounted SD card`
+                    : '';
                 return (
                   <UnitCard
                     key={group.groupId}
                     title={`${group.members.length} shots${first ? ` · ${formatClock(first.taken_at)}` : ''}`}
-                    status={pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`}
+                    status={
+                      (pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`) + away
+                    }
                     statusDone={pending === 0}
                     members={group.members}
                     onPress={() => navigation.navigate('Deck', { groupId: String(group.groupId) })}

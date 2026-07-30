@@ -10,6 +10,7 @@ import { createBottomTabNavigator, type BottomTabBarProps } from '@react-navigat
 import { useSQLiteContext } from 'expo-sqlite';
 import type { MainTabParamList, RootStackParamList } from './src/navigation';
 import { countQueues } from './src/db/actions';
+import { mountedVolumeSet, onVolumesChanged } from './src/lib/mountedVolumes';
 import { DATABASE_NAME, migrateDatabase } from './src/db/database';
 import { ReviewProvider, useReview } from './src/review/ReviewContext';
 import { HomeScreen } from './src/screens/HomeScreen';
@@ -52,7 +53,11 @@ function MainTabs() {
     // rescheduled again was an unbounded 4 s polling loop against a
     // persistently failing database.
     let retried = false;
+    // Only the LATEST trigger may commit (final cycle N6): an older load
+    // holding a pre-eject mounted set must not overwrite fresher badges.
+    let loadGen = 0;
     const load = async () => {
+      const myGen = ++loadGen;
       // v18: one grouped query for all four badges, where there used to
       // be four separate count functions over four different shapes.
       // FAIL CLOSED (codex r5): a rejected count keeps the last rendered
@@ -61,7 +66,7 @@ function MainTabs() {
       // the next review mutation or foreground return retries anyway.
       let queues: Awaited<ReturnType<typeof countQueues>>;
       try {
-        queues = await countQueues(db);
+        queues = await countQueues(db, await mountedVolumeSet());
       } catch (error) {
         console.warn('[tabs] queue badge count failed — badges kept:', String(error));
         if (!cancelled && !retried) {
@@ -71,7 +76,7 @@ function MainTabs() {
         return;
       }
       retried = false;
-      if (cancelled) return;
+      if (cancelled || myGen !== loadGen) return;
       setBadges({
         EditQueue: queues.edit,
         FavouritesQueue: queues.favourite,
@@ -86,11 +91,18 @@ function MainTabs() {
     // returns through an AppState 'active' transition. The old 15 s
     // interval re-ran four COUNT queries forever while foregrounded.
     const subscription = AppState.addEventListener('change', (next) => {
+      // Mount-state invalidation on foreground lives in
+      // lib/mountedVolumes.ts (module-scope listener, O6) — this reload
+      // always reads a fresh set.
       if (next === 'active') void load();
     });
+    // Live mount changes move the badges too (Tristan, m0.8.3 matrix):
+    // a card swap with the app foregrounded fires no AppState event.
+    const unsubscribeVolumes = onVolumesChanged(() => void load());
     return () => {
       cancelled = true;
       subscription.remove();
+      unsubscribeVolumes();
     };
   }, [db, version]);
   const screenOptions = ({ route }: { route: { name: keyof MainTabParamList } }) => ({

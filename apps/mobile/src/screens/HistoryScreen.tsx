@@ -23,6 +23,7 @@ import {
   type HistoryRow,
 } from '../db/store';
 import { reconcileExternallyRemoved } from '../db/trashStore';
+import { mountedVolumeSet } from '../lib/mountedVolumes';
 import { mapWithConcurrency } from '../lib/concurrency';
 import { checkMediaPresence } from '../lib/media';
 import { formatDayClock } from '../lib/format';
@@ -110,7 +111,18 @@ export function HistoryScreen(_props: Props) {
         photoIds.filter((_, i) => presences[i] === 'trashed' || presences[i] === 'absent'),
       );
       if (gone.size === 0) return pageRows;
-      await reconcileExternallyRemoved(db, [...gone], Date.now());
+      // Quad-state 'absent' = permanently gone → duel history dies with
+      // the sweep; 'trashed' is restorable and keeps it (grilling Q13).
+      const permanentlyGone = new Set<string>(photoIds.filter((_, i) => presences[i] === 'absent'));
+      // Mounted snapshot: the repair must defer a group still holding a
+      // member on an ejected card (final cycle P4, plan §5).
+      await reconcileExternallyRemoved(
+        db,
+        [...gone],
+        Date.now(),
+        await mountedVolumeSet(),
+        permanentlyGone,
+      );
       // The removal may have dissolved a cached group or moved its
       // survivor to singles — the review queue must observe it.
       void refreshReview().catch(() => {});

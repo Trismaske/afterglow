@@ -3,6 +3,7 @@ import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from '
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
+import { useExternalRefresh } from '../components/useExternalRefresh';
 import { useSQLiteContext } from 'expo-sqlite';
 import * as MediaLibrary from 'expo-media-library';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -29,7 +30,14 @@ import {
 import { countPhotosInRange } from '../lib/media';
 import { resolveSources } from '../lib/sourceCatalog';
 import {
+  invalidateMountedVolumes,
+  mountedVolumeSet,
+  unreachableCounts,
+} from '../lib/mountedVolumes';
+import type { SourceRoot } from '../lib/sources';
+import {
   countStagedCulls,
+  countTrackedByVolume,
   getCoverageByDay,
   getDecisionTotals,
   getStagedCullBytes,
@@ -117,6 +125,9 @@ export function HomeScreen({ navigation }: Props) {
     reviewed: number;
   } | null>(null);
   const [stagedCullCount, setStagedCullCount] = useState(0);
+  /** m0.8.3 §5: unreachable photos per unmounted volume — the Home
+   * status line ("SD card not mounted — 214 photos waiting on it"). */
+  const [unreachable, setUnreachable] = useState<{ volume: string; count: number }[]>([]);
   /** EXACT bytes the staged culls would free (vetted): a SUM over
    * scan-recorded sizes, plus transient per-file stats for rows the v14
    * scan has not sized yet. */
@@ -130,6 +141,11 @@ export function HomeScreen({ navigation }: Props) {
   const [detectionNotice, setDetectionNotice] = useState<string | null>(null);
   /** Bumped after detection changes states, to re-run the focus loaders. */
   const [refreshTick, setRefreshTick] = useState(0);
+  // Foreground return reloads the whole Home surface (final cycle O6):
+  // the review queue's own foreground refresh commits nothing when the
+  // QUEUE is unchanged, but a card swap still moves Home's corpus,
+  // coverage and banner. Both focus loaders depend on this tick.
+  useExternalRefresh(() => setRefreshTick((t) => t + 1));
   const lastDetectionRef = useRef(0);
 
   // m0.8 gate 2: kick the continuous scan once media permission is in.
@@ -226,16 +242,22 @@ export function HomeScreen({ navigation }: Props) {
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
+      // Home focus starts a fresh burst: mount state must be live, not
+      // the previous screen's 5-second memo (m0.8.3).
+      invalidateMountedVolumes();
       void (async () => {
         const today = dayKey(Date.now());
         const since = recentDayKeys(120)[119] ?? today;
+        // ONE mounted snapshot for this whole burst (final cycle N5):
+        // corpus, coverage and the banner must describe the same world.
+        const burstMounted = await mountedVolumeSet();
         // decided_at bound in epoch ms (see getReviewedCountsByDay).
         const sinceMs = rangeOfDayKey(since).startMs;
         // Corpus stats share the queue's source scope: the MediaStore
         // denominator and the verdict/group numerators must count the
         // same photos. FAIL CLOSED: a resolution error keeps the last
         // rendered stats instead of broadening to all folders.
-        let src: { roots: string[] | null; albumIds: string[] | null } | null = null;
+        let src: { roots: SourceRoot[] | null; albumIds: string[] | null } | null = null;
         if (permission?.granted) {
           try {
             const resolved = await resolveSources(db);
@@ -261,7 +283,7 @@ export function HomeScreen({ navigation }: Props) {
           // m0.8.2: the forecast's decision floor and pace denominator —
           // one indexed aggregate, not the full base-rate pass.
           resolutionFailed ? null : getDecisionTotals(db, src?.roots ?? null),
-          permission?.granted && src ? getCorpusStats(db, src.roots) : null,
+          permission?.granted && src ? getCorpusStats(db, src.roots, burstMounted) : null,
           // null = the MediaStore count FAILED — keep the last rendered
           // stats rather than presenting an authoritative-looking zero.
           permission?.granted && src
@@ -299,7 +321,7 @@ export function HomeScreen({ navigation }: Props) {
           console.warn('[home] sources unresolved — coverage and forecast kept');
         } else {
           const sinceDay = coverageWindowDays(coverageGoal) === null ? null : keys[0];
-          const rows = await getCoverageByDay(db, sinceDay, src.roots);
+          const rows = await getCoverageByDay(db, sinceDay, src.roots, burstMounted);
           if (cancelled) return;
           nextCoverageStatus =
             coverageGoal === 'off' ? null : coverageStatus(rows, coverageGoal, keys);
@@ -341,6 +363,13 @@ export function HomeScreen({ navigation }: Props) {
         if (nextFinish !== undefined) setFinish(nextFinish);
         if (stats && total !== null)
           setCorpus({ total, groupsFound: stats.groupsFound, reviewed: stats.reviewed });
+        // The §5 naming surface: which in-scope volumes are out, with the
+        // tracked photos waiting on them. Unknowable mounted set (legacy)
+        // = no claims, banner absent.
+        if (permission?.granted && src !== null) {
+          const byVolume = await countTrackedByVolume(db, src?.roots ?? null);
+          if (!cancelled) setUnreachable(unreachableCounts(byVolume, burstMounted));
+        }
       })();
       return () => {
         cancelled = true;
@@ -523,11 +552,15 @@ export function HomeScreen({ navigation }: Props) {
     useCallback(() => {
       let cancelled = false;
       (async () => {
-        const stagedCulls = await countStagedCulls(db);
+        // ONE mounted snapshot for this whole loader (final cycle Q4):
+        // cull counts, day summaries and unreviewed-day discovery must
+        // describe the same mounted world within one render.
+        const cullMounted = await mountedVolumeSet();
+        const stagedCulls = await countStagedCulls(db, cullMounted);
         if (cancelled) return;
         setStagedCullCount(stagedCulls);
         if (stagedCulls > 0) {
-          const staged = await getStagedCullBytes(db);
+          const staged = await getStagedCullBytes(db, cullMounted);
           if (cancelled) return;
           // Scan-recorded sizes SUM in SQL; only rows the scan never
           // sized get a (blocking) stat, bounded by the query's LIMIT.
@@ -543,7 +576,7 @@ export function HomeScreen({ navigation }: Props) {
         // rows — null's store meaning is "all folders", and the
         // still-to-review discovery below must never silently broaden a
         // narrowed source.
-        let src: { roots: string[] | null; albumIds: string[] | null } | null = null;
+        let src: { roots: SourceRoot[] | null; albumIds: string[] | null } | null = null;
         if (permission?.granted) {
           try {
             const resolved = await resolveSources(db);
@@ -579,7 +612,7 @@ export function HomeScreen({ navigation }: Props) {
         // zero photos.
         const buildRows = async (days: readonly string[]): Promise<DayRow[]> => {
           if (days.length === 0) return [];
-          const summaries = await getDaySummariesForDays(db, days, src?.roots ?? null);
+          const summaries = await getDaySummariesForDays(db, days, src?.roots ?? null, cullMounted);
           // Per-day MediaStore counts run CONCURRENTLY and via the cheap
           // totalCount path (m0.8.1): this used to PAGE every asset of
           // every day (200 at a time) sequentially just to tally one
@@ -612,7 +645,22 @@ export function HomeScreen({ navigation }: Props) {
               if (row.total > 0) rows.push(row);
               return;
             }
-            const row = toRow(day, summaries.get(day), msTotals[index]);
+            // The day's population is AT LEAST what the DB tracks on it
+            // (final cycle M2): a D15-rescued photo has a real DB day but
+            // no MediaStore DATE_TAKEN, so the range count alone would
+            // undercount — or drop — its day. MediaStore still lifts the
+            // total for photos the scan has not ingested yet.
+            const summary = summaries.get(day);
+            const dbAlive = (summary?.tracked ?? 0) - (summary?.trashed ?? 0);
+            // Disjoint union (final cycle P4): MediaStore's range count
+            // (which includes photos the scan has not ingested yet) plus
+            // the D15-rescued rows MediaStore cannot date. `dbAlive`
+            // stays as a floor for the failed-count edge.
+            const row = toRow(
+              day,
+              summary,
+              Math.max(msTotals[index] + (summary?.rescued ?? 0), dbAlive),
+            );
             if (row.total > 0) rows.push(row);
           });
           return rows;
@@ -620,7 +668,7 @@ export function HomeScreen({ navigation }: Props) {
         try {
           const recentKeys = recentDayKeys(RECENT_CALENDAR_DAYS);
           const unreviewedDays = permission?.granted
-            ? await getUnreviewedDayRows(db, src?.roots ?? null)
+            ? await getUnreviewedDayRows(db, src?.roots ?? null, cullMounted)
             : [];
           const undatedPending = unreviewedDays.some((u) => u.day === UNDATED_DAY_KEY);
           const olderUnreviewed = unreviewedDays
@@ -834,6 +882,23 @@ export function HomeScreen({ navigation }: Props) {
                       {`${libraryTotal.toLocaleString()} picture${libraryTotal === 1 ? '' : 's'} total`}
                     </Text>
                   )}
+                  {/* m0.8.3 §5 (D5): unmounted ≠ deleted, named with its
+                      count. One line per absent volume; the copy carries
+                      the asterisk a "clear" day earned by ejecting a
+                      card deserves. */}
+                  {unreachable.map((entry) => (
+                    <Pressable
+                      key={entry.volume}
+                      onPress={() => navigation.navigate('Settings')}
+                      accessibilityLabel="SD card not mounted — open Settings"
+                    >
+                      <Text style={styles.unreachableLine}>
+                        {`SD card not mounted — ${entry.count.toLocaleString()} photo${
+                          entry.count === 1 ? '' : 's'
+                        } waiting on it`}
+                      </Text>
+                    </Pressable>
+                  ))}
                   {queueTotal === 0 ? (
                     <Text style={styles.cardText}>
                       Everything reviewed — new photos join the queue as they are found.
@@ -1117,6 +1182,9 @@ const styles = StyleSheet.create({
   },
   cardTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
   cardText: { color: colors.textDim, fontSize: 15, lineHeight: 21 },
+  // Reachability is a FACT line, not an error: near-white (colors.text,
+  // the no-hue-of-its-own colour), never cull-red — nothing is wrong.
+  unreachableLine: { color: colors.text, fontSize: 14, lineHeight: 20 },
   coverageCard: {
     backgroundColor: colors.surface,
     borderRadius: touch.radius,

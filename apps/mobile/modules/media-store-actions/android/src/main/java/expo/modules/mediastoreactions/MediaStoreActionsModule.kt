@@ -1,13 +1,17 @@
 package expo.modules.mediastoreactions
 
 import android.content.ActivityNotFoundException
+import android.content.BroadcastReceiver
 import android.content.ContentResolver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Process
 import android.provider.MediaStore
+import androidx.exifinterface.media.ExifInterface
 import expo.modules.kotlin.activityresult.AppContextActivityResultLauncher
 import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
@@ -15,9 +19,39 @@ import expo.modules.kotlin.modules.ModuleDefinition
 
 class MediaStoreActionsModule : Module() {
   private lateinit var launcher: AppContextActivityResultLauncher<MediaStoreActionInput, Boolean>
+  private var volumeReceiver: BroadcastReceiver? = null
 
   override fun definition() = ModuleDefinition {
     Name("MediaStoreActions")
+
+    // m0.8.3 (Tristan, matrix): mount changes while the app stays
+    // FOREGROUNDED have no navigation or AppState signal — the OS
+    // broadcast is the only push. MEDIA_* are protected system
+    // broadcasts (system-only senders), so no export flag concerns.
+    Events("volumesChanged")
+
+    OnCreate {
+      val filter = IntentFilter().apply {
+        addAction(Intent.ACTION_MEDIA_MOUNTED)
+        addAction(Intent.ACTION_MEDIA_UNMOUNTED)
+        addAction(Intent.ACTION_MEDIA_EJECT)
+        addAction(Intent.ACTION_MEDIA_REMOVED)
+        addAction(Intent.ACTION_MEDIA_BAD_REMOVAL)
+        addDataScheme("file")
+      }
+      val receiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+          sendEvent("volumesChanged", mapOf("action" to (intent.action ?: "")))
+        }
+      }
+      volumeReceiver = receiver
+      appContext.reactContext?.registerReceiver(receiver, filter)
+    }
+
+    OnDestroy {
+      volumeReceiver?.let { appContext.reactContext?.unregisterReceiver(it) }
+      volumeReceiver = null
+    }
 
     RegisterActivityContracts {
       launcher = registerForActivityResult(MediaStoreActionContract(this@MediaStoreActionsModule))
@@ -42,6 +76,27 @@ class MediaStoreActionsModule : Module() {
     // transient failure for a deleted photo.
     AsyncFunction("mediaPresence") Coroutine { uri: Uri ->
       mediaPresenceOf(uri)
+    }
+
+    // D15 EXIF date rescue (m0.8.3): one header-only ExifInterface read
+    // of DateTimeOriginal per photo that landed UNDATED at ingestion.
+    // READ-ONLY by contract — the app never modifies original photo
+    // bytes; the files are complete (exiftool-verified) and the gap is
+    // Android's extraction, so there is nothing to repair. A failed read
+    // reports its error string and a null date — the caller logs the
+    // fallback loudly and the photo stays honestly undated.
+    AsyncFunction("readExifDateTimeOriginal") { uriStrings: List<Uri> ->
+      val context = appContext.reactContext
+        ?: throw IllegalStateException("Android context unavailable")
+      val resolver = context.contentResolver
+      uriStrings.map { uri ->
+        val (value, error) = exifDateTimeOriginal(resolver, uri)
+        mapOf(
+          "uri" to uri.toString(),
+          "dateTimeOriginal" to value,
+          "error" to error,
+        )
+      }
     }
 
     // ---- Gate-0 editor-launch diagnostic matrix (m0.7 item A) ----------
@@ -231,6 +286,76 @@ class MediaStoreActionsModule : Module() {
       out
     }
 
+    /**
+     * The mounted volume set (m0.8.3 phase 2, codex): reachability
+     * decisions must never run blind, so the scan REQUIRES this and
+     * aborts when it throws. API 29+ asks MediaStore directly; API
+     * 24-28 derives the same names from StorageManager (primary →
+     * 'external_primary', others → lowercased FS UUID — the identical
+     * mapping mechanism D applies to paths). ALL OR NONE: a mounted
+     * volume this cannot name is an error, not a silent omission.
+     */
+    AsyncFunction("listMountedVolumes") {
+      val context = appContext.reactContext
+        ?: throw IllegalStateException("Android context unavailable")
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        MediaStore.getExternalVolumeNames(context).toList()
+      } else {
+        val storage = context.getSystemService(android.content.Context.STORAGE_SERVICE)
+          as android.os.storage.StorageManager
+        storage.storageVolumes
+          .filter {
+            it.state == android.os.Environment.MEDIA_MOUNTED ||
+              it.state == android.os.Environment.MEDIA_MOUNTED_READ_ONLY
+          }
+          .map { volume ->
+            if (volume.isPrimary) {
+              "external_primary"
+            } else {
+              volume.uuid?.lowercase()
+                ?: throw IllegalStateException("mounted volume without a UUID")
+            }
+          }
+      }
+    }
+
+    /**
+     * Per-volume image counts (m0.8.3 phase 2) — one side of the
+     * per-volume scan tripwires when the scope is "All folders" (a dirs
+     * scope counts its own buckets instead). Default query args, so
+     * trashed and pending rows are excluded exactly as they are from the
+     * paging the scan does.
+     *
+     * ALL VOLUMES OR NONE, same rule as mediaGenerations: a partial
+     * count map is indistinguishable from a complete one, and a missing
+     * volume would hide exactly the tripwire this exists to fire.
+     */
+    AsyncFunction("countImagesByVolume") { volumes: List<String> ->
+      val context = appContext.reactContext
+        ?: throw IllegalStateException("Android context unavailable")
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+        throw IllegalStateException("per-volume queries need API 29+")
+      }
+      val out = mutableMapOf<String, Double>()
+      for (volume in volumes) {
+        try {
+          val uri = MediaStore.Images.Media.getContentUri(volume)
+          val count = context.contentResolver.query(
+            uri,
+            arrayOf(MediaStore.MediaColumns._ID),
+            null,
+            null,
+            null,
+          )?.use { cursor -> cursor.count }
+            ?: throw IllegalStateException("null cursor for volume $volume")
+          out[volume] = count.toDouble()
+        } catch (error: Exception) {
+          throw IllegalStateException("count failed for volume $volume", error)
+        }
+      }
+      out
+    }
+
     AsyncFunction("listImageAlbums") {
       val context = appContext.reactContext
         ?: throw IllegalStateException("Android context unavailable")
@@ -301,6 +426,49 @@ class MediaStoreActionsModule : Module() {
     // mutating move must never run before consent — a lingering write
     // grant from an earlier batch would let resolver.update succeed
     // early. Nulls on any failure.
+    // m0.8.3 final cycle Q2: image details by CANONICAL volume-qualified
+    // content URI. The merged-collection raw-id lookup (Expo) can resolve
+    // ANOTHER volume's row when raw ids collide across volumes; querying
+    // the exact per-volume URI is collision-proof. DATE_MODIFIED is
+    // converted to ms here so JS consumers share one unit.
+    AsyncFunction("queryImageDetails") { uriStrings: List<Uri> ->
+      val context = appContext.reactContext
+        ?: throw IllegalStateException("Android context unavailable")
+      val resolver = context.contentResolver
+      uriStrings.map { uri ->
+        try {
+          val row = resolver.query(
+            uri,
+            arrayOf(
+              MediaStore.MediaColumns.DISPLAY_NAME,
+              MediaStore.MediaColumns.DATE_MODIFIED,
+              MediaStore.Images.Media.DATE_TAKEN,
+              MediaStore.MediaColumns.DATA,
+            ),
+            null,
+            null,
+            null,
+          )?.use { c ->
+            if (c.moveToFirst()) mapOf(
+              "uri" to uri.toString(),
+              "status" to "found",
+              "displayName" to (if (c.isNull(0)) null else c.getString(0)),
+              "dateModifiedMs" to (if (c.isNull(1)) null else c.getLong(1) * 1000),
+              "dateTakenMs" to (if (c.isNull(2)) null else c.getLong(2)),
+              "data" to (if (c.isNull(3)) null else c.getString(3)),
+            ) else null
+          }
+          row ?: mapOf("uri" to uri.toString(), "status" to "absent")
+        } catch (error: Exception) {
+          mapOf(
+            "uri" to uri.toString(),
+            "status" to "error",
+            "message" to (error.message ?: error.javaClass.simpleName),
+          )
+        }
+      }
+    }
+
     AsyncFunction("queryRelativePaths") { uriStrings: List<Uri> ->
       val context = appContext.reactContext
         ?: throw IllegalStateException("Android context unavailable")
@@ -442,6 +610,24 @@ class MediaStoreActionsModule : Module() {
       }
     }
   }
+
+  /** The one D15 read: DateTimeOriginal via a streamed header-only
+   * ExifInterface parse. Returns (value, error) — exactly one is
+   * non-null unless the tag is simply absent (null, null). A NULL input
+   * stream is an ERROR, not an absent tag (codex r2): nothing was
+   * parsed, so reporting it as a completed read would stamp the
+   * once-per-content marker and permanently suppress the retry. */
+  private fun exifDateTimeOriginal(resolver: ContentResolver, uri: Uri): Pair<String?, String?> =
+    try {
+      val stream = resolver.openInputStream(uri)
+        ?: return Pair(null, "openInputStream returned null")
+      val value = stream.use { s ->
+        ExifInterface(s).getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)
+      }
+      Pair(value, null)
+    } catch (error: Exception) {
+      Pair(null, "${error.javaClass.simpleName}: ${error.message}")
+    }
 
   private fun permissionLabel(result: Int): String =
     if (result == PackageManager.PERMISSION_GRANTED) "granted" else "denied"

@@ -307,6 +307,191 @@ describe('makePhotoSingles (durable user ejection)', () => {
   });
 });
 
+describe('makePhotoSingles with an unreachable survivor (final cycle O1)', () => {
+  const SD = '0a91-e18d';
+  const sdId = (rawId: string): string => `${SD}/${rawId}`;
+
+  /** Cross-volume pair: primary/v1 grouped with sd/s1. */
+  async function seedMixedPair(d: TestDb): Promise<number> {
+    await writeContinuousGroups(
+      asExpo(d),
+      {
+        photos: [
+          upsert('v1'),
+          {
+            ...upsert('s1'),
+            assetId: sdId('s1'),
+            uri: `file:///storage/0A91-E18D/DCIM/s1.jpg`,
+            volumeName: SD,
+            rawId: 's1',
+          },
+        ],
+        groups: [{ members: [id('v1'), sdId('s1')], timeAttached: [] }],
+        singles: [],
+      },
+      AT,
+    );
+    const row = d.raw
+      .prepare(`SELECT group_id FROM photo_group_assignments WHERE photo_id = ?`)
+      .get(id('v1')) as { group_id: number };
+    return row.group_id;
+  }
+
+  it('never user_single-freezes a survivor on an unmounted card; its assignment defers', async () => {
+    const d = await fresh();
+    const groupId = await seedMixedPair(d);
+    await makePhotoSingles(asExpo(d), [id('v1')], groupId, ['external_primary']);
+    const ejected = d.raw
+      .prepare('SELECT group_id, user_single FROM photo_group_assignments WHERE photo_id = ?')
+      .get(id('v1')) as { group_id: number | null; user_single: number };
+    expect(ejected.group_id).toBeNull();
+    expect(ejected.user_single).toBe(1);
+    // The unseen survivor keeps every byte (plan §5): same group, never
+    // marked a user single — remount re-windows it normally.
+    const survivor = d.raw
+      .prepare('SELECT group_id, user_single FROM photo_group_assignments WHERE photo_id = ?')
+      .get(sdId('s1')) as { group_id: number | null; user_single: number };
+    expect(survivor.group_id).toBe(groupId);
+    expect(survivor.user_single).toBe(0);
+  });
+
+  it('a REACHABLE survivor still promotes to a durable single (pair semantics)', async () => {
+    const d = await fresh();
+    const groupId = await seedMixedPair(d);
+    await makePhotoSingles(asExpo(d), [id('v1')], groupId, ['external_primary', SD]);
+    const survivor = d.raw
+      .prepare('SELECT group_id, user_single FROM photo_group_assignments WHERE photo_id = ?')
+      .get(sdId('s1')) as { group_id: number | null; user_single: number };
+    expect(survivor.group_id).toBeNull();
+    expect(survivor.user_single).toBe(1);
+  });
+});
+
+describe('reachability scopes live rows, never tombstoned facts (final cycle O3)', () => {
+  const SD = '0a91-e18d';
+
+  /** One primary live photo + one SD row per requested state, all on the
+   * seed day. Tombstones are shaped exactly as their writers leave them:
+   * trashed = removal cleanup, keep = Forget-keep. */
+  async function seedDay(d: TestDb): Promise<void> {
+    await writeContinuousGroups(
+      asExpo(d),
+      {
+        photos: [
+          upsert('live'),
+          {
+            ...upsert('sdTrashed'),
+            assetId: `${SD}/sdTrashed`,
+            uri: 'file:///storage/0A91-E18D/DCIM/t.jpg',
+            volumeName: SD,
+            rawId: 'sdTrashed',
+          },
+          {
+            ...upsert('sdKeep'),
+            assetId: `${SD}/sdKeep`,
+            uri: 'file:///storage/0A91-E18D/DCIM/k.jpg',
+            volumeName: SD,
+            rawId: 'sdKeep',
+          },
+        ],
+        groups: [],
+        singles: [id('live'), `${SD}/sdTrashed`, `${SD}/sdKeep`],
+      },
+      AT,
+    );
+    // A verified trash tombstone (mechanism 1: state = trashed, absent).
+    d.raw
+      .prepare(
+        `UPDATE photos SET state = 'trashed', is_present = 0 WHERE asset_id = '${SD}/sdTrashed'`,
+      )
+      .run();
+    // A Forget-keep tombstone (mechanism 2: ordinary verdict, absent).
+    d.raw
+      .prepare(`UPDATE photos SET state = 'kept', is_present = 0 WHERE asset_id = '${SD}/sdKeep'`)
+      .run();
+  }
+
+  it('day summaries keep counting a trashed fact after its volume unmounts', async () => {
+    const d = await fresh();
+    await seedDay(d);
+    const map = await getDaySummariesForDays(asExpo(d), ['2026-07-20'], null, ['external_primary']);
+    const day = map.get('2026-07-20')!;
+    // live (reachable) + the trashed fact; the keep tombstone is not a
+    // day population member anywhere.
+    expect(day.tracked).toBe(2);
+    expect(day.trashed).toBe(1);
+    expect(day.done).toBe(1);
+  });
+
+  it('state-count chips keep the trashed figure after its volume unmounts', async () => {
+    const d = await fresh();
+    await seedDay(d);
+    const counts = await getStateCountsInScope(asExpo(d), { day: '2026-07-20' }, null, [
+      'external_primary',
+    ]);
+    expect(counts.trashed).toBe(1);
+    expect(counts.unreviewed).toBe(1);
+    expect(counts.tracked).toBe(2);
+    expect(counts.rescued).toBe(0);
+  });
+});
+
+describe('day summaries count D15-rescued rows for the union total (final cycle P4)', () => {
+  it('a dated row wearing the rescue marker reports in `rescued`; trashed and unmarked rows do not', async () => {
+    const d = await fresh();
+    await seed(d, ['plain', 'rescued', 'rescuedTrashed']);
+    d.raw
+      .prepare('UPDATE photos SET exif_checked_mod_time = mod_time WHERE asset_id IN (?, ?)')
+      .run(id('rescued'), id('rescuedTrashed'));
+    d.raw
+      .prepare("UPDATE photos SET state = 'trashed', is_present = 0 WHERE asset_id = ?")
+      .run(id('rescuedTrashed'));
+    const map = await getDaySummariesForDays(asExpo(d), ['2026-07-20']);
+    const day = map.get('2026-07-20')!;
+    expect(day.tracked).toBe(3);
+    expect(day.rescued).toBe(1); // alive marked row only
+    // The day page's chips carry the same figure (the analyzing line
+    // subtracts it from the ingested-dated population, grilling Q8).
+    const counts = await getStateCountsInScope(asExpo(d), { day: '2026-07-20' }, null);
+    expect(counts.rescued).toBe(1);
+  });
+});
+
+describe('rescue-marker provenance across re-ingestion (final cycle Q3)', () => {
+  const marker = (d: TestDb): number | null =>
+    (
+      d.raw
+        .prepare('SELECT exif_checked_mod_time AS m FROM photos WHERE asset_id = ?')
+        .get(id('r1')) as { m: number | null }
+    ).m;
+
+  async function upsertR1(d: TestDb, fields: Partial<ContinuousPhotoUpsert>): Promise<void> {
+    await writeContinuousGroups(
+      asExpo(d),
+      { photos: [{ ...upsert('r1'), ...fields }], groups: [], singles: [id('r1')] },
+      AT,
+    );
+  }
+
+  it('a MediaStore-dated re-ingestion clears the marker (Home union stays exact)', async () => {
+    const d = await fresh();
+    await upsertR1(d, { exifCheckedModTime: AT - 3_600_000 });
+    expect(marker(d)).toBe(AT - 3_600_000);
+    // MediaStore later supplies DATE_TAKEN: the row pages DATED, no
+    // rescue ran, so the upsert carries a day and no marker.
+    await upsertR1(d, { exifCheckedModTime: undefined });
+    expect(marker(d)).toBeNull();
+  });
+
+  it('an undated pass without a completed read keeps the stored proof', async () => {
+    const d = await fresh();
+    await upsertR1(d, { exifCheckedModTime: AT - 3_600_000 });
+    // Failed read / module absent: undated, no marker → proof survives.
+    await upsertR1(d, { exifCheckedModTime: undefined, day: null, takenAt: AT - 3_600_000 });
+    expect(marker(d)).toBe(AT - 3_600_000);
+  });
+});
+
 describe('un-staging paths (decision 2)', () => {
   it('unstageCullDirect lands on kept, and a queued edit rides along', async () => {
     const d = await fresh();
@@ -796,7 +981,7 @@ describe('source-scoped queue reads', () => {
       AT,
     );
   }
-  const CAMERA = ['DCIM/Camera'];
+  const CAMERA = [{ volume: 'external_primary', dir: 'DCIM/Camera' }];
 
   it('groups, singles feed, counts and day groups all honor the roots filter', async () => {
     const d = await fresh();
@@ -999,7 +1184,9 @@ describe('corpus stats honor the source scope', () => {
       ],
       AT + 1,
     );
-    expect(await getCorpusStats(asExpo(d), ['DCIM/Camera'])).toEqual({
+    expect(
+      await getCorpusStats(asExpo(d), [{ volume: 'external_primary', dir: 'DCIM/Camera' }]),
+    ).toEqual({
       groupsFound: 1,
       reviewed: 1,
     });
@@ -1786,7 +1973,7 @@ describe('decision counts honour the source selection (m0.8.2)', () => {
       ],
       AT,
     );
-    const roots = ['DCIM/Camera'];
+    const roots = [{ volume: 'external_primary', dir: 'DCIM/Camera' }];
     const scoped = await getReviewedCountsByDay(asExpo(d), 0, roots);
     const unscoped = await getReviewedCountsByDay(asExpo(d), 0);
     expect([...scoped.values()].reduce((a, b) => a + b, 0)).toBe(1);
@@ -1900,7 +2087,9 @@ describe('getCoverageByDay (m0.8.1 coverage goal)', () => {
         .run(`file:///storage/emulated/0/${folder}/${rawId}.jpg`, id(rawId));
     setUri('1', 'DCIM/Camera');
     setUri('2', 'WhatsApp/Media');
-    const scoped = await getCoverageByDay(asExpo(d), null, ['DCIM/Camera']);
+    const scoped = await getCoverageByDay(asExpo(d), null, [
+      { volume: 'external_primary', dir: 'DCIM/Camera' },
+    ]);
     expect(scoped.reduce((sum, r) => sum + r.total, 0)).toBe(1);
     const all = await getCoverageByDay(asExpo(d), null, null);
     expect(all.reduce((sum, r) => sum + r.total, 0)).toBe(2);

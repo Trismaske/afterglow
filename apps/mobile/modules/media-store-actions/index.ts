@@ -22,6 +22,16 @@ export interface ProbeLaunchResult {
   message: string;
 }
 
+/** One D15 EXIF read result: the raw DateTimeOriginal string ("YYYY:MM:DD
+ * HH:MM:SS", naive local time) or null, plus the error that prevented the
+ * read (null on a clean read — including a clean read of a file that
+ * simply has no tag). */
+export interface ExifDateResult {
+  uri: string;
+  dateTimeOriginal: string | null;
+  error: string | null;
+}
+
 interface NativeApi {
   trash(uris: string[]): Promise<{ status: MediaStoreActionStatus }>;
   setFavourite(uris: string[], value: boolean): Promise<{ status: MediaStoreActionStatus }>;
@@ -35,7 +45,12 @@ interface NativeApi {
   mediaGenerations(): Promise<Record<string, number>>;
   mediaChangedSince(volume: string, since: number): Promise<NativeChangedRow[]>;
   queryRelativePaths(uris: string[]): Promise<RelativePathInfo[]>;
+  queryImageDetails(uris: string[]): Promise<ImageDetailsRow[]>;
   moveToRelativePath(uris: string[], relativePath: string): Promise<MoveResult[]>;
+  readExifDateTimeOriginal(uris: string[]): Promise<ExifDateResult[]>;
+  countImagesByVolume(volumes: string[]): Promise<Record<string, number>>;
+  listMountedVolumes(): Promise<string[]>;
+  addListener(event: 'volumesChanged', listener: () => void): { remove(): void };
 }
 
 /** One row MediaStore reports as added or modified since a generation.
@@ -72,6 +87,20 @@ export interface RelativePathInfo {
   uri: string;
   relativePath: string | null;
   data: string | null;
+}
+
+/** Details by canonical content URI (m0.8.3 final cycle Q2) — the
+ * collision-proof replacement for merged-collection raw-id lookups.
+ * 'absent' is authoritative (successful empty query); 'error' is not
+ * evidence of anything. dateModifiedMs is already converted to ms. */
+export interface ImageDetailsRow {
+  uri: string;
+  status: 'found' | 'absent' | 'error';
+  displayName?: string | null;
+  dateModifiedMs?: number | null;
+  dateTakenMs?: number | null;
+  data?: string | null;
+  message?: string;
 }
 
 export interface MoveResult {
@@ -217,6 +246,32 @@ export async function queryMediaRelativePaths(uris: string[]): Promise<RelativeP
   return native!.queryRelativePaths(contentUris(uris));
 }
 
+/** Storage-volume mount/unmount push events (m0.8.3): fires on the OS
+ * MEDIA_* broadcasts while the app runs — the only signal for a card
+ * swap that happens while the app stays foregrounded. No-op (returns a
+ * dummy unsubscribe) when the module is absent. */
+export function subscribeVolumesChanged(listener: () => void): () => void {
+  if (Platform.OS !== 'android' || native == null) return () => {};
+  const subscription = native.addListener('volumesChanged', listener);
+  return () => subscription.remove();
+}
+
+/** The canonical read-only details query needs only named per-volume
+ * MediaStore URIs (API 29) and the module — NOT the Android-11 mutation
+ * boundary (final cycle S1): gating it at 30 would recreate the merged
+ * raw-id collision on Android 10, the exact hole it exists to close. */
+export function imageDetailsAvailable(): boolean {
+  return Platform.OS === 'android' && Number(Platform.Version) >= 29 && native != null;
+}
+
+/** Image details by canonical content URI (Q2). Throws when unavailable
+ * — callers gate on imageDetailsAvailable() and fall back to the
+ * volume-guarded merged lookup. */
+export async function queryImageDetailsByUri(uris: string[]): Promise<ImageDetailsRow[]> {
+  if (!imageDetailsAvailable()) throw new Error('canonical details query unavailable');
+  return native!.queryImageDetails(contentUris(uris));
+}
+
 /** Verified RELATIVE_PATH moves (R#6). Callers hold write access first. */
 export async function moveMediaToRelativePath(
   uris: string[],
@@ -230,6 +285,48 @@ export async function moveMediaToRelativePath(
     }));
   }
   return native!.moveToRelativePath(contentUris(uris), relativePath);
+}
+
+/** D15 EXIF date rescue: one header-only DateTimeOriginal read per uri.
+ * Read-only by contract — the app never modifies original photo bytes.
+ * Gated on module presence only (like the diagnostics), NOT the Android
+ * 11 action boundary: the read has no API-30 dependency, and gating it
+ * there would leave every undated photo on older Android permanently
+ * undated (codex r1). Unavailable module → every row comes back erroring,
+ * so callers degrade to "stays undated" and stay retry-eligible. */
+export async function readExifDateTimeOriginal(uris: string[]): Promise<ExifDateResult[]> {
+  if (!diagnosticsAvailable()) {
+    return uris.map((uri) => ({ uri, dateTimeOriginal: null, error: 'module unavailable' }));
+  }
+  return native!.readExifDateTimeOriginal(contentUris(uris));
+}
+
+/** Whether the D15 read can run at all. Callers short-circuit the whole
+ * rescue when it cannot (module absent — an Expo Go dev shell): probing
+ * would report every photo failed, and a "failed" that can never succeed
+ * must not defeat the unchanged-library skip forever (codex r2). */
+export function exifReadAvailable(): boolean {
+  return diagnosticsAvailable();
+}
+
+/** The mounted volume set (m0.8.3 phase 2, codex): the scan REQUIRES
+ * this — reachability decisions (the regroup freeze, reconcile scope,
+ * page validation) must never run blind, so unknown means the pass
+ * ABORTS rather than treating every volume as reachable. THROWS when
+ * the module is absent or a mounted volume cannot be named. */
+export async function getMountedVolumes(): Promise<string[]> {
+  if (!diagnosticsAvailable()) throw new Error('mounted-volume enumeration unavailable');
+  return native!.listMountedVolumes();
+}
+
+/** Per-volume image counts (m0.8.3 phase 2) — the "All folders" side of
+ * the per-volume scan tripwires. ALL VOLUMES OR NONE (a partial map
+ * would hide exactly the tripwire this feeds) — THROWS when any volume
+ * is uncountable or the module/API is unavailable; the scan's planner
+ * catches and falls back to a full pass. */
+export async function getImageCountsByVolume(volumes: string[]): Promise<Record<string, number>> {
+  if (!available()) throw new Error('per-volume counts unavailable');
+  return native!.countImagesByVolume(volumes);
 }
 
 /** Fire the share sheet (SEND / SEND_MULTIPLE with read grants). Resolves

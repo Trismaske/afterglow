@@ -112,7 +112,7 @@ HEIC, GIF) reviews normally. Videos are not reviewable yet.
 | Format | Status |
 |---|---|
 | DNG (incl. Samsung Expert RAW) | **Fully supported** — grouped, rendered, reviewable like any photo |
-| NEF (Nikon) | **Supported, one caveat** — reviews and renders fine, but Android does not extract its capture date, so NEF photos land under *Unknown day* and sort by file date |
+| NEF (Nikon) | **Fully supported** — Android does not extract its capture date, so Afterglow reads it from the file's own EXIF header at ingestion (0.8.3) and files the photo under its real day |
 | ARW (Sony) | **Fully supported** |
 | CR3 (Canon) | **Not supported** — Android does not classify CR3 as an image, so these files are invisible to the app (they are not shown, counted, or touched) |
 | Other RAW formats | Untested — the app shows whatever MediaStore indexes as an image |
@@ -121,13 +121,25 @@ Format handling is the OS's: results can vary by device and Android
 version; the table above is what we measured, not a promise about every
 phone.
 
-**Where photos can live:** internal storage is fully supported. A card
-in the phone's **own SD slot** currently *appears* in the app but is not
-reliably actionable (deleting or favouriting from it can fail) — proper
-SD-card support is the next release (0.8.3). Cards in **USB/OTG
-readers** and USB drives are not supported at all: Android never indexes
-them for gallery apps, so they are invisible to Afterglow (use your
-file manager to copy them onto the phone first).
+**Where photos can live (0.8.3):** internal storage and a card in the
+phone's **own SD slot** are both fully supported — SD folders are picked
+like any other (they wear an "SD card" tag), and culling, favouriting,
+editing and sharing work on SD photos. Moving photos between albums
+(Organize) stays primary-storage-only this release; the app says so on
+the affordance rather than failing later. Ejecting the card never loses
+anything: its photos leave the queues and counts while it is out
+("SD card not mounted — N photos waiting on it" on Home), and return
+exactly as they were on remount. A card that is gone for good has a
+designed exit — **Settings → Forget this card** — with a choice between
+keeping your review history and erasing it. Cards in **USB/OTG readers**
+and USB drives are not supported at all: Android never indexes them for
+gallery apps, so they are invisible to Afterglow (use your file manager
+to copy them onto the phone first).
+
+**Upgrading to 0.8.3:** the database resets on first launch (pre-1.0
+policy) — review states are rebuilt from a fresh scan, which re-analyses
+the library once (roughly 25 minutes on a 27,000-photo phone, faster on
+smaller libraries).
 
 ## What a photo carries
 

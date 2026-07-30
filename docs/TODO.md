@@ -335,3 +335,76 @@ or other docs quote the title, never the number**.
     bounded pending feed (paging + perf on 27k corpora), the filter's
     default state, and what "Continue reviewing" anchors to when the
     list shows everything.
+
+22. **Field diagnostics: persistent capture + user-shareable export**
+    (Tristan, m0.8.3 grilling). Today every field diagnostic —
+    `[scan]`/`[perf]` lines, count tripwires, fallback warnings — is a
+    plain console line, visible only over adb and gone with the
+    process. Wanted: users run the app in the field for weeks, then
+    share a diagnostics bundle we can analyze for weirdness they never
+    noticed (silent-safe events like tripwire full-passes, fallback
+    badges, hash-collision symptoms are exactly the class that needs
+    this). Needs its own design pass: persistent ring buffer (size- and
+    time-bounded), what gets captured (log lines vs structured events),
+    privacy (paths/filenames in lines — scrub or disclose), a Settings
+    "Share diagnostics" row via the share sheet, and how this composes
+    with the v1 re-gating of the `[perf]` lines.
+
+23. **History event streams for actions, and a duel-history surface**
+    (Tristan, m0.8.3 matrix). History's two streams are photo VERDICTS
+    and SHARE events — favourite/organize/edit activity appears only as
+    badges on verdict rows, and duel records have NO browse surface at
+    all (they exist as data: star provenance, whole-table revalidation,
+    the Q13 permanence split protects them for exactly this future).
+    Wanted: action events in the History feed (queued/applied, with the
+    same keyset paging discipline) and somewhere to SEE a group's
+    Compare history. Needs its own design pass: which actions are
+    events vs noise, feed volume, and where duel history lives (viewer
+    decision panel vs group sheet).
+
+24. **History feed: tombstone rows with a placeholder tile** (Tristan,
+    m0.8.3 grilling F5/C11). The feed requires `is_present = 1` (rows
+    render thumbnails), so Forget-keep tombstones keep every STAT but
+    drop out of the scrollable feed. Wanted: absent decided photos stay
+    in the feed as a placeholder tile (grey "photo removed" cell,
+    verdict badge, original date) so the feed is the complete record.
+    Design: tile treatment, whether trashed rows join too (they have
+    the same gap), and the filter story.
+
+## Discovered, waiting for a real trigger
+
+Items found during implementation whose fix has a known shape but whose
+value is unproven — deliberately parked until a real user or tester hits
+them (Tristan, m0.8.3 grilling). Same hygiene as above: promote on
+trigger, delete when answered.
+
+- **Rescued photos never window with same-moment dated photos**
+  (m0.8.3 grilling Q9). A D15-rescued photo (in practice: NEF —
+  measured on the S23: NEF `datetaken` NULL, DNG and ARW both dated)
+  carries its real timestamp but pages in MediaStore's undated batch,
+  so an NEF+JPEG same-moment pair reviews as two separate cards.
+  Rescued photos group stably among themselves; the fix is a designed
+  re-merge of rescued photos into the dated windowing stream (plan
+  m0.8.3 B8 deferred real-pair grouping). Trigger: a tester actually
+  reviewing RAW+JPEG pairs and wanting them on one card.
+
+- **Bucket-id hash collision: named-folder warning** (m0.8.3 grilling
+  Q11). A cross-volume BUCKET_ID hash collision (~0.005% lifetime odds,
+  measured 0 across 643 buckets on the S10e) would over-include another
+  folder's photos in MediaStore-paged grids and cause repeated tripwire
+  full-passes; durable state stays correct (true volume identity is
+  stamped at ingestion). Fix shape: detect at catalog load, name the two
+  colliding folders, advise rename/deselect. Trigger: a tester's grid
+  shows an unselected folder's photos, or logs show persistent tripwire
+  full-passes with no library change.
+
+- **EXIF-failure retry cap** (m0.8.3 grilling Q18a). A failed (I/O-level)
+  EXIF rescue read withholds the scan fingerprint so the next open
+  retries — correct and bounded for transient failures, but a file that
+  stays indexed yet permanently throws on open would force a pass every
+  open. Measured unreachable via file corruption (lenient EXIF parsing
+  completes-null on truncated/garbled NEFs — S10e, 2026-07-30); only a
+  persistent open-failure could trigger it. Fix shape: cap consecutive
+  identical-content retries, then stamp honestly-undated. Trigger: field
+  logs (TODO "Field diagnostics" item) showing the same `exifFailed`
+  warning across consecutive passes.

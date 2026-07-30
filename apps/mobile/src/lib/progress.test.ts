@@ -73,6 +73,7 @@ function counts(partial: Partial<StateCounts>): StateCounts {
     kept: 0,
     staged: 0,
     trashed: 0,
+    rescued: 0,
     tracked: 0,
     grouped: { unreviewed: 0, kept: 0, staged: 0 },
     actions: { edit: 0, favourite: 0, organize: 0, share: 0 },

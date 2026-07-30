@@ -26,6 +26,11 @@ export interface StateCounts {
   trashed: number;
   /** All rows for the scope. */
   tracked: number;
+  /** ALIVE rows dated only by the D15 EXIF rescue (marker present) —
+   * invisible to MediaStore range counts, so a day's "still being
+   * analyzed" line subtracts them from the ingested-dated population
+   * (Tristan, grilling Q8). */
+  rescued: number;
   /** Of the above, how many sit in a similarity group — the ANNOTATION
    * layer, counted per verdict so the grouped underline can span them
    * all (docs/STATE_MODEL.md rule 5). */

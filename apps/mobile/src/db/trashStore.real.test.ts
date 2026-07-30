@@ -17,6 +17,7 @@ import {
   TRASH_BATCH_LIMIT,
 } from './trashStore';
 import { encodeOrganizeTarget } from './actions';
+import { writeContinuousGroups } from './store';
 import { openTestDb, type TestDb } from './testDb';
 
 const open: TestDb[] = [];
@@ -41,10 +42,10 @@ async function fresh(): Promise<TestDb> {
 function insertPhoto(d: TestDb, id: string, state: string): void {
   d.raw
     .prepare(
-      `INSERT INTO photos (asset_id, uri, taken_at, day, state)
-       VALUES (?, 'content://x', ?, '2026-07-20', ?)`,
+      `INSERT INTO photos (asset_id, uri, taken_at, day, state, volume_name, raw_id)
+       VALUES (?, 'content://x', ?, '2026-07-20', ?, 'external_primary', ?)`,
     )
-    .run(id, AT, state);
+    .run(id, AT, state, id);
 }
 
 function insertCull(d: TestDb, id: string): void {
@@ -223,6 +224,85 @@ describe('resolveTrashBatch', () => {
       AT + 3,
     );
     expect(retry!.members).toHaveLength(1);
+  });
+});
+
+describe('resolveTrashBatch — unreachable partner (final cycle O2)', () => {
+  /** Seed a cross-volume pair through the scan write: primary/p1 grouped
+   * with sd/s1 (the SD card later ejects). */
+  async function seedPair(d: TestDb): Promise<void> {
+    await writeContinuousGroups(
+      asExpo(d),
+      {
+        photos: [
+          {
+            assetId: 'external_primary/p1',
+            uri: 'file:///storage/emulated/0/DCIM/p1.jpg',
+            takenAt: AT - 3_600_000,
+            modTime: AT - 3_600_000,
+            day: '2026-07-20',
+            volumeName: 'external_primary',
+            rawId: 'p1',
+            sizeBytes: 1_000,
+          },
+          {
+            assetId: '0a91-e18d/s1',
+            uri: 'file:///storage/0A91-E18D/DCIM/s1.jpg',
+            takenAt: AT - 3_599_000,
+            modTime: AT - 3_599_000,
+            day: '2026-07-20',
+            volumeName: '0a91-e18d',
+            rawId: 's1',
+            sizeBytes: 1_000,
+          },
+        ],
+        groups: [{ members: ['external_primary/p1', '0a91-e18d/s1'], timeAttached: [] }],
+        singles: [],
+      },
+      AT,
+    );
+  }
+
+  async function trashPrimaryMember(d: TestDb, mountedVolumes: readonly string[] | null) {
+    d.raw
+      .prepare("UPDATE photos SET state = 'culled' WHERE asset_id = 'external_primary/p1'")
+      .run();
+    const prepared = await prepareTrashBatch(
+      asExpo(d),
+      [{ photoId: 'external_primary/p1', measuredBytes: 10 }],
+      AT + 100,
+    );
+    await markBatchLaunching(asExpo(d), prepared!.batchId, AT + 200);
+    return resolveTrashBatch(asExpo(d), {
+      batchId: prepared!.batchId,
+      verify: absent,
+      dialog: 'applied',
+      at: AT + 300,
+      mountedVolumes,
+    });
+  }
+
+  it('defers the dissolve while the partner is on an unmounted card (plan §5)', async () => {
+    const d = await fresh();
+    await seedPair(d);
+    await trashPrimaryMember(d, ['external_primary']);
+    const partner = d.raw
+      .prepare(
+        `SELECT group_id, user_single FROM photo_group_assignments WHERE photo_id = '0a91-e18d/s1'`,
+      )
+      .get() as { group_id: number | null; user_single: number };
+    expect(partner.group_id).not.toBeNull();
+    expect(partner.user_single).toBe(0);
+  });
+
+  it('without mount knowledge (null) the standard dissolve applies', async () => {
+    const d = await fresh();
+    await seedPair(d);
+    await trashPrimaryMember(d, null);
+    const partner = d.raw
+      .prepare(`SELECT group_id FROM photo_group_assignments WHERE photo_id = '0a91-e18d/s1'`)
+      .get() as { group_id: number | null };
+    expect(partner.group_id).toBeNull();
   });
 });
 

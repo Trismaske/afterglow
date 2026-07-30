@@ -3,9 +3,12 @@
 import { describe, expect, it } from 'vitest';
 import { scanCanSkip, scanFingerprint, scanStatusLine } from './scanSkip';
 
+const PRIMARY = 'external_primary';
+const root = (dir: string, volume = PRIMARY) => ({ volume, dir });
+
 const base = {
   generations: { external_primary: 4211 },
-  roots: ['DCIM/Camera'] as readonly string[] | null,
+  roots: [root('DCIM/Camera')] as readonly { volume: string; dir: string }[] | null,
   strictness: null as string | null,
   modelSha: 'abc123',
 };
@@ -15,12 +18,12 @@ describe('scanFingerprint', () => {
     const a = scanFingerprint({
       ...base,
       generations: { a: 1, b: 2 },
-      roots: ['DCIM/Camera', 'Pictures'],
+      roots: [root('DCIM/Camera'), root('Pictures')],
     });
     const b = scanFingerprint({
       ...base,
       generations: { b: 2, a: 1 },
-      roots: ['Pictures', 'DCIM/Camera'],
+      roots: [root('Pictures'), root('DCIM/Camera')],
     });
     expect(a).toBe(b);
   });
@@ -31,9 +34,15 @@ describe('scanFingerprint', () => {
       reference,
     );
     expect(scanFingerprint({ ...base, roots: null })).not.toBe(reference);
-    expect(scanFingerprint({ ...base, roots: ['Pictures'] })).not.toBe(reference);
+    expect(scanFingerprint({ ...base, roots: [root('Pictures')] })).not.toBe(reference);
     expect(scanFingerprint({ ...base, strictness: '2' })).not.toBe(reference);
     expect(scanFingerprint({ ...base, modelSha: 'def456' })).not.toBe(reference);
+  });
+
+  it('distinguishes the same dir on two volumes (m0.8.3, D4)', () => {
+    expect(scanFingerprint({ ...base, roots: [root('DCIM/Camera', '0a91-e18d')] })).not.toBe(
+      scanFingerprint(base),
+    );
   });
 
   it('distinguishes all-folders from a named root', () => {
@@ -66,13 +75,13 @@ describe('multi-volume proof (m0.8.2)', () => {
     // while that volume's photos changed underneath.
     const both = scanFingerprint({
       generations: { external_primary: 12, '0a91-e18d': 7 },
-      roots: ['DCIM/Camera'],
+      roots: [root('DCIM/Camera')],
       strictness: null,
       modelSha: 'sha',
     });
     const primaryOnly = scanFingerprint({
       generations: { external_primary: 12 },
-      roots: ['DCIM/Camera'],
+      roots: [root('DCIM/Camera')],
       strictness: null,
       modelSha: 'sha',
     });
@@ -88,7 +97,7 @@ describe('multi-volume proof (m0.8.2)', () => {
     // And the SD volume changing alone is enough to force a pass.
     const sdMoved = scanFingerprint({
       generations: { external_primary: 12, '0a91-e18d': 8 },
-      roots: ['DCIM/Camera'],
+      roots: [root('DCIM/Camera')],
       strictness: null,
       modelSha: 'sha',
     });

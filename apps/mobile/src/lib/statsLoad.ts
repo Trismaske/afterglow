@@ -94,6 +94,8 @@ import {
   type CoverageWindow,
 } from './coverageGoal';
 import { dayKey, rangeOfDayKey, recentDayKeys } from './dates';
+import { mountedVolumeSet } from './mountedVolumes';
+import type { SourceRoot } from './sources';
 import { fileSizeOrNull } from './hash';
 import { countPhotosInRange } from './media';
 import { computeBreakdown, type StateBreakdown } from './progress';
@@ -129,7 +131,7 @@ export interface DecisionStats {
 
 /** The photo sources a scoped read must honour (resolved by the caller). */
 export interface StatsSources {
-  roots: readonly string[] | null;
+  roots: readonly SourceRoot[] | null;
   albumIds: readonly string[] | null;
 }
 
@@ -141,6 +143,9 @@ export async function loadDecisionStats(
 ): Promise<DecisionStats> {
   const today = dayKey(at);
   const newestFirst = recentDayKeys(STREAK_WINDOW_DAYS, new Date(at));
+  // One mounted-set read per burst (m0.8.3 §5): coverage and pool
+  // numbers exclude unreachable photos; decision HISTORY stays whole.
+  const mounted = await mountedVolumeSet();
   const [rawGoal, rawCoverage, reviewedByDay, lifetime, todaySummary, coverageRows] =
     await Promise.all([
       getSetting(db, DAILY_GOAL_KEY),
@@ -158,7 +163,12 @@ export async function loadDecisionStats(
       // SAME source scope as every other corpus number (m0.8.2 fix).
       sources === null
         ? Promise.resolve(null)
-        : getCoverageByDay(db, newestFirst[newestFirst.length - 1] ?? today, sources.roots),
+        : getCoverageByDay(
+            db,
+            newestFirst[newestFirst.length - 1] ?? today,
+            sources.roots,
+            mounted,
+          ),
     ]);
   const goal = parseDailyGoal(rawGoal);
   const dayKeys = [...newestFirst].reverse();
@@ -198,10 +208,11 @@ export async function loadForecastInputs(
   db: SQLiteDatabase,
   sources: StatsSources,
 ): Promise<ForecastInputs> {
+  const mounted = await mountedVolumeSet();
   const [baseRates, stamps, pool] = await Promise.all([
     getForecastBaseRates(db, sources.roots),
     getRecentDecisionStamps(db, undefined, sources.roots),
-    getRemainingPoolSize(db, sources.roots),
+    getRemainingPoolSize(db, sources.roots, mounted),
   ]);
   return { baseRates, stamps, pool };
 }
@@ -232,14 +243,15 @@ export async function loadForecastStats(
   const newestFirst = recentDayKeys(STREAK_WINDOW_DAYS, new Date(at));
   const oldest = newestFirst[newestFirst.length - 1] ?? today;
   const sinceMs = rangeOfDayKey(oldest).startMs;
+  const mounted = await mountedVolumeSet();
   const [rawGoal, reviewedByDay, inputs, coverageRows, corpus, total] = await Promise.all([
     getSetting(db, DAILY_GOAL_KEY),
     getReviewedCountsByDay(db, sinceMs, sources.roots),
     loadForecastInputs(db, sources),
     // The SAME rows the coverage chart plots — so the intake behind the
     // ETA and the intake drawn on the Activity tab cannot disagree.
-    getCoverageByDay(db, oldest, sources.roots),
-    getCorpusStats(db, sources.roots),
+    getCoverageByDay(db, oldest, sources.roots, mounted),
+    getCorpusStats(db, sources.roots, mounted),
     countPhotosInRange(0, Number.POSITIVE_INFINITY, sources.albumIds),
   ]);
   const capturedByDay = new Map<string, number>();
@@ -297,7 +309,7 @@ export async function loadHabitStats(
     await Promise.all([
       getDecisionRhythm(db, sources.roots),
       getRecentDecisionStamps(db, undefined, sources.roots),
-      getQueueTurnaround(db),
+      getQueueTurnaround(db, await mountedVolumeSet()),
       getDuelSummary(db),
       getDecisionOutcomesSince(db, sinceMs, sources.roots),
       getForecastBaseRates(db, sources.roots),
@@ -349,21 +361,27 @@ export interface LibraryStats {
 /** Corpus-wide stats for the photo sources the review queue uses. */
 export async function loadLibraryStats(
   db: SQLiteDatabase,
-  sources: { roots: readonly string[] | null; albumIds: readonly string[] | null },
+  sources: { roots: readonly SourceRoot[] | null; albumIds: readonly string[] | null },
 ): Promise<LibraryStats> {
+  const mounted = await mountedVolumeSet();
   const [total, counts, corpus, cull, queues] = await Promise.all([
     // The same open-ended scope the "All photos" Progress page uses on
     // both sides, so Stats and Progress can never disagree: MediaStore
     // unbounded, and the DB by `taken_at` (NOT NULL — undated photos
     // carry the mtime fallback, so they count here too).
     countPhotosInRange(0, Number.POSITIVE_INFINITY, sources.albumIds),
-    getStateCountsInScope(db, { startMs: 0, endMs: Number.POSITIVE_INFINITY }, sources.roots),
-    getCorpusStats(db, sources.roots),
-    countStagedCulls(db),
+    getStateCountsInScope(
+      db,
+      { startMs: 0, endMs: Number.POSITIVE_INFINITY },
+      sources.roots,
+      mounted,
+    ),
+    getCorpusStats(db, sources.roots, mounted),
+    countStagedCulls(db, mounted),
     // v18: one grouped query instead of four bespoke count functions.
-    countQueues(db),
+    countQueues(db, mounted),
   ]);
-  const staged = cull > 0 ? await getStagedCullBytes(db) : { scanned: 0, unsized: [] };
+  const staged = cull > 0 ? await getStagedCullBytes(db, mounted) : { scanned: 0, unsized: [] };
   return {
     breakdown: computeBreakdown(total, counts),
     groupsFound: corpus.groupsFound,

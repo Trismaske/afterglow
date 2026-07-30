@@ -9,6 +9,7 @@ import { Alert, FlatList, Platform, Pressable, StyleSheet, Text, View } from 're
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSQLiteContext } from 'expo-sqlite';
+import { mountedVolumeSet } from '../lib/mountedVolumes';
 import { getPhotoQueueFacts } from '../db/store';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {} from '../db/store';
@@ -48,7 +49,7 @@ export function FavouritesQueueScreen() {
     useCallback(async () => {
       // v18: one action queue; the DIRECTION that used to be a five-value
       // enum is now the action's target.
-      const actions = await getQueue(db, 'favourite');
+      const actions = await getQueue(db, 'favourite', await mountedVolumeSet());
       const byId = await getPhotoQueueFacts(
         db,
         actions.map((a) => a.photoId),

@@ -33,6 +33,7 @@ What stays unchanged: the grouping engine (volume-blind by decision D9), the rev
 | D13 | RAW policy | Binary per-format, no half-states: a RAW format is either fully reviewable (renders + embeds + groups + trashes) or visibly excluded at ingestion with a named count. Spike B fills the format table. A format that fails the spike is **dropped from the roadmap**, not parked — no "full RAW support" TODO. |
 | D14 | Housekeeping | Version m0.8.3; destructive DB reset (schema v19 → v20) per the standing pre-v1 fresh-baseline policy; TODO edits as listed in §9. |
 | D15 | EXIF date rescue | In scope (2026-07-29, post-spike): any photo landing UNDATED at ingestion gets one native `ExifInterface` read of `DateTimeOriginal`; found → real timestamp/day, else Unknown day as today. Generic, not NEF-specific. **No file writes, ever** — the files are not broken (exiftool-verified), Android's extraction is; the app never modifies original photo bytes, and a repair setting was considered and rejected. |
+| D16 | Day grids page from the DB | Decided with Tristan 2026-07-30 (phase-1 build): a rescued photo is DB-dated but MediaStore-undated, so a day's "all photos" grid paged by MediaStore DATE_TAKEN range would omit it forever while the day's counts/chips/deck include it. Day-scoped grids therefore use the SQLite paging engine (the one the Unknown day and verdict/action filters already use); library-wide range grids stay MediaStore-paged. Per-photo hydration of MediaStore pages was considered and rejected (needs a date-source marker plus a third merged fetcher, all for one engine's blind spot). Lands with phase 3. |
 
 ## 1. Gate 0 — the spikes
 
@@ -100,7 +101,7 @@ Full evidence: `/tmp/afterglow-m0.8.3-handoff/spikeB-findings.md` (with the buil
 - Setting shape: `{ mode: 'dirs'; dirs: { volume: string; dir: string }[] }` (or `{ mode: 'all' }`, unchanged).
   Parse/serialize in `sources.ts` with the existing fallback-to-default pattern; the old path-only shape is not migrated (destructive reset, D14).
 - Catalog: `buildCatalog` stops erasing volume identity — one `SourceDir` per (volume, dir) instead of keying by lower-cased path alone (`sourceCatalog.ts:181-196`).
-  The pre-API-30 expo fallback path has no volume data; it yields primary-volume entries only (legacy devices without the native module keep today's behavior).
+  The pre-API-30 expo fallback derives each bucket's volume from its probe asset's uri under mechanism D (codex r1: ingestion stamps real volumes on every API level, so a primary-labeled root over UUID-stamped rows would silently empty the scope; the plan's earlier "no volume data" assumption was wrong — the probe uri carries it).
 - Picker: one row per (volume, dir); non-primary rows carry a volume tag ("SD card"); unreachable rows (volume in the setting but not mounted) render greyed with "not mounted" instead of disappearing.
 - DB filter: `sourceClause` becomes `volume_name = ? AND uri LIKE ?` per root.
 - MediaStore filter: `matchAlbumIds` matches within the root's volume only.
@@ -119,7 +120,7 @@ Full evidence: `/tmp/afterglow-m0.8.3-handoff/spikeB-findings.md` (with the buil
 Any photo landing undated (`!asset.creationTime`, the existing flag at `media.ts:64`) gets one native `ExifInterface` read of `DateTimeOriginal` at ingestion — header-only, once per photo.
 Found → the timestamp and day are real (EXIF naive local time converted with the device timezone, the same best-effort stance clustering already takes); absent → Unknown day exactly as today (a WhatsApp-stripped JPEG stays honestly undated).
 The pure side (date parse/convert, undated predicate) is unit-tested; the native read lives in `media-store-actions`.
-Phase-1 verification, before coding against it: confirm on-device that `ExifInterface` parses the D300s NEFs (the `DCIM/SpikeRAW` seeds exist for exactly this — ExifInterface's NEF support is documented but assumed-tier until observed).
+Phase-1 verification: **passed on-device** (2026-07-29, S23 release build, `DCIM/SpikeRAW` seeds) — `ExifInterface` returned `DateTimeOriginal` for all three D300s NEFs (`2024:08:17 16:58:32` / `16:59:35` / `17:04:35`, the real 17 Aug 2024 capture day) and the ARW/JPG seeds, while MediaStore's `datetaken` stayed NULL on every NEF; the rescue is coded against observed behavior (measured tier).
 No file writes, ever: the spike proved the files are complete (exiftool: full `DateTimeOriginal` on every NEF) and the gap is Android's extraction — there is nothing to repair, and the app never modifies original photo bytes.
 
 ## 4. The per-volume scan contract (D8 — seven invariants)
@@ -211,7 +212,7 @@ Each phase lands with its tests and doc updates; order is dependency order.
 
 1. **Volume identity foundation** — mechanism D parser (pure, unit-tested against spike-verified shapes), ingestion stamping, schema v20 destructive reset, volume-qualified setting + catalog + picker + DB/MediaStore filters, and the D15 EXIF date rescue (native read + pure conversion, gated on the ExifInterface-parses-NEF verification against the `DCIM/SpikeRAW` seeds) (§§2-3).
 2. **Per-volume scan contract** — tripwires, baselines, fingerprint scoping, unmount safety; unit tests per invariant, including the eject-mid-session zero-row-change test (§4).
-3. **Reachability scope** — mounted-set provider, query predicates, the three naming surfaces, partial-group naming; STATE_MODEL.md section lands here (§5).
+3. **Reachability scope** — mounted-set provider, query predicates, the three naming surfaces, partial-group naming; day-scoped grids switch to the DB paging engine (D16); STATE_MODEL.md section lands here (§5).
 4. **Data lifecycle** — tombstone sweep (SQL-parity tested like `reviewPatch.ts`) + Forget-this-card flow with both levels (§7).
 5. **Parity naming + RAW policy** — organize limitation copy (§6), per-format ingestion policy from the spike table (§8), README/tester notes (reset cost: one ~25-min re-analysis on a 27k library), release gate.
 

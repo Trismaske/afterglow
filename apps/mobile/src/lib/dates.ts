@@ -93,3 +93,38 @@ const DAY_FORMAT: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' 
 export function formatDay(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, DAY_FORMAT);
 }
+
+/**
+ * EXIF DateTimeOriginal ("YYYY:MM:DD HH:MM:SS", naive local time) → epoch
+ * ms in the DEVICE timezone — the D15 date rescue's pure half (m0.8.3).
+ * EXIF times carry no zone, so device-local is the same best-effort
+ * stance clustering already takes for every timestamp.
+ *
+ * Null for anything else: malformed strings, out-of-range fields, and the
+ * all-zeros placeholder unset camera clocks write. Pre-1970 dates are
+ * rejected too — MediaStore time is epoch ms, and a negative timestamp is
+ * far more likely a mangled header than a real photo.
+ *
+ * The round-trip guard covers CALENDAR fields only (Feb 30 must not
+ * become Mar 2). A wall time falling in a DST spring-forward gap is
+ * deliberately accepted as JS normalizes it (02:30 → 03:30, same day):
+ * the capture DAY — what the rescue exists to recover — survives, and
+ * rejecting would demote a real, dated photo to Unknown day over an
+ * hour-level ambiguity the no-zone format cannot resolve anyway.
+ */
+export function exifDateTimeToMs(value: string): number | null {
+  const m = value.trim().match(/^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/);
+  if (!m) return null;
+  const [y, mo, d, h, mi, s] = m.slice(1).map(Number);
+  if (y < 1970 || mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 59) {
+    return null;
+  }
+  const date = new Date(y, mo - 1, d, h, mi, s);
+  // Round-trip guard: JS Date silently rolls over impossible dates
+  // (Feb 30 → Mar 2), which would file the photo under a day its header
+  // never named.
+  if (date.getFullYear() !== y || date.getMonth() !== mo - 1 || date.getDate() !== d) {
+    return null;
+  }
+  return date.getTime();
+}

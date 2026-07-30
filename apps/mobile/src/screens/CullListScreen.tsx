@@ -7,6 +7,8 @@ import type { MediaItem } from '@afterglow/core';
 import type { RootStackParamList } from '../navigation';
 import { useReview } from '../review/ReviewContext';
 import { useSQLiteContext } from 'expo-sqlite';
+import { mountedVolumeSet } from '../lib/mountedVolumes';
+import { useExternalRefresh } from '../components/useExternalRefresh';
 import { getStagedCulls, type StagedCullRow } from '../db/store';
 import { BigButton } from '../components/BigButton';
 import { ReDecideSheet, type DecidedState } from '../components/ReDecideSheet';
@@ -38,6 +40,12 @@ export function CullListScreen({ navigation, route }: Props) {
   // null (footer disabled) so Finish/Done can never fire while durable
   // culls might exist unseen.
   const [loadFailed, setLoadFailed] = useState(false);
+  // Foreground return re-reads the queue (final cycle P4): ejecting a
+  // card holding only STAGED culls changes no review-queue snapshot, so
+  // `version` stays put — without this tick the stale tiles would stay
+  // visible and tappable.
+  const [foregroundTick, setForegroundTick] = useState(0);
+  useExternalRefresh(() => setForegroundTick((t) => t + 1));
   const loading = globalRows === null;
   const systemTrashSupported = Platform.OS === 'android' && Number(Platform.Version) >= 30;
 
@@ -46,28 +54,30 @@ export function CullListScreen({ navigation, route }: Props) {
   // snapshot cannot see.
   useEffect(() => {
     let cancelled = false;
-    getStagedCulls(db).then(
-      (rows) => {
-        if (!cancelled) {
-          setLoadFailed(false);
-          setGlobalRows(rows);
-        }
-      },
-      () => {
-        if (!cancelled) {
-          // Also invalidate rows from an EARLIER successful load — stale
-          // tiles must not stay interactive (a tap could re-stage a
-          // photo whose decision just changed).
-          setGlobalRows(null);
-          setLoadFailed(true);
-          Alert.alert('Could not load the cull queue', 'Leave and reopen this screen to retry.');
-        }
-      },
-    );
+    mountedVolumeSet()
+      .then((mounted) => getStagedCulls(db, undefined, mounted))
+      .then(
+        (rows) => {
+          if (!cancelled) {
+            setLoadFailed(false);
+            setGlobalRows(rows);
+          }
+        },
+        () => {
+          if (!cancelled) {
+            // Also invalidate rows from an EARLIER successful load — stale
+            // tiles must not stay interactive (a tap could re-stage a
+            // photo whose decision just changed).
+            setGlobalRows(null);
+            setLoadFailed(true);
+            Alert.alert('Could not load the cull queue', 'Leave and reopen this screen to retry.');
+          }
+        },
+      );
     return () => {
       cancelled = true;
     };
-  }, [db, version, busy]);
+  }, [db, version, busy, foregroundTick]);
 
   const staged: MediaItem[] = useMemo(
     () =>

@@ -270,28 +270,57 @@ export async function clearQueue(db: SQLiteDatabase, kind: ActionKind): Promise<
   return cleared;
 }
 
+/** Reachability half of the queue question (m0.8.3 §5): a queued action
+ * on an unmounted volume's photo is not work waiting for you — its file
+ * is away — so queue lists and badges exclude it (the ACTION ROW itself
+ * is untouched and returns with the card). Null = unknowable, no filter. */
+export function reachExists(
+  mounted: readonly string[] | null | undefined,
+  photoIdExpr: string,
+): { sql: string; params: string[] } {
+  if (mounted === null || mounted === undefined) return { sql: '', params: [] };
+  if (mounted.length === 0) return { sql: ' AND 0', params: [] };
+  return {
+    sql: ` AND EXISTS (SELECT 1 FROM photos reach_p
+             WHERE reach_p.asset_id = ${photoIdExpr}
+               AND reach_p.volume_name IN (${mounted.map(() => '?').join(',')}))`,
+    params: [...mounted],
+  };
+}
+
 /** Photos waiting in one queue, oldest first (the order they were asked
  * for is the order they should be worked). */
-export async function getQueue(db: SQLiteDatabase, kind: ActionKind): Promise<PhotoAction[]> {
+export async function getQueue(
+  db: SQLiteDatabase,
+  kind: ActionKind,
+  mounted: readonly string[] | null = null,
+): Promise<PhotoAction[]> {
+  const reach = reachExists(mounted, 'photo_actions.photo_id');
   const rows = await db.getAllAsync<ActionRow>(
     `SELECT photo_id, kind, state, target, applied_target, queued_at, resolved_at
        FROM photo_actions
       WHERE kind = ? AND state IN ('queued', 'error')
-        AND ${livePhotoClause('photo_actions.photo_id')}
+        AND ${livePhotoClause('photo_actions.photo_id')}${reach.sql}
       ORDER BY queued_at ASC`,
     kind,
+    ...reach.params,
   );
   return rows.map(toAction);
 }
 
 /** Queue depth per kind — the tab-bar badges, in ONE query rather than
  * the four bespoke count functions this replaces. */
-export async function countQueues(db: SQLiteDatabase): Promise<Record<ActionKind, number>> {
+export async function countQueues(
+  db: SQLiteDatabase,
+  mounted: readonly string[] | null = null,
+): Promise<Record<ActionKind, number>> {
+  const reach = reachExists(mounted, 'photo_actions.photo_id');
   const rows = await db.getAllAsync<{ kind: ActionKind; n: number }>(
     `SELECT kind, COUNT(*) AS n FROM photo_actions
       WHERE state IN ('queued', 'error')
-        AND ${livePhotoClause('photo_actions.photo_id')}
+        AND ${livePhotoClause('photo_actions.photo_id')}${reach.sql}
       GROUP BY kind`,
+    ...reach.params,
   );
   const counts: Record<ActionKind, number> = { edit: 0, favourite: 0, organize: 0, share: 0 };
   for (const row of rows) counts[row.kind] = Number(row.n);

@@ -546,3 +546,69 @@ describe('identical re-writes are no-ops (m0.8.1 stable group ids)', () => {
     expect(foreignKeyCheck(d)).toEqual([]);
   });
 });
+
+describe('D15 rescue marker persistence (m0.8.3)', () => {
+  function markerOf(d: TestDb, rawId: string): number | null {
+    const row = d.raw
+      .prepare('SELECT exif_checked_mod_time AS m FROM photos WHERE asset_id = ?')
+      .get(id(rawId)) as { m: number | null };
+    return row.m;
+  }
+
+  it('a completed read stamps the marker; a later pass without one RETAINS it', async () => {
+    const d = await fresh();
+    const db = asExpo(d);
+    // Pass 1: the rescue completed a read at modTime — marker persists.
+    await writeContinuousGroups(
+      db,
+      {
+        photos: [{ ...upsert('1'), exifCheckedModTime: AT - 3_600_000 }],
+        groups: [],
+        singles: [id('1')],
+      },
+      AT,
+    );
+    expect(markerOf(d, '1')).toBe(AT - 3_600_000);
+    // Pass 2: the rescue's REUSE path carries the stored marker
+    // explicitly (Q3) — retained without a fresh read.
+    await writeContinuousGroups(
+      db,
+      {
+        photos: [{ ...upsert('1'), exifCheckedModTime: AT - 3_600_000 }],
+        groups: [],
+        singles: [id('1')],
+      },
+      AT + 1000,
+    );
+    expect(markerOf(d, '1')).toBe(AT - 3_600_000);
+    // Pass 2b: an UNDATED pass without a completed read (failed read or
+    // module absent) still retains the stored proof.
+    await writeContinuousGroups(
+      db,
+      { photos: [{ ...upsert('1'), day: null }], groups: [], singles: [id('1')] },
+      AT + 1500,
+    );
+    expect(markerOf(d, '1')).toBe(AT - 3_600_000);
+    // Pass 3: content changed and a NEW read completed — marker advances.
+    await writeContinuousGroups(
+      db,
+      {
+        photos: [{ ...upsert('1'), modTime: AT, exifCheckedModTime: AT }],
+        groups: [],
+        singles: [id('1')],
+      },
+      AT + 2000,
+    );
+    expect(markerOf(d, '1')).toBe(AT);
+  });
+
+  it('a photo that never completed a read keeps a NULL marker (retry-eligible)', async () => {
+    const d = await fresh();
+    await writeContinuousGroups(
+      asExpo(d),
+      { photos: [upsert('1')], groups: [], singles: [id('1')] },
+      AT,
+    );
+    expect(markerOf(d, '1')).toBeNull();
+  });
+});

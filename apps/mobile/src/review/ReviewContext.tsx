@@ -51,6 +51,8 @@ import { recoverTrashBatches, TRASH_BATCH_LIMIT } from '../db/trashStore';
 import { recoverShareBatches } from '../db/shareStore';
 import { verifyTrashedTriState } from '../lib/media';
 import { resolveSources } from '../lib/sourceCatalog';
+import { mountedVolumeSet, onVolumesChanged } from '../lib/mountedVolumes';
+import type { SourceRoot } from '../lib/sources';
 import { withUserWritePriority } from '../lib/writePriority';
 import { startContinuousScan, subscribeScanStatus } from '../scan/scanRunner';
 import {
@@ -161,7 +163,7 @@ interface ReviewContextValue {
   /** STRICT scoped refresh: reads under the GIVEN roots, no resolution,
    * no fallback — rejections propagate. The settings apply paths use it
    * so a silent fail-open can never leave an old scope actionable. */
-  refreshScoped: (roots: readonly string[] | null) => Promise<void>;
+  refreshScoped: (roots: readonly SourceRoot[] | null) => Promise<void>;
   /** Fetch ONE group by id, completion irrespective (gate 5 browse of a
    * finished group). Its members join the flag/favourite tracking so the
    * deck's toggles work outside the queue; null = gone (dissolved). */
@@ -364,9 +366,23 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   }>({ groups: [], singles: [], counts: { grouped: 0, singles: 0, groups: 0 } });
   /** Members of an out-of-queue group the deck browses (gate 5): refresh
    * keeps their flag/favourite entries alive alongside the queue's. */
+  /** The mounted snapshot the CURRENT deck loaded under (final cycle
+   * P4): keep-rest re-reads its day scope at write time, and that
+   * re-read must cover the world the user SAW — a fresh provider read
+   * could widen the bulk verdict to photos on a card that remounted
+   * (or to hidden rows, if enumeration failed to null) after load. */
+  const deckMountedRef = useRef<readonly string[] | null>(null);
+  /** Deck-load generation (S4): only the LATEST loadGroup/loadDeckSingles
+   * may publish the deck refs — overlapping loads around an eject can
+   * finish out of order, and a canceled load's late result must not pair
+   * the displayed deck with another world's mounted set. */
+  const deckLoadGenRef = useRef(0);
+  /** The queue snapshot's own load-time mounted set (R1) — the fallback
+   * world for bulk writes on decks the snapshot itself rendered. */
+  const snapshotMountedRef = useRef<readonly string[] | null>(null);
   const extraIdsRef = useRef<string[]>([]);
   /** Last successfully resolved source roots (fail-closed fallback). */
-  const lastRootsRef = useRef<{ roots: readonly string[] | null } | null>(null);
+  const lastRootsRef = useRef<{ roots: readonly SourceRoot[] | null } | null>(null);
   /** Monotonic refresh token: only the LATEST refresh may commit — a
    * scan-status refresh overlapping a decision's refresh must not
    * overwrite the queue/refs with its older reads. */
@@ -395,9 +411,10 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       nextGroups: ReviewGroupRow[];
       nextSingles: ReviewMemberRow[];
       counts: QueueCounts;
+      mounted: readonly string[] | null;
       generation: number;
     }) => {
-      const { nextGroups, nextSingles, counts, generation } = read;
+      const { nextGroups, nextSingles, counts, mounted, generation } = read;
       const ids = [
         ...nextGroups.flatMap((g) => g.members.map((m) => m.asset_id)),
         ...nextSingles.map((m) => m.asset_id),
@@ -464,6 +481,10 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
         sameIds(carriedRef.current.organize, carried.organize) &&
         sameIds(carriedRef.current.share, carried.share)
       ) {
+        // Even a no-op refresh updates the PAIRED mounted snapshot
+        // (final cycle T6): a card swap that leaves the visible rows
+        // unchanged still moves the world later bulk re-reads must use.
+        snapshotMountedRef.current = mounted;
         return;
       }
       needsEditRef.current = needsEdit;
@@ -471,6 +492,10 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       queuedForRef.current = queuedFor;
       carriedRef.current = carried;
       loadedIdsRef.current = ids;
+      // The set keep-rest re-reads under for on-page groups (R1/S3) —
+      // published only past the generation guard, as one unit with the
+      // snapshot it loaded.
+      snapshotMountedRef.current = mounted;
       snapshotRef.current = { groups: nextGroups, singles: nextSingles, counts };
       setGroups(nextGroups);
       setSingles(nextSingles);
@@ -481,14 +506,19 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   );
 
   const refreshWithRoots = useCallback(
-    async (roots: readonly string[] | null, generation: number) => {
+    async (roots: readonly SourceRoot[] | null, generation: number) => {
       // ONE snapshot for all three slices — independent reads could cache
       // a photo as both grouped and single mid-scan.
-      const queue = await readReviewQueue(db, GROUP_PAGE, SINGLES_PAGE, roots);
+      const snapshotMounted = await mountedVolumeSet();
+      const queue = await readReviewQueue(db, GROUP_PAGE, SINGLES_PAGE, roots, snapshotMounted);
       return {
         nextGroups: queue.groups,
         nextSingles: queue.singles,
         counts: queue.counts,
+        // Committed WITH the rows (final cycle S3): a superseded refresh
+        // must not leave its mounted set published under someone else's
+        // snapshot.
+        mounted: snapshotMounted,
         generation,
       };
     },
@@ -504,7 +534,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     // to the store, so a transient failure must fall back to the last
     // known roots — or skip the refresh entirely before any resolution
     // succeeds — never silently broaden a narrowed source.
-    let roots: readonly string[] | null;
+    let roots: readonly SourceRoot[] | null;
     try {
       roots = (await resolveSources(db)).roots ?? null;
       // Only the LATEST refresh may move the fallback roots — an older
@@ -564,7 +594,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   }, [refreshOnce]);
 
   const refreshScoped = useCallback(
-    async (roots: readonly string[] | null) => {
+    async (roots: readonly SourceRoot[] | null) => {
       // The given roots ARE the just-persisted truth — install them as
       // the fallback up front so any concurrent refresh that fails
       // resolution falls back to the NEW scope, never the old one.
@@ -674,7 +704,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   /** Source scope for a read outside the refresh chain, under the SAME
    * fail-closed rule: resolve, fall back to the last known roots, and
    * REJECT rather than let a resolution failure mean "all folders". */
-  const scopedRoots = useCallback(async (): Promise<readonly string[] | null> => {
+  const scopedRoots = useCallback(async (): Promise<readonly SourceRoot[] | null> => {
     try {
       return (await resolveSources(db)).roots ?? null;
     } catch (error) {
@@ -729,8 +759,16 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       day: string,
       range: { from: number; to: number } | null = null,
     ): Promise<ReviewMemberRow[]> => {
-      const rows = await listSinglesForDeck(db, day, await scopedRoots(), range);
-      extraIdsRef.current = rows.map((m) => m.asset_id);
+      const myGen = ++deckLoadGenRef.current;
+      const deckMounted = await mountedVolumeSet();
+      const rows = await listSinglesForDeck(db, day, await scopedRoots(), range, deckMounted);
+      // Published only WITH its rows (Q6) and only by the LATEST load
+      // (S4): an overlapping older load finishing late must not pair the
+      // displayed deck with its stale mounted set.
+      if (myGen === deckLoadGenRef.current) {
+        deckMountedRef.current = deckMounted;
+        extraIdsRef.current = rows.map((m) => m.asset_id);
+      }
       await hydrateBadgeRefs(extraIdsRef.current);
       return rows;
     },
@@ -745,9 +783,17 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
 
   const loadGroup = useCallback(
     async (groupId: number): Promise<ReviewGroupRow | null> => {
-      const group = await getReviewGroup(db, groupId);
-      extraIdsRef.current = group ? group.members.map((m) => m.asset_id) : [];
-      await hydrateBadgeRefs(extraIdsRef.current);
+      const myGen = ++deckLoadGenRef.current;
+      const deckMounted = await mountedVolumeSet();
+      const group = await getReviewGroup(db, groupId, deckMounted);
+      // Published only WITH its rows (R1) and only by the LATEST load
+      // (S4): keep-rest on this off-page group must write under the
+      // world these rows rendered from.
+      if (myGen === deckLoadGenRef.current) {
+        deckMountedRef.current = deckMounted;
+        extraIdsRef.current = group ? group.members.map((m) => m.asset_id) : [];
+        await hydrateBadgeRefs(extraIdsRef.current);
+      }
       return group;
     },
     [db, hydrateBadgeRefs],
@@ -854,7 +900,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     void (async () => {
       const started = Date.now();
       await Promise.all([
-        recoverTrashBatches(db, verifyTrashedTriState, Date.now()),
+        recoverTrashBatches(db, verifyTrashedTriState, Date.now(), await mountedVolumeSet()),
         recoverShareBatches(db),
       ]).catch((error) => {
         // Recovery re-runs next launch; the durable lifecycle rows are
@@ -889,7 +935,18 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       // when nothing changed.
       void refresh().catch(() => {});
     });
-    return () => subscription.remove();
+    // LIVE mount changes take the same path (Tristan, m0.8.3 matrix): a
+    // remount with the app foregrounded must kick the scan (the delta
+    // picks up card-side changes) and refresh the reach-scoped queue —
+    // without waiting for a navigation or background/foreground cycle.
+    const unsubscribeVolumes = onVolumesChanged(() => {
+      void startContinuousScan(db);
+      void refresh().catch(() => {});
+    });
+    return () => {
+      subscription.remove();
+      unsubscribeVolumes();
+    };
   }, [db, refresh]);
 
   // The queue fills as the scan lands windows; refresh on phase changes
@@ -1007,9 +1064,23 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           // The queue page holds only GROUP_PAGE groups — an explicitly
           // opened group (DayProgress, off-page) is fetched directly so
           // "Keep remaining" never silently no-ops.
-          const group =
-            snapshotRef.current.groups.find((g) => g.groupId === groupId) ??
-            (await getReviewGroup(db, groupId));
+          // ALWAYS a write-time re-read (final cycle S2): the cached
+          // snapshot's member states can be stale against another
+          // surface's writes (a Progress state-editor cull must not be
+          // overwritten to kept), and membership can have moved. The
+          // mounted set is the deck's LOAD-time snapshot (R1) — an
+          // on-page group re-reads under the queue snapshot's own set, an
+          // off-page one under its loadGroup set; never a fresh read,
+          // which could widen the bulk keep to members a hot remount
+          // revealed after the rows rendered.
+          const onPage = snapshotRef.current.groups.some((g) => g.groupId === groupId);
+          const group = await getReviewGroup(
+            db,
+            groupId,
+            onPage
+              ? snapshotMountedRef.current
+              : (deckMountedRef.current ?? snapshotMountedRef.current),
+          );
           if (!group) return;
           const changes = group.members
             .filter((m) => m.state === 'unreviewed')
@@ -1060,7 +1131,9 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     (assetId: string, expectedGroupId: number) =>
       write(
         async () => {
-          await makePhotoSingles(db, [assetId], expectedGroupId);
+          // The tap's mounted snapshot (final cycle O1): "Not related"
+          // must not user_single-freeze a survivor on an ejected card.
+          await makePhotoSingles(db, [assetId], expectedGroupId, await mountedVolumeSet());
         },
         { kind: 'makeSingle', assetId, groupId: expectedGroupId },
       ),
@@ -1100,6 +1173,15 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       await applyReviewDecisions(db, verdicts, duel.at, {
         duel,
         setBest: { groupId, assetId: winnerId },
+        // The whole-table revalidation judges outsiders over the SAME
+        // mounted population Compare RENDERED (m0.8.3 §5, final cycle
+        // S5/T4) — a queue-backed group pairs with the queue snapshot's
+        // own set (deckMountedRef could be a previously browsed deck's
+        // world); an independently loaded group uses its loadGroup set.
+        // Never a fresh read, which a mid-compare remount could widen.
+        mounted: snapshotRef.current.groups.some((g) => g.groupId === groupId)
+          ? snapshotMountedRef.current
+          : (deckMountedRef.current ?? snapshotMountedRef.current),
       });
     },
     [db],
@@ -1270,7 +1352,15 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           // own singles here — the same fresh-at-write-time rule keepRest
           // uses for an off-page group.
           const rows = day
-            ? await listSinglesForDeck(db, day, await scopedRoots(), range)
+            ? await listSinglesForDeck(
+                db,
+                day,
+                await scopedRoots(),
+                range,
+                // The deck's own load-time snapshot, NOT a fresh read
+                // (final cycle P4): the bulk keep covers what was shown.
+                deckMountedRef.current,
+              )
             : snapshotRef.current.singles;
           const changes = rows
             .filter((m) => m.state === 'unreviewed')
@@ -1311,9 +1401,9 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     for (;;) {
       // Read only what one batch can attempt (+ the rows this run has
       // already given up on, which the filter drops).
-      const rows = (await getStagedCulls(db, TRASH_BATCH_LIMIT + unresolved.size)).filter(
-        (row) => !unresolved.has(row.asset_id),
-      );
+      const rows = (
+        await getStagedCulls(db, TRASH_BATCH_LIMIT + unresolved.size, await mountedVolumeSet())
+      ).filter((row) => !unresolved.has(row.asset_id));
       if (rows.length === 0) break;
       const attempt = await runTrashAttempt(
         db,
@@ -1329,7 +1419,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       creditedBytes += attempt.creditedBytes;
       if (attempt.status !== 'applied') break;
     }
-    const remaining = await countStagedCulls(db);
+    const remaining = await countStagedCulls(db, await mountedVolumeSet());
     await refresh().catch(() => {});
     return {
       status: outcome,

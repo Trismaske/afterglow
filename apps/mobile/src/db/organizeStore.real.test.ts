@@ -72,13 +72,13 @@ function photoRow(d: TestDb, photoId: string): { uri: string; activity_at: numbe
   };
 }
 
-function insertPhoto(d: TestDb, id: string, volume: string | null = 'external_primary'): void {
+function insertPhoto(d: TestDb, id: string, volume = 'external_primary'): void {
   d.raw
     .prepare(
-      `INSERT INTO photos (asset_id, uri, taken_at, day, volume_name)
-       VALUES (?, 'file:///dcim/x.jpg', ?, '2026-07-20', ?)`,
+      `INSERT INTO photos (asset_id, uri, taken_at, day, volume_name, raw_id)
+       VALUES (?, 'file:///dcim/x.jpg', ?, '2026-07-20', ?, ?)`,
     )
-    .run(id, AT, volume);
+    .run(id, AT, volume, id);
 }
 
 describe('target validation', () => {
@@ -121,7 +121,9 @@ describe('queue lifecycle', () => {
     insertPhoto(d, 'p1');
     insertPhoto(d, 'sd1', 'sd-1234');
     expect(await queueOrganize(asExpo(d), 'p1', AT)).toBeNull();
-    expect(await queueOrganize(asExpo(d), 'sd1', AT)).toMatch(/removable storage/);
+    expect(await queueOrganize(asExpo(d), 'sd1', AT)).toMatch(
+      /On SD card — moves are not supported/,
+    );
     let queue = await getOrganizeQueue(asExpo(d));
     expect(queue.map((r) => r.photo_id)).toEqual(['p1']);
     // Untargeted (F6): the projection is NULL, never substr() noise.

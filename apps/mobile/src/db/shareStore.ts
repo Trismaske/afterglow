@@ -22,7 +22,8 @@
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { withWriteTransaction } from './database';
-import { leaveQueue, livePhotoClause } from './actions';
+import { leaveQueue, livePhotoClause, reachExists } from './actions';
+import { chunk, IN_CHUNK } from './store';
 
 /** Soft warning threshold — many receivers degrade above this (R#7). */
 export const SHARE_SOFT_WARN_COUNT = 50;
@@ -143,6 +144,7 @@ export async function isInShareQueue(db: SQLiteDatabase, photoId: string): Promi
 export async function getShareQueue(
   db: SQLiteDatabase,
   at: number = Date.now(),
+  mounted: readonly string[] | null = null,
 ): Promise<ShareQueueRow[]> {
   // One transaction: deleting the final missing-media row and closing
   // the emptied cycle must land together, or a crash in between would
@@ -163,6 +165,9 @@ export async function getShareQueue(
     );
     await closeShareCycleIfQueueEmpty(txn, at);
   });
+  // m0.8.3 §5: an unmounted volume's queued shares wait for remount —
+  // the rows survive; only the list hides them.
+  const reach = reachExists(mounted, 'q.photo_id');
   return db.getAllAsync<ShareQueueRow>(
     `SELECT q.photo_id, p.uri, p.taken_at, p.day, q.queued_at,
        (SELECT COUNT(*) FROM share_batch_members m
@@ -174,8 +179,9 @@ export async function getShareQueue(
      -- v18: the queue is an action row, so the cycle comes from the ONE
      -- open cycle rather than a column repeated on every queued photo.
      WHERE q.kind = 'share' AND q.state IN ('queued', 'error')
-       AND ${livePhotoClause('q.photo_id')}
+       AND ${livePhotoClause('q.photo_id')}${reach.sql}
      ORDER BY p.taken_at ASC`,
+    ...reach.params,
   );
 }
 
@@ -299,62 +305,105 @@ export interface ClearShareQueueResult {
 }
 
 /** How many queued photos have zero passes this cycle (clear-confirm copy). */
-export async function countNeverShared(db: SQLiteDatabase): Promise<number> {
+export async function countNeverShared(
+  db: SQLiteDatabase,
+  mounted: readonly string[] | null = null,
+): Promise<number> {
+  const reach = reachExists(mounted, 'q.photo_id');
   const row = await db.getFirstAsync<{ n: number }>(
     `SELECT COUNT(*) AS n FROM photo_actions q
      WHERE q.kind = 'share' AND q.state IN ('queued', 'error')
-       AND ${livePhotoClause('q.photo_id')}
+       AND ${livePhotoClause('q.photo_id')}${reach.sql}
        AND NOT EXISTS (
        SELECT 1 FROM share_batch_members m
          JOIN share_batches b ON b.id = m.batch_id
        WHERE m.photo_id = q.photo_id AND b.cycle_id = (SELECT id FROM share_cycles WHERE ended_at IS NULL ORDER BY id DESC LIMIT 1)
          AND b.state = 'sheet_opened'
      )`,
+    ...reach.params,
   );
   return row?.n ?? 0;
 }
 
 /** Explicit clear: empties the queue and ends the cycle. Share batches are
- * kept for History (R#7) — clearing never erases events. */
+ * kept for History (R#7) — clearing never erases events.
+ *
+ * m0.8.3 §5 (codex phase-3): the clear touches ONLY the rows the screen
+ * showed — an unreachable photo's action row survives byte-for-byte and
+ * re-lists on remount (it batches into whichever cycle is open then). */
 export async function clearShareQueue(
   db: SQLiteDatabase,
   at: number,
+  mounted: readonly string[] | null = null,
+  /** The queue rows the confirmation DESCRIBED (final cycle T2): given,
+   * the clear touches only these ids — a card remounting while the
+   * dialog sat open may shrink the write (reachability), never widen it
+   * past what the user confirmed. Omitted = whole reachable queue. */
+  displayedIds: readonly string[] | null = null,
 ): Promise<ClearShareQueueResult> {
-  const neverShared = await countNeverShared(db);
+  const neverShared = await countNeverShared(db, mounted);
+  const reach = reachExists(mounted, 'photo_actions.photo_id');
+  // The bound is CHUNKED (final cycle U2): the queue has no size cap,
+  // and one IN list per rendered row would hit SQLite's 999-variable
+  // compatibility floor around a thousand rows — "Clear queue" must not
+  // be the one write that fails at exactly the scale it exists for.
+  const boundParts: (readonly string[] | null)[] =
+    displayedIds === null ? [null] : chunk(displayedIds, IN_CHUNK);
   let cleared = 0;
   await withWriteTransaction(db, async (txn) => {
-    // LIVE rows only, on BOTH legs — exactly the rows this count reports
-    // and the screen showed (Tristan, grilling Q12): a staged cull's
-    // hidden retained row SURVIVES the clear, because STATE_MODEL
-    // promises un-staging returns a photo to every queue it was in. The
-    // old "nothing else would ever remove it" worry is obsolete — the
-    // trash-verification cleanup demotes/deletes it when the cull
-    // completes, and a resurfaced row mints its own cycle (codex r9).
-    const row = await txn.getFirstAsync<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM photo_actions
-        WHERE kind = 'share' AND state IN ('queued', 'error')
-          AND ${livePhotoClause('photo_actions.photo_id')}`,
-    );
-    cleared = row?.n ?? 0;
-    // BOTH halves, exactly as unqueueAction/clearQueue do it: a row that
-    // never went out is forgotten, and one that DID keeps its permanent
-    // record while leaving the queue. Without the second statement an
-    // already-shared photo stays `state = 'queued'` after a clear, so the
-    // queue never reads as empty and the next queue-up silently rejoins
-    // the closed cycle instead of starting a new one.
-    await txn.runAsync(
-      // IN ('queued','error') like clearQueue: an errored-but-never-sent
-      // row is still a queue exit, and 'queued' alone would strand it.
-      `DELETE FROM photo_actions
-        WHERE kind = 'share' AND state IN ('queued', 'error') AND resolved_at IS NULL
-          AND ${livePhotoClause('photo_actions.photo_id')}`,
-    );
-    await txn.runAsync(
-      `UPDATE photo_actions SET state = 'applied', target = NULL
-        WHERE kind = 'share' AND state IN ('queued', 'error') AND resolved_at IS NOT NULL
-          AND ${livePhotoClause('photo_actions.photo_id')}`,
-    );
-    await txn.runAsync('UPDATE share_cycles SET ended_at = ? WHERE ended_at IS NULL', at);
+    for (const part of boundParts) {
+      const bound =
+        part === null
+          ? { sql: '', params: [] as string[] }
+          : {
+              sql: ` AND photo_actions.photo_id IN (${part.map(() => '?').join(',')})`,
+              params: [...part],
+            };
+      // LIVE rows only, on BOTH legs — exactly the rows this count reports
+      // and the screen showed (Tristan, grilling Q12): a staged cull's
+      // hidden retained row SURVIVES the clear, because STATE_MODEL
+      // promises un-staging returns a photo to every queue it was in. The
+      // old "nothing else would ever remove it" worry is obsolete — the
+      // trash-verification cleanup demotes/deletes it when the cull
+      // completes, and a resurfaced row mints its own cycle (codex r9).
+      const row = await txn.getFirstAsync<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM photo_actions
+          WHERE kind = 'share' AND state IN ('queued', 'error')
+            AND ${livePhotoClause('photo_actions.photo_id')}${reach.sql}${bound.sql}`,
+        ...reach.params,
+        ...bound.params,
+      );
+      cleared += row?.n ?? 0;
+      // BOTH halves, exactly as unqueueAction/clearQueue do it: a row that
+      // never went out is forgotten, and one that DID keeps its permanent
+      // record while leaving the queue. Without the second statement an
+      // already-shared photo stays `state = 'queued'` after a clear, so the
+      // queue never reads as empty and the next queue-up silently rejoins
+      // the closed cycle instead of starting a new one.
+      await txn.runAsync(
+        // IN ('queued','error') like clearQueue: an errored-but-never-
+        // sent row is still a queue exit, and 'queued' alone would
+        // strand it.
+        `DELETE FROM photo_actions
+          WHERE kind = 'share' AND state IN ('queued', 'error') AND resolved_at IS NULL
+            AND ${livePhotoClause('photo_actions.photo_id')}${reach.sql}${bound.sql}`,
+        ...reach.params,
+        ...bound.params,
+      );
+      await txn.runAsync(
+        `UPDATE photo_actions SET state = 'applied', target = NULL
+          WHERE kind = 'share' AND state IN ('queued', 'error') AND resolved_at IS NOT NULL
+            AND ${livePhotoClause('photo_actions.photo_id')}${reach.sql}${bound.sql}`,
+        ...reach.params,
+        ...bound.params,
+      );
+    }
+    // The cycle ends only when the queue is EMPTY (final cycle V2): a
+    // reachability-scoped or bounded clear can leave hidden unreachable
+    // rows queued, and closing their cycle would zero their pass counts
+    // on remount — user actions on the reachable subset must not alter
+    // an unreachable row's working state.
+    await closeShareCycleIfQueueEmpty(txn, at);
   });
   return { cleared, neverShared };
 }

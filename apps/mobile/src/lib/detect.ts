@@ -17,6 +17,7 @@
  * from a metadata-only mod-time bump.
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
+import { mountedVolumeSet } from './mountedVolumes';
 import {
   checkMediaPresence,
   getAssetDetails,
@@ -87,7 +88,7 @@ export async function runEditDetection(
   onAutoDone?: (assetId: string) => void,
 ): Promise<EditDetectionResult> {
   const result: EditDetectionResult = { autoDoneIds: [], copies: [], reconciled: 0 };
-  const rows = await getEditDetectionRows(db);
+  const rows = await getEditDetectionRows(db, await mountedVolumeSet());
   if (rows.length === 0) return result;
 
   // Pass 1: in-place edits. Rows that survive go to copy detection.
@@ -272,7 +273,17 @@ export async function runEditDetection(
         // two leaves the pending match as the retry signal (the next
         // scan lands here again); the reverse order would strand a
         // 'done' row for an absent photo with no way back.
-        await reconcileExternallyRemoved(db, [match.copy_id], Date.now());
+        // Mounted snapshot so the membership repair defers a group still
+        // holding a member on an ejected card (final cycle P4, plan §5).
+        // 'absent' = permanently gone → duels die too; a restorable
+        // 'trashed' keeps them (grilling Q13).
+        await reconcileExternallyRemoved(
+          db,
+          [match.copy_id],
+          Date.now(),
+          await mountedVolumeSet(),
+          presence === 'absent' ? new Set([match.copy_id]) : undefined,
+        );
         result.reconciled += 1;
         await dismissCopyMatch(db, match.original_id, match.copy_id);
       }

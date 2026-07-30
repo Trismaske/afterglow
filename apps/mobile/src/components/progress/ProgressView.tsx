@@ -11,7 +11,7 @@
  * are three views of one fact), and the library caller passed the whole
  * library in all three — the range was a parameter nothing varied.
  */
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -25,7 +25,6 @@ import {
   type StateBreakdown,
 } from '../../lib/progress';
 import {
-  countUndatedAlive,
   getBacklogFrontier,
   getBurstStats,
   getCaptureHistogram,
@@ -50,6 +49,9 @@ import { formatBytes } from '../../lib/format';
 import { labelForDayKey, rangeOfDayKey, UNDATED_DAY_KEY } from '../../lib/dates';
 import { countPhotosInRange } from '../../lib/media';
 import { resolveSources } from '../../lib/sourceCatalog';
+import { mountedVolumeSet, sameVolumeSet } from '../../lib/mountedVolumes';
+import { subscribeScanStatus } from '../../scan/scanRunner';
+import type { SourceRoot } from '../../lib/sources';
 import { StateProgressBar } from '../StateProgressBar';
 import { colors, touch, useTheme } from '../../theme';
 import {
@@ -61,10 +63,11 @@ import {
   VERDICT_ORDER,
 } from './stateMeta';
 import { PhotoStateGrid, type GridPhoto } from './PhotoStateGrid';
+import { useExternalRefresh } from '../useExternalRefresh';
 import { PhotoViewer, type ViewerItem } from '../PhotoViewer';
 
 interface ResolvedSrc {
-  roots: string[] | null;
+  roots: SourceRoot[] | null;
   albumIds: string[] | null;
 }
 
@@ -322,10 +325,39 @@ export function ProgressView({
     scopeKey: string;
     breakdown: StateBreakdown;
     trashed: number;
+    /** Fresh shots MediaStore has but the scan has not ingested yet
+     * (dated day scopes only; Tristan, grilling Q8): the day page's
+     * counts/grid are pure-DB (D16), so during the short ingestion
+     * window Home's day total runs ahead — this names the gap instead
+     * of silently mismatching. 0 = hidden. */
+    analyzing: number;
   } | null>(null);
   const [filter, setFilter] = useState<ProgressFilter>('all');
   const [viewer, setViewer] = useState<{ items: ViewerItem[]; index: number } | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
+  /** The counts loader's mounted snapshot, handed to the grid so the
+   * chips and the population they label page ONE world (final cycle
+   * O5). `undefined` until the first load; identity kept stable across
+   * reloads that observed no change, so the grid only resets on a real
+   * mount change. */
+  const [gridMounted, setGridMounted] = useState<readonly string[] | null | undefined>(undefined);
+
+  // A card can be swapped while the app is backgrounded, and returning to
+  // an already-open Progress screen re-fires no navigation focus — the
+  // counts and the grid would keep the pre-eject world indefinitely
+  // (final cycle N4/O6). Foreground return bumps the same tick the state
+  // editor uses, reloading counts and resetting the grid together.
+  useExternalRefresh(() => setRefreshTick((t) => t + 1));
+  // A pass completing under an open page re-reads too (grilling Q8):
+  // the "still being analyzed" line must clear — and the fresh photos
+  // appear — without a leave-and-return.
+  useEffect(
+    () =>
+      subscribeScanStatus((status) => {
+        if (status.phase === 'done') setRefreshTick((t) => t + 1);
+      }),
+    [],
+  );
 
   const scopeKey = scopeKeyOf(scope);
   /** The counts, only when they describe the CURRENT scope; otherwise
@@ -350,29 +382,52 @@ export function ProgressView({
         }
         const roots = sources.roots ?? null;
         const albumIds = sources.albumIds ?? null;
-        // The Unknown-day pseudo-day cannot be counted via MediaStore
-        // (no DATE_TAKEN query) — the tracked rows ARE its population.
-        const undatedScope = 'day' in scope && scope.day === UNDATED_DAY_KEY;
+        // EVERY day scope takes its denominator from the DB (m0.8.3,
+        // D16 + codex phase-3): the grid and chips page SQLite for day
+        // scopes, and a D15-rescued photo exists there but not in any
+        // MediaStore DATE_TAKEN range — a MediaStore denominator could
+        // read 0 under a grid showing a photo. `tracked - trashed` is
+        // exactly the alive DB day population. Library RANGE scopes keep
+        // the MediaStore total (untracked photos have no DB row yet).
+        const dayScope = 'day' in scope;
         // FAIL CLOSED (m0.8.2): a failed MediaStore count used to become
         // 0, and `computeBreakdown` would then happily report "10 of 0
         // reviewed" at some impossible percentage. A count we could not
         // take is not a count of zero — keep whatever is on screen and
         // let the next focus try again.
+        const mounted = await mountedVolumeSet();
+        // A dated day ALSO takes a non-authoritative MediaStore count —
+        // not as a denominator (D16 keeps that pure-DB) but to name the
+        // not-yet-ingested gap ("N still being analyzed", grilling Q8).
+        // Null on failure = no claim, no line.
+        const datedDay = 'day' in scope && scope.day !== UNDATED_DAY_KEY;
         const [msTotal, counts] = await Promise.all([
-          undatedScope
-            ? countUndatedAlive(db, roots)
+          dayScope && !datedDay
+            ? null
             : countPhotosInRange(startMs, endMs, albumIds).catch((error): null => {
                 console.warn('[progress] corpus count failed — numbers kept:', String(error));
                 return null;
               }),
-          getStateCountsInScope(db, scope, roots),
+          getStateCountsInScope(db, scope, roots, mounted),
         ]);
-        if (cancelled || msTotal === null) return;
+        const dbAlive = counts.tracked - counts.trashed;
+        const total = dayScope ? dbAlive : msTotal;
+        if (cancelled || total === null) return;
+        // MediaStore sees dated photos (ingested or not) but never
+        // rescued ones; the DB's dated-ingested population is therefore
+        // alive − rescued. Anything MediaStore has beyond that is still
+        // on its way through the scan.
+        const analyzing =
+          datedDay && msTotal !== null ? Math.max(0, msTotal - (dbAlive - counts.rescued)) : 0;
+        setGridMounted((prev) =>
+          prev !== undefined && sameVolumeSet(prev, mounted) ? prev : mounted,
+        );
         setSrc({ roots, albumIds });
         setData({
           scopeKey,
-          breakdown: computeBreakdown(msTotal, counts),
+          breakdown: computeBreakdown(total, counts),
           trashed: counts.trashed,
+          analyzing,
         });
       })();
       return () => {
@@ -400,11 +455,12 @@ export function ProgressView({
       void (async () => {
         try {
           const roots = (await resolveSources(db)).roots ?? null;
+          const mounted = await mountedVolumeSet();
           const [buckets, frontier, storage, burst] = await Promise.all([
-            getCaptureHistogram(db, roots),
-            getBacklogFrontier(db, roots),
-            getStorageBreakdown(db, roots),
-            getBurstStats(db, roots),
+            getCaptureHistogram(db, roots, mounted),
+            getBacklogFrontier(db, roots, mounted),
+            getStorageBreakdown(db, roots, mounted),
+            getBurstStats(db, roots, mounted),
           ]);
           if (cancelled) return;
           setInsights(buildInsightLines(buckets, frontier, storage, burst));
@@ -513,6 +569,13 @@ export function ProgressView({
           })}
         </View>
         <Text style={styles.footnote}>Tap a state to filter · tap a photo to change it.</Text>
+        {scopedData !== null && scopedData.analyzing > 0 && (
+          <Text style={styles.insightLine}>
+            {scopedData.analyzing === 1
+              ? '1 photo still being analyzed — it joins these counts when the scan finishes'
+              : `${scopedData.analyzing} photos still being analyzed — they join these counts when the scan finishes`}
+          </Text>
+        )}
 
         {/* The histogram is NAVIGATION: tapping a month filters the grid
             below, so seeing where the backlog sits and going to work on
@@ -583,6 +646,7 @@ export function ProgressView({
         albumIds={src.albumIds}
         filter={filter}
         refreshKey={refreshTick}
+        mounted={gridMounted}
         header={header}
         bottomInset={insets.bottom}
         onPhotoPress={(_photo, siblings, index) =>

@@ -11,11 +11,10 @@
  * upgrade story.
  *
  * SQLite is the source of truth for photo state. Canonical identity is
- * volume-qualified (`<volume>/<raw id>`; P4#2) — the identity columns are
- * nullable until the ingestion-boundary change flips `asset_id` to the
- * canonical key and tightens them. Group membership truth lives in the
- * durable grouping relations (grouping_runs / photo_groups /
- * photo_group_assignments).
+ * volume-qualified (`<volume>/<raw id>`; P4#2) with REAL volume identity
+ * stamped at ingestion (m0.8.3, D7) — volume_name/raw_id are NOT NULL.
+ * Group membership truth lives in the durable grouping relations
+ * (grouping_runs / photo_groups / photo_group_assignments).
  *
  * Foreign keys are declared AND enforced (`PRAGMA foreign_keys = ON` on
  * every open; C#3). Schema-level invariants: one current group assignment
@@ -30,7 +29,7 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 export const DATABASE_NAME = 'afterglow.db';
 
 /** Bump on ANY schema change before v1 — the open path resets mismatches. */
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 export const BASELINE_DDL = `
   CREATE TABLE photos (
@@ -56,11 +55,18 @@ export const BASELINE_DDL = `
     decided_at           INTEGER,
     culled_at            INTEGER,
 
-    -- Canonical volume-qualified identity (P4#2); tightened to NOT NULL
-    -- with the ingestion boundary.
-    volume_name          TEXT,
-    raw_id               TEXT,
-    content_uri          TEXT,
+    -- Canonical volume-qualified identity (P4#2). v20: NOT NULL — every
+    -- ingestion path stamps the REAL volume (m0.8.3, D7 mechanism D);
+    -- reachability scoping and the per-volume scan key on this column.
+    volume_name          TEXT NOT NULL,
+    raw_id               TEXT NOT NULL,
+    -- D15 EXIF rescue marker (v20): the MediaStore mod_time at which the
+    -- photo's header was LAST successfully read for DateTimeOriginal
+    -- (found or honestly absent). NULL = never completed — a failed read
+    -- stays retry-eligible. Deliberately its own column: mod_time above
+    -- is owned by edit detection (reset/preserved by edit cycles), so it
+    -- cannot double as the rescue's once-per-content version.
+    exif_checked_mod_time INTEGER,
 
     -- Presence + feed ordering + trash generation (C#1, N#3, C#7, P8#4)
     is_present           INTEGER NOT NULL DEFAULT 1 CHECK (is_present IN (0, 1)),

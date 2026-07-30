@@ -65,14 +65,12 @@ describe('formatMatrixReport', () => {
         ['UID', '10434'],
       ],
       {
-        uri: 'content://media/external/images/media/1000168830',
-        source: 'synthetic-fallback',
-        resolveError: 'asset not found',
+        uri: 'content://media/external_primary/images/media/1000168830',
+        source: 'canonical',
       },
       [launched('view_read'), security('edit_readwrite')],
     );
-    expect(report).toContain('SYNTHETIC FALLBACK');
-    expect(report).toContain('asset not found');
+    expect(report).toContain('constructed canonical volume-qualified uri');
     expect(report).toContain('samsung SM-G991B');
     expect(report).toContain('VIEW, read-only grant: launched');
     expect(report).toContain('(an app opened)');
@@ -81,14 +79,14 @@ describe('formatMatrixReport', () => {
   });
 
   it('flags a dispatch that launched with nothing observed opening', () => {
-    const report = formatMatrixReport([], { uri: 'content://media/1', source: 'expo' }, [
+    const report = formatMatrixReport([], { uri: 'content://media/1', source: 'canonical' }, [
       launched('view_read', false),
     ]);
     expect(report).toContain('NOTHING opened');
   });
 
   it('reports completion when the sequence is done', () => {
-    const report = formatMatrixReport([], { uri: 'content://media/1', source: 'expo' }, [
+    const report = formatMatrixReport([], { uri: 'content://media/1', source: 'canonical' }, [
       launched('view_read'),
       launched('edit_read'),
       launched('edit_readwrite'),

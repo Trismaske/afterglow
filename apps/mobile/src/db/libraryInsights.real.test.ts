@@ -319,10 +319,10 @@ describe('getPhotoTimestamps (delta-scan planning)', () => {
   function seedAt(d: TestDb, offsetsMin: readonly number[]): number {
     const base = 1_800_000_000_000;
     const insert = d.raw.prepare(
-      "INSERT INTO photos (asset_id, uri, taken_at, state, is_present) VALUES (?, ?, ?, 'unreviewed', 1)",
+      "INSERT INTO photos (asset_id, uri, taken_at, state, is_present, volume_name, raw_id) VALUES (?, ?, ?, 'unreviewed', 1, 'external_primary', ?)",
     );
     offsetsMin.forEach((min, i) => {
-      insert.run(`p${i}`, `file:///DCIM/Camera/p${i}.jpg`, base + min * 60_000);
+      insert.run(`p${i}`, `file:///DCIM/Camera/p${i}.jpg`, base + min * 60_000, `p${i}`);
     });
     return base;
   }
@@ -351,7 +351,9 @@ describe('getPhotoTimestamps (delta-scan planning)', () => {
     d.raw
       .prepare("UPDATE photos SET uri = 'file:///Pictures/WhatsApp/p1.jpg' WHERE asset_id = ?")
       .run('p1');
-    expect(await getPhotoTimestamps(asExpo(d), ['DCIM/Camera'])).toEqual([base]);
+    expect(
+      await getPhotoTimestamps(asExpo(d), [{ volume: 'external_primary', dir: 'DCIM/Camera' }]),
+    ).toEqual([base]);
     expect(await getPhotoTimestamps(asExpo(d), null)).toHaveLength(2);
   });
 

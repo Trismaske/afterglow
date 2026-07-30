@@ -11,6 +11,7 @@ import { dayKey } from '../lib/dates';
 // today/all-time numbers from ONE query set, so they cannot drift.
 import { loadDecisionStats } from '../lib/statsLoad';
 import { resolveSources } from '../lib/sourceCatalog';
+import type { SourceRoot } from '../lib/sources';
 import { BigButton } from '../components/BigButton';
 import { colors, touch, useTheme } from '../theme';
 import { formatBytes } from '../lib/format';
@@ -44,7 +45,7 @@ export function SummaryScreen({ navigation }: Props) {
       // the screen keeps its placeholders/previous values rather than
       // showing whole-library counts as the user's selection. The
       // retrying resolution (sourceCatalog) makes this rare.
-      let sources: { roots: string[] | null; albumIds: string[] | null };
+      let sources: { roots: SourceRoot[] | null; albumIds: string[] | null };
       try {
         const resolved = await resolveSources(db);
         sources = { roots: resolved.roots ?? null, albumIds: resolved.albumIds ?? null };

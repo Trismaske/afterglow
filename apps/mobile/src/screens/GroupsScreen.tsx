@@ -74,6 +74,13 @@ export function GroupsScreen({ navigation }: Props) {
       if (unit.kind === 'group') {
         const group = unit.group;
         const pending = group.members.filter((m) => m.state === 'unreviewed').length;
+        // Hidden members are NAMED on the card itself (Tristan, m0.8.3
+        // matrix): a mixed group showing one thumbnail must say why
+        // without being opened.
+        const away =
+          (group.unreachableCount ?? 0) > 0
+            ? ` · ${group.unreachableCount} on unmounted SD card`
+            : '';
         const newest = group.members[0];
         const displayMembers = group.bestPhotoId
           ? [
@@ -84,7 +91,7 @@ export function GroupsScreen({ navigation }: Props) {
         return (
           <UnitCard
             title={`Group · ${group.members.length} shots · ${labelForDayKey(newest?.day ?? UNDATED_DAY_KEY)}${newest ? ` ${formatClock(newest.taken_at)}` : ''}`}
-            status={pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`}
+            status={(pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`) + away}
             statusDone={pending === 0}
             members={displayMembers}
             onPress={() => openUnit(unit)}

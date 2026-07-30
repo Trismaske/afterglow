@@ -19,10 +19,10 @@ import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
+import { invalidateMountedVolumes, mountedVolumeSet } from '../lib/mountedVolumes';
 import type { MainTabScreenProps } from '../navigation';
 import {
   clearShareQueue,
-  countNeverShared,
   createShareBatch,
   failShareBatch,
   getShareQueue,
@@ -53,7 +53,9 @@ export function ShareQueueScreen(_props: Props) {
     rows,
     failed,
     reload: reloadRows,
-  } = useQueueRows<ShareQueueRow>(useCallback(() => getShareQueue(db), [db]));
+  } = useQueueRows<ShareQueueRow>(
+    useCallback(async () => getShareQueue(db, Date.now(), await mountedVolumeSet()), [db]),
+  );
   /** Every mutation here also moves the share BADGE on review surfaces
    * (deck, Groups) — the provider's membership map is their source. */
   const reload = useCallback(async () => {
@@ -108,10 +110,20 @@ export function ShareQueueScreen(_props: Props) {
         // be STALE — useQueueRows deliberately keeps them when a reload
         // fails — and a share must never dispatch photos a successful
         // clear/unqueue already removed. The durable queue is the truth;
-        // the selection filters it.
-        const freshIds = (await getShareQueue(db)).map((r) => r.photo_id);
+        // the selection filters it. LIVE mount state (final cycle U1):
+        // within the 5 s TTL a hot-ejected card's rows would otherwise
+        // still ride into the dispatched batch.
+        invalidateMountedVolumes();
+        const freshIds = (await getShareQueue(db, Date.now(), await mountedVolumeSet())).map(
+          (r) => r.photo_id,
+        );
         const freshSet = new Set(freshIds);
-        const ids = selected.size > 0 ? shareIds.filter((id) => freshSet.has(id)) : freshIds;
+        // INTERSECTION in both modes (final cycle T1): the fresh read may
+        // only SHRINK the batch — "Share all N" covers the N rendered
+        // rows, and a card remounting before the reload commits must not
+        // ride extra, unseen photos into the dispatch (or around the
+        // large-batch warning, which counted the rendered ids).
+        const ids = shareIds.filter((id) => freshSet.has(id));
         if (ids.length === 0) {
           showToast('Nothing to share — the queue changed under this screen');
           await reload();
@@ -181,7 +193,7 @@ export function ShareQueueScreen(_props: Props) {
       return;
     }
     await fire();
-  }, [busy, db, shareIds, selected, reload]);
+  }, [busy, db, shareIds, reload]);
 
   const saveLabel = useCallback(
     async (label: string) => {
@@ -194,7 +206,11 @@ export function ShareQueueScreen(_props: Props) {
   );
 
   const runClear = useCallback(async () => {
-    const neverShared = await countNeverShared(db);
+    // The warning counts the RENDERED rows — exactly the set the bounded
+    // clear below may touch (final cycle U4). A fresh queue count could
+    // describe rows a remount just revealed that the write will never
+    // clear ("5 of 3 photos were never shared").
+    const neverShared = (rows ?? []).filter((r) => r.pass_count === 0).length;
     const total = rows?.length ?? 0;
     const message =
       neverShared > 0
@@ -206,10 +222,30 @@ export function ShareQueueScreen(_props: Props) {
         text: 'Clear',
         style: 'destructive',
         onPress: () =>
-          void clearShareQueue(db, Date.now()).then(() => {
-            setSelected(new Set());
+          void (async () => {
+            try {
+              // The dialog can sit open across a card swap (Q5/T2): the
+              // write re-reads LIVE mount state so a now-unreachable
+              // row's pending share survives byte-for-byte (plan §5),
+              // AND it is bounded to the rows the dialog described — a
+              // remount may only shrink the clear, never add unseen
+              // rows to it.
+              invalidateMountedVolumes();
+              await clearShareQueue(
+                db,
+                Date.now(),
+                await mountedVolumeSet(),
+                (rows ?? []).map((r) => r.photo_id),
+              );
+              setSelected(new Set());
+            } catch (error) {
+              // A rejected transaction must not close the dialog into
+              // silence (final cycle V4) — say so, then show what stands.
+              console.warn('[share] clear failed:', String(error));
+              showToast('Could not clear the queue — nothing was changed. Try again.');
+            }
             void reload();
-          }),
+          })(),
       },
     ]);
   }, [db, rows, reload]);

@@ -17,11 +17,24 @@
  * volumes) can prove nothing.
  */
 
+/** Settings key: fingerprint of the last COMPLETE clean pass. Exported
+ * (m0.8.3 final cycle P4) because "Forget this card" must durably defeat
+ * the skip in ITS OWN transaction — the process-local forced rescan dies
+ * with the process, and a forgotten card returning unchanged could then
+ * fingerprint-match and never re-ingest. */
+export const SCAN_FINGERPRINT_KEY = 'scan_fingerprint';
+/** Settings key: per-volume generation baselines of the last COMPLETE
+ * clean pass, as JSON (the delta scan's "everything up to here is
+ * accounted for"). Deleted alongside the fingerprint by Forget: the next
+ * open then runs the full pass the flow's forced rescan intends, process
+ * death or not. */
+export const SCAN_GENERATIONS_KEY = 'scan_generations';
+
 export function scanFingerprint(args: {
   /** Per-volume MediaStore generations ({} = unknown). */
   generations: Readonly<Record<string, number>>;
-  /** Resolved source roots (null = all folders). */
-  roots: readonly string[] | null;
+  /** Resolved volume-qualified source roots (null = all folders). */
+  roots: readonly { volume: string; dir: string }[] | null;
   /** Raw grouping-strictness setting (null = default). */
   strictness: string | null;
   /** Pinned embedding-model SHA. */
@@ -31,7 +44,13 @@ export function scanFingerprint(args: {
     .sort()
     .map((volume) => `${volume}=${args.generations[volume]}`)
     .join(',');
-  const roots = args.roots === null ? '*' : [...args.roots].sort().join(',');
+  const roots =
+    args.roots === null
+      ? '*'
+      : args.roots
+          .map((root) => `${root.volume}:${root.dir}`)
+          .sort()
+          .join(',');
   return `gen:${volumes}|src:${roots}|strict:${args.strictness ?? 'default'}|model:${args.modelSha}`;
 }
 

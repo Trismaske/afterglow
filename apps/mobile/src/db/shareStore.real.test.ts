@@ -43,10 +43,10 @@ async function fresh(): Promise<TestDb> {
 function insertPhoto(d: TestDb, id: string, present = 1): void {
   d.raw
     .prepare(
-      `INSERT INTO photos (asset_id, uri, taken_at, day, is_present)
-       VALUES (?, 'content://x', ?, '2026-07-20', ?)`,
+      `INSERT INTO photos (asset_id, uri, taken_at, day, is_present, volume_name, raw_id)
+       VALUES (?, 'content://x', ?, '2026-07-20', ?, 'external_primary', ?)`,
     )
-    .run(id, AT, present);
+    .run(id, AT, present, id);
 }
 
 describe('share queue + cycles', () => {
@@ -203,6 +203,55 @@ describe('share queue + cycles', () => {
     expect(queue[0].pass_count).toBe(0);
     const state = d.raw.prepare('SELECT state FROM share_batches').get() as { state: string };
     expect(state.state).toBe('error');
+  });
+
+  it('a partial clear leaves the cycle OPEN while hidden unreachable rows stay queued (V2)', async () => {
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    d.raw
+      .prepare(
+        `INSERT INTO photos (asset_id, uri, taken_at, day, is_present, volume_name, raw_id)
+         VALUES ('0a91-e18d/s1', 'content://x', ${AT}, '2026-07-20', 1, '0a91-e18d', 's1')`,
+      )
+      .run();
+    await addToShareQueue(asExpo(d), 'p1', AT);
+    await addToShareQueue(asExpo(d), '0a91-e18d/s1', AT + 1);
+    // Card out: the clear sees only p1 (reach-scoped) and is bounded to
+    // the rendered rows — the SD row survives, so its cycle must too.
+    const result = await clearShareQueue(asExpo(d), AT + 10, ['external_primary'], ['p1']);
+    expect(result.cleared).toBe(1);
+    const cycle = d.raw
+      .prepare('SELECT ended_at FROM share_cycles ORDER BY id DESC LIMIT 1')
+      .get() as { ended_at: number | null };
+    expect(cycle.ended_at).toBeNull();
+    const queue = await getShareQueue(asExpo(d));
+    expect(queue.map((r) => r.photo_id)).toEqual(['0a91-e18d/s1']);
+  });
+
+  it('a displayed-ids bound past the SQL variable floor clears in chunks (U2)', async () => {
+    const d = await fresh();
+    const ids: string[] = [];
+    const insert = d.raw.prepare(
+      `INSERT INTO photos (asset_id, uri, taken_at, day, is_present, volume_name, raw_id)
+       VALUES (?, 'content://x', ${AT}, '2026-07-20', 1, 'external_primary', ?)`,
+    );
+    const queue = d.raw.prepare(
+      `INSERT INTO photo_actions (photo_id, kind, state, queued_at)
+       VALUES (?, 'share', 'queued', ${AT})`,
+    );
+    for (let i = 0; i < 1100; i += 1) {
+      const id = `bulk${i}`;
+      ids.push(id);
+      insert.run(id, id);
+      queue.run(id);
+    }
+    d.raw.prepare(`INSERT INTO share_cycles (started_at) VALUES (${AT})`).run();
+    const result = await clearShareQueue(asExpo(d), AT + 10, null, ids);
+    expect(result.cleared).toBe(1100);
+    const left = d.raw
+      .prepare("SELECT COUNT(*) AS n FROM photo_actions WHERE kind = 'share'")
+      .get() as { n: number };
+    expect(left.n).toBe(0);
   });
 
   it('remove-one keeps the rest of the queue', async () => {

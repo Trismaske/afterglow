@@ -19,6 +19,7 @@
 import { useCallback, useRef, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import { useReview } from '../review/ReviewContext';
+import { useExternalRefresh } from './useExternalRefresh';
 
 /** The one quiet failure line every queue screen renders when `failed`
  * is set — stale rows stay on screen, this says why they might be. */
@@ -40,7 +41,12 @@ export function useQueueRows<T>(load: () => Promise<T[]>): {
   // on photos the deck never loaded. Gated on the count so an ordinary
   // focus-reload does not invalidate every stats query.
   const rendered = useRef<number | null>(null);
+  /** Only the LATEST reload may commit (final cycle P4): a focus reload
+   * still in flight when the foreground reload starts would otherwise
+   * finish second and overwrite the fresher mounted-scoped rows. */
+  const reloadGen = useRef(0);
   const reload = useCallback(async () => {
+    const myGen = ++reloadGen.current;
     let next: T[];
     try {
       next = await load();
@@ -48,9 +54,10 @@ export function useQueueRows<T>(load: () => Promise<T[]>): {
       // codex r9: the read rejected — keep whatever the screen already
       // shows and mark the failure; reload itself never rejects, so the
       // focus effect and every awaiting mutation handler stay total.
-      setFailed(true);
+      if (myGen === reloadGen.current) setFailed(true);
       return;
     }
+    if (myGen !== reloadGen.current) return;
     setRows(next);
     setFailed(false);
     if (rendered.current !== null && rendered.current !== next.length) queuesChanged();
@@ -61,5 +68,10 @@ export function useQueueRows<T>(load: () => Promise<T[]>): {
       void reload();
     }, [reload]),
   );
+  // Foreground return re-reads too (final cycle O6): the tab navigator
+  // keeps a focused queue screen focused across backgrounding, so a card
+  // swapped while away would otherwise leave its rows on screen — visible
+  // and tappable — until the user navigates off the tab and back.
+  useExternalRefresh(() => void reload());
   return { rows, failed, reload };
 }

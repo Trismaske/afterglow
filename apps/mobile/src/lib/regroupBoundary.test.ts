@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { frozenPhotos, reconcileWindowGroups, type ReconcileMaps } from './regroupBoundary';
+import {
+  frozenPhotos,
+  reconcileWindowGroups,
+  windowFreeze,
+  type ReconcileMaps,
+} from './regroupBoundary';
 
 function maps(partial: Partial<ReconcileMaps>): ReconcileMaps {
   return {
@@ -7,6 +12,7 @@ function maps(partial: Partial<ReconcileMaps>): ReconcileMaps {
     assignments: partial.assignments ?? new Map(),
     groupMembers: partial.groupMembers ?? new Map(),
     metadataGroups: partial.metadataGroups ?? new Set(),
+    ...(partial.reachable ? { reachable: partial.reachable } : {}),
   };
 }
 
@@ -135,5 +141,127 @@ describe('frozenPhotos (group-level metadata)', () => {
       }),
     );
     expect([...frozen].sort()).toEqual(['a', 'b']);
+  });
+});
+
+describe('frozenPhotos (unreachable members, m0.8.3)', () => {
+  it('freezes a group whole while any member is unreachable — rebuilding a half-seen group strands the other half', () => {
+    // Group 7 spans volumes: 'a','b' on primary, 'sd1' on an ejected SD
+    // card. The pass sees only a,b; rebuilding around them would leave
+    // sd1 in a rump group the <2-present repair dissolves, changing an
+    // unreachable photo's assignment (plan §5 forbids).
+    const frozen = frozenPhotos(
+      ['a', 'b'],
+      maps({
+        assignments: new Map([
+          ['a', { groupId: 7, userSingle: false }],
+          ['b', { groupId: 7, userSingle: false }],
+        ]),
+        groupMembers: new Map([[7, ['a', 'b', 'sd1']]]),
+        reachable: (id) => id !== 'sd1',
+      }),
+    );
+    expect([...frozen].sort()).toEqual(['a', 'b']);
+  });
+
+  it('unfreezes the moment every member is reachable again', () => {
+    const frozen = frozenPhotos(
+      ['a', 'b'],
+      maps({
+        assignments: new Map([
+          ['a', { groupId: 7, userSingle: false }],
+          ['b', { groupId: 7, userSingle: false }],
+        ]),
+        groupMembers: new Map([[7, ['a', 'b', 'sd1']]]),
+        reachable: () => true,
+      }),
+    );
+    expect(frozen.size).toBe(0);
+  });
+
+  it('an absent predicate freezes nothing extra (pre-reachability callers)', () => {
+    const frozen = frozenPhotos(
+      ['a'],
+      maps({
+        assignments: new Map([['a', { groupId: 7, userSingle: false }]]),
+        groupMembers: new Map([[7, ['a', 'sd1']]]),
+      }),
+    );
+    expect(frozen.size).toBe(0);
+  });
+});
+
+describe('grow-only (m0.8.3 grilling): unreachable-frozen groups accept new members', () => {
+  /** Group 7 = {a, sd} where sd's card is out; b is a fresh photo the
+   * engine clustered with a. */
+  function unreachableMaps(extra: Partial<ReconcileMaps> = {}): ReconcileMaps {
+    return maps({
+      states: new Map([
+        ['a', 'unreviewed'],
+        ['sd', 'unreviewed'],
+        ['b', 'unreviewed'],
+      ]),
+      assignments: new Map([['a', { groupId: 7, userSingle: false }]]),
+      groupMembers: new Map([[7, ['a', 'sd']]]),
+      reachable: (id) => id !== 'sd',
+      ...extra,
+    });
+  }
+
+  it('marks unreachable-only-frozen photos growable; review freezes are not', () => {
+    const freeze = windowFreeze(['a', 'b'], unreachableMaps());
+    expect([...freeze.frozen]).toEqual(['a']);
+    expect(freeze.growable.get('a')).toBe(7);
+    // Same shape but the group carries a star: frozen, NOT growable.
+    const starred = windowFreeze(['a', 'b'], unreachableMaps({ metadataGroups: new Set([7]) }));
+    expect([...starred.frozen]).toEqual(['a']);
+    expect(starred.growable.size).toBe(0);
+  });
+
+  it('appends the unfrozen cluster-mates to the growable group', () => {
+    const freeze = windowFreeze(['a', 'b'], unreachableMaps());
+    const plan = reconcileWindowGroups(
+      [{ members: ['a', 'b'], timeAttached: ['b'] }],
+      freeze.frozen,
+      freeze.growable,
+    );
+    expect(plan.groups).toEqual([]);
+    expect(plan.singles).toEqual([]);
+    expect(plan.appends).toEqual([{ groupId: 7, members: ['b'], timeAttached: ['b'] }]);
+  });
+
+  it('without a growable target the pre-grow shapes stand', () => {
+    const freeze = windowFreeze(['a', 'b'], unreachableMaps({ metadataGroups: new Set([7]) }));
+    const plan = reconcileWindowGroups(
+      [{ members: ['a', 'b'], timeAttached: [] }],
+      freeze.frozen,
+      freeze.growable,
+    );
+    expect(plan.appends).toEqual([]);
+    expect(plan.singles).toEqual(['b']); // lone unfrozen remainder
+  });
+
+  it('largest member overlap wins the append target; ties break low', () => {
+    const growable = new Map([
+      ['a1', 7],
+      ['a2', 7],
+      ['c1', 3],
+    ]);
+    const frozen = new Set(['a1', 'a2', 'c1']);
+    const plan = reconcileWindowGroups(
+      [{ members: ['a1', 'a2', 'c1', 'new'], timeAttached: [] }],
+      frozen,
+      growable,
+    );
+    expect(plan.appends).toEqual([{ groupId: 7, members: ['new'], timeAttached: [] }]);
+    const tie = reconcileWindowGroups(
+      [{ members: ['a1', 'c1', 'new'], timeAttached: [] }],
+      new Set(['a1', 'c1']),
+      new Map([
+        ['a1', 7],
+        ['c1', 3],
+      ]),
+    );
+    expect(tie.appends).toEqual([{ groupId: 3, members: ['new'], timeAttached: [] }]);
   });
 });

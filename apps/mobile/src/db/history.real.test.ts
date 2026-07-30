@@ -37,10 +37,11 @@ function insertPhoto(
 ): void {
   d.raw
     .prepare(
-      `INSERT INTO photos (asset_id, uri, taken_at, day, state, activity_at, is_present)
-       VALUES (?, 'content://x', ?, '2026-07-20', ?, ?, ?)`,
+      `INSERT INTO photos (asset_id, uri, taken_at, day, state, activity_at, is_present,
+                           volume_name, raw_id)
+       VALUES (?, 'content://x', ?, '2026-07-20', ?, ?, ?, 'external_primary', ?)`,
     )
-    .run(id, AT, state, activityAt, extras.is_present ?? 1);
+    .run(id, AT, state, activityAt, extras.is_present ?? 1, id);
 }
 
 /** Attach a pending action (v18) — `resolvedAt` set means it happened. */

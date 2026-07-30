@@ -4,6 +4,7 @@ import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
+import { mountedVolumeSet } from '../lib/mountedVolumes';
 import type { MainTabScreenProps } from '../navigation';
 import { getToEditPhotos, markEditDone, type ToEditRow } from '../db/store';
 import { withUserWritePriority } from '../lib/writePriority';
@@ -35,7 +36,9 @@ export function EditQueueScreen(_props: Props) {
   const theme = useTheme();
   const db = useSQLiteContext();
   const { refresh } = useReview();
-  const { rows, failed, reload } = useQueueRows(useCallback(() => getToEditPhotos(db), [db]));
+  const { rows, failed, reload } = useQueueRows(
+    useCallback(async () => getToEditPhotos(db, await mountedVolumeSet()), [db]),
+  );
   const [busyId, setBusyId] = useState<string | null>(null);
   // Gate-0 (m0.7 item A): the editor-launch diagnostic matrix, opened from
   // the failure alert or by long-pressing Edit (proactive/emulator path).

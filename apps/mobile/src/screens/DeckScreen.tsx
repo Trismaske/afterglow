@@ -242,6 +242,11 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   }, [explicitGroupId, queueGroup, loadGroup, singlesMode, version, loadTick]);
   const group: ReviewGroupRow | null =
     queueGroup ?? (typeof loadedGroup === 'object' ? loadedGroup : null);
+  // m0.8.3 §5 (D9): a group straddling volumes shows only reachable
+  // members while a card is out — the header NAMES the rest, so the
+  // deck never silently presents a partial group as whole.
+  const unreachableSuffix =
+    (group?.unreachableCount ?? 0) > 0 ? ` · ${group!.unreachableCount} on unmounted SD card` : '';
   // m0.8.2: singles decks are day/run scoped and fetch their own rows —
   // kept photos included (group-deck parity, F10) — for the SAME reason
   // loadGroup exists above: the queue's singles feed is a bounded
@@ -999,8 +1004,8 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
                 range ? ` · ${queueCounts.singles.toLocaleString()} left in library` : ''
               }`
             : browse
-              ? `Group · ${keepCount} reviewed`
-              : `Group · ${keepCount - aliveItems.length} of ${keepCount} reviewed · ${queueCounts.groups.toLocaleString()} groups left`}
+              ? `Group · ${keepCount} reviewed${unreachableSuffix}`
+              : `Group · ${keepCount - aliveItems.length} of ${keepCount} reviewed · ${queueCounts.groups.toLocaleString()} groups left${unreachableSuffix}`}
         </Text>
         <Text style={styles.headerHint}>
           {browse

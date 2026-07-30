@@ -87,13 +87,17 @@ export async function queueOrganize(
   // The pre-read exists for the user-facing MESSAGES; the write below
   // re-proves presence itself, so this read racing a scan reconcile can
   // never queue an action on a photo that just vanished.
-  const photo = await db.getFirstAsync<{ is_present: number; volume_name: string | null }>(
+  const photo = await db.getFirstAsync<{ is_present: number; volume_name: string }>(
     'SELECT is_present, volume_name FROM photos WHERE asset_id = ?',
     photoId,
   );
   if (!photo || photo.is_present !== 1) return 'That photo is no longer available.';
-  if (photo.volume_name !== null && photo.volume_name !== PRIMARY_VOLUME) {
-    return 'Photos on removable storage cannot be moved in this release.';
+  // Real volume identity (v20, NOT NULL) makes this rejection live for
+  // SD photos — the D3 organize limitation, NAMED at the affordance
+  // (plan §6: visible-and-named, never a dead chip or a Move-time
+  // surprise). The deck shows this as an alert on the chip tap.
+  if (photo.volume_name !== PRIMARY_VOLUME) {
+    return 'On SD card — moves are not supported in this release. Cull, favourite, edit and share all work.';
   }
   let queued = false;
   // ONE transaction for queue truth + its History stamp: as separate
@@ -191,7 +195,20 @@ export async function unqueueOrganize(
   });
 }
 
-export async function getOrganizeQueue(db: SQLiteDatabase): Promise<OrganizeQueueRow[]> {
+export async function getOrganizeQueue(
+  db: SQLiteDatabase,
+  /** m0.8.3 §5: an unmounted volume's queued moves wait for remount. */
+  mounted: readonly string[] | null = null,
+): Promise<OrganizeQueueRow[]> {
+  const reach =
+    mounted === null
+      ? { sql: '', params: [] as string[] }
+      : mounted.length === 0
+        ? { sql: ' AND 0', params: [] as string[] }
+        : {
+            sql: ` AND p.volume_name IN (${mounted.map(() => '?').join(',')})`,
+            params: [...mounted],
+          };
   // NULL-safe target projection: an untargeted row (m0.8.2) comes back
   // with NULL volume/path rather than substr() noise.
   return db.getAllAsync<OrganizeQueueRow>(
@@ -202,8 +219,9 @@ export async function getOrganizeQueue(db: SQLiteDatabase): Promise<OrganizeQueu
                  ELSE substr(pa.target, instr(pa.target, char(10)) + 1) END AS organize_path
      FROM photos p
      JOIN photo_actions pa ON pa.photo_id = p.asset_id AND pa.kind = 'organize'
-     WHERE pa.state IN ('queued', 'error') AND ${livePhotoClause('p.asset_id')}
+     WHERE pa.state IN ('queued', 'error') AND ${livePhotoClause('p.asset_id')}${reach.sql}
      ORDER BY p.taken_at ASC`,
+    ...reach.params,
   );
 }
 

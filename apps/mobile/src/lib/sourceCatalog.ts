@@ -21,26 +21,24 @@ import { invalidatePhotoCounts } from './media';
 import { perfLog } from './perfLog';
 import {
   DEFAULT_SOURCE_DIR,
+  foldAlbumsToDirs,
   isUnderAnyRoot,
   matchAlbumIds,
+  matchAlbumIdsByVolume,
   parsePhotoSourceSetting,
   PHOTO_SOURCES_KEY,
   sourceDirOfUri,
   sourceLabel,
   type PhotoSourceSetting,
+  type SourceDir,
+  type SourceRoot,
 } from './sources';
+import { PRIMARY_VOLUME, volumeOfUriPath } from './mediaIdentity';
 import { getSetting } from '../db/store';
 
-/** One selectable photo directory (bucket(s) sharing a relative path). */
-export interface SourceDir {
-  /** Storage-relative directory, e.g. "DCIM/Camera". */
-  dir: string;
-  /** Bucket ids for this dir — usually one; two when the same relative
-   * path exists on two storage volumes (internal + SD card). */
-  albumIds: string[];
-  /** Photos in these buckets (non-recursive, like the buckets). */
-  photoCount: number;
-}
+// The catalog entry shape + its pure fold live in sources.ts (the pure
+// side of this pair); re-exported here for the existing consumers.
+export type { SourceDir } from './sources';
 
 /** 10 min (m0.8.1, was 60 s): the catalog is consulted by EVERY screen
  * loader via resolveSources, and a cold rebuild costs one MediaStore
@@ -178,28 +176,13 @@ async function buildCatalog(): Promise<SourceDir[]> {
     // A forced listSourceDirs cleared the album cache before this build,
     // so the plain call is fresh exactly when freshness was demanded.
     const albums = await listImageAlbumsCached();
-    const byDir = new Map<string, SourceDir>();
-    for (const album of albums) {
-      const dir = album.relativePath.replace(/\/+$/, '');
-      if (dir === '' || album.photoCount === 0) continue;
-      const existing = byDir.get(dir.toLowerCase());
-      if (existing) {
-        existing.albumIds.push(album.bucketId);
-        existing.photoCount += album.photoCount;
-      } else {
-        byDir.set(dir.toLowerCase(), {
-          dir,
-          albumIds: [album.bucketId],
-          photoCount: album.photoCount,
-        });
-      }
-    }
-    const dirs = commit([...byDir.values()].sort((a, b) => a.dir.localeCompare(b.dir)));
+    // Keyed by (volume, dir) — m0.8.3 D4: volume identity is preserved,
+    // so DCIM/Camera on primary and on the SD card stay two entries.
+    const dirs = commit(foldAlbumsToDirs(albums));
     perfLog(() => `source catalog (native): ${albums.length} buckets in ${Date.now() - started}ms`);
     return dirs;
   }
   const albums = await MediaLibrary.getAlbumsAsync();
-  const byDir = new Map<string, SourceDir>();
   let failedProbes = 0;
   // Probe buckets CONCURRENTLY (m0.8.1, was sequential): each probe is
   // one first:1 MediaStore query; dozens of buckets in series took
@@ -233,22 +216,25 @@ async function buildCatalog(): Promise<SourceDir[]> {
       }
     }),
   );
+  const probedAlbums: Parameters<typeof foldAlbumsToDirs>[0][number][] = [];
   for (const probe of probes) {
     if (probe === null) continue;
     if (probe !== 'failed') {
       const dir = sourceDirOfUri(probe.uri);
-      if (dir === null) continue;
-      const existing = byDir.get(dir.toLowerCase());
-      if (existing) {
-        existing.albumIds.push(probe.albumId);
-        existing.photoCount += probe.totalCount;
-      } else {
-        byDir.set(dir.toLowerCase(), {
-          dir,
-          albumIds: [probe.albumId],
-          photoCount: probe.totalCount,
-        });
-      }
+      // SAME volume identity as ingestion (codex r1): the probe asset's
+      // uri parses under mechanism D exactly like the scan's assets, so
+      // a legacy device's SD bucket gets its real volume — a
+      // primary-labeled root over UUID-stamped rows would silently
+      // empty every dir-scoped read. A bucket whose uri parses to no
+      // volume is skipped, matching the adapter skipping its photos.
+      const volume = volumeOfUriPath(probe.uri);
+      if (dir === null || volume === null) continue;
+      probedAlbums.push({
+        volumeName: volume,
+        bucketId: probe.albumId,
+        relativePath: `${dir}/`,
+        photoCount: probe.totalCount,
+      });
     } else {
       // One unreadable bucket must not sink the whole catalog.
       failedProbes += 1;
@@ -261,7 +247,7 @@ async function buildCatalog(): Promise<SourceDir[]> {
     // so callers keep their last-known scope (never cached).
     throw new Error(`source catalog incomplete — ${failedProbes} album probes failed`);
   }
-  const dirs = commit([...byDir.values()].sort((a, b) => a.dir.localeCompare(b.dir)));
+  const dirs = commit(foldAlbumsToDirs(probedAlbums));
   // Field diagnostic (once per cold rebuild): this is the shared cost of
   // every screen's source resolution — regressions show up here first.
   perfLog(() => `source catalog: ${albums.length} buckets probed in ${Date.now() - started}ms`);
@@ -275,9 +261,14 @@ export interface ResolvedSources {
   isDefault: boolean;
   /** Bucket ids to query — null = all folders (no filter). */
   albumIds: string[] | null;
-  /** Selected roots for DB-side uri matching — null = all folders. */
-  roots: string[] | null;
-  /** "DCIM/Camera" / "All folders" / "DCIM/Camera +2 more". */
+  /** The same matched buckets grouped per volume (m0.8.3 phase 2) — the
+   * per-volume scan tripwires' MediaStore-count scope. Null = all
+   * folders (per-volume counts come from the native counter instead). */
+  albumIdsByVolume: Record<string, string[]> | null;
+  /** Selected volume-qualified roots for DB-side matching — null = all
+   * folders. */
+  roots: SourceRoot[] | null;
+  /** "DCIM/Camera" / "All folders" / "DCIM/100MSDCF (SD card) +2 more". */
   label: string;
 }
 
@@ -352,6 +343,7 @@ async function resolveSourcesUncached(db: SQLiteDatabase, force = false): Promis
       setting: stored,
       isDefault: false,
       albumIds: null,
+      albumIdsByVolume: null,
       roots: null,
       label: sourceLabel(stored),
     };
@@ -362,21 +354,33 @@ async function resolveSourcesUncached(db: SQLiteDatabase, force = false): Promis
       setting: stored,
       isDefault: false,
       albumIds: matchAlbumIds(dirs, stored.dirs),
+      albumIdsByVolume: matchAlbumIdsByVolume(dirs, stored.dirs),
       roots: stored.dirs,
       label: sourceLabel(stored),
     };
   }
-  const hasCamera = dirs.some((d) => isUnderAnyRoot(d.dir, [DEFAULT_SOURCE_DIR]));
+  // The default source resolves against the PRIMARY volume (plan §2) —
+  // an SD card's DCIM/Camera must not satisfy the probe.
+  const defaultRoot: SourceRoot = { volume: PRIMARY_VOLUME, dir: DEFAULT_SOURCE_DIR };
+  const hasCamera = dirs.some((d) => isUnderAnyRoot(d.volume, d.dir, [defaultRoot]));
   if (hasCamera) {
-    const setting: PhotoSourceSetting = { mode: 'dirs', dirs: [DEFAULT_SOURCE_DIR] };
+    const setting: PhotoSourceSetting = { mode: 'dirs', dirs: [defaultRoot] };
     return {
       setting,
       isDefault: true,
       albumIds: matchAlbumIds(dirs, setting.dirs),
+      albumIdsByVolume: matchAlbumIdsByVolume(dirs, setting.dirs),
       roots: setting.dirs,
       label: sourceLabel(setting),
     };
   }
   const setting: PhotoSourceSetting = { mode: 'all' };
-  return { setting, isDefault: true, albumIds: null, roots: null, label: sourceLabel(setting) };
+  return {
+    setting,
+    isDefault: true,
+    albumIds: null,
+    albumIdsByVolume: null,
+    roots: null,
+    label: sourceLabel(setting),
+  };
 }

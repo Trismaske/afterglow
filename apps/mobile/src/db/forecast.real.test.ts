@@ -120,7 +120,11 @@ describe('getForecastBaseRates', () => {
         uri: `file:///storage/emulated/0/Pictures/Screenshots/S_${i}.jpg`,
       })),
     ]);
-    const scoped = await getForecastBaseRates(asExpo(d), ['/storage/emulated/0/DCIM/Camera'], 5);
+    const scoped = await getForecastBaseRates(
+      asExpo(d),
+      [{ volume: 'external_primary', dir: 'DCIM/Camera' }],
+      5,
+    );
     expect(scoped.decisions).toBe(20);
     const unscoped = await getForecastBaseRates(asExpo(d), null, 5);
     expect(unscoped.decisions).toBe(40);

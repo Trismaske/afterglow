@@ -1,6 +1,6 @@
 # Photo state model & visual language
 
-**Status:** shipped in m0.8.2 (schema v19). This is the contract, not a proposal — the code implements it and the tests hold it there.
+**Status:** shipped in m0.8.2; reachability scoping added in m0.8.3 (schema v20). This is the contract, not a proposal — the code implements it and the tests hold it there.
 **Audience:** anyone adding a surface that shows what has happened to a photo.
 **Why it exists:** three unrelated ideas were being drawn in one visual vocabulary, so "in a group" (a scan fact) was painted like a decision and counted as progress. This document is the single answer, so it never has to be re-derived.
 
@@ -91,6 +91,49 @@ The batch tables are an **event log**, because "these six photos went to Mum tog
 It answers "has the scan clustered this yet" — a scan fact the user cannot act on differently, since grouped and ungrouped unreviewed photos are both simply undecided.
 It was previously drawn as a filled segment in the accent colour, which made unreviewed photos count visually as progress.
 
+## Reachability is scope, not state (m0.8.3)
+
+A photo is **unreachable** iff its `volume_name` is not in the currently
+mounted volume set — an SD card ejected with its photos' rows intact.
+This is a **derived, query-time predicate** (`volume_name IN (mounted)`
+beside `is_present = 1` on every review-scope read), never a stored flag:
+mount and unmount write **nothing**, so the three layers above survive an
+eject byte-for-byte — verdict, actions, annotations, group membership,
+embeddings — and remount restores them exactly, no re-ingestion.
+
+`is_present` keeps its exact meaning: gone from MediaStore **while its
+volume was mounted** — a real deletion. The scan may only conclude
+deletions on mounted volumes; an unmounted volume is skipped whole
+(plan-m0.8.3 §4 invariants).
+
+What the predicate scopes: review queues and the timeline, the four
+action queues and their badges (the action ROWS survive; only the lists
+hide them), the cull queue and its confirm flow, counts, coverage and
+clear streaks (a "clear" day earned by ejecting a card is asterisked by
+the Home banner's presence), the forecast's remaining pool, and the
+browse grids. What it never touches: decision HISTORY and lifetime
+stats — completed work is fact, whichever volume it lives on now.
+
+**What a WRITE may touch while a card is out (the M5 rule, vetted
+m0.8.3):** explicitly targeted actions — deck verdicts, viewer edits,
+selected queue removals — act on their targets regardless of mount
+state: the user asked for exactly those rows and would have gotten the
+same result before the eject. UNTARGETED bulk writes (keep-rest,
+share-all, queue clears, move/remove-all) bind to the rendered set
+intersected with a fresh reachable read — a re-read may SHRINK the
+write, never widen it into photos the user never saw. Physical
+operations (share dispatch, album moves, trash) always bind to
+reachable, because they need the bytes. Groups frozen by an unreachable
+member still GROW: a new photo the engine clusters with their reachable
+members joins the group — existing member rows stay byte-for-byte —
+while review-frozen groups never grow.
+
+The state is **named, never silent** (D5): Home carries "SD card not
+mounted — N photos waiting on it", the Settings source row a "not
+mounted" tag, the picker greys the root, and a deck showing a
+partially-reachable group names the hidden members ("N on unmounted SD
+card").
+
 ## The visual language
 
 Six rules. They apply to every surface that paints a state.
@@ -127,3 +170,4 @@ Recorded so they are not re-invented:
 - **in a group / time-attached** — scan facts (annotations).
 - **edit / favourite / organize / share** — actions, orthogonal to the verdict, each either waiting or carried.
 - **"done"** — retired wording; the verdict is *kept*.
+- **unreachable** — scope, not state (m0.8.3, D5b): derived at query time from the mounted-volume set, stored nowhere, and gone the moment the card returns.

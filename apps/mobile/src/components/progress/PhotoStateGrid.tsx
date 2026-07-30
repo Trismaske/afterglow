@@ -29,6 +29,7 @@ import {
 } from '../../lib/progress';
 import { createMergedDescendingPager, type MergedPager } from '../../lib/progressPager';
 import { fetchPhotoPageDesc, type LoadedPhoto } from '../../lib/media';
+import { rootKey, type SourceRoot } from '../../lib/sources';
 import {
   getGridPhotosByFilter,
   getStateRowsForAssets,
@@ -69,11 +70,16 @@ function isDbFilter(filter: ProgressFilter): boolean {
   return (DB_FILTERS as readonly string[]).includes(filter) || isActionFilter(filter);
 }
 
-/** The Unknown-day pseudo-day pages EVERY filter from SQLite — its
- * photos (no DATE_TAKEN) cannot be paged from MediaStore, and the
- * tracked rows are the complete population there. */
-function isUndatedScope(scope: PhotoScope): boolean {
-  return 'day' in scope && scope.day === UNDATED_DAY_KEY;
+/** EVERY day scope pages EVERY filter from SQLite (m0.8.3, D16 —
+ * decided with Tristan): a D15-rescued photo is DB-dated but
+ * MediaStore-undated, so a DATE_TAKEN-range page would omit it from its
+ * real day forever while the day's counts include it. The DB day column
+ * is the app's truth of day membership; only library-wide RANGE scopes
+ * keep the MediaStore engine (instant visibility for photos the scan
+ * has not ingested yet). The Unknown-day pseudo-day was already here —
+ * its photos cannot be paged from MediaStore at all. */
+function isDbScope(scope: PhotoScope): boolean {
+  return 'day' in scope;
 }
 
 export function PhotoStateGrid({
@@ -84,6 +90,7 @@ export function PhotoStateGrid({
   albumIds,
   filter,
   refreshKey,
+  mounted,
   header,
   bottomInset,
   onPhotoPress,
@@ -93,11 +100,19 @@ export function PhotoStateGrid({
   /** MediaStore-side range (always ms). */
   startMs: number;
   endMs: number;
-  roots: string[] | null;
+  roots: SourceRoot[] | null;
   albumIds: string[] | null;
   filter: ProgressFilter;
   /** Bump to reload from scratch (state edits, focus refresh). */
   refreshKey: number;
+  /** The PARENT's mounted-volume snapshot (final cycle O5): the chips'
+   * counts and the grid they label must page one world, so the grid
+   * never re-reads the provider itself — a filter tap after an active-
+   * session eject would otherwise page the new reachable population
+   * under a chip still advertising the old count. `undefined` = counts
+   * not loaded yet; the DB engine waits for it. Identity is stable
+   * across reloads that observed no change (sameVolumeSet upstream). */
+  mounted: readonly string[] | null | undefined;
   header: React.ReactElement;
   bottomInset: number;
   onPhotoPress: (photo: GridPhoto, siblings: GridPhoto[], index: number) => void;
@@ -115,8 +130,7 @@ export function PhotoStateGrid({
   const loadingGenRef = useRef<number | null>(null);
   const offsetRef = useRef(0);
   const pagerRef = useRef<MergedPager<LoadedPhoto> | null>(null);
-
-  const rootsKey = roots ? roots.join('\0') : '';
+  const rootsKey = roots ? roots.map(rootKey).join('\0') : '';
   const albumsKey = albumIds ? albumIds.join('\0') : '';
   const scopeKey = scopeKeyOf(scope);
 
@@ -124,7 +138,7 @@ export function PhotoStateGrid({
     async (gen: number, reset: boolean) => {
       if (loadingGenRef.current !== null) return;
       loadingGenRef.current = gen;
-      const dbEngine = isDbFilter(filter) || isUndatedScope(scope);
+      const dbEngine = isDbFilter(filter) || isDbScope(scope);
       // The DB engine clears the flag EVERY page (its retry re-reads the
       // same offset, so a later success really has recovered); the
       // MediaStore engine only clears on reset — a failed bucket's page
@@ -145,6 +159,9 @@ export function PhotoStateGrid({
             filter,
             BATCH,
             offsetRef.current,
+            // One world per pass (M6/N3/O5): the parent's snapshot, never
+            // a live provider read — reset re-fires when it changes.
+            mounted ?? null,
           ).catch((error: unknown) => {
             console.warn('[progress] grid query failed:', String(error));
             failedRef.current = true;
@@ -221,17 +238,18 @@ export function PhotoStateGrid({
         }
       }
     },
-    [db, filter, scope, roots],
+    [db, filter, scope, roots, mounted],
   );
 
-  // Reset + first page whenever the filter/scope/source/refresh changes.
+  // Reset + first page whenever the filter/scope/source/refresh — or
+  // the parent's mounted snapshot (O5) — changes.
   useEffect(() => {
     const gen = ++genRef.current;
     loadingGenRef.current = null;
     offsetRef.current = 0;
     setItems([]);
     setExhausted(false);
-    if (isDbFilter(filter) || isUndatedScope(scope)) {
+    if (isDbFilter(filter) || isDbScope(scope)) {
       pagerRef.current = null;
     } else {
       const buckets: (string | undefined)[] = albumIds ? [...albumIds] : [undefined];
@@ -256,11 +274,15 @@ export function PhotoStateGrid({
         (p) => p.item.timestamp,
       );
     }
+    // The DB engine pages the parent's world — before the first counts
+    // load lands there is no world to page (the spinner shows); the
+    // prop's arrival re-fires this effect.
+    if ((isDbFilter(filter) || isDbScope(scope)) && mounted === undefined) return;
     void loadMore(gen, true);
     // loadMore is recreated alongside these deps; scopeKey/rootsKey/
     // albumsKey stand in for their object identities.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter, refreshKey, scopeKey, rootsKey, albumsKey, startMs, endMs]);
+  }, [filter, refreshKey, scopeKey, rootsKey, albumsKey, startMs, endMs, mounted]);
 
   const renderItem = useCallback(
     ({ item, index }: { item: GridPhoto; index: number }) => (

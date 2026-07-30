@@ -16,6 +16,7 @@ import {
   type TrashMemberInput,
 } from '../db/trashStore';
 import { trashAssets, verifyTrashedTriState } from './media';
+import { mountedVolumeSet } from './mountedVolumes';
 
 export interface TrashAttemptResult {
   status: 'applied' | 'cancelled' | 'unsupported' | 'failed' | 'skipped';
@@ -84,6 +85,10 @@ export async function runTrashAttempt(
     // Verify conservatively like an interrupted launch instead:
     // authoritative absence converges (uncredited), everything else stays
     // staged with honest unknowns.
+    // One mounted snapshot for this resolution (final cycle O2): the
+    // membership repair must not dissolve a group whose other member is
+    // waiting on an ejected card.
+    const mountedVolumes = await mountedVolumeSet();
     const resolved =
       status === 'failed'
         ? await resolveTrashBatch(db, {
@@ -92,12 +97,14 @@ export async function runTrashAttempt(
             dialog: 'applied',
             interrupted: true,
             at: Date.now(),
+            mountedVolumes,
           })
         : await resolveTrashBatch(db, {
             batchId: batch.batchId,
             verify: verifyTrashedTriState,
             dialog: status,
             at: Date.now(),
+            mountedVolumes,
           });
     return {
       status,
@@ -130,6 +137,7 @@ export async function runTrashAttempt(
         dialog: 'applied',
         interrupted: true,
         at: Date.now(),
+        mountedVolumes: await mountedVolumeSet(),
       });
       return {
         status: 'failed',

@@ -18,6 +18,7 @@ import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
+import { invalidateMountedVolumes, mountedVolumeSet } from '../lib/mountedVolumes';
 import type { MainTabScreenProps } from '../navigation';
 import {
   commitOrganizeOutcomes,
@@ -72,7 +73,9 @@ export function OrganizeQueueScreen(_props: Props) {
     rows,
     failed,
     reload: reloadRows,
-  } = useQueueRows<OrganizeQueueRow>(useCallback(() => getOrganizeQueue(db), [db]));
+  } = useQueueRows<OrganizeQueueRow>(
+    useCallback(async () => getOrganizeQueue(db, await mountedVolumeSet()), [db]),
+  );
   /** Every mutation here also moves the organize BADGE on review
    * surfaces (deck, Groups) — the provider's membership map is their
    * source. */
@@ -157,7 +160,23 @@ export function OrganizeQueueScreen(_props: Props) {
    * the blast radius said in the chip's copy ("Remove all N"). */
   const removeQueued = useCallback(async () => {
     try {
-      for (const id of targetIds) await unqueueOrganize(db, id, Date.now());
+      // The M5 rule (Tristan, grilling Q2): an EXPLICIT selection acts
+      // on its targets regardless of mount state — the user asked for
+      // exactly those rows and would have gotten the same result before
+      // the eject. Only the untargeted "Remove all" binds to the fresh
+      // reachable queue (T7): it must not delete/demote the pending
+      // organize of photos the bulk sweep never showed as its scope.
+      let bounded: readonly string[] = targetIds;
+      if (selected.size === 0) {
+        invalidateMountedVolumes(); // LIVE mount state for a bulk write (V3)
+        const fresh = new Set(
+          (await getOrganizeQueue(db, await mountedVolumeSet())).map((r) => r.photo_id),
+        );
+        bounded = targetIds.filter((id) => fresh.has(id));
+      }
+      for (const id of bounded) {
+        await unqueueOrganize(db, id, Date.now());
+      }
       setSelected(new Set());
       await reload();
     } catch (error) {
@@ -167,7 +186,7 @@ export function OrganizeQueueScreen(_props: Props) {
       );
       await reload().catch(() => {});
     }
-  }, [db, targetIds, reload]);
+  }, [db, targetIds, selected.size, reload]);
 
   const applyAll = useCallback(async () => {
     if (busy || busyRef.current) return;
@@ -178,8 +197,15 @@ export function OrganizeQueueScreen(_props: Props) {
       // may predate a just-tapped assignment/removal whose write is still
       // landing (same-connection FIFO makes this read see it). Only
       // TARGETED rows can move; the rest are reported, not skipped
-      // silently.
-      const freshQueue = await getOrganizeQueue(db);
+      // silently. BOUNDED to the rendered rows (final cycle U3): "Move
+      // N" authorizes the N rows on screen — the fresh read may shrink
+      // that set, never physically move photos queued elsewhere that
+      // this screen never showed.
+      const rendered = new Set((rows ?? []).map((r) => r.photo_id));
+      invalidateMountedVolumes(); // LIVE mount state for a bulk write (V3)
+      const freshQueue = (await getOrganizeQueue(db, await mountedVolumeSet())).filter((r) =>
+        rendered.has(r.photo_id),
+      );
       const freshRows = freshQueue.filter(
         (row): row is OrganizeQueueRow & { organize_path: string; organize_volume: string } =>
           row.organize_path !== null && row.organize_volume !== null,
@@ -313,7 +339,7 @@ export function OrganizeQueueScreen(_props: Props) {
       setBusy(false);
       busyRef.current = false;
     }
-  }, [busy, db, reload, refreshReview]);
+  }, [busy, db, rows, reload, refreshReview]);
 
   const renderItem = useCallback(
     ({ item }: { item: OrganizeQueueRow }) => (

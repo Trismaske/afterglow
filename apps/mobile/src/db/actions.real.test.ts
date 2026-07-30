@@ -45,9 +45,9 @@ async function fresh(photoIds: readonly string[] = ['p1', 'p2', 'p3']): Promise<
   d.raw.exec('PRAGMA foreign_keys = ON');
   await migrateDatabase(asExpo(d));
   const insert = d.raw.prepare(
-    "INSERT INTO photos (asset_id, uri, taken_at, state) VALUES (?, ?, ?, 'unreviewed')",
+    "INSERT INTO photos (asset_id, uri, taken_at, state, volume_name, raw_id) VALUES (?, ?, ?, 'unreviewed', 'external_primary', ?)",
   );
-  for (const id of photoIds) insert.run(id, `file:///${id}.jpg`, AT);
+  for (const id of photoIds) insert.run(id, `file:///${id}.jpg`, AT, id);
   return d;
 }
 

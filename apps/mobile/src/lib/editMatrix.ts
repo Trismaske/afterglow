@@ -39,12 +39,11 @@ export interface MatrixRecord {
   observedOpen?: boolean;
 }
 
-/** How the content URI was resolved — the synthetic fallback shape matches
- * the URI in the captured Samsung failure, so this is itself evidence. */
+/** The content URI under test. m0.8.3: always the CONSTRUCTED canonical
+ * volume-qualified uri (media.ts) — there is no resolution path left. */
 export interface MatrixUriInfo {
   uri: string;
-  source: 'expo' | 'synthetic-fallback';
-  resolveError?: string;
+  source: 'canonical';
 }
 
 export const MATRIX_PROBES: Record<
@@ -112,11 +111,7 @@ export function formatMatrixReport(
 ): string {
   const lines: string[] = ['Afterglow editor-launch matrix (m0.7 gate 0)', ''];
   lines.push(`URI: ${uriInfo.uri}`);
-  lines.push(
-    uriInfo.source === 'expo'
-      ? 'URI source: Expo MediaLibrary resolution'
-      : `URI source: SYNTHETIC FALLBACK (Expo resolution failed: ${uriInfo.resolveError ?? 'unknown'})`,
-  );
+  lines.push('URI source: constructed canonical volume-qualified uri');
   lines.push('');
   for (const [label, value] of env) lines.push(`${label}: ${value}`);
   lines.push('');

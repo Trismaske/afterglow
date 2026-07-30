@@ -30,6 +30,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
+import { useExternalRefresh } from '../components/useExternalRefresh';
 import { useSQLiteContext } from 'expo-sqlite';
 import * as MediaLibrary from 'expo-media-library';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -115,6 +116,10 @@ export function StatsScreen({ navigation }: Props) {
     forecast: -1,
     habits: -1,
   });
+  // Foreground return invalidates every loaded tab (final cycle P4): a
+  // card swap moves mounted-scoped figures without bumping `version`
+  // when the review queue itself did not change.
+  useExternalRefresh(() => setLoadedAt({ activity: -1, forecast: -1, habits: -1 }));
   const markLoaded = useCallback((key: TabKey, at: number) => {
     setLoadedAt((prev) => (prev[key] === at ? prev : { ...prev, [key]: at }));
   }, []);

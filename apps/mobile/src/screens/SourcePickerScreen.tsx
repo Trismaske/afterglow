@@ -1,12 +1,18 @@
 /**
- * Photo-source picker (m0.3.1): choose which device folders feed scope
- * counts, sessions, edit detection, and progress rows. Directories come
- * from MediaStore buckets (see sourceCatalog.ts); selection is recursive
- * — a chosen folder includes its subfolders, shown as "included" rows.
+ * Photo-source picker (m0.3.1; volume-qualified since m0.8.3 D4): choose
+ * which (volume, folder) sources feed scope counts, review, edit
+ * detection, and progress rows. Directories come from MediaStore buckets
+ * (see sourceCatalog.ts) — one row per (volume, dir), so DCIM/Camera on
+ * the SD card is its own row wearing the "SD card" tag. Selection is
+ * recursive within a volume — a chosen folder includes its subfolders,
+ * shown as "included" rows. A selected root whose volume is not mounted
+ * renders greyed as "not mounted" (unmounted ≠ deleted, D5): it stays in
+ * the setting and comes back with the card.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Modal,
   Pressable,
   ScrollView,
@@ -16,6 +22,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
+import { useExternalRefresh } from '../components/useExternalRefresh';
 import { useSQLiteContext } from 'expo-sqlite';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -29,9 +36,14 @@ import {
 import {
   isUnderAnyRoot,
   PHOTO_SOURCES_KEY,
+  rootKey,
   serializePhotoSourceSetting,
+  volumeTag,
   type PhotoSourceSetting,
+  type SourceRoot,
 } from '../lib/sources';
+import { mountedVolumeSet } from '../lib/mountedVolumes';
+import { countTrackedPhotos } from '../db/store';
 import { applyGroupingSettingChange } from '../db/store';
 import { requestRescan, supersedeScan } from '../scan/scanRunner';
 import { useReview } from '../review/ReviewContext';
@@ -42,8 +54,11 @@ import { colors, touch, useTheme } from '../theme';
 type Props = NativeStackScreenProps<RootStackParamList, 'SourcePicker'>;
 
 interface Row extends SourceDir {
-  /** Persisted dir that no longer has a bucket (still deselectable). */
+  /** Persisted root that no longer has a bucket (still deselectable). */
   missing?: boolean;
+  /** Persisted root whose volume is not currently mounted (D5): greyed
+   * "not mounted", never "no photos" — the data is intact on the card. */
+  unmounted?: boolean;
 }
 
 export function SourcePickerScreen({ navigation }: Props) {
@@ -54,6 +69,17 @@ export function SourcePickerScreen({ navigation }: Props) {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [loadTick, setLoadTick] = useState(0);
+  /** The user has toggled since the last load — a reload would clobber
+   * the unsaved selection (the loader sets it from the PERSISTED
+   * setting), so the foreground refresh below stands down. */
+  const dirtyRef = useRef(false);
+  // Foreground return re-reads the catalog (final cycle O6): the volume
+  // tags and unmounted rows must reflect a card swapped while the picker
+  // sat open in the background — unless that would cost unsaved input
+  // (stale tags beat lost toggles; saving or reopening refreshes).
+  useExternalRefresh(() => {
+    if (!dirtyRef.current) setLoadTick((t) => t + 1);
+  });
   const [allFolders, setAllFolders] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
@@ -83,8 +109,18 @@ export function SourcePickerScreen({ navigation }: Props) {
         setLoadFailed(false);
         let dirs: SourceDir[];
         let current: Awaited<ReturnType<typeof resolveSources>>;
+        let mountedList: readonly string[] | null;
         try {
-          [dirs, current] = await Promise.all([listSourceDirs(true), resolveSources(db)]);
+          [dirs, current, mountedList] = await Promise.all([
+            listSourceDirs(true),
+            resolveSources(db),
+            // The REAL mounted-volume provider (codex phase-3): works
+            // from API 24, unlike the generations API this used to lean
+            // on. Null = unknowable — absent rows fall back to the
+            // "no photos found" wording rather than claiming "not
+            // mounted" without evidence.
+            mountedVolumeSet(),
+          ]);
         } catch (error) {
           // A transient unreadable album fails the catalog (fail-closed
           // contract) — surface a retry instead of a stuck loader.
@@ -93,6 +129,7 @@ export function SourcePickerScreen({ navigation }: Props) {
           return;
         }
         if (cancelled) return;
+        const mounted = mountedList === null ? null : new Set(mountedList);
         previousSettingRef.current = current.isDefault
           ? { kind: 'unset' }
           : { kind: 'set', setting: current.setting };
@@ -102,20 +139,34 @@ export function SourcePickerScreen({ navigation }: Props) {
           setAllFolders(true);
         } else {
           setAllFolders(false);
-          for (const dir of current.setting.dirs) {
-            // Map persisted dirs onto catalog rows case-insensitively;
-            // keep vanished dirs visible so they can be unselected.
-            const row = catalog.find((r) => r.dir.toLowerCase() === dir.toLowerCase());
-            if (row) chosen.add(row.dir);
+          for (const root of current.setting.dirs) {
+            // Map persisted roots onto catalog rows by (volume, dir);
+            // keep absent roots visible — unmounted ones greyed (D5),
+            // vanished ones deselectable.
+            const row = catalog.find((r) => rootKey(r) === rootKey(root));
+            if (row) chosen.add(rootKey(row));
             else {
-              catalog.push({ dir, albumIds: [], photoCount: 0, missing: true });
-              chosen.add(dir);
+              const unmounted = mounted !== null && !mounted.has(root.volume);
+              // An unmounted root still CARRIES ITS COUNT (§5: all three
+              // naming surfaces carry counts) — the tracked rows are the
+              // population MediaStore cannot see right now.
+              const trackedCount = unmounted ? await countTrackedPhotos(db, [root]) : 0;
+              catalog.push({
+                volume: root.volume,
+                dir: root.dir,
+                albumIds: [],
+                photoCount: trackedCount,
+                missing: !unmounted,
+                unmounted,
+              });
+              chosen.add(rootKey(root));
             }
           }
         }
-        catalog.sort((a, b) => a.dir.localeCompare(b.dir));
+        catalog.sort((a, b) => a.dir.localeCompare(b.dir) || a.volume.localeCompare(b.volume));
         setRows(catalog);
         setSelected(chosen);
+        dirtyRef.current = false;
       })();
       return () => {
         cancelled = true;
@@ -126,16 +177,19 @@ export function SourcePickerScreen({ navigation }: Props) {
   );
 
   const toggleAll = useCallback(() => {
+    dirtyRef.current = true;
     setAllFolders(true);
     setSelected(new Set());
   }, []);
 
-  const toggleDir = useCallback((dir: string) => {
+  const toggleRow = useCallback((row: Row) => {
+    dirtyRef.current = true;
     setAllFolders(false);
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(dir)) next.delete(dir);
-      else next.add(dir);
+      const key = rootKey(row);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }, []);
@@ -146,12 +200,28 @@ export function SourcePickerScreen({ navigation }: Props) {
 
   const save = useCallback(async () => {
     if (!valid || saving) return;
+    // Every selected root costs SQL bind variables in the volume-
+    // qualified source predicate (up to 4 per root in the widest query),
+    // against SQLite's 999-variable compatibility floor — an unbounded
+    // selection would make scoped reads FAIL after saving (final cycle
+    // Q7). Explicit over implicit: refuse with the fix named.
+    if (!allFolders && selected.size > 200) {
+      Alert.alert(
+        'Too many folders',
+        `${selected.size} folders selected — the limit is 200. Select fewer folders, or use "All folders".`,
+      );
+      return;
+    }
     setSaving(true);
     savingRef.current = true;
     try {
+      const chosenRoots: SourceRoot[] = (rows ?? [])
+        .filter((row) => selected.has(rootKey(row)))
+        .map((row) => ({ volume: row.volume, dir: row.dir }))
+        .sort((a, b) => a.dir.localeCompare(b.dir) || a.volume.localeCompare(b.volume));
       const setting: PhotoSourceSetting = allFolders
         ? { mode: 'all' }
-        : { mode: 'dirs', dirs: [...selected].sort((a, b) => a.localeCompare(b)) };
+        : { mode: 'dirs', dirs: chosenRoots };
       // Supersede the in-flight scan FIRST: an old-source window
       // completing during the apply below could repopulate a group with
       // newly excluded photos and have the scoped refresh render it.
@@ -248,9 +318,15 @@ export function SourcePickerScreen({ navigation }: Props) {
       setSaving(false);
       savingRef.current = false;
     }
-  }, [valid, saving, allFolders, selected, db, navigation, refresh, refreshScoped]);
+  }, [valid, saving, allFolders, selected, rows, db, navigation, refresh, refreshScoped]);
 
-  const roots = useMemo(() => [...selected], [selected]);
+  const roots = useMemo<SourceRoot[]>(
+    () =>
+      (rows ?? [])
+        .filter((row) => selected.has(rootKey(row)))
+        .map((row) => ({ volume: row.volume, dir: row.dir })),
+    [rows, selected],
+  );
 
   return (
     <View style={styles.root}>
@@ -301,17 +377,29 @@ export function SourcePickerScreen({ navigation }: Props) {
         )}
 
         {rows?.map((row) => {
-          const isSelected = !allFolders && selected.has(row.dir);
-          const included = !allFolders && !isSelected && isUnderAnyRoot(row.dir, roots);
+          const isSelected = !allFolders && selected.has(rootKey(row));
+          const included = !allFolders && !isSelected && isUnderAnyRoot(row.volume, row.dir, roots);
+          const tag = volumeTag(row.volume);
           return (
             <Pressable
-              key={row.dir}
-              style={[styles.row, isSelected && { borderColor: theme.accent }]}
-              onPress={() => toggleDir(row.dir)}
+              key={rootKey(row)}
+              style={[
+                styles.row,
+                isSelected && { borderColor: theme.accent },
+                row.unmounted && styles.rowUnmounted,
+              ]}
+              onPress={() => toggleRow(row)}
             >
               <View style={styles.rowBody}>
-                <Text style={styles.rowTitle}>{row.dir}</Text>
-                {row.missing ? (
+                <View style={styles.rowTitleLine}>
+                  <Text style={[styles.rowTitle, row.unmounted && styles.rowTitleUnmounted]}>
+                    {row.dir}
+                  </Text>
+                  {tag !== null && <Text style={styles.rowTag}>{tag}</Text>}
+                </View>
+                {row.unmounted ? (
+                  <Text style={styles.rowHint}>not mounted</Text>
+                ) : row.missing ? (
                   <Text style={styles.rowHint}>no photos found — tap to unselect</Text>
                 ) : included ? (
                   <Text style={[styles.rowIncluded, { color: theme.accent }]}>
@@ -374,7 +462,23 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   rowBody: { flex: 1 },
-  rowTitle: { color: colors.text, fontSize: 15, fontWeight: '600' },
+  rowTitleLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  rowTitle: { color: colors.text, fontSize: 15, fontWeight: '600', flexShrink: 1 },
+  // Unmounted = greyed, never gone (D5): the row names the state and
+  // keeps its place; the data returns with the card.
+  rowUnmounted: { opacity: 0.55 },
+  rowTitleUnmounted: { color: colors.textDim },
+  rowTag: {
+    color: colors.textDim,
+    fontSize: 11,
+    fontWeight: '700',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    overflow: 'hidden',
+  },
   rowHint: { color: colors.textDim, fontSize: 12 },
   rowIncluded: { fontSize: 12 },
   rowCount: { color: colors.textDim, fontSize: 13 },

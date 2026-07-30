@@ -28,7 +28,8 @@ import {
 } from './actions';
 import type { LoadedPhoto } from '../lib/media';
 import { frozenPhotos, reconcileWindowGroups } from '../lib/regroupBoundary';
-import { sourceLikePattern } from '../lib/sources';
+import { sourceLikePattern, type SourceRoot } from '../lib/sources';
+import { rawIdOf, volumeOf } from '../lib/mediaIdentity';
 import { rangeOfDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import type { StateCounts } from '../lib/progress';
 
@@ -72,6 +73,10 @@ export interface PersistDecisionExtras {
    * photo between render and tap, and a verdict against the stale
    * assignment would freeze a group the user never reviewed. */
   requireAssignment?: readonly { assetId: string; groupId: number | null }[];
+  /** The mounted set the UI rendered under (m0.8.3 §5): the compare
+   * whole-table revalidation judges outsiders over the SAME population
+   * Compare showed — an unreachable member is outside the table. */
+  mounted?: readonly string[] | null;
 }
 
 /**
@@ -109,22 +114,50 @@ function scopeClause(scope: PhotoScope): { sql: string; params: (string | number
 }
 
 /**
- * Photo-source roots as an SQL fragment over `photos.uri` (m0.3.1).
- * `roots` null/empty = "All folders" (no filter). The LIKE containment
- * match (`%/<root>/%`, ASCII-case-insensitive by SQLite default) is the
- * DB-side counterpart of the album matching in sources.ts — see its
- * module docs for the accepted looseness.
+ * Photo-source roots as an SQL fragment (m0.3.1; volume-qualified since
+ * m0.8.3 D4). `roots` null/empty = "All folders" (no filter). Each root
+ * contributes `volume_name = ? AND uri LIKE '%/<dir>/%'` — the volume
+ * term is what keeps the same relative path on two volumes two distinct
+ * sources; the LIKE half's accepted looseness is documented in
+ * sources.ts. `column` prefixes BOTH terms' table alias.
  */
 function sourceClause(
-  roots: readonly string[] | null | undefined,
+  roots: readonly SourceRoot[] | null | undefined,
   column = 'uri',
 ): {
   sql: string;
   params: string[];
 } {
   if (!roots || roots.length === 0) return { sql: '', params: [] };
-  const likes = roots.map(() => `${column} LIKE ? ESCAPE '\\'`).join(' OR ');
-  return { sql: ` AND (${likes})`, params: roots.map(sourceLikePattern) };
+  const table = column.includes('.') ? `${column.slice(0, column.indexOf('.'))}.` : '';
+  const terms = roots
+    .map(() => `(${table}volume_name = ? AND ${column} LIKE ? ESCAPE '\\')`)
+    .join(' OR ');
+  return {
+    sql: ` AND (${terms})`,
+    params: roots.flatMap((root) => [root.volume, sourceLikePattern(root.dir)]),
+  };
+}
+
+/**
+ * Reachability predicate (m0.8.3 phase 3, D5b): `volume_name IN
+ * (mounted)` beside `is_present = 1` on every review-scope read. SCOPE,
+ * NOT STATE — derived at query time from the mounted set the caller
+ * fetched for this burst (lib/mountedVolumes.ts); nothing is ever
+ * stored, and unmount/unmount writes nothing. Null/undefined = the set
+ * is unknowable — no predicate, show everything (the provider's
+ * documented fail direction). Empty = nothing mounted — match nothing.
+ */
+function reachClause(
+  mounted: readonly string[] | null | undefined,
+  column = 'volume_name',
+): { sql: string; params: string[] } {
+  if (mounted === null || mounted === undefined) return { sql: '', params: [] };
+  if (mounted.length === 0) return { sql: ' AND 0', params: [] };
+  return {
+    sql: ` AND ${column} IN (${mounted.map(() => '?').join(',')})`,
+    params: [...mounted],
+  };
 }
 
 /** Read one settings value (null when unset). */
@@ -159,9 +192,16 @@ export function chunk<T>(items: readonly T[], size: number): T[][] {
 
 /** Staged, present culls in the durable global queue (Home card badge —
  * the queue must stay reachable with no active session, P4#1). */
-export async function countStagedCulls(db: SQLiteDatabase): Promise<number> {
+export async function countStagedCulls(
+  db: SQLiteDatabase,
+  /** m0.8.3 §5: an unreachable staged cull is not confirmable work — its
+   * file is on an absent card — so the queue badge excludes it. */
+  mounted: readonly string[] | null = null,
+): Promise<number> {
+  const reach = reachClause(mounted);
   const row = await db.getFirstAsync<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM photos WHERE state = 'culled' AND is_present = 1",
+    `SELECT COUNT(*) AS n FROM photos WHERE state = 'culled' AND is_present = 1${reach.sql}`,
+    ...reach.params,
   );
   return row?.n ?? 0;
 }
@@ -181,11 +221,16 @@ export async function getStagedCulls(
    * size for each before the batch discarded all but the first 500 — a
    * 3,000-cull confirm did ~18,000 native stats to trash 3,000 photos. */
   limit?: number,
+  /** m0.8.3 §5: unreachable staged culls stay staged but leave the list
+   * (and the confirm flow) until their card returns. */
+  mounted: readonly string[] | null = null,
 ): Promise<StagedCullRow[]> {
+  const reach = reachClause(mounted);
   return db.getAllAsync<StagedCullRow>(
     `SELECT asset_id, uri, taken_at, day FROM photos
-     WHERE state = 'culled' AND is_present = 1
+     WHERE state = 'culled' AND is_present = 1${reach.sql}
      ORDER BY taken_at ASC${limit === undefined ? '' : ' LIMIT ?'}`,
+    ...reach.params,
     ...(limit === undefined ? [] : [limit]),
   );
 }
@@ -292,15 +337,22 @@ export async function applyReviewDecisions(
       // would then close a question the duel never asked. Triage duels
       // (no verdicts) skip this: they make no whole-table claim.
       if (changes.length > 0) {
+        // The whole-table claim is judged over the SAME population the
+        // UI showed (m0.8.3 §5, codex phase-3): an unreviewed member on
+        // an ejected card is outside the table Compare offered, so it
+        // must not fail a legitimate duel — its verdict question waits
+        // for remount, exactly like the rest of its card.
+        const duelReach = reachClause(extras.mounted ?? null, 'p.volume_name');
         const outsider = await txn.getFirstAsync<{ photo_id: string }>(
           `SELECT a.photo_id FROM photo_group_assignments a
            JOIN photos p ON p.asset_id = a.photo_id
            WHERE a.group_id = ? AND a.photo_id NOT IN (?, ?)
-             AND p.is_present = 1 AND p.state = 'unreviewed'
+             AND p.is_present = 1 AND p.state = 'unreviewed'${duelReach.sql}
            LIMIT 1`,
           extras.setBest.groupId,
           extras.duel.winnerId,
           extras.duel.loserId,
+          ...duelReach.params,
         );
         if (outsider) {
           throw new Error('This group changed while comparing — reopen it and try again.');
@@ -490,7 +542,29 @@ export async function applyReviewDecisions(
  * plus the survivor when the group dissolved. Marks user_single so no
  * scan ever regroups them, then runs the shared repairs.
  */
-async function applyPhotoSingles(txn: SQLiteDatabase, assetIds: readonly string[]): Promise<void> {
+async function applyPhotoSingles(
+  txn: SQLiteDatabase,
+  assetIds: readonly string[],
+  /** Mounted volumes (m0.8.3 final cycle O1): the survivor promotion is
+   * a durable, never-regroupable verdict about a photo — it must not
+   * land on a member the user could not see. Null = unknowable =
+   * today's semantics (query-side fail open). */
+  mounted: readonly string[] | null = null,
+): Promise<void> {
+  // An UNREACHABLE present survivor keeps its assignment byte-for-byte
+  // (plan §5): the promotion skips it, and the mounted-aware repair
+  // below defers its rump group; the next pass with every member
+  // reachable re-windows it normally.
+  const survivorReachable =
+    mounted === null
+      ? ''
+      : mounted.length === 0
+        ? ` AND NOT EXISTS (SELECT 1 FROM photos sp
+              WHERE sp.asset_id = a.photo_id AND sp.is_present = 1)`
+        : ` AND NOT EXISTS (SELECT 1 FROM photos sp
+              WHERE sp.asset_id = a.photo_id AND sp.is_present = 1
+                AND sp.volume_name NOT IN (${mounted.map(() => '?').join(',')}))`;
+  const survivorParams = mounted ?? [];
   // The survivor query interpolates the id list THREE times, so batches
   // stay ≤ 300 ids (3 × 300 < SQLite's 999-parameter floor) — the callers
   // used to pass 1-2 ids by discipline, but m0.8.2's batch flows made
@@ -514,10 +588,12 @@ async function applyPhotoSingles(txn: SQLiteDatabase, assetIds: readonly string[
                               WHERE photo_id IN (${placeholders}) AND group_id IS NOT NULL)
            AND (SELECT COUNT(*) FROM photo_group_assignments b
                 WHERE b.group_id = a.group_id AND b.photo_id NOT IN (${placeholders})) = 1
+           ${survivorReachable}
        )`,
       ...batch,
       ...batch,
       ...batch,
+      ...survivorParams,
     );
     await txn.runAsync(
       `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0, user_single = 1
@@ -525,7 +601,7 @@ async function applyPhotoSingles(txn: SQLiteDatabase, assetIds: readonly string[
       ...batch,
     );
   }
-  await repairGroupMembership(txn);
+  await repairGroupMembership(txn, undefined, mounted);
 }
 
 /**
@@ -569,10 +645,39 @@ export async function setNeedsEdit(
 export async function repairGroupMembership(
   txn: SQLiteDatabase,
   groupIds?: readonly number[],
+  /** Mounted volumes (m0.8.3 phase 2, codex): when given, a group
+   * holding any member on an UNMOUNTED volume is left alone by the
+   * dissolve step — a real deletion of its mounted partner must not
+   * rewrite the unreachable member's assignment while its card is out
+   * (plan §5 byte-for-byte). The deferral self-heals: the next pass
+   * with every member reachable re-windows and repairs normally.
+   * Scan AND user-driven removal paths pass it (final cycle O1/O2);
+   * omitted/null = pre-m0.8.3 semantics (mount state unknowable). */
+  mountedVolumes?: readonly string[] | null,
 ): Promise<void> {
   if (groupIds !== undefined && groupIds.length === 0) return;
   const scopes: (readonly number[] | null)[] =
     groupIds === undefined ? [null] : chunk([...new Set(groupIds)], IN_CHUNK);
+  // The deferral predicate: no member on an unmounted volume. With no
+  // mounted set given, every group qualifies (1=1).
+  const reachableGuard =
+    mountedVolumes === null || mountedVolumes === undefined
+      ? '1=1'
+      : mountedVolumes.length === 0
+        ? // Nothing mounted: every grouped photo is unreachable — defer all.
+          '0'
+        : `NOT EXISTS (
+             SELECT 1 FROM photo_group_assignments ua
+             JOIN photos up ON up.asset_id = ua.photo_id
+             WHERE ua.group_id = g.id
+               -- PRESENT unreachable members only (final cycle M3): an
+               -- absent tombstone on an ejected volume is not "waiting
+               -- to be seen again" — deferring for it would strand live
+               -- one-photo rump groups.
+               AND up.is_present = 1
+               AND up.volume_name NOT IN (${mountedVolumes.map(() => '?').join(',')})
+           )`;
+  const guardParams = mountedVolumes ?? [];
   for (const scope of scopes) {
     const inList = scope === null ? '' : `(${scope.map(() => '?').join(',')})`;
     const params = scope === null ? [] : scope;
@@ -581,11 +686,13 @@ export async function repairGroupMembership(
        WHERE group_id IN (
          SELECT g.id FROM photo_groups g
          WHERE ${scope === null ? '' : `g.id IN ${inList} AND `}
+           ${reachableGuard} AND
            (SELECT COUNT(*) FROM photo_group_assignments a
                 JOIN photos p ON p.asset_id = a.photo_id
                 WHERE a.group_id = g.id AND p.is_present = 1) < 2
        )`,
       ...params,
+      ...guardParams,
     );
     await txn.runAsync(
       `UPDATE photo_groups SET best_photo_id = NULL
@@ -616,6 +723,8 @@ export async function makePhotoSingles(
    * wrong group (and user_single-freezing its unseen survivor) must
    * abort whole instead. Omit for callers without a group context. */
   expectedGroupId?: number,
+  /** Mounted volumes at the tap (final cycle O1) — see applyPhotoSingles. */
+  mounted: readonly string[] | null = null,
 ): Promise<void> {
   if (assetIds.length === 0) return;
   await withWriteTransaction(db, async (txn) => {
@@ -634,7 +743,7 @@ export async function makePhotoSingles(
         throw new Error('This group changed while reviewing — reopen it and try again.');
       }
     }
-    await applyPhotoSingles(txn, assetIds);
+    await applyPhotoSingles(txn, assetIds, mounted);
   });
 }
 
@@ -666,6 +775,9 @@ export interface ReviewGroupRow {
   /** NEWEST-first members, all states (the deck badges non-unreviewed).
    * Every deck reads most-recently-taken first (Tristan, m0.8.2). */
   members: ReviewMemberRow[];
+  /** Present members hidden by the mounted filter (m0.8.3, §5 partial-
+   * group naming: "N on unmounted SD card"). Absent/0 = whole group. */
+  unreachableCount?: number;
 }
 
 /**
@@ -676,12 +788,17 @@ export interface ReviewGroupRow {
 async function listReviewGroupsIn(
   txn: SQLiteDatabase,
   limit: number,
-  roots: readonly string[] | null,
+  roots: readonly SourceRoot[] | null,
+  mounted: readonly string[] | null,
 ): Promise<ReviewGroupRow[]> {
   // The source filter gates which groups QUEUE (a pending in-source
   // member); a queued group still shows all its members — the deck always
-  // works on whole groups.
+  // works on whole groups. Reachability (m0.8.3, D5b) gates BOTH sides:
+  // an unreachable pending member must not queue its group, and a queued
+  // group shows only its reachable members while a card is out (§5 — the
+  // deck header names the rest).
   const src = sourceClause(roots, 'p.uri');
+  const reach = reachClause(mounted, 'p.volume_name');
   {
     // CROSS JOIN is SQLite's documented join-order hint: the EXISTS must
     // walk THIS group's few assignments and probe photos by primary key.
@@ -697,27 +814,48 @@ async function listReviewGroupsIn(
       `SELECT g.id, g.best_photo_id,
             (SELECT MAX(p.taken_at) FROM photo_group_assignments a
               JOIN photos p ON p.asset_id = a.photo_id
-              WHERE a.group_id = g.id AND p.is_present = 1) AS newest
+              WHERE a.group_id = g.id AND p.is_present = 1${reach.sql}) AS newest
      FROM photo_groups g
      WHERE EXISTS (
        SELECT 1 FROM photo_group_assignments a CROSS JOIN photos p
        WHERE a.group_id = g.id AND p.asset_id = a.photo_id
-         AND p.state = 'unreviewed' AND p.is_present = 1${src.sql}
+         AND p.state = 'unreviewed' AND p.is_present = 1${src.sql}${reach.sql}
      )
      ORDER BY newest DESC
      LIMIT ?`,
+      ...reach.params,
       ...src.params,
+      ...reach.params,
       limit,
     );
     if (groups.length === 0) return [];
+    // Ordered by the newest REACHABLE member (codex phase-3): a hidden
+    // newer SD member must not pull a group ahead of what the page
+    // actually shows — the timeline's anchors come from visible members.
     const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
       `SELECT a.group_id, p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
-       WHERE a.group_id IN (${groups.map(() => '?').join(',')}) AND p.is_present = 1
+       WHERE a.group_id IN (${groups.map(() => '?').join(',')}) AND p.is_present = 1${reach.sql}
        ORDER BY p.taken_at DESC, p.asset_id DESC`,
       ...groups.map((g) => g.id),
+      ...reach.params,
     );
+    // §5 partial-group naming for the COMMON pending path (codex
+    // phase-3): the deck renders queue rows directly, so the hidden
+    // count must ride the same snapshot — not only getReviewGroup's.
+    const hiddenByGroup = new Map<number, number>();
+    if (reach.sql !== '') {
+      const totals = await txn.getAllAsync<{ group_id: number; n: number }>(
+        `SELECT a.group_id, COUNT(*) AS n
+           FROM photo_group_assignments a
+           JOIN photos p ON p.asset_id = a.photo_id
+          WHERE a.group_id IN (${groups.map(() => '?').join(',')}) AND p.is_present = 1
+          GROUP BY a.group_id`,
+        ...groups.map((g) => g.id),
+      );
+      for (const row of totals) hiddenByGroup.set(Number(row.group_id), Number(row.n));
+    }
     const byGroup = new Map<number, ReviewMemberRow[]>();
     for (const m of members) {
       const bucket = byGroup.get(Number(m.group_id));
@@ -733,11 +871,16 @@ async function listReviewGroupsIn(
       if (bucket) bucket.push(row);
       else byGroup.set(Number(m.group_id), [row]);
     }
-    return groups.map((g) => ({
-      groupId: Number(g.id),
-      bestPhotoId: g.best_photo_id,
-      members: byGroup.get(Number(g.id)) ?? [],
-    }));
+    return groups.map((g) => {
+      const groupMembers = byGroup.get(Number(g.id)) ?? [];
+      const present = hiddenByGroup.get(Number(g.id));
+      return {
+        groupId: Number(g.id),
+        bestPhotoId: g.best_photo_id,
+        members: groupMembers,
+        unreachableCount: present === undefined ? 0 : Math.max(0, present - groupMembers.length),
+      };
+    });
   }
 }
 
@@ -747,11 +890,12 @@ async function listReviewGroupsIn(
 export async function listReviewGroups(
   db: SQLiteDatabase,
   limit: number,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  mounted: readonly string[] | null = null,
 ): Promise<ReviewGroupRow[]> {
   let out: ReviewGroupRow[] = [];
   await withReadTransaction(db, async (txn) => {
-    out = await listReviewGroupsIn(txn, limit, roots);
+    out = await listReviewGroupsIn(txn, limit, roots, mounted);
   });
   return out;
 }
@@ -764,9 +908,11 @@ export async function listReviewGroups(
 export async function getReviewGroup(
   db: SQLiteDatabase,
   groupId: number,
+  mounted: readonly string[] | null = null,
 ): Promise<ReviewGroupRow | null> {
   // One snapshot for header + members (same race as listReviewGroups).
   let out: ReviewGroupRow | null = null;
+  const reach = reachClause(mounted, 'p.volume_name');
   await withReadTransaction(db, async (txn) => {
     const group = await txn.getFirstAsync<{ id: number; best_photo_id: string | null }>(
       'SELECT id, best_photo_id FROM photo_groups WHERE id = ?',
@@ -777,12 +923,33 @@ export async function getReviewGroup(
       `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
-       WHERE a.group_id = ? AND p.is_present = 1
+       WHERE a.group_id = ? AND p.is_present = 1${reach.sql}
        ORDER BY p.taken_at DESC, p.asset_id DESC`,
       groupId,
+      ...reach.params,
     );
     if (members.length === 0) return;
-    out = { groupId: Number(group.id), bestPhotoId: group.best_photo_id, members };
+    // §5 partial-group naming: how many members the mounted filter hid —
+    // the deck header carries "N on unmounted SD card".
+    const hidden =
+      reach.sql === ''
+        ? 0
+        : Number(
+            (
+              await txn.getFirstAsync<{ n: number }>(
+                `SELECT COUNT(*) AS n FROM photo_group_assignments a
+                  JOIN photos p ON p.asset_id = a.photo_id
+                  WHERE a.group_id = ? AND p.is_present = 1`,
+                groupId,
+              )
+            )?.n ?? 0,
+          ) - members.length;
+    out = {
+      groupId: Number(group.id),
+      bestPhotoId: group.best_photo_id,
+      members,
+      unreachableCount: hidden,
+    };
   });
   return out;
 }
@@ -796,17 +963,20 @@ export async function getReviewGroup(
 async function listSinglesFeedIn(
   txn: SQLiteDatabase,
   limit: number,
-  roots: readonly string[] | null,
+  roots: readonly SourceRoot[] | null,
+  mounted: readonly string[] | null,
 ): Promise<ReviewMemberRow[]> {
   const src = sourceClause(roots, 'p.uri');
+  const reach = reachClause(mounted, 'p.volume_name');
   const page = await txn.getAllAsync<ReviewMemberRow>(
     `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
-     WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled') AND p.is_present = 1${src.sql}
+     WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled') AND p.is_present = 1${src.sql}${reach.sql}
      ORDER BY p.taken_at DESC, p.asset_id DESC
      LIMIT ?`,
     ...src.params,
+    ...reach.params,
     limit,
   );
   // A WALL of staged culls must not hide older pending work (codex r9):
@@ -823,11 +993,12 @@ async function listSinglesFeedIn(
       `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
-       WHERE a.group_id IS NULL AND p.state = 'unreviewed' AND p.is_present = 1${src.sql}
+       WHERE a.group_id IS NULL AND p.state = 'unreviewed' AND p.is_present = 1${src.sql}${reach.sql}
          AND (p.taken_at < ? OR (p.taken_at = ? AND p.asset_id < ?))
        ORDER BY p.taken_at DESC, p.asset_id DESC
        LIMIT ?`,
       ...src.params,
+      ...reach.params,
       tail.taken_at,
       tail.taken_at,
       tail.asset_id,
@@ -843,9 +1014,10 @@ async function listSinglesFeedIn(
 export async function listSinglesFeed(
   db: SQLiteDatabase,
   limit: number,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  mounted: readonly string[] | null = null,
 ): Promise<ReviewMemberRow[]> {
-  return listSinglesFeedIn(db, limit, roots);
+  return listSinglesFeedIn(db, limit, roots, mounted);
 }
 
 /**
@@ -871,10 +1043,12 @@ export async function listSinglesFeed(
 export async function listSinglesForDeck(
   db: SQLiteDatabase,
   day: string,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
   range: { from: number; to: number } | null = null,
+  mounted: readonly string[] | null = null,
 ): Promise<ReviewMemberRow[]> {
   const src = sourceClause(roots, 'p.uri');
+  const reach = reachClause(mounted, 'p.volume_name');
   const dayPredicate = day === UNDATED_DAY_KEY ? ' AND p.day IS NULL' : ' AND p.day = ?';
   // UNCAPPED for range reads too (codex r10): the cull-wall continuation
   // means a legitimate run CAN exceed the old 500-row insurance cap —
@@ -887,9 +1061,10 @@ export async function listSinglesForDeck(
     `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
-     WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled', 'kept') AND p.is_present = 1${src.sql}${dayPredicate}${rangePredicate}
+     WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled', 'kept') AND p.is_present = 1${src.sql}${reach.sql}${dayPredicate}${rangePredicate}
      ORDER BY p.taken_at DESC, p.asset_id DESC`,
     ...src.params,
+    ...reach.params,
     ...(day === UNDATED_DAY_KEY ? [] : [day]),
     ...(range ? [range.from, range.to] : []),
   );
@@ -904,9 +1079,11 @@ export async function listSinglesForDeck(
 export async function listGroupsForDay(
   db: SQLiteDatabase,
   day: string,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  mounted: readonly string[] | null = null,
 ): Promise<ReviewGroupRow[]> {
   const src = sourceClause(roots, 'p.uri');
+  const reach = reachClause(mounted, 'p.volume_name');
   const dayPredicate = day === UNDATED_DAY_KEY ? 'p.day IS NULL' : 'p.day = ?';
   // Per-member in_source projection (codex r7): the SAME containment
   // match the group-selection filter above uses, applied to each member
@@ -916,8 +1093,10 @@ export async function listGroupsForDay(
     !roots || roots.length === 0
       ? { sql: '1', params: [] as string[] }
       : {
-          sql: `(CASE WHEN ${roots.map(() => "p.uri LIKE ? ESCAPE '\\'").join(' OR ')} THEN 1 ELSE 0 END)`,
-          params: roots.map(sourceLikePattern),
+          sql: `(CASE WHEN ${roots
+            .map(() => "(p.volume_name = ? AND p.uri LIKE ? ESCAPE '\\')")
+            .join(' OR ')} THEN 1 ELSE 0 END)`,
+          params: roots.flatMap((root) => [root.volume, sourceLikePattern(root.dir)]),
         };
   // ONE snapshot for ids + headers + members (m0.8.1 — the previous
   // one-transaction-per-group shape opened a fresh SQLite connection per
@@ -927,9 +1106,10 @@ export async function listGroupsForDay(
     const ids = await txn.getAllAsync<{ group_id: number }>(
       `SELECT DISTINCT a.group_id FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
-       WHERE a.group_id IS NOT NULL AND ${dayPredicate} AND p.is_present = 1${src.sql}`,
+       WHERE a.group_id IS NOT NULL AND ${dayPredicate} AND p.is_present = 1${src.sql}${reach.sql}`,
       ...(day === UNDATED_DAY_KEY ? [] : [day]),
       ...src.params,
+      ...reach.params,
     );
     for (const batch of chunk(
       ids.map((r) => Number(r.group_id)),
@@ -945,10 +1125,11 @@ export async function listGroupsForDay(
         `SELECT a.group_id, p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, ${memberInSource.sql} AS in_source
          FROM photo_group_assignments a
          JOIN photos p ON p.asset_id = a.photo_id
-         WHERE a.group_id IN (${placeholders}) AND p.is_present = 1
+         WHERE a.group_id IN (${placeholders}) AND p.is_present = 1${reach.sql}
          ORDER BY p.taken_at DESC, p.asset_id DESC`,
         ...memberInSource.params,
         ...batch,
+        ...reach.params,
       );
       const byGroup = new Map<number, ReviewMemberRow[]>();
       for (const m of members) {
@@ -1197,9 +1378,11 @@ export interface QueueCounts {
 
 async function countReviewQueueIn(
   txn: SQLiteDatabase,
-  roots: readonly string[] | null,
+  roots: readonly SourceRoot[] | null,
+  mounted: readonly string[] | null,
 ): Promise<QueueCounts> {
   const src = sourceClause(roots, 'p.uri');
+  const reach = reachClause(mounted, 'p.volume_name');
   const row = await txn.getFirstAsync<{ grouped: number; singles: number; groups: number }>(
     `SELECT
        SUM(CASE WHEN a.group_id IS NOT NULL THEN 1 ELSE 0 END) AS grouped,
@@ -1207,8 +1390,9 @@ async function countReviewQueueIn(
        COUNT(DISTINCT a.group_id) AS groups
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
-     WHERE p.state = 'unreviewed' AND p.is_present = 1${src.sql}`,
+     WHERE p.state = 'unreviewed' AND p.is_present = 1${src.sql}${reach.sql}`,
     ...src.params,
+    ...reach.params,
   );
   return { grouped: row?.grouped ?? 0, singles: row?.singles ?? 0, groups: row?.groups ?? 0 };
 }
@@ -1216,9 +1400,10 @@ async function countReviewQueueIn(
 /** Public wrapper (Home CTA counts outside the queue snapshot). */
 export async function countReviewQueue(
   db: SQLiteDatabase,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  mounted: readonly string[] | null = null,
 ): Promise<QueueCounts> {
-  return countReviewQueueIn(db, roots);
+  return countReviewQueueIn(db, roots, mounted);
 }
 
 /** THE queue read (gate 5 + final review): groups, singles feed, and
@@ -1229,7 +1414,8 @@ export async function readReviewQueue(
   db: SQLiteDatabase,
   groupLimit: number,
   singlesLimit: number,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  mounted: readonly string[] | null = null,
 ): Promise<{
   groups: ReviewGroupRow[];
   singles: ReviewMemberRow[];
@@ -1242,9 +1428,9 @@ export async function readReviewQueue(
   } = { groups: [], singles: [], counts: { grouped: 0, singles: 0, groups: 0 } };
   await withReadTransaction(db, async (txn) => {
     out = {
-      groups: await listReviewGroupsIn(txn, groupLimit, roots),
-      singles: await listSinglesFeedIn(txn, singlesLimit, roots),
-      counts: await countReviewQueueIn(txn, roots),
+      groups: await listReviewGroupsIn(txn, groupLimit, roots, mounted),
+      singles: await listSinglesFeedIn(txn, singlesLimit, roots, mounted),
+      counts: await countReviewQueueIn(txn, roots, mounted),
     };
   });
   return out;
@@ -1269,9 +1455,14 @@ export interface DayCoverageRow {
 export async function getCoverageByDay(
   db: SQLiteDatabase,
   sinceDay: string | null,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  /** Coverage and clear streaks EXCLUDE unreachable photos (m0.8.3 §5);
+   * the Home banner carries the asterisk for a "clear" day earned by
+   * ejecting a card. */
+  mounted: readonly string[] | null = null,
 ): Promise<DayCoverageRow[]> {
   const src = sourceClause(roots);
+  const reach = reachClause(mounted);
   // The undated bucket must survive a sinceDay bound (all-time needs it,
   // and `NULL >= '2026-01-01'` is NULL — i.e. filtered out), so the
   // bound explicitly keeps the NULL day.
@@ -1281,9 +1472,10 @@ export async function getCoverageByDay(
             COUNT(*) AS total,
             SUM(CASE WHEN state = 'unreviewed' THEN 1 ELSE 0 END) AS pending
      FROM photos
-     WHERE is_present = 1${src.sql}${bound}
+     WHERE is_present = 1${src.sql}${reach.sql}${bound}
      GROUP BY day`,
     ...src.params,
+    ...reach.params,
     ...(sinceDay === null ? [] : [sinceDay]),
   );
   return rows.map((r) => ({ day: r.day, total: Number(r.total), pending: Number(r.pending) }));
@@ -1304,7 +1496,7 @@ export async function getReviewedCountsByDay(
    * the forecast's pace all read this, and every one of them is a claim
    * about the library you selected. See statsLoad.ts for where the line
    * between "your library now" and "what you did" is drawn. */
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<Map<string, number>> {
   const src = sourceClause(roots);
   // `AS decided_day`, never `AS day`: `day` is a REAL COLUMN on photos
@@ -1329,21 +1521,25 @@ export async function getReviewedCountsByDay(
  * stays first-stamped for lifetime stats). */
 export async function getCorpusStats(
   db: SQLiteDatabase,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  mounted: readonly string[] | null = null,
 ): Promise<{ groupsFound: number; reviewed: number }> {
   const src = sourceClause(roots, 'p.uri');
+  const reach = reachClause(mounted, 'p.volume_name');
   const row = await db.getFirstAsync<{ groups: number; reviewed: number }>(
     `SELECT
        (SELECT COUNT(DISTINCT a.group_id) FROM photo_group_assignments a
         JOIN photos p ON p.asset_id = a.photo_id
-        WHERE a.group_id IS NOT NULL AND p.is_present = 1${src.sql}) AS groups,
+        WHERE a.group_id IS NOT NULL AND p.is_present = 1${src.sql}${reach.sql}) AS groups,
        (SELECT COUNT(*) FROM photos p
         -- Home's denominator is the current MediaStore corpus — count
         -- only verdicts on PRESENT photos (trashed/removed rows left it).
         WHERE p.state IN ('kept', 'culled')
-          AND p.is_present = 1${src.sql}) AS reviewed`,
+          AND p.is_present = 1${src.sql}${reach.sql}) AS reviewed`,
     ...src.params,
+    ...reach.params,
     ...src.params,
+    ...reach.params,
   );
   return { groupsFound: row?.groups ?? 0, reviewed: row?.reviewed ?? 0 };
 }
@@ -1445,14 +1641,20 @@ export async function getMetadataGroupIds(
  * user-bounded, so the sweep stays cheap. */
 export async function getStagedCullBytes(
   db: SQLiteDatabase,
+  /** m0.8.3 §5 (codex phase-3): the estimate must describe the SAME rows
+   * as the mounted-scoped cull count beside it — and never stat files on
+   * an absent card. */
+  mounted: readonly string[] | null = null,
 ): Promise<{ scanned: number; unsized: string[] }> {
+  const reach = reachClause(mounted);
   // The SUM lives in SQL (m0.8.1): Home used to receive EVERY staged row
   // and blocking-stat each one on the JS thread, per focus. Only rows the
   // v14 scan never sized need a stat, and the caller caps those.
   const row = await db.getFirstAsync<{ total: number; unsized: number }>(
     `SELECT COALESCE(SUM(size_bytes), 0) AS total,
             SUM(CASE WHEN size_bytes IS NULL THEN 1 ELSE 0 END) AS unsized
-     FROM photos WHERE state = 'culled' AND is_present = 1`,
+     FROM photos WHERE state = 'culled' AND is_present = 1${reach.sql}`,
+    ...reach.params,
   );
   const unsized =
     (row?.unsized ?? 0) === 0
@@ -1460,8 +1662,9 @@ export async function getStagedCullBytes(
       : (
           await db.getAllAsync<{ uri: string }>(
             `SELECT uri FROM photos
-             WHERE state = 'culled' AND is_present = 1 AND size_bytes IS NULL
+             WHERE state = 'culled' AND is_present = 1 AND size_bytes IS NULL${reach.sql}
              LIMIT 200`,
+            ...reach.params,
           )
         ).map((r) => r.uri);
   return { scanned: Number(row?.total ?? 0), unsized };
@@ -1473,13 +1676,16 @@ export async function getStagedCullBytes(
  * tracked rows ARE the population). */
 export async function countUndatedAlive(
   db: SQLiteDatabase,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  mounted: readonly string[] | null = null,
 ): Promise<number> {
   const src = sourceClause(roots);
+  const reach = reachClause(mounted);
   const row = await db.getFirstAsync<{ n: number }>(
     `SELECT COUNT(*) AS n FROM photos
-     WHERE day IS NULL AND is_present = 1${src.sql}`,
+     WHERE day IS NULL AND is_present = 1${src.sql}${reach.sql}`,
     ...src.params,
+    ...reach.params,
   );
   return row?.n ?? 0;
 }
@@ -1500,12 +1706,27 @@ export async function updatePhotoUri(
  * completion reconciliation diffs these against what it actually saw. */
 export async function getPresentAssetIds(
   db: SQLiteDatabase,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  /** Restrict to these volumes (m0.8.3 phase 2): the scan's unseen
+   * reconciliation may only consider MOUNTED volumes' rows — an
+   * unmounted volume's photos are absent from enumeration because the
+   * volume is away, which is no evidence about the photos (plan §4
+   * invariants 2 + 6). Null = no restriction. */
+  volumes: readonly string[] | null = null,
 ): Promise<string[]> {
   const src = sourceClause(roots);
+  // An EMPTY volume list means "nothing is mounted" — match no rows
+  // (`IN ()` is not valid SQLite).
+  const volumeClause =
+    volumes === null
+      ? ''
+      : volumes.length === 0
+        ? ' AND 0'
+        : ` AND volume_name IN (${volumes.map(() => '?').join(',')})`;
   const rows = await db.getAllAsync<{ asset_id: string }>(
-    `SELECT asset_id FROM photos WHERE is_present = 1${src.sql}`,
+    `SELECT asset_id FROM photos WHERE is_present = 1${src.sql}${volumeClause}`,
     ...src.params,
+    ...(volumes ?? []),
   );
   return rows.map((r) => r.asset_id);
 }
@@ -1526,6 +1747,11 @@ export interface ContinuousPhotoUpsert {
   /** File size at scan time (v14) — NULL when the stat failed; powers
    * the exact reclaimable-bytes sum. */
   sizeBytes: number | null;
+  /** D15 rescue marker: the mod_time at which this pass COMPLETED an
+   * EXIF date read (found or absent). Absent/NULL = no read completed
+   * this pass — the upsert then RETAINS the stored marker (COALESCE), so
+   * a dated photo or a reuse pass never erases a past rescue's proof. */
+  exifCheckedModTime?: number | null;
 }
 
 /** One group's continuous-scan write (post-reconciliation). */
@@ -1543,6 +1769,18 @@ export interface ContinuousWindowWrite {
   groups: readonly ContinuousGroupWrite[];
   /** Photos to (re)assign as singles (NULL group). */
   singles: readonly string[];
+  /** Grow-only appends (m0.8.3 grilling): unfrozen photos the engine
+   * clustered with an unreachable-frozen group's reachable members —
+   * added to that group without touching any existing member row.
+   * Revalidated in the transaction; a target that no longer qualifies
+   * degrades the entry to the pre-grow plan shape (own group / single). */
+  appends?: readonly ContinuousAppendWrite[];
+}
+
+export interface ContinuousAppendWrite {
+  groupId: number;
+  members: readonly string[];
+  timeAttached: readonly string[];
 }
 
 /** The scan-owned grouping run's id, creating it on first use. */
@@ -1575,7 +1813,12 @@ export async function writeContinuousGroups(
   /** Checked INSIDE the exclusive transaction: a scan window whose
    * settings were superseded mid-embed must not commit after the reset
    * cleared the queue (entry-time fences alone leave that race open). */
-  options: { abortIf?: () => boolean } = {},
+  options: {
+    abortIf?: () => boolean;
+    /** Mounted volumes (m0.8.3 phase 2): the membership repair defers
+     * dissolving groups that still hold an unreachable member. */
+    mountedVolumes?: readonly string[] | null;
+  } = {},
 ): Promise<void> {
   if (write.photos.length === 0) return;
   await withWriteTransaction(db, async (txn) => {
@@ -1603,11 +1846,17 @@ export async function writeContinuousGroups(
     for (const photo of write.photos) {
       await txn.runAsync(
         `INSERT INTO photos (asset_id, uri, taken_at, state, mod_time, day,
-                             volume_name, raw_id, size_bytes)
-         VALUES (?, ?, ?, 'unreviewed', ?, ?, ?, ?, ?)
+                             volume_name, raw_id, size_bytes, exif_checked_mod_time)
+         VALUES (?, ?, ?, 'unreviewed', ?, ?, ?, ?, ?, ?)
          ON CONFLICT(asset_id) DO UPDATE SET
            uri = excluded.uri,
            taken_at = excluded.taken_at,
+           -- A scanned photo IS present, whatever marked it absent —
+           -- including a "Forget this card, keep history" assertion whose
+           -- card came back (m0.8.3 §7): the honest edge in that flow's
+           -- copy is exactly this revival. (Trashed rows take the fuller
+           -- restore transition above.)
+           is_present = 1,
            size_bytes = COALESCE(excluded.size_bytes, photos.size_bytes),
            -- photos.mod_time is the in-place edit detector's baseline
            -- while a row is in an edit cycle: refreshing it here would
@@ -1616,7 +1865,21 @@ export async function writeContinuousGroups(
                            THEN photos.mod_time ELSE excluded.mod_time END,
            day = excluded.day,
            volume_name = excluded.volume_name,
-           raw_id = excluded.raw_id`,
+           raw_id = excluded.raw_id,
+           -- The D15 marker only ever advances on a COMPLETED read; a
+           -- pass that did not probe an UNDATED row passes NULL and must
+           -- not erase the stored proof. But a DATED incoming row
+           -- without the marker never entered the rescue at all — its
+           -- date came from MediaStore, and a surviving marker would
+           -- make Home's disjoint union (MediaStore range + rescued)
+           -- count it twice (final cycle Q3).
+           exif_checked_mod_time =
+             CASE
+               WHEN excluded.exif_checked_mod_time IS NOT NULL
+                 THEN excluded.exif_checked_mod_time
+               WHEN excluded.day IS NOT NULL THEN NULL
+               ELSE photos.exif_checked_mod_time
+             END`,
         photo.assetId,
         photo.uri,
         photo.takenAt,
@@ -1625,30 +1888,40 @@ export async function writeContinuousGroups(
         photo.volumeName,
         photo.rawId,
         photo.sizeBytes,
+        photo.exifCheckedModTime ?? null,
       );
     }
     // Revalidate the plan INSIDE the transaction: the runner computed it
     // from reads that predate this write, and a review decision can land
     // in between (the scan runs in the background). Fresh state/assignment
     // reads + the same pure freeze rules decide what may still be written.
+    const appendWrites = write.appends ?? [];
     const plannedIds = [
-      ...new Set([...write.groups.flatMap((g) => [...g.members]), ...write.singles]),
+      ...new Set([
+        ...write.groups.flatMap((g) => [...g.members]),
+        ...write.singles,
+        ...appendWrites.flatMap((a) => [...a.members]),
+      ]),
     ];
     const liveAssignments = await getGroupAssignments(txn, plannedIds);
     const liveTouched = [
-      ...new Set(
-        [...liveAssignments.values()].map((a) => a.groupId).filter((g): g is number => g !== null),
-      ),
+      ...new Set([
+        ...[...liveAssignments.values()]
+          .map((a) => a.groupId)
+          .filter((g): g is number => g !== null),
+        ...appendWrites.map((a) => a.groupId),
+      ]),
     ];
     const liveMembers = await getGroupMembers(txn, liveTouched);
     const liveStateIds = new Set(plannedIds);
     for (const memberIds of liveMembers.values()) for (const m of memberIds) liveStateIds.add(m);
     const liveStates = await getStatesForAssets(txn, [...liveStateIds]);
+    const metadataLive = await getMetadataGroupIds(txn, [...liveMembers.keys()]);
     const frozen = frozenPhotos(plannedIds, {
       states: liveStates,
       assignments: liveAssignments,
       groupMembers: liveMembers,
-      metadataGroups: await getMetadataGroupIds(txn, [...liveMembers.keys()]),
+      metadataGroups: metadataLive,
     });
     const plan = reconcileWindowGroups(
       [...write.groups, ...write.singles.map((s) => ({ members: [s], timeAttached: [] }))],
@@ -1714,7 +1987,62 @@ export async function writeContinuousGroups(
         runId,
       );
     }
-    await repairGroupMembership(txn, [...touchedGroups]);
+    // GROW-ONLY appends, revalidated on live state (m0.8.3 grilling): the
+    // target must still be a growable group — it exists, carries no
+    // review metadata, and every member is still unreviewed — and each
+    // appended photo must itself still be unfrozen. A disqualified entry
+    // degrades to the pre-grow plan shape (own group when ≥2, single
+    // otherwise); existing member rows are never touched either way.
+    for (const append of appendWrites) {
+      const additions = append.members.filter((id) => !frozen.has(id));
+      if (additions.length === 0) continue;
+      const targetMembers = liveMembers.get(append.groupId) ?? [];
+      const targetGrowable =
+        targetMembers.length > 0 &&
+        !metadataLive.has(append.groupId) &&
+        targetMembers.every((m) => (liveStates.get(m) ?? 'unreviewed') === 'unreviewed');
+      const timeAttached = new Set(append.timeAttached);
+      if (targetGrowable) {
+        touchedGroups.add(append.groupId);
+        for (const assetId of additions) {
+          const live = liveAssignments.get(assetId);
+          if (live && live.groupId === append.groupId) continue; // already a member
+          await txn.runAsync(
+            `INSERT OR REPLACE INTO photo_group_assignments (photo_id, run_id, group_id, time_attached)
+             VALUES (?, ?, ?, ?)`,
+            assetId,
+            runId,
+            append.groupId,
+            timeAttached.has(assetId) ? 1 : 0,
+          );
+        }
+      } else if (additions.length >= 2) {
+        const groupResult = await txn.runAsync(
+          'INSERT INTO photo_groups (run_id, best_photo_id) VALUES (?, NULL)',
+          runId,
+        );
+        const groupId = Number(groupResult.lastInsertRowId);
+        touchedGroups.add(groupId);
+        for (const assetId of additions) {
+          await txn.runAsync(
+            `INSERT OR REPLACE INTO photo_group_assignments (photo_id, run_id, group_id, time_attached)
+             VALUES (?, ?, ?, ?)`,
+            assetId,
+            runId,
+            groupId,
+            timeAttached.has(assetId) ? 1 : 0,
+          );
+        }
+      } else {
+        await txn.runAsync(
+          `INSERT OR REPLACE INTO photo_group_assignments (photo_id, run_id, group_id, time_attached)
+           VALUES (?, ?, NULL, 0)`,
+          additions[0],
+          runId,
+        );
+      }
+    }
+    await repairGroupMembership(txn, [...touchedGroups], options.mountedVolumes);
   });
 }
 
@@ -1978,14 +2306,21 @@ export interface ToEditRow {
 }
 
 /** The to-edit queue: every photo flagged for editing, newest first.
- * Live work only — a staged cull is not waiting to be edited. */
-export async function getToEditPhotos(db: SQLiteDatabase): Promise<ToEditRow[]> {
+ * Live work only — a staged cull is not waiting to be edited, and
+ * (m0.8.3 §5) neither is a photo whose volume is out; its action row
+ * survives and the queue re-lists it on remount. */
+export async function getToEditPhotos(
+  db: SQLiteDatabase,
+  mounted: readonly string[] | null = null,
+): Promise<ToEditRow[]> {
+  const reach = reachClause(mounted, 'p.volume_name');
   return db.getAllAsync<ToEditRow>(
     `SELECT p.asset_id, p.uri, p.taken_at, p.day FROM photos p
        JOIN photo_actions pa ON pa.photo_id = p.asset_id
       WHERE pa.kind = 'edit' AND pa.state IN ('queued', 'error')
-        AND ${livePhotoClause('p.asset_id')}
+        AND ${livePhotoClause('p.asset_id')}${reach.sql}
       ORDER BY p.taken_at DESC`,
+    ...reach.params,
   );
 }
 
@@ -1999,14 +2334,21 @@ export interface EditDetectionRow {
   to_edit_at: number | null;
 }
 
-export async function getEditDetectionRows(db: SQLiteDatabase): Promise<EditDetectionRow[]> {
+export async function getEditDetectionRows(
+  db: SQLiteDatabase,
+  /** m0.8.3 §5: detection probes stat files — an unmounted volume's
+   * probes can only fail as noise, so those rows wait for remount. */
+  mounted: readonly string[] | null = null,
+): Promise<EditDetectionRow[]> {
+  const reach = reachClause(mounted, 'p.volume_name');
   return db.getAllAsync<EditDetectionRow>(
     `SELECT p.asset_id, p.uri, p.taken_at, p.mod_time, p.content_hash,
             pa.queued_at AS to_edit_at
        FROM photos p
        JOIN photo_actions pa ON pa.photo_id = p.asset_id
       WHERE pa.kind = 'edit' AND pa.state IN ('queued', 'error')
-        AND ${livePhotoClause('p.asset_id')}`,
+        AND ${livePhotoClause('p.asset_id')}${reach.sql}`,
+    ...reach.params,
   );
 }
 
@@ -2100,8 +2442,8 @@ export async function insertDetectedCopyWithMatch(
     // clobbered (it was not a candidate anyway).
     const upsert = await txn.runAsync(
       `INSERT INTO photos
-         (asset_id, uri, taken_at, state, mod_time, day, activity_at)
-       VALUES (?, ?, ?, 'unreviewed', ?, ?, ?)
+         (asset_id, uri, taken_at, state, mod_time, day, volume_name, raw_id, activity_at)
+       VALUES (?, ?, ?, 'unreviewed', ?, ?, ?, ?, ?)
        ON CONFLICT(asset_id) DO UPDATE SET
          activity_at = excluded.activity_at
        WHERE photos.state = 'unreviewed' AND photos.activity_at IS NULL`,
@@ -2110,6 +2452,10 @@ export async function insertDetectedCopyWithMatch(
       copy.takenAt,
       copy.modTime,
       copy.day,
+      // The canonical id IS `<volume>/<raw id>` — identity columns are
+      // derivable, and v20 requires them on every insert.
+      volumeOf(copy.assetId),
+      rawIdOf(copy.assetId),
       detectedAt,
     );
     if (Number(upsert.changes) === 0) {
@@ -2416,19 +2762,33 @@ export async function getHistoryPage(
 export async function getStateCountsInScope(
   db: SQLiteDatabase,
   scope: PhotoScope,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  mounted: readonly string[] | null = null,
 ): Promise<StateCounts> {
   const where = scopeClause(scope);
   const src = sourceClause(roots);
+  const reach = reachClause(mounted);
   const [rows, actionRows] = await Promise.all([
-    db.getAllAsync<{ state: PhotoState; grouped: number; n: number }>(
+    db.getAllAsync<{ state: PhotoState; grouped: number; n: number; rescued: number }>(
       `SELECT state,
               EXISTS (SELECT 1 FROM photo_group_assignments a
                       WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped,
-              COUNT(*) AS n
-       FROM photos WHERE ${where.sql}${src.sql} GROUP BY state, grouped`,
+              COUNT(*) AS n,
+              -- Alive rescue-dated rows (same rule as DAY_SUMMARY's
+              -- rescued): the day page's analyzing line needs them.
+              SUM(CASE WHEN photos.exif_checked_mod_time IS NOT NULL
+                        AND photos.state <> 'trashed' THEN 1 ELSE 0 END) AS rescued
+       FROM photos WHERE ${where.sql}${src.sql}
+         -- Keep-history tombstones (m0.8.3 §7) are ABSENT rows with
+         -- ordinary verdicts — a browse surface must not revive them.
+         -- Trashed rows stay countable (the chips' trashed figure)
+         -- WHEREVER their volume is: a tombstoned fact is not waiting on
+         -- a card (final cycle O3) — reachability scopes live rows only.
+         AND (photos.state = 'trashed' OR (photos.is_present = 1${reach.sql}))
+       GROUP BY state, grouped`,
       ...where.params,
       ...src.params,
+      ...reach.params,
     ),
     // Deliberately NOT the queue rule: these chips label a BROWSE grid
     // that already shows staged culls under its own verdict chip, and a
@@ -2440,12 +2800,14 @@ export async function getStateCountsInScope(
       `SELECT pa.kind, COUNT(*) AS n
          FROM photos
          JOIN photo_actions pa ON pa.photo_id = photos.asset_id
-        WHERE ${where.sql}${src.sql}
+        WHERE ${where.sql}${src.sql}${reach.sql}
           AND pa.state IN ('queued', 'error')
           AND photos.state <> 'trashed'
+          AND photos.is_present = 1
         GROUP BY pa.kind`,
       ...where.params,
       ...src.params,
+      ...reach.params,
     ),
   ]);
   const counts: StateCounts = {
@@ -2454,12 +2816,14 @@ export async function getStateCountsInScope(
     staged: 0,
     trashed: 0,
     tracked: 0,
+    rescued: 0,
     grouped: { unreviewed: 0, kept: 0, staged: 0 },
     actions: { edit: 0, favourite: 0, organize: 0, share: 0 },
   };
   for (const row of actionRows) counts.actions[row.kind] = Number(row.n);
   for (const row of rows) {
     counts.tracked += row.n;
+    counts.rescued += Number(row.rescued ?? 0);
     // Grouping is an ANNOTATION counted per verdict, not a verdict of
     // its own (docs/STATE_MODEL.md): it is what the grouped underline
     // spans, and a grouped unreviewed photo is still simply unreviewed.
@@ -2554,13 +2918,15 @@ for (const kind of ['edit', 'favourite', 'organize', 'share']) {
 export async function getGridPhotosByFilter(
   db: SQLiteDatabase,
   scope: PhotoScope,
-  roots: readonly string[] | null,
+  roots: readonly SourceRoot[] | null,
   filter: string,
   limit: number,
   offset: number,
+  mounted: readonly string[] | null = null,
 ): Promise<GridPhotoRow[]> {
   const where = scopeClause(scope);
   const src = sourceClause(roots);
+  const reach = reachClause(mounted);
   // Explicit over implicit: an unknown key must not silently broaden to
   // the whole library (the chip's number would still claim a filter).
   const filterSql = GRID_FILTER_SQL[filter];
@@ -2578,10 +2944,14 @@ export async function getGridPhotosByFilter(
                      AND po.kind = 'organize' AND po.state IN ('queued', 'error')) AS organize_pending,
             EXISTS (SELECT 1 FROM photo_actions ps WHERE ps.photo_id = photos.asset_id
                      AND ps.kind = 'share' AND ps.state IN ('queued', 'error')) AS share_pending
-     FROM photos WHERE ${where.sql} AND (${filterSql})${src.sql}
+     FROM photos WHERE ${where.sql} AND (${filterSql})${src.sql}${reach.sql}
+       -- Grid filters never select trashed rows, so presence is the
+       -- whole predicate here (keep-history tombstones stay out).
+       AND is_present = 1
      ORDER BY taken_at DESC, asset_id DESC LIMIT ? OFFSET ?`,
     ...where.params,
     ...src.params,
+    ...reach.params,
     limit,
     offset,
   );
@@ -2735,6 +3105,12 @@ export interface DaySummaryRow {
   trashed: number; // subset of `done`; gone from MediaStore
   toEdit: number;
   staged: number;
+  /** ALIVE rows whose date exists only in the DB (the D15 EXIF rescue's
+   * marker — MediaStore has no DATE_TAKEN for them), so no MediaStore
+   * range count includes them. Home's day total is the disjoint union
+   * `MediaStore range + rescued` (final cycle P4: max() alone missed a
+   * day holding both a rescued photo and a not-yet-ingested one). */
+  rescued: number;
 }
 
 const DAY_SUMMARY_SELECT = `SELECT day,
@@ -2746,8 +3122,34 @@ const DAY_SUMMARY_SELECT = `SELECT day,
             -- the Edit tab correctly refuses to list because it is
             -- staged for deletion.
             SUM(CASE WHEN ${queuedClause('edit', 'photos.asset_id')} THEN 1 ELSE 0 END) AS toEdit,
-            SUM(CASE WHEN state = 'culled' THEN 1 ELSE 0 END) AS staged
+            SUM(CASE WHEN state = 'culled' THEN 1 ELSE 0 END) AS staged,
+            -- The rescue marker only ever lands on MediaStore-UNDATED
+            -- photos, so a dated+marked ALIVE row is exactly a photo no
+            -- MediaStore range count can see (DaySummaryRow.rescued).
+            SUM(CASE WHEN exif_checked_mod_time IS NOT NULL AND state <> 'trashed'
+                     THEN 1 ELSE 0 END) AS rescued
+     -- Keep-history tombstones (m0.8.3 §7) are absent rows with ordinary
+     -- verdicts — day populations must not count them as live photos;
+     -- trashed rows stay counted (toRow's total adds them deliberately).
+     -- The presence predicate lives at the call sites so reachability
+     -- can scope the LIVE branch only (final cycle O3): a trashed
+     -- tombstone is a fact, not a photo waiting on an unmounted card —
+     -- the cycling-card workflow's whole day history lives on ejected
+     -- volumes (plan §7 "per-day charts stay exactly right").
      FROM photos WHERE day IS NOT NULL`;
+
+/** ` AND (state = 'trashed' OR (is_present = 1 <reach>))` — the shared
+ * presence-or-fact predicate of the day summaries (O3, see
+ * DAY_SUMMARY_SELECT). Params: the reach clause's, in place. */
+function presentOrTrashedClause(reach: { sql: string; params: string[] }): {
+  sql: string;
+  params: string[];
+} {
+  return {
+    sql: ` AND (state = 'trashed' OR (is_present = 1${reach.sql}))`,
+    params: reach.params,
+  };
+}
 
 /**
  * What was DECIDED on one local day (Stats/Summary "done for today"):
@@ -2766,7 +3168,7 @@ const DAY_SUMMARY_SELECT = `SELECT day,
 export async function getDayReviewSummary(
   db: SQLiteDatabase,
   day: string,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<{ reviewed: number; kept: number; staged: number; trashed: number }> {
   const range = rangeOfDayKey(day);
   const src = sourceClause(roots);
@@ -2798,13 +3200,17 @@ export async function getDayReviewSummary(
 export async function getDaySummaries(
   db: SQLiteDatabase,
   sinceDay: string,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  mounted: readonly string[] | null = null,
 ): Promise<Map<string, DaySummaryRow>> {
   const src = sourceClause(roots);
+  const reach = reachClause(mounted);
+  const present = presentOrTrashedClause(reach);
   const rows = await db.getAllAsync<DaySummaryRow>(
-    `${DAY_SUMMARY_SELECT} AND day >= ?${src.sql} GROUP BY day`,
+    `${DAY_SUMMARY_SELECT} AND day >= ?${src.sql}${present.sql} GROUP BY day`,
     sinceDay,
     ...src.params,
+    ...present.params,
   );
   return new Map(rows.map((r) => [r.day, r]));
 }
@@ -2814,17 +3220,21 @@ export async function getDaySummaries(
 export async function getDaySummariesForDays(
   db: SQLiteDatabase,
   days: readonly string[],
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  mounted: readonly string[] | null = null,
 ): Promise<Map<string, DaySummaryRow>> {
   if (days.length === 0) return new Map();
   const src = sourceClause(roots);
+  const reach = reachClause(mounted);
   const dated = days.filter((d) => d !== UNDATED_DAY_KEY);
   const out = new Map<string, DaySummaryRow>();
+  const present = presentOrTrashedClause(reach);
   if (dated.length > 0) {
     const rows = await db.getAllAsync<DaySummaryRow>(
-      `${DAY_SUMMARY_SELECT} AND day IN (${dated.map(() => '?').join(',')})${src.sql} GROUP BY day`,
+      `${DAY_SUMMARY_SELECT} AND day IN (${dated.map(() => '?').join(',')})${src.sql}${present.sql} GROUP BY day`,
       ...dated,
       ...src.params,
+      ...present.params,
     );
     for (const r of rows) out.set(r.day, r);
   }
@@ -2838,9 +3248,14 @@ export async function getDaySummariesForDays(
             -- the Edit tab correctly refuses to list because it is
             -- staged for deletion.
             SUM(CASE WHEN ${queuedClause('edit', 'photos.asset_id')} THEN 1 ELSE 0 END) AS toEdit,
-              SUM(CASE WHEN state = 'culled' THEN 1 ELSE 0 END) AS staged
-       FROM photos WHERE day IS NULL${src.sql}`,
+              SUM(CASE WHEN state = 'culled' THEN 1 ELSE 0 END) AS staged,
+              -- A marker on an UNDATED row means "checked, nothing found"
+              -- — not a rescue; and the undated pseudo-day has no
+              -- MediaStore range to union with anyway.
+              0 AS rescued
+       FROM photos WHERE day IS NULL${src.sql}${present.sql}`,
       ...src.params,
+      ...present.params,
     );
     if (row && Number(row.tracked) > 0) out.set(UNDATED_DAY_KEY, { day: UNDATED_DAY_KEY, ...row });
   }
@@ -2851,21 +3266,25 @@ export async function getDaySummariesForDays(
  * with their pending counts (Home's still-unreviewed day rows, gate 5). */
 export async function getUnreviewedDayRows(
   db: SQLiteDatabase,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  mounted: readonly string[] | null = null,
 ): Promise<{ day: string; pending: number }[]> {
   const src = sourceClause(roots);
+  const reach = reachClause(mounted);
   const rows = await db.getAllAsync<{ day: string; pending: number }>(
     `SELECT day, COUNT(*) AS pending FROM photos
-     WHERE day IS NOT NULL AND state = 'unreviewed' AND is_present = 1${src.sql}
+     WHERE day IS NOT NULL AND state = 'unreviewed' AND is_present = 1${src.sql}${reach.sql}
      GROUP BY day ORDER BY day DESC`,
     ...src.params,
+    ...reach.params,
   );
   // The Unknown-day pseudo-day rides along (after the dated days) when
   // undated photos await review.
   const undated = await db.getFirstAsync<{ pending: number }>(
     `SELECT COUNT(*) AS pending FROM photos
-     WHERE day IS NULL AND state = 'unreviewed' AND is_present = 1${src.sql}`,
+     WHERE day IS NULL AND state = 'unreviewed' AND is_present = 1${src.sql}${reach.sql}`,
     ...src.params,
+    ...reach.params,
   );
   if ((undated?.pending ?? 0) > 0) rows.push({ day: UNDATED_DAY_KEY, pending: undated!.pending });
   return rows;
@@ -2915,6 +3334,50 @@ export async function getTakenAtForAssets(
   return result;
 }
 
+/** One stored row per id for the D15 EXIF date rescue's once-per-photo
+ * contract (m0.8.3): a photo whose header was already read at its
+ * current content version reuses its stored taken_at/day instead of a
+ * re-read — and MUST, because the scan's upsert rewrites taken_at/day
+ * from the ingested values, so a rescue that ran only once would be
+ * clobbered back to the mtime fallback on the next pass. The version is
+ * `exif_checked_mod_time`, the rescue's own marker (codex r1) — NOT
+ * photos.mod_time, which edit detection owns and resets/preserves for
+ * its own reasons, and NULL for a photo whose read never completed, so
+ * transient failures stay retry-eligible instead of freezing undated. */
+export interface RescueBaselineRow {
+  takenAt: number;
+  day: string | null;
+  exifCheckedModTime: number | null;
+}
+
+export async function getRescueBaselines(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+): Promise<Map<string, RescueBaselineRow>> {
+  const result = new Map<string, RescueBaselineRow>();
+  for (const batch of chunk(assetIds, IN_CHUNK)) {
+    const rows = await db.getAllAsync<{
+      asset_id: string;
+      taken_at: number;
+      day: string | null;
+      exif_checked_mod_time: number | null;
+    }>(
+      `SELECT asset_id, taken_at, day, exif_checked_mod_time FROM photos
+        WHERE asset_id IN (${batch.map(() => '?').join(',')})`,
+      ...batch,
+    );
+    for (const row of rows) {
+      result.set(row.asset_id, {
+        takenAt: Number(row.taken_at),
+        day: row.day,
+        exifCheckedModTime:
+          row.exif_checked_mod_time === null ? null : Number(row.exif_checked_mod_time),
+      });
+    }
+  }
+  return result;
+}
+
 /** How many of these ids are still tracked as present — the delta
  * tripwire's correction term for gallery-trashed rows that MediaStore
  * already hides but the DB still holds (scanRunner.planPass). */
@@ -2936,7 +3399,7 @@ export async function countPresentPhotos(
 
 export async function getPhotoTimestamps(
   db: SQLiteDatabase,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<number[]> {
   const src = sourceClause(roots);
   const rows = await db.getAllAsync<{ taken_at: number }>(
@@ -2958,7 +3421,7 @@ export async function getPhotoTimestamps(
  */
 export async function countTrackedPhotos(
   db: SQLiteDatabase,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<number> {
   const src = sourceClause(roots);
   const row = await db.getFirstAsync<{ n: number }>(
@@ -2966,6 +3429,24 @@ export async function countTrackedPhotos(
     ...src.params,
   );
   return Number(row?.n ?? 0);
+}
+
+/** Tracked present rows PER VOLUME under the source scope (m0.8.3
+ * phase 2) — one side of the per-volume tripwires (plan §4 invariant 1).
+ * Volumes with no rows simply have no entry; callers default to 0. */
+export async function countTrackedByVolume(
+  db: SQLiteDatabase,
+  roots: readonly SourceRoot[] | null = null,
+): Promise<Record<string, number>> {
+  const src = sourceClause(roots);
+  const rows = await db.getAllAsync<{ volume_name: string; n: number }>(
+    `SELECT volume_name, COUNT(*) AS n FROM photos
+      WHERE is_present = 1${src.sql} GROUP BY volume_name`,
+    ...src.params,
+  );
+  const out: Record<string, number> = {};
+  for (const row of rows) out[row.volume_name] = Number(row.n);
+  return out;
 }
 
 export interface OutcomeChunkRow {
@@ -2998,7 +3479,7 @@ export interface ForecastBaseRates extends DecisionTotals {
  */
 export async function getDecisionTotals(
   db: SQLiteDatabase,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<DecisionTotals> {
   const src = sourceClause(roots);
   const row = await db.getFirstAsync<{ decisions: number; firstDecidedAt: number | null }>(
@@ -3026,7 +3507,7 @@ export async function getDecisionTotals(
  */
 export async function getForecastBaseRates(
   db: SQLiteDatabase,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
   chunks = 5,
 ): Promise<ForecastBaseRates> {
   const src = sourceClause(roots);
@@ -3092,7 +3573,7 @@ export async function getForecastBaseRates(
 export async function getRecentDecisionStamps(
   db: SQLiteDatabase,
   limit = 2000,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<number[]> {
   const src = sourceClause(roots);
   const rows = await db.getAllAsync<{ decided_at: number }>(
@@ -3116,14 +3597,20 @@ export async function getRecentDecisionStamps(
  */
 export async function getRemainingPoolSize(
   db: SQLiteDatabase,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  /** The forecast's REMAINING pool excludes unreachable photos (m0.8.3
+   * §5) — the finish line describes work you can actually do; the base
+   * RATES deliberately stay history-wide (completed work is fact). */
+  mounted: readonly string[] | null = null,
 ): Promise<{ sized: number; meanBytes: number }> {
   const src = sourceClause(roots);
+  const reach = reachClause(mounted);
   const row = await db.getFirstAsync<{ sized: number; meanBytes: number | null }>(
     `SELECT COUNT(size_bytes) AS sized, AVG(size_bytes) AS meanBytes
      FROM photos
-     WHERE state = 'unreviewed' AND is_present = 1${src.sql}`,
+     WHERE state = 'unreviewed' AND is_present = 1${src.sql}${reach.sql}`,
     ...src.params,
+    ...reach.params,
   );
   return { sized: Number(row?.sized ?? 0), meanBytes: Math.round(row?.meanBytes ?? 0) };
 }
@@ -3150,7 +3637,7 @@ export interface RhythmCell {
  */
 export async function getDecisionRhythm(
   db: SQLiteDatabase,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<RhythmCell[]> {
   const src = sourceClause(roots);
   const rows = await db.getAllAsync<{ weekday: string; hour: string; n: number }>(
@@ -3200,13 +3687,24 @@ const TURNAROUND_SAMPLE = 500;
  * answerable at all only because `resolved_at` is permanent, so clearing
  * a queue does not erase the evidence that its work once got done.
  */
-export async function getQueueTurnaround(db: SQLiteDatabase): Promise<QueueTurnaround[]> {
+export async function getQueueTurnaround(
+  db: SQLiteDatabase,
+  /** m0.8.3 §5: the WAITING half matches the tab badge, which excludes
+   * unreachable photos; the finished counts and turnaround gaps stay
+   * unscoped — they are history. */
+  mounted: readonly string[] | null = null,
+): Promise<QueueTurnaround[]> {
+  const reach = reachClause(mounted, 'live_p.volume_name');
   const [waiting, finished, gaps] = await Promise.all([
     db.getAllAsync<{ kind: ActionKind; n: number; oldest: number | null }>(
       `SELECT kind, COUNT(*) AS n, MIN(queued_at) AS oldest FROM photo_actions
         WHERE state IN ('queued', 'error')
-          AND ${livePhotoClause('photo_actions.photo_id')}
+          AND EXISTS (SELECT 1 FROM photos live_p
+                       WHERE live_p.asset_id = photo_actions.photo_id
+                         AND live_p.is_present = 1
+                         AND live_p.state NOT IN ('culled', 'trashed')${reach.sql})
         GROUP BY kind`,
+      ...reach.params,
     ),
     db.getAllAsync<{ kind: ActionKind; n: number }>(
       `SELECT kind, COUNT(*) AS n FROM photo_actions
@@ -3277,7 +3775,7 @@ export async function getDuelSummary(db: SQLiteDatabase): Promise<DuelSummary> {
 export async function getDecisionOutcomesSince(
   db: SQLiteDatabase,
   sinceMs: number,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<{ decided: number; culled: number }> {
   const src = sourceClause(roots);
   const row = await db.getFirstAsync<{ decided: number; culled: number }>(
@@ -3318,19 +3816,22 @@ export interface MonthBucket {
  */
 export async function getCaptureHistogram(
   db: SQLiteDatabase,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  mounted: readonly string[] | null = null,
 ): Promise<MonthBucket[]> {
   const src = sourceClause(roots);
+  const reach = reachClause(mounted);
   const rows = await db.getAllAsync<{ month: string | null; total: number; reviewed: number }>(
     `SELECT substr(day, 1, 7) AS month,
             COUNT(*) AS total,
             SUM(CASE WHEN state IN ('kept', 'culled', 'trashed')
                      THEN 1 ELSE 0 END) AS reviewed
      FROM photos
-     WHERE is_present = 1${src.sql}
+     WHERE is_present = 1${src.sql}${reach.sql}
      GROUP BY month
      ORDER BY month`,
     ...src.params,
+    ...reach.params,
   );
   return rows.map((row) => ({
     month: row.month,
@@ -3351,9 +3852,11 @@ export interface BacklogFrontier {
 
 export async function getBacklogFrontier(
   db: SQLiteDatabase,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  mounted: readonly string[] | null = null,
 ): Promise<BacklogFrontier> {
   const src = sourceClause(roots);
+  const reach = reachClause(mounted);
   const row = await db.getFirstAsync<{
     reviewedBackTo: string | null;
     oldestUnreviewedDay: string | null;
@@ -3364,8 +3867,9 @@ export async function getBacklogFrontier(
          AS reviewedBackTo,
        MIN(CASE WHEN state = 'unreviewed' THEN day END) AS oldestUnreviewedDay,
        SUM(CASE WHEN state = 'unreviewed' AND day IS NULL THEN 1 ELSE 0 END) AS undatedPending
-     FROM photos WHERE is_present = 1${src.sql}`,
+     FROM photos WHERE is_present = 1${src.sql}${reach.sql}`,
     ...src.params,
+    ...reach.params,
   );
   return {
     reviewedBackTo: row?.reviewedBackTo ?? null,
@@ -3385,9 +3889,11 @@ export interface StorageBreakdown {
 
 export async function getStorageBreakdown(
   db: SQLiteDatabase,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  mounted: readonly string[] | null = null,
 ): Promise<StorageBreakdown> {
   const src = sourceClause(roots);
+  const reach = reachClause(mounted);
   const row = await db.getFirstAsync<{
     sized: number;
     unsized: number;
@@ -3401,8 +3907,9 @@ export async function getStorageBreakdown(
             COALESCE(SUM(CASE WHEN state = 'culled' THEN size_bytes END), 0)
               AS staged,
             COALESCE(SUM(CASE WHEN state = 'unreviewed' THEN size_bytes END), 0) AS unreviewed
-     FROM photos WHERE is_present = 1${src.sql}`,
+     FROM photos WHERE is_present = 1${src.sql}${reach.sql}`,
     ...src.params,
+    ...reach.params,
   );
   return {
     sized: Number(row?.sized ?? 0),
@@ -3434,28 +3941,41 @@ export interface BurstStats {
  */
 export async function getBurstStats(
   db: SQLiteDatabase,
-  roots: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+  mounted: readonly string[] | null = null,
 ): Promise<BurstStats> {
   const src = sourceClause(roots, 'p.uri');
+  const reach = reachClause(mounted, 'p.volume_name');
+  // The fully-decided test runs over the SAME scoped population as the
+  // outer counts (codex phase-3 + final cycle M8): a hidden unreviewed
+  // member — ejected, tombstoned, or out of the selected source — must
+  // not block a group whose measured members are all decided.
+  const subReach = reachClause(mounted, 'p2.volume_name');
+  const subSrc = sourceClause(roots, 'p2.uri');
   const row = await db.getFirstAsync<{ photosInGroups: number; groups: number }>(
     `SELECT COUNT(*) AS photosInGroups, COUNT(DISTINCT a.group_id) AS groups
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
-     WHERE a.group_id IS NOT NULL AND p.is_present = 1${src.sql}`,
+     WHERE a.group_id IS NOT NULL AND p.is_present = 1${src.sql}${reach.sql}`,
     ...src.params,
+    ...reach.params,
   );
   const decided = await db.getFirstAsync<{ members: number; kept: number }>(
     `SELECT COUNT(*) AS members,
             SUM(CASE WHEN p.state = 'kept' THEN 1 ELSE 0 END) AS kept
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
-     WHERE a.group_id IS NOT NULL AND p.is_present = 1${src.sql}
+     WHERE a.group_id IS NOT NULL AND p.is_present = 1${src.sql}${reach.sql}
        AND a.group_id NOT IN (
          SELECT a2.group_id FROM photo_group_assignments a2
          JOIN photos p2 ON p2.asset_id = a2.photo_id
          WHERE a2.group_id IS NOT NULL AND p2.state = 'unreviewed'
+           AND p2.is_present = 1${subSrc.sql}${subReach.sql}
        )`,
     ...src.params,
+    ...reach.params,
+    ...subSrc.params,
+    ...subReach.params,
   );
   return {
     photosInGroups: Number(row?.photosInGroups ?? 0),

@@ -32,10 +32,10 @@ async function fresh(): Promise<TestDb> {
 function insertPhoto(d: TestDb, assetId: string): void {
   d.raw
     .prepare(
-      `INSERT INTO photos (asset_id, uri, taken_at, day)
-       VALUES (?, 'content://x', ?, '2026-07-01')`,
+      `INSERT INTO photos (asset_id, uri, taken_at, day, volume_name, raw_id)
+       VALUES (?, 'content://x', ?, '2026-07-01', 'external_primary', ?)`,
     )
-    .run(assetId, AT);
+    .run(assetId, AT, assetId);
 }
 
 describe('fresh baseline', () => {
@@ -209,20 +209,20 @@ describe('the verdict column (v18)', () => {
     for (const state of ['unreviewed', 'kept', 'culled', 'trashed']) {
       d.raw
         .prepare(
-          `INSERT INTO photos (asset_id, uri, taken_at, state)
-           VALUES (?, 'content://x', ?, ?)`,
+          `INSERT INTO photos (asset_id, uri, taken_at, state, volume_name, raw_id)
+           VALUES (?, 'content://x', ?, ?, 'external_primary', ?)`,
         )
-        .run(`ok/${state}`, AT, state);
+        .run(`ok/${state}`, AT, state, state);
     }
     // 'to_edit' is a pending ACTION now, and 'done' is spelled 'kept'.
     for (const state of ['to_edit', 'done', 'confirmed']) {
       expect(() =>
         d.raw
           .prepare(
-            `INSERT INTO photos (asset_id, uri, taken_at, state)
-             VALUES (?, 'content://x', ?, ?)`,
+            `INSERT INTO photos (asset_id, uri, taken_at, state, volume_name, raw_id)
+             VALUES (?, 'content://x', ?, ?, 'external_primary', ?)`,
           )
-          .run(`bad/${state}`, AT, state),
+          .run(`bad/${state}`, AT, state, state),
       ).toThrow(/CHECK/);
     }
   });

@@ -42,7 +42,7 @@ export type TrashOutcome =
 
 export interface PreparedTrashBatch {
   batchId: number;
-  members: { photoId: string; contentUri: string | null; measuredBytes: number }[];
+  members: { photoId: string; measuredBytes: number }[];
   /** Best stars cleared by the stage-and-reserve transition (edited-copy
    * culls) — a DEFINITIVE non-application restores them with the
    * un-staging (a cancelled sheet must be a true no-op). */
@@ -156,12 +156,8 @@ export async function prepareTrashBatch(
     for (const member of eligible) {
       const row = await txn.getFirstAsync<{
         trash_generation: number;
-        content_uri: string | null;
         state: string;
-      }>(
-        'SELECT trash_generation, content_uri, state FROM photos WHERE asset_id = ?',
-        member.photoId,
-      );
+      }>('SELECT trash_generation, state FROM photos WHERE asset_id = ?', member.photoId);
       if (!row || row.state !== 'culled') continue; // only staged culls
       await txn.runAsync(
         `INSERT INTO trash_batch_members (batch_id, photo_id, trash_generation, measured_bytes)
@@ -179,7 +175,6 @@ export async function prepareTrashBatch(
       );
       out.members.push({
         photoId: member.photoId,
-        contentUri: row.content_uri,
         measuredBytes: member.measuredBytes,
       });
     }
@@ -231,6 +226,13 @@ async function applyRemovalCleanup(
   photoId: string,
   at: number,
   markCulled: boolean,
+  /** True only when the pixels are authoritatively GONE (quad-state
+   * 'absent', never 'trashed'): duel history is the one swept satellite
+   * that cannot be recomputed, so a 30-day-restorable trash keeps it —
+   * a restore must bring the photo's Compare history back with it
+   * (Tristan, grilling Q13). Embeddings/hashes are content-derived and
+   * sweep on every removal regardless. */
+  permanent: boolean,
 ): Promise<void> {
   await txn.runAsync(
     `UPDATE photos SET state = 'trashed', is_present = 0,
@@ -252,10 +254,31 @@ async function applyRemovalCleanup(
       WHERE photo_id = ? AND state IN ('queued', 'error') AND resolved_at IS NOT NULL`,
     photoId,
   );
+  // PENDING copy matches are swept in BOTH directions (m0.8.3 §7 +
+  // codex phase-4): a departed ORIGINAL answers its prompt's question; a
+  // departed COPY dissolves the relationship (the copy's pixels are
+  // gone, and a surviving pending row would block the original's next
+  // legitimate match). Deleted, not resolved — a pending row is dead
+  // work, and only rows about COMPLETED facts are kept.
   await txn.runAsync(
-    "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
+    "DELETE FROM edit_copy_matches WHERE state = 'pending' AND (original_id = ? OR copy_id = ?)",
+    photoId,
     photoId,
   );
+  // TOMBSTONE SWEEP (m0.8.3 §7, mechanism 1): a departed photo's row
+  // survives (verdict/timestamps/day — all-time counts and base rates
+  // stay exactly right) but its satellites are swept in the SAME
+  // transaction: they only have value if the pixels return, and the
+  // cycling camera-card workflow would otherwise structurally bloat the
+  // DB (an embedding is ~5 KB/photo; a tombstone row is ~100 bytes).
+  // A photo restored from system trash re-ingests through the scan's
+  // restore transition (mod_time NULL → re-embed, re-hash) — the sweep
+  // costs a restore one re-analysis, never data.
+  await txn.runAsync('DELETE FROM photo_embeddings WHERE asset_id = ?', photoId);
+  await txn.runAsync('DELETE FROM photo_hashes WHERE asset_id = ?', photoId);
+  if (permanent) {
+    await txn.runAsync('DELETE FROM duels WHERE winner_id = ? OR loser_id = ?', photoId, photoId);
+  }
 }
 
 /**
@@ -289,16 +312,27 @@ export async function reconcileExternallyRemoved(
   db: SQLiteDatabase,
   photoIds: readonly string[],
   at: number,
+  /** Mounted volumes (m0.8.3 phase 2): scan-driven reconciliation passes
+   * these so the membership repair DEFERS dissolving a group that still
+   * holds an unreachable member (plan §5). User-driven callers omit. */
+  mountedVolumes?: readonly string[] | null,
+  /** The subset whose quad-state presence was 'absent' — permanently
+   * gone, so their duel history dies too (grilling Q13). Ids not here
+   * are system-trashed (restorable): duels survive a possible restore.
+   * Omitted = none permanent (the conservative default). */
+  permanentIds?: ReadonlySet<string>,
 ): Promise<void> {
   if (photoIds.length === 0) return;
   await withWriteTransaction(db, async (txn) => {
     // The groups these photos sit in, read BEFORE cleanup (m0.8.1 scope:
     // the whole-table repair costs ~12 ms even as a no-op).
     const affected = await groupsOfPhotos(txn, photoIds);
-    for (const id of photoIds) await applyRemovalCleanup(txn, id, at, false);
+    for (const id of photoIds) {
+      await applyRemovalCleanup(txn, id, at, false, permanentIds?.has(id) ?? false);
+    }
     // A removal can leave a group with one present member — dissolve it
     // in the same transaction so the deck never receives a 1-photo group.
-    await repairGroupMembership(txn, affected);
+    await repairGroupMembership(txn, affected, mountedVolumes);
     await closeShareCycleIfQueueEmpty(txn, at);
   });
 }
@@ -316,6 +350,12 @@ export interface ResolveInput {
    * after process death — absence then earns NO credit (P8#3). */
   interrupted?: boolean;
   at: number;
+  /** Mounted volumes at resolve time (final cycle O2): a verified trash
+   * of a mixed group's mounted member must not dissolve the assignment
+   * of a partner waiting on an ejected card (plan §5 byte-for-byte) —
+   * the membership repair defers such groups exactly like the scan's
+   * reconcile paths. Null/omitted = unknowable, today's semantics. */
+  mountedVolumes?: readonly string[] | null;
 }
 
 export interface ResolveResult {
@@ -381,7 +421,10 @@ export async function resolveTrashBatch(
       );
       if (outcome === 'trashed' || outcome === 'absent_after_interrupted_launch') {
         // C#7 transition contract, one transaction with the outcome.
-        await applyRemovalCleanup(txn, member.photo_id, input.at, true);
+        // Never `permanent`: the app's own trash lands in the SYSTEM
+        // trash (30-day restorable), and the tri-state verify cannot
+        // distinguish trashed from gone — duels survive (Q13).
+        await applyRemovalCleanup(txn, member.photo_id, input.at, true, false);
         if (outcome === 'trashed') creditedBytes += member.measured_bytes;
       }
       // 'still_present' / 'unknown': the reservation releases below; a
@@ -390,13 +433,15 @@ export async function resolveTrashBatch(
     }
 
     // Verified removals can leave 1-present-member groups — dissolve them
-    // with the outcomes (same transaction), scoped to their groups.
+    // with the outcomes (same transaction), scoped to their groups; a
+    // group still holding an unreachable member defers (O2).
     await repairGroupMembership(
       txn,
       await groupsOfPhotos(
         txn,
         members.map((m) => m.photo_id),
       ),
+      input.mountedVolumes ?? null,
     );
     // Trash cleanup may have emptied the share queue — the open cycle
     // must end with it (N#5) so a later requeue starts a fresh cycle.
@@ -450,6 +495,9 @@ export async function recoverTrashBatches(
   db: SQLiteDatabase,
   verify: (photoId: string) => Promise<PresenceCheck>,
   at: number,
+  /** Mounted volumes at recovery (O2) — threaded into each resolve's
+   * membership repair. */
+  mountedVolumes: readonly string[] | null = null,
 ): Promise<TrashRecoveryResult> {
   const stale = await db.getAllAsync<{ id: number; state: string }>(
     "SELECT id, state FROM trash_batches WHERE state IN ('preparing', 'launching')",
@@ -468,6 +516,7 @@ export async function recoverTrashBatches(
         dialog: 'applied',
         interrupted: true,
         at,
+        mountedVolumes,
       });
       for (const [photoId, outcome] of Object.entries(resolved.outcomes)) {
         if (outcome === 'trashed' || outcome === 'absent_after_interrupted_launch') {

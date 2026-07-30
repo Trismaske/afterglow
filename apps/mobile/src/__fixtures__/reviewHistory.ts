@@ -317,8 +317,8 @@ export function seedReviewHistory(
   const photo = raw.prepare(
     `INSERT INTO photos
        (asset_id, uri, taken_at, day, state, size_bytes,
-        reviewed_at, decided_at, culled_at, is_present)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        reviewed_at, decided_at, culled_at, is_present, volume_name, raw_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'external_primary', ?)`,
   );
   const action = raw.prepare(
     `INSERT INTO photo_actions
@@ -340,6 +340,7 @@ export function seedReviewHistory(
       row.state === 'culled' || row.state === 'trashed' ? row.decidedAt : null,
       // Trashed photos have left MediaStore.
       row.state === 'trashed' ? 0 : 1,
+      row.assetId,
     );
     for (const item of row.actions) {
       action.run(

@@ -218,8 +218,9 @@ or other docs quote the title, never the number**.
     Honest capture-order review, and auto-advance chains through them —
     but if testers find it tedious, the option is merging adjacent
     small runs across day boundaries until they reach a minimum size,
-    at the cost of blurring the day-scoped run model (Plan_m0.8.2.md
-    appendix 34 has the full trade).
+    at the cost of blurring the day-scoped run model (the full trade
+    was recorded in the shipped m0.8.2 plan's appendix 34 — git
+    history).
 
 14. **Verify the UI gate's PiP dismissal against a live PiP**
     (2026-07-29). A YouTube picture-in-picture window ate the Stats tap

@@ -104,7 +104,7 @@ embeddings — and remount restores them exactly, no re-ingestion.
 `is_present` keeps its exact meaning: gone from MediaStore **while its
 volume was mounted** — a real deletion. The scan may only conclude
 deletions on mounted volumes; an unmounted volume is skipped whole
-(plan-m0.8.3 §4 invariants).
+(the m0.8.3 per-volume scan contract — lib/volumeScan.ts and the scanRunner headers carry its invariants).
 
 What the predicate scopes: review queues and the timeline, the four
 action queues and their badges (the action ROWS survive; only the lists

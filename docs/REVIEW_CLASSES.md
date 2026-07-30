@@ -113,3 +113,41 @@ never caught their siblings.
 33. **Dependent steps running after their anchor step failed** — record
     them failed-skipped; never write real decisions from an unknown
     position.
+
+## Reachability & snapshot discipline (m0.8.3 — the cycle's dominant family)
+
+34. **A bulk or destructive write reading the world fresh at write time**
+    — every fresh read can WIDEN the write past what the user saw (a
+    remount, a reload landing late, a null enumeration). Bulk writes
+    bind to the RENDERED set intersected with an invalidated fresh
+    reachable read (shrink-only); explicit single targets act
+    unconditionally (the M5 rule, STATE_MODEL.md); physical operations
+    always bind to reachable.
+35. **A snapshot published apart from the data it describes** — a
+    mounted set (or any paired context) set before its rows commit, by
+    a superseded load, or surviving a no-op refresh unpublished, pairs
+    one world's data with another's predicate. Publish atomically with
+    the rows, latest-load-only, and on no-op paths too.
+36. **Two native reads treated as one snapshot** — generations before
+    mounted volumes, a count memo beside a fresh enumeration: anything
+    that changed between them silently defeats checks built on their
+    agreement. Verify the later read still covers the earlier one, and
+    re-fence immediately before ACCEPTING a skip or claiming coverage.
+37. **A reachability predicate appended beside an OR-facts branch** —
+    `reach` next to `(is_present = 1 OR state = 'trashed')` silently
+    scopes the FACTS branch too; reachability scopes live rows only.
+38. **An IN-list bound sized by user data** — a rendered-ids bound or
+    volume-qualified source clause hits SQLite's 999-variable floor at
+    real scale; chunk it or cap the input with an actionable error.
+39. **A refresh trigger missing one of its worlds** — navigation focus,
+    foreground return, and LIVE volume broadcasts are three separate
+    signals; a screen wired to fewer than it needs goes stale exactly
+    when the world changes without the missing signal
+    (useExternalRefresh wires the non-navigation two).
+40. **Fix-on-fix drift** — across ten review rounds, the newest hunks
+    (my fixes to prior findings) were consistently where the next
+    defects lived: incomplete rollouts of a principle (one path of
+    four), a fix written against the wrong key shape, a bound added
+    without its chunking. Point re-review budget at the newest changes
+    first, and sweep a principle across EVERY sibling path in the same
+    round.

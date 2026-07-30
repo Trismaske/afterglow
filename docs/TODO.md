@@ -372,6 +372,30 @@ or other docs quote the title, never the number**.
     Design: tile treatment, whether trashed rows join too (they have
     the same gap), and the filter story.
 
+25. **Capture-time truth: DST-normalized times, and photos shot in
+    another timezone** (Tristan, m0.8.3 grilling Q2). EXIF
+    `DateTimeOriginal` is a ZONELESS wall time, so every consumer —
+    Android's own `DATE_TAKEN` extraction and our D15 rescue alike —
+    reads it in whatever zone applies at read time. Two consequences,
+    both currently silent: (a) a wall time inside a DST spring-forward
+    gap is NORMALIZED by JS (02:30 → 03:30, same day; deliberate — the
+    capture DAY survives, and rejecting would demote a real photo to
+    Unknown day); (b) a photo shot in a different timezone renders at
+    device-local time, which near midnight can place it on the WRONG
+    capture day — the key every day page, coverage streak, and day-scoped
+    deck uses. Wanted: show the original local date/time (perhaps beside
+    the device-local one) and badge times we normalized or shifted.
+    Mechanism: EXIF 2.31's `OffsetTimeOriginal` recovers the true zone —
+    measured 2026-07-30: the S23's camera writes `+02:00`, the D300s NEFs
+    carry NO offset tag (so the RAW workflow's zone is unrecoverable from
+    EXIF; GPS timestamps are the only secondary source). Needs its own
+    design pass: which time `photos.day` keys on (changing it re-days
+    existing rows and re-windows their groups), whether the offset gets
+    stored (schema) and read natively (the rescue reads only
+    `TAG_DATETIME_ORIGINAL` today), where the original zone surfaces
+    (viewer decision panel vs deck header), and what an offset-less photo
+    shows — the honest answer may be "no claim" rather than a guess.
+
 ## Discovered, waiting for a real trigger
 
 Items found during implementation whose fix has a known shape but whose

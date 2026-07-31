@@ -174,3 +174,27 @@ never caught their siblings.
     under the next, while a count drawn from a third source agrees with
     neither. When a component has two data paths, ask what a row
     visible to only one of them looks like.
+
+## Errors and generated copy (m0.8.4)
+
+44. **A failure reported by a toast the user cannot act on** — a toast
+    is enough when RETRYING IS THE WHOLE ANSWER: nothing changed, tap
+    again. It is the wrong surface when retry is futile (a platform
+    refusal that will refuse identically forever) or when the state is
+    now ambiguous, because a message that vanishes leaves the user
+    looping. Apply the retry test to every failure surface; the five
+    "could not save — try again" toasts in this codebase pass it, and
+    the one that did not was the one that needed a dialog.
+45. **A diagnosis parsed out of a platform's error text** — exception
+    wording is not an API. It differs by OS version and OEM skin, so a
+    matcher silently stops matching and the explanation degrades to
+    nothing, which is worse than never having claimed to know. Classify
+    from facts YOU own (the item's own path, your own status codes),
+    quote the platform's words verbatim and unparsed underneath, and let
+    a rule that becomes wrong go quiet rather than start lying.
+46. **Count copy asserted only in its plural form** — an interpolated
+    count reads naturally while you write it, because you write the
+    plural; the `n = 1` case is the one that ships as "1 photo live in".
+    Every generated sentence carrying a count needs its singular
+    asserted, not just its shape — and the verb and pronoun, not only
+    the noun.

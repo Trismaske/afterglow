@@ -1,10 +1,55 @@
 import { describe, expect, it } from 'vitest';
-import { dayKey, exifDateTimeToMs } from './dates';
+import { dayKey, exifDateTimeToMs, labelForDayKey, UNDATED_DAY_KEY } from './dates';
 
 describe('dayKey', () => {
   it('is lexicographically sortable (zero-padded)', () => {
     const jan5 = dayKey(new Date(2026, 0, 5).getTime());
     expect(jan5).toBe('2026-01-05');
+  });
+});
+
+describe('labelForDayKey', () => {
+  /** Anchoring "now" is what makes Today/Yesterday assertable at all —
+   * the label is relative by definition, so a test without a fixed now
+   * would pass or fail by the calendar. */
+  const now = new Date(2026, 6, 31, 14, 0, 0);
+
+  /** The absolute label carries the year — the m0.8.4 change. Asserted
+   * through the SAME Intl call the code makes, because the format is
+   * locale-dependent ("17 Aug 2024" here, "Aug 17, 2024" under en-US)
+   * and hardcoding one locale's output would pin the test environment
+   * rather than the behaviour. What is asserted is that the year is
+   * present and the day is right. */
+  function expectedAbsolute(y: number, m: number, d: number): string {
+    return new Date(y, m, d).toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  }
+
+  it('carries the year on a past-year day', () => {
+    const label = labelForDayKey('2024-08-17', now);
+    expect(label).toBe(expectedAbsolute(2024, 7, 17));
+    expect(label).toContain('2024');
+  });
+
+  it('carries the year on a CURRENT-year day too (unconditional)', () => {
+    // The whole point of not making it conditional: two "17 Aug" rows a
+    // year apart must not both render bare.
+    const label = labelForDayKey('2026-08-17', now);
+    expect(label).toBe(expectedAbsolute(2026, 7, 17));
+    expect(label).toContain('2026');
+    // ...and it must differ from the same day in another year.
+    expect(label).not.toBe(labelForDayKey('2024-08-17', now));
+  });
+
+  it('leaves the relative and absent labels alone', () => {
+    // These return before formatDay is reached, so the year never
+    // applies to them.
+    expect(labelForDayKey('2026-07-31', now)).toBe('Today');
+    expect(labelForDayKey('2026-07-30', now)).toBe('Yesterday');
+    expect(labelForDayKey(UNDATED_DAY_KEY, now)).toBe('Unknown day');
   });
 });
 

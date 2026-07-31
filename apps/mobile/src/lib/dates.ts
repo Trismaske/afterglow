@@ -61,7 +61,11 @@ export function rangeOfDayKey(key: string): DateRange {
  */
 export const UNDATED_DAY_KEY = 'undated';
 
-/** "Today" / "Yesterday" / "Jul 12" for a day key, relative to now. */
+/** "Today" / "Yesterday" / "12 Jul 2025" for a day key, relative to now.
+ *
+ * The chokepoint for every day label in the app — Home's day rows, the
+ * timeline's group and singles cards, DayProgress headings, the Edit
+ * queue and PhotoViewer all render through here. */
 export function labelForDayKey(key: string, now: Date = new Date()): string {
   if (key === UNDATED_DAY_KEY) return 'Unknown day';
   if (key === dayKey(now.getTime())) return 'Today';
@@ -88,9 +92,25 @@ export function recentDayKeys(count: number, now: Date = new Date()): string[] {
   return keys;
 }
 
-const DAY_FORMAT: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
+/**
+ * The year is UNCONDITIONAL (m0.8.4). Home routinely lists two rows both
+ * reading "17 Aug" — one 2024, one 2025 — with nothing to tell them
+ * apart. A conditional "only when the year differs from now" was
+ * considered and rejected as the MORE confusing option: a label whose
+ * format changes with the calendar makes the reader work out which rule
+ * is in force, and this year's bare "17 Aug" would silently start
+ * meaning something else next January.
+ */
+const DAY_FORMAT: Intl.DateTimeFormatOptions = {
+  year: 'numeric',
+  month: 'short',
+  day: 'numeric',
+};
 
-export function formatDay(ms: number): string {
+/** Private: labelForDayKey is the only caller, and every day label in
+ * the app goes through it — a second entry point would let a surface
+ * print a differently-shaped date. */
+function formatDay(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, DAY_FORMAT);
 }
 

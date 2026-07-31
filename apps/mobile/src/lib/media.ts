@@ -6,6 +6,17 @@
  * functions (`getAssetsAsync` paging) are the documented, battle-tested path.
  * Destructive actions deliberately bypass the legacy delete API and use the
  * app's Android 11+ MediaStore trash-request module below.
+ *
+ * DO NOT REMOVE `WRITE_EXTERNAL_STORAGE` FROM app.json. It looks dead — the
+ * app calls no expo-media-library write API, and Android grants nothing for
+ * it from API 30 — but below API 33 the library's own read gate
+ * (`MediaLibraryModule.hasReadPermissions`) requires READ **and** WRITE to
+ * be granted before ANY read call, and a permission absent from the manifest
+ * can never be granted. Removing it leaves every `getAssetsAsync` here
+ * throwing "Missing MEDIA_LIBRARY permissions" forever on Android 11/12 —
+ * measured on the S10e (API 31), 2026-07-30: 0 photos scanned, vs 5 795 with
+ * it kept. Harmless-looking on API 33+, which is why only an API 30-32
+ * device catches it.
  */
 import { Platform } from 'react-native';
 import * as MediaLibrary from 'expo-media-library/legacy';

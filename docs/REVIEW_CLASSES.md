@@ -151,3 +151,26 @@ never caught their siblings.
     without its chunking. Point re-review budget at the newest changes
     first, and sweep a principle across EVERY sibling path in the same
     round.
+
+## Deletions and dual sources (m0.8.4)
+
+41. **A dead branch left behind a raised floor** — when a minimum
+    rises, the unreachable arm is only half the sweep. The other half
+    is whatever that arm was the *sole* consumer of: helper chains,
+    build dependencies, tests, doc lines. Each is invisible until the
+    thing above it goes, so deletions cascade — re-grep for callers
+    after every removal, not just before the first.
+42. **An inert-looking declaration a dependency treats as
+    load-bearing** — platform semantics are not library semantics. A
+    permission or flag the OS ignores may still be read by a dependency
+    as a precondition, and one absent from the manifest can never be
+    granted. Before deleting a declaration a third party can observe,
+    grep that dependency's own source for it, and test in the version
+    band where it still applies: the failure can be invisible on newer
+    releases.
+43. **Two engines behind one screen** — a surface that pages from two
+    sources depending on a filter will eventually show both answers. A
+    row only one engine can see appears under one control and vanishes
+    under the next, while a count drawn from a third source agrees with
+    neither. When a component has two data paths, ask what a row
+    visible to only one of them looks like.

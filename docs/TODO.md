@@ -396,6 +396,167 @@ or other docs quote the title, never the number**.
     (viewer decision panel vs deck header), and what an offset-less photo
     shows — the honest answer may be "no claim" rather than a guess.
 
+    **ARW is dated by file mtime, not EXIF** (measured 2026-07-30, S23 /
+    API 36, controlled push experiment; the same value reproduces on an
+    API 30 emulator and the S10e / API 31, so it is not version-specific).
+    MediaStore never reads a Sony ARW's `DateTimeOriginal`:
+
+    | File | EXIF DateTimeOriginal | file mtime | MediaStore `datetaken` |
+    | --- | --- | --- | --- |
+    | `DSC09576.ARW` (arrived normally) | 2026-07-30 03:00:43 | 03:00:42 | 03:00:43 — *looks* right |
+    | same bytes, `adb push`ed | 2026-07-30 03:00:43 | 21:11:59 | 21:15:43 |
+    | fresh A6000 ARW, never on a device | 2026-05-08 23:21:52 | 2026-05-09 01:21:52 | 2026-05-09 01:21:52 |
+
+    The third row is the proof: `datetaken` equals the mtime exactly while
+    the EXIF says something 2 h different. A normally-imported file only
+    *looks* correct because its mtime happens to match capture time — so
+    any workflow that rewrites mtime (copy, sync, backup restore) silently
+    re-dates the photo, on the RAW formats the README advertises as fully
+    supported. The D15 rescue cannot intervene: it only runs on rows
+    MediaStore reports as UNDATED, and these carry a confident wrong date.
+    Unresolved loose end: the pushed copy's `datetaken` is 224 s AFTER its
+    mtime rather than equal to it, yet byte-identical across three
+    devices — the mtime rule fits the other two rows and not this one.
+    Wanted: whether the native EXIF read should extend to dated-but-
+    suspect rows (RAW mime types, or `datetaken == date_modified`), which
+    would make this the same mechanism as the D15 rescue rather than a
+    second one. Related: entry 26 below (the read-source half of the same
+    family, already designed).
+
+26. **A D15-rescued photo's date does not reach the Progress library
+    scope** (found 2026-07-30 during the m0.8.4 spikes; scoped out of
+    that release to keep it a pure deletion). **Fully investigated and
+    the fix is agreed — this is ready to implement, not to re-design.**
+
+    **Symptom.** A photo MediaStore reports as undated, whose real
+    capture date the D15 EXIF rescue recovers, shows its file
+    MODIFICATION time on the Progress library grid and is absent from
+    its own capture-month filter. Sharpest form, measured: Progress
+    filtered to one month prints THREE different numbers on one screen —
+    header `0 of 1 photos reviewed`, chips `7 Unreviewed`, grid
+    rendering `1` tile.
+
+    **Who it hits.** Every rescued photo, not just RAW — measured on an
+    emulator where 7 of 9 photos were rescued and all 7 misbehaved. But
+    the README states NEF capture dates come ONLY from the rescue, so
+    for the RAW workflow it advertises, every NEF is affected.
+
+    **The DB is correct; this is a read-source defect.** The rescue sets
+    `item.timestamp` and clears `undated` (`scanRunner.ts:1112-1114`), so
+    the upsert persists the right `taken_at` AND `day`. Only surfaces
+    that re-read dates from MediaStore are wrong.
+
+    **The fix already exists in this codebase, on Home**
+    (`HomeScreen.tsx:648-663`): a disjoint union of MediaStore's range
+    count and the DB's `rescued` rows, floored at the DB population, with
+    the `rescued` count exposed at `db/store.ts:3111-3130`. m0.8.3's D16
+    moved DAY scopes to SQLite but deliberately left library RANGE scopes
+    on MediaStore ("untracked photos have no DB row yet"), and the
+    rescue's DB-only truth falls through that carve-out.
+
+    **Decisive isolation:** under the SAME month scope, switching the
+    state filter to KEPT renders the photo correctly, because that filter
+    routes the grid to the SQLite engine. The scope is innocent; the
+    engine is the defect. Fixing display alone would not make the photo
+    appear.
+
+    **Scope vs display splits on bounded vs unbounded.** Bounded ranges
+    query MediaStore on `DATE_TAKEN`, and a NULL-`datetaken` row matches
+    NO month — so the photo is missing from its true month AND from its
+    mtime's month; it lands in none. Unbounded returns every row, so the
+    photo is present but wears the mtime and sorts by it.
+
+    **Reproduced identically on API 30 (emulator), API 31 (S10e) and API
+    36 (S23), on shipped 0.8.3** — not version-dependent, and neither
+    created nor cured by the m0.8.4 floor change. Everything reading
+    `photos.day` / `photos.taken_at` is correct: Home day rows (and not
+    double-counted), the capture histogram, state chips, DayProgress,
+    the review timeline and deck, History, the Edit queue, Stats, and
+    `StateEditorSheet` — which self-heals by re-reading `facts.taken_at`
+    (`PhotoViewer.tsx:528`) instead of trusting its caller.
+
+    **The agreed fix — six changes** (Tristan, 2026-07-30; change 5
+    widened and change 6 added 2026-07-31 by the S10e never-rescued
+    measurement). A seventh, always showing the year in day labels, was
+    independent of this defect and went into m0.8.4 on its own; it is
+    what makes changes 1-4 verifiable by eye outside Progress, so do that
+    first if it has not shipped yet.
+
+    1. **Bounded month grid** (`progress/PhotoStateGrid.tsx:262`) — page
+       SQLite, D16's already-proven day-scope pattern, instead of
+       `fetchPhotoPageDesc`'s `DATE_TAKEN` range. Fixes the missing photo
+       and the wrong order together.
+    2. **Unbounded library grid** (`PhotoStateGrid.tsx:217`) — take
+       `takenAt` from the DB state join already happening beside it
+       (`getStateRowsForAssets`), not `p.item.timestamp` (which is
+       `creationTime || modificationTime`, `media.ts:104`). PhotoViewer
+       needs no change: it renders what the grid hands it.
+    3. **Header denominator** (`ProgressView.tsx:414`, printing at
+       `:499`) — apply Home's disjoint union. This is a SEPARATE site
+       from the grid; fixing only the grid leaves the header printing
+       "No photos here." above a rendered photo. It must keep counting
+       not-yet-ingested photos, which have no DB row — that is why the
+       MediaStore path exists and why two patterns are needed, not one.
+    4. **Ordering** — union the DB's rescued rows into `progressPager` as
+       one more merge source sorted by `taken_at` descending. Change 2
+       fixes the displayed date but not the position: a slot is decided
+       inside the k-way merge over MediaStore cursors before any DB join
+       exists. Rejected: paging SQLite for the unbounded scope
+       (dismantles the carve-out and hides un-ingested photos);
+       re-sorting each loaded window (wrong across page boundaries);
+       accepting mis-ordering (trades a wrong date for a wrong position).
+    5. **The undated-and-unrescued surfaces must not lie — TWO sites,
+       not one.** A photo with no EXIF date is filed under "Unknown day"
+       and then shown as `Today · <mtime>` one screen later, in BOTH the
+       PhotoViewer and the StateEditorSheet. Reproduced on the S23 and
+       the S10e (2026-07-30/31), different clock values, same shape.
+       `StateEditorSheet` cannot self-heal here the way it does for a
+       RESCUED photo: `getPhotoQueueFacts` (`db/store.ts:2212-2229`)
+       selects `asset_id, uri, taken_at` and never `day`, and for an
+       honestly-undated photo `taken_at` IS the mtime — `scanRunner.ts:1243`
+       writes `day: p.undated ? null : dayKey(...)` while `takenAt` keeps
+       the fallback, which `store.ts:88` states outright ("`taken_at` is
+       NOT NULL (the mtime fallback) even when their `day` is"). So the
+       fix needs `day` carried alongside `taken_at` to these surfaces,
+       not just a display change. A third, softer site: the review deck's
+       overlay clock prints the mtime time-of-day — it never names a day,
+       so it is not the same confident lie, but it is still a time claim
+       about a photo with no known time.
+
+    6. **Bounded month scopes must key on `day`, not `taken_at`** —
+       otherwise change 1 makes things WORSE. The DB range predicate is
+       `taken_at BETWEEN ? AND ?` (`store.ts:106`), which deliberately
+       INCLUDES undated photos by their mtime; that is right for the
+       open-ended whole-corpus range it was written for and wrong for a
+       month. So the never-rescued population produces the same
+       three-numbers contradiction in the OPPOSITE direction — the DB
+       chip over-counts while the MediaStore header/grid correctly
+       excludes. Measured on the S10e under `PHOTOS · UNREVIEWED`:
+       July 2026 header `0 of 2`, chip `3`, grid 2 tiles; December 2022
+       header `0 of 283`, chip `288` — a delta of exactly 5, matching
+       five pre-existing undated GIFs, so this is NOT an artefact of a
+       test fixture. Changes 1-4 move the grid and header toward DB
+       truth, which would import this over-count unless the bounded scope
+       keys on `day`. The design question the earlier draft did not
+       contain: may an undated photo appear in a month scope at all? The
+       honest answer is no — `photos.day IS NULL` means the app does not
+       know the month, and the Unknown-day pseudo-day already exists as
+       its home.
+
+    **Regression pins, both taken from real screens:** the month view
+    printing three different numbers must print one, across header, chips
+    and grid; and a month view must render the same photo under
+    `Unreviewed` as it does under `Kept`.
+
+    **Device fixtures left in place for this work:** S23
+    `/sdcard/DCIM/SpikeRAW/NOEXIF_undated.jpg` (the only
+    undated-and-unrescuable photo in scope — exactly what change 5
+    needs); the S23 NEF with mtime touched to 2026-07-30 23:16 so "Today"
+    versus "17 Aug 2024" is unambiguous on every screen; and an
+    `afterglow-api30` AVD that boots in under a minute. Related: entry 25
+    (the ingestion half of the same family) and
+    `docs/REVIEW_CLASSES.md` 43.
+
 ## Discovered, waiting for a real trigger
 
 Items found during implementation whose fix has a known shape but whose

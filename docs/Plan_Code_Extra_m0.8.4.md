@@ -64,9 +64,13 @@ Named because "no behaviour change on any device that can install it" stays true
 
 ## 6. Found on device, not in the plan
 
-- **An organize move failed, and it is not this release's doing.** The first move attempted on the S10e targeted a photo in `Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images/`, and Android refuses `RELATIVE_PATH` moves out of another package's `Android/media/` tree. It is a scoped-storage rule, not a version gate — `moveToRelativePath`'s only m0.8.4 change was deleting an `SDK_INT < R` early return that could never fire at API 31.
-  The app behaved correctly: the row stayed queued, badged failed, with *"1 queued · 1 failed, retried on the next move"*. A second move on a `DCIM/Camera` photo succeeded and verified (`relative_path=DCIM/Table Mountain Lapse/`), so the success path is measured too.
-  Worth a TODO of its own — the queue accepts a photo it can never move, and only says so after the OS consent tap. Not raised here because it predates this release and fixing it is a queue-time refusal, not a deletion.
+- **An organize move failed, and it is not this release's doing.** The first move attempted on the S10e targeted a photo in `Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images/`, and Android refuses `RELATIVE_PATH` moves out of another package's `Android/media/` tree. It is a scoped-storage rule, not a version gate — `moveToRelativePath`'s only m0.8.4 change was deleting an `SDK_INT < R` early return that could never fire at API 31. A second move on a `DCIM/Camera` photo succeeded and verified (`relative_path=DCIM/Table Mountain Lapse/`), so the success path is measured too.
+
+  **The failure is safe but unexplained, and that is a defect.** Nothing is lost or silently dropped — the row stays queued and retryable, the toast counts it (*"Moved 0, 1 failed (kept queued)"*), the subtitle counts it (*"1 queued · 1 failed, retried on the next move"*), the cell wears a red `alert-circle`. But the user is told only **that** it failed, never **why**, and retrying will fail forever for that photo.
+
+  The cause is a schema hole, not a missing screen. `moveToRelativePath` already returns Android's own explanation — `"${error.javaClass.simpleName}: ${error.message}"` (`MediaStoreActionsModule.kt:536-540`) — and `commitOrganizeOutcomes` carries it as `outcome.message` all the way to the write, where it writes `state = 'error'` and drops it (`organizeStore.ts:299-304`). `photo_actions` has no column to put it in (`database.ts:89-103`), so no surface can show it, and none tries.
+
+  Two things follow, both left for a decision rather than fixed here: the queue accepts photos it can never move (queue-time refusal, the shape m0.8.3 already used for SD), and the diagnosis Android hands us is discarded (a column plus a surface). Parked in `docs/TODO.md`. Note the irony for §3: the wording chosen for `moveToRelativePath`'s `unsupported` message is copy for a string that currently has no reader.
 
 ## 7. Process
 

@@ -663,3 +663,71 @@ Nothing in this plan is an unvetted assumption; implement against the sections a
 It is load-bearing for `expo-media-library` reads on API 30–32, and its removal leaves the app permanently unable to scan on Android 11/12 — §4.6 carries the evidence and the control experiment. Recorded rather than deleted so nobody re-proposes it from the same plausible reasoning.
 
 **Scoped out to `docs/TODO.md`:** the rescued-date read-source defect, fully designed, as "A D15-rescued photo's date does not reach the Progress library scope"; and ARW capture dates coming from file mtime rather than EXIF, appended to "Capture-time truth". Both were found by this release's spikes; neither is legacy removal.
+
+---
+
+## 12. Human acceptance pass — the m0.8.4 checklist
+
+Everything automatable is already green (§9's gates, both floor assertions, the UI gate on both phones, the three-target device walk). This section is only what **you** have to judge: the OS consent flows automation deliberately cancels, frame-level latency, and taste.
+
+**State of the devices right now.** All three targets already carry release `0.8.4` (versionCode 11) with a fully scanned corpus and permission granted, so you can start at step 2 unless you want the cold-start check. The UI gate has already made real decisions on both phones' corpora (keeps, culls, edit flags, queue intents) — that is expected and disposable.
+
+`S23 = 192.168.10.32:44687` · `S10e = 192.168.10.137:34287` · emulator `emulator-5554` (API 30).
+Wireless ADB ports change on reconnect — re-derive with `scripts/android-device.sh discover` if a serial is dead, and never `adb kill-server`/`disconnect`.
+
+### 12.1 The floor — do this once, on the S10e (5 min)
+
+The one thing no automated gate can prove is that a **real user upgrade** works, because CI only ever installs onto a clean device.
+
+- [ ] With 0.8.4 already installed, confirm the app opens and the library total matches what it showed before (the floor rise must not have reset anything).
+- [ ] `adb -s $S10E install -r <the 0.8.4 APK>` a second time — an in-place reinstall over itself must succeed, not `INSTALL_FAILED_*`.
+- [ ] Settings → About shows `0.8.4`.
+
+There is deliberately **no in-app floor check to test**: below API 30 no code of ours can run, so anything you could see has already cleared the floor (§6.1).
+
+### 12.2 The three OS consent flows (both phones)
+
+The gate cancels or avoids all three, so these are the highest-value manual steps. Each was walked once by me on each device — you are judging *feel and wording*, not whether it works.
+
+**Cull → system trash**
+- [ ] Stage 2-3 culls in a deck, open Cull list. Subtitle reads `N staged · tap any photo to change its decision` with **no** "requires Android 11" line anywhere.
+- [ ] Tap `Trash N photos` → the app's own confirm names the count and says recovery is gallery-controlled → `MOVE TO TRASH` → Android's sheet.
+- [ ] **Cancel** Android's sheet: the photos must still be staged and the copy must say nothing was touched.
+- [ ] Repeat and **Allow**: the count drops, the Home cull row disappears, and the photos are in your gallery's Recently Deleted / Bin.
+
+**Favourite batch**
+- [ ] Queue 2 hearts from the deck, open the Favourite queue. The permanent `Gallery favourites require Android 11 or later` banner is **gone** — check the screen looks right without it, since that line used to sit between the intro and the list.
+- [ ] `Apply N favourites` → consent → the queue drains and the hearts show in your gallery.
+
+**Organize move**
+- [ ] Queue one photo **from `DCIM/Camera`** (see §12.5 — a WhatsApp photo will fail for an unrelated, known reason), assign an album, `Move 1 to albums` → consent → the row leaves the queue and the photo is in that album in your gallery.
+
+### 12.3 The one visible change (either phone, 2 min)
+
+- [ ] Home's day rows read `28 Jul 2026`, not `28 Jul`. Same on the timeline overview's group/singles cards, DayProgress's heading, the Edit queue and the photo viewer.
+- [ ] `Today`, `Yesterday` and `Unknown day` are **unchanged** — no year appended to those.
+- [ ] Judge the width: the year is ~5 characters on every day row, and Home's rows also carry `0/35 reviewed · 0%`. If anything now wraps or truncates at a size that matters to you, that is the call to make here.
+
+### 12.4 External media — S10e only (10 min)
+
+This is where m0.8.4's Kotlin deletions concentrate (`listMountedVolumes`, `countImagesByVolume`, `mediaGenerations`), so it gets the longest manual look. Measured green today; you are confirming it feels right.
+
+- [ ] Settings → Photo source: SD rows carry the `SD card` tag, internal rows do not.
+- [ ] With **All folders** selected, physically eject the card (or `adb -s $S10E shell sm unmount public:179,1`). **Without touching the app**, Home's banner appears: `SD card not mounted — N photos waiting on it`, and the library total drops by exactly N.
+- [ ] Press the banner → it lands in Settings.
+- [ ] Remount. The banner clears and the total returns — again without you navigating.
+- [ ] Open the folder picker while ejected: persisted SD roots are greyed with their tracked counts, not missing.
+
+### 12.5 Known, not yours to report
+
+Seen during the device walk, already parked — please do not spend time on them:
+
+- **A move fails with only a red badge, no reason.** Photos under `Android/media/<pkg>/` (WhatsApp) can never be moved by Android, and the app discards the explanation it receives. `docs/TODO.md`, "A failed organize move never says why".
+- **An ARW's date can be wrong.** MediaStore dates ARW by file mtime, not EXIF. `docs/TODO.md`, "Capture-time truth"; the README's RAW table now says so.
+- **A rescued (NEF) photo shows its modification time in Progress.** Pre-existing, fully designed, deliberately out of this release. `docs/TODO.md`.
+
+### 12.6 Frame-level latency — only if something feels slow
+
+Do not run this speculatively; it exists for when a tap *feels* wrong. `docs/MOBILE_UI_GATE.md` has the method (`screenrecord` → `ffmpeg` frames). m0.8.1 reference: edit/favourite/share chips ≤ 100 ms, cull→advance ≤ 200 ms.
+
+m0.8.4 deletes branches and adds none on any hot path, so a regression here would be surprising — which is exactly why it is worth one honest look at the deck rather than a stopwatch.

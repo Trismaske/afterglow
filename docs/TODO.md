@@ -564,19 +564,25 @@ value is unproven — deliberately parked until a real user or tester hits
 them (Tristan, m0.8.3 grilling). Same hygiene as above: promote on
 trigger, delete when answered.
 
-- **Organize accepts photos Android will never let it move**
-  (measured on the S10e, 2026-07-31). A photo under another package's
-  `Android/media/<pkg>/` tree — WhatsApp's `WhatsApp Images` is the
-  common case, 858 photos on that device — is queued and album-assigned
-  like any other, and the platform refuses the `RELATIVE_PATH` move only
-  after the user has approved the OS write consent. The queue reports it
-  honestly (row badged failed, "retried on the next move", nothing
-  silently dropped), so this is a wasted-tap problem, not a correctness
-  one. Same shape as the SD refusal m0.8.3 already added: the fix is a
-  queue-time refusal naming the reason, and its cost is knowing which
-  paths are unmovable — `Android/media/` is one, but the rule may be
-  broader. Trigger: a tester queueing WhatsApp or other app-media photos
-  and hitting the failure.
+- **A failed organize move never says why** (measured on the S10e,
+  2026-07-31). Two halves, one root.
+  *The failure:* a photo under another package's `Android/media/<pkg>/`
+  tree — WhatsApp's `WhatsApp Images`, 858 photos on that device — is
+  queued and album-assigned like any other, and Android refuses the
+  `RELATIVE_PATH` move only after the user has approved the OS write
+  consent. Same shape as the SD refusal m0.8.3 already added; the fix is
+  a queue-time refusal, and its cost is knowing which paths are
+  unmovable (`Android/media/` is one, the rule may be broader).
+  *The silence:* the native module already returns Android's own
+  explanation (`"<ExceptionName>: <message>"`), and
+  `commitOrganizeOutcomes` carries it to the write and drops it —
+  `photo_actions` has no column for it. So the user gets a red badge and
+  "retried on the next move", retries, and fails again forever, with the
+  diagnosis Android handed us thrown away. Nothing is lost or silently
+  dropped, so this is wasted taps rather than wrong data — but "we know
+  exactly why and do not say" is the part worth fixing first, and it is
+  the cheaper half (a column plus one surface, no path rules needed).
+  Trigger: a tester queueing app-media photos and hitting the failure.
 
 - **Rescued photos never window with same-moment dated photos**
   (m0.8.3 grilling Q9). A D15-rescued photo (in practice: NEF —

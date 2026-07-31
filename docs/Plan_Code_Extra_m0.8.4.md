@@ -84,7 +84,15 @@ Two things worth carrying out of it:
 - **The device pass caught a bug the tests did not.** The first build read *"1 photo live in another app's own storage"*. The plural sentence had a test; the singular one did not, and all four cause lines shared the fault. Copy that interpolates a count needs its `n = 1` case asserted, not just its shape.
 - **Android's own words validated a classifier that never reads them.** The dialog diagnoses from the photo's uri; Android independently said *"Changing ownership … not allowed"*. That is the tier-3 quote doing exactly the job it was added for — corroborating a guess without being the basis of one.
 
-## 8. Process
+## 8. The acceptance pass changed the release again
+
+`Plan_m0.8.4.md` §14 has it in full. Three findings, and the third is the one worth remembering:
+
+**A restriction can be right and still be wrong.** `ORGANIZE_ROOTS` was tagged `(autonomous)` in m0.7 and never vetted. It turned out to mirror Android's real rule exactly — measured in-app: *"allowed directories are [DCIM, Pictures]"* — and it was still the wrong design, because a hand-copy of a platform rule is a second source of truth, and it was stated to the user as if it were ours. The fix was not to change the rule but to change who owns it.
+
+**My own measurement was invalid and I nearly reported it.** An `adb shell content update` accepted an images row into `Download/`, which looked like proof the restriction was arbitrary — until the same probe also accepted `Android/` and `Movies/`, which cannot be right for an app. Shell bypasses the provider's validation entirely. The valid measurement needed the app itself, and it said the opposite. A probe that agrees with your hypothesis deserves the same scepticism as one that does not.
+
+## 9. Process
 
 - The **phase 2 gradle build ran against a phase-2 tree**, before phases 3-7 landed, and a second full `prebuild --clean` + `assembleRelease` ran at the end. Phase 2's proof is native-only, so running it early costs nothing and catches a Kotlin problem before 300 lines of TypeScript deletions can be entangled with it.
 - **The final `assembleRelease` failed once and passed on retry, with no source change.** `:app:mergeDexRelease` threw `DexArchiveMergerException: Error while merging dex archives:` with an empty cause — the signature of a dexer worker being killed, and two emulators plus a warm Gradle daemon were resident at the time. Recorded rather than ignored: a build failure that "went away" is worth one line, and the passing build is the one every artifact check below was run against.

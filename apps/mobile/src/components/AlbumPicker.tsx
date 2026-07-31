@@ -19,7 +19,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { VolumeAlbum } from '../../modules/media-store-actions';
 import { listImageAlbumsCached } from '../lib/sourceCatalog';
 import { PRIMARY_VOLUME } from '../lib/mediaIdentity';
-import { newAlbumPath } from '../db/organizeStore';
+import { androidAllowsImagesIn, newAlbumPath } from '../db/organizeStore';
 import { colors, touch } from '../theme';
 
 export function AlbumPicker({
@@ -64,7 +64,13 @@ export function AlbumPicker({
         if (cancelled) return;
         setAlbums(
           catalog
-            .filter((a) => a.volumeName === PRIMARY_VOLUME)
+            // Primary volume only (cross-volume moves are out of scope),
+            // and only where Android permits an image to live — offering
+            // Downloads and then refusing it after an OS consent tap is
+            // the defect m0.8.4's acceptance pass found. The refusal
+            // itself is still explained if one slips through: this is a
+            // convenience filter, not the authority (organizeStore).
+            .filter((a) => a.volumeName === PRIMARY_VOLUME && androidAllowsImagesIn(a.relativePath))
             .sort((a, b) => b.photoCount - a.photoCount),
         );
       },

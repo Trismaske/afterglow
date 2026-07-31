@@ -104,7 +104,7 @@ Mechanical, no design decisions, folded in here so it lands with the rest.
 
 **Every generated sentence carrying a count needs its `n = 1` case asserted** — verb and pronoun, not only the noun (`REVIEW_CLASSES.md` 46). m0.8.4 shipped "1 photo **live** in another app's own storage" to a device because the plural had a test and the singular did not.
 
-Three unguarded sites found by the sweep, all reachable with a count of 1:
+**FIXED in m0.8.4's acceptance round** — listed here because the class outlives the three instances. The sites were:
 
 | Site | Reads at n = 1 |
 |---|---|
@@ -112,7 +112,7 @@ Three unguarded sites found by the sweep, all reachable with a count of 1:
 | `SettingsScreen.tsx:218` | "1 photos removed from your history" |
 | `ShareQueueScreen.tsx:218` | "Clear all 1 photos from the share queue?" |
 
-The codebase mostly gets this right already (`HomeScreen:530`, `SettingsScreen:187-188`), so this is a fix-and-pin, not a redesign. Worth considering a shared `plural()` helper rather than three local ternaries — but only if it reduces net code (`AGENTS.md`).
+The codebase mostly gets this right already (`HomeScreen:530`, `SettingsScreen:187-188`), which is why this was three sites and not thirty. D5 (a shared `plural()` helper) stays open and is now purely forward-looking: with these fixed there is nothing to consolidate, so it only earns its place if a future boundary adds enough sentences to pay for the abstraction.
 
 ---
 
@@ -128,13 +128,15 @@ Each blocks the one after it.
 | D4 | Does the favourite boundary get partial-success copy? | `unverifiedIds` supports it and nothing else in the app expresses partial success. That is new behaviour, not a copy fix. |
 | D5 | Shared `plural()` helper, or local ternaries? | Three sites is under the threshold where an abstraction pays. |
 
+**D-organize is now CLOSED** (Tristan, 2026-07-31, m0.8.4 acceptance): the app keeps no allow-list of its own — Android is the only authority on where a photo may live, and a refusal is explained in Android's own words. A mirrored copy of the rule survives for the album PICKER only, as a convenience that can hide a legal option but never block one. That layering — *platform is truth, validator is authority, filter is convenience* — is the shape this doc proposes for the other boundaries.
+
 **Nothing here is an autonomous call.** Every row above is a genuine fork, which is why this doc stops at the table.
 
 ---
 
 ## 7. Implementation phases (provisional, pending §6)
 
-1. **§5's three copy fixes** plus their singular tests — independent of every decision above, and the only part that could land alone.
+1. ~~§5's three copy fixes~~ — **done** in m0.8.4's acceptance round.
 2. **Favourite** (§4.2) — richest facts, clearest win, and D4 is the only decision it needs.
 3. **Trash** (§4.1) — closest to done; mostly naming causes the lifecycle already distinguishes.
 4. **Share** (§4.3) — last, because D1 may conclude it needs nothing.

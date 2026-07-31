@@ -215,7 +215,7 @@ export function ShareQueueScreen(_props: Props) {
     const message =
       neverShared > 0
         ? `${neverShared} of ${total} photos were never shared. Clear anyway?`
-        : `Clear all ${total} photos from the share queue? Past share events are kept in History.`;
+        : `Clear all ${total} photo${total === 1 ? '' : 's'} from the share queue? Past share events are kept in History.`;
     Alert.alert('Clear share queue', message, [
       { text: 'Cancel', style: 'cancel' },
       {

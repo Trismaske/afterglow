@@ -108,8 +108,18 @@ export function CullListScreen({ navigation, route }: Props) {
           result.unresolvedCount > 0
             ? ` ${result.unresolvedCount} could not be verified and may already be in the system trash.`
             : '';
+        // THREE truths, three headings (m0.8.4 acceptance pass): a plain
+        // cancel is CERTAIN — nothing was attempted — and it used to
+        // share "Nothing confirmed moved" with the ambiguous case, so
+        // the heading hedged where the body below it did not. The
+        // heading is what the user reads first, so the hedge was what
+        // landed.
         Alert.alert(
-          result.trashedCount > 0 ? 'Partly moved to trash' : 'Nothing confirmed moved',
+          result.trashedCount > 0
+            ? 'Partly moved to trash'
+            : result.unresolvedCount > 0
+              ? 'Nothing confirmed moved'
+              : 'Cancelled — nothing moved',
           result.trashedCount > 0
             ? `${result.trashedCount} photo${result.trashedCount === 1 ? '' : 's'} moved before the system confirmation was cancelled. ${result.remaining} remain staged.${ambiguity}`
             : result.unresolvedCount > 0

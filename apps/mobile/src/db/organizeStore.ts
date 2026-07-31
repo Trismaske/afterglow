@@ -32,29 +32,75 @@ import { PRIMARY_VOLUME } from '../lib/mediaIdentity';
 export const ORGANIZE_BATCH_LIMIT = 500;
 
 /** Allowed top-level directories for organize targets (autonomous). */
-export const ORGANIZE_ROOTS = ['DCIM/', 'Pictures/'] as const;
 
 export interface OrganizeTarget {
   volumeName: string;
   relativePath: string;
 }
 
-/** Validate a target path: primary volume, allowed root, sane segment. */
+/**
+ * Validate a target path: primary volume, sane segment. Nothing else.
+ *
+ * There is deliberately NO app-side allow-list of top-level directories
+ * (m0.8.4, Tristan). m0.7 shipped one — `DCIM/` and `Pictures/` only,
+ * an autonomous call that was never vetted — and it refused a perfectly
+ * ordinary "move this to Downloads" with a message that read like
+ * Android's rule rather than ours. **Android is the only authority on
+ * where a photo may live**, and it is one we cannot restate accurately:
+ * the allow-list varies by collection and version, so any copy of it
+ * here is a second source of truth that silently drifts.
+ *
+ * What makes dropping it safe is the failure path: a refused move is
+ * explained by `lib/organizeFailures.ts`, which quotes Android's own
+ * words verbatim. So the platform's rule is stated by the platform, at
+ * the moment it applies, in its own language — instead of being
+ * guessed at here.
+ *
+ * The two checks that stay are ours to make: the volume (cross-volume
+ * moves are not supported this release) and path sanity (traversal,
+ * doubled separators, stray whitespace — none of which is Android's job
+ * to catch for us).
+ */
 export function validateOrganizeTarget(target: OrganizeTarget): string | null {
   if (target.volumeName !== PRIMARY_VOLUME) {
     return 'Only albums on primary storage can be organize targets in this release.';
   }
   const path = target.relativePath.endsWith('/') ? target.relativePath : `${target.relativePath}/`;
-  if (!ORGANIZE_ROOTS.some((root) => path.startsWith(root))) {
-    return 'Albums must live under DCIM/ or Pictures/.';
-  }
   if (path.includes('..') || path.includes('//') || path.trim() !== path) {
     return 'That album path is not valid.';
   }
   return null;
 }
 
-/** Normalized target path for a new album name → Pictures/<name>/. */
+/**
+ * Where Android permits an IMAGES row to live, mirrored from the
+ * platform's own refusal (measured on the S10e, 2026-07-31):
+ *
+ *   IllegalArgumentException: Primary directory Download not allowed
+ *   for content://media/external_primary/images/media/143737;
+ *   allowed directories are [DCIM, Pictures]
+ *
+ * A CONVENIENCE, not an authority. `validateOrganizeTarget` deliberately
+ * does not consult it — Android decides, and a refusal is explained in
+ * Android's own words (lib/organizeFailures.ts). This exists so the
+ * album picker stops OFFERING targets the next step will refuse, which
+ * is what m0.8.4's acceptance pass hit: Downloads was pickable, then
+ * rejected after an OS consent tap.
+ *
+ * Being a convenience is what makes the duplication safe. If Android
+ * ever widens the rule this filter is merely stale — it hides an option
+ * that would have worked, which is annoying; it can never block a move
+ * the platform would allow, because nothing downstream reads it.
+ */
+export function androidAllowsImagesIn(relativePath: string): boolean {
+  const path = relativePath.endsWith('/') ? relativePath : `${relativePath}/`;
+  return path.startsWith('DCIM/') || path.startsWith('Pictures/');
+}
+
+/** Normalized target path for a NEW album name → `Pictures/<name>/`.
+ * Creating an album still defaults to Pictures/ — that is a sensible
+ * home for one the user is inventing, not a restriction: existing
+ * albums anywhere on primary storage are pickable (validateOrganizeTarget). */
 export function newAlbumPath(name: string): string | null {
   const trimmed = name.trim();
   if (trimmed === '' || /[/\\:*?"<>|]/.test(trimmed)) return null;

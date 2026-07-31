@@ -13,6 +13,7 @@ import {
   queueOrganize,
   setOrganizeTargets,
   unqueueOrganize,
+  androidAllowsImagesIn,
   validateOrganizeTarget,
 } from './organizeStore';
 import { decodeOrganizeTarget } from './actions';
@@ -82,22 +83,52 @@ function insertPhoto(d: TestDb, id: string, volume = 'external_primary'): void {
 }
 
 describe('target validation', () => {
-  it('accepts primary-volume DCIM/Pictures paths and rejects the rest', () => {
-    expect(
-      validateOrganizeTarget({ volumeName: 'external_primary', relativePath: 'Pictures/Trips/' }),
-    ).toBeNull();
-    expect(
-      validateOrganizeTarget({ volumeName: 'external_primary', relativePath: 'DCIM/Camera/' }),
-    ).toBeNull();
+  it('accepts any sane primary-volume path — Android owns the real rule', () => {
+    const ok = (relativePath: string) =>
+      validateOrganizeTarget({ volumeName: 'external_primary', relativePath });
+    expect(ok('Pictures/Trips/')).toBeNull();
+    expect(ok('DCIM/Camera/')).toBeNull();
+    // m0.8.4: the app-side DCIM/Pictures allow-list is GONE. It was an
+    // unvetted m0.7 call that refused an ordinary "move to Downloads",
+    // and any copy of Android's rule here is a second source of truth
+    // that drifts. A refused move is now explained by the platform's
+    // own words instead (lib/organizeFailures.ts).
+    expect(ok('Download/X/')).toBeNull();
+    expect(ok('Movies/X/')).toBeNull();
+  });
+
+  it('still refuses what is OURS to refuse', () => {
+    // Cross-volume moves are out of scope this release...
     expect(validateOrganizeTarget({ volumeName: 'sd-1234', relativePath: 'Pictures/X/' })).toMatch(
       /primary storage/,
     );
-    expect(
-      validateOrganizeTarget({ volumeName: 'external_primary', relativePath: 'Download/X/' }),
-    ).toMatch(/DCIM/);
+    // ...and path sanity is not Android's job to catch for us.
     expect(
       validateOrganizeTarget({ volumeName: 'external_primary', relativePath: 'Pictures/../X/' }),
     ).toMatch(/not valid/);
+    expect(
+      validateOrganizeTarget({ volumeName: 'external_primary', relativePath: 'Pictures//X/' }),
+    ).toMatch(/not valid/);
+  });
+
+  it('androidAllowsImagesIn mirrors the platform allow-list for the PICKER only', () => {
+    // Measured refusal, S10e 2026-07-31: "allowed directories are
+    // [DCIM, Pictures]". This filter keeps the picker from offering a
+    // target the next step refuses...
+    expect(androidAllowsImagesIn('DCIM/Camera/')).toBe(true);
+    expect(androidAllowsImagesIn('Pictures/Trips/')).toBe(true);
+    expect(androidAllowsImagesIn('Pictures/Trips')).toBe(true); // trailing slash optional
+    expect(androidAllowsImagesIn('Download/')).toBe(false);
+    expect(androidAllowsImagesIn('Movies/')).toBe(false);
+    // ...and must not be mistaken for a prefix match on the NAME.
+    expect(androidAllowsImagesIn('DCIMx/')).toBe(false);
+    expect(androidAllowsImagesIn('PicturesOld/')).toBe(false);
+
+    // It is deliberately NOT wired into validation: Android stays the
+    // only authority, so a path this filter hides still validates.
+    expect(
+      validateOrganizeTarget({ volumeName: 'external_primary', relativePath: 'Download/X/' }),
+    ).toBeNull();
   });
 
   it('newAlbumPath builds validated Pictures paths and rejects bad names', () => {

@@ -697,7 +697,7 @@ The gate cancels or avoids all three, so these are the highest-value manual step
 
 **Favourite batch**
 - [ ] Queue 2 hearts from the deck, open the Favourite queue. The permanent `Gallery favourites require Android 11 or later` banner is **gone** — check the screen looks right without it, since that line used to sit between the intro and the list.
-- [ ] `Apply N favourites` → consent → the queue drains and the hearts show in your gallery.
+- [ ] `Apply N favourites` → the queue drains and the hearts show in your gallery. **Android does not prompt for this** — measured on all three targets, and not a bug: `createFavoriteRequest` lets the platform decide whether to ask, and Afterglow verifies every `IS_FAVORITE` flag afterwards rather than trusting the result. The destructive path is the one that must prompt, and it does.
 
 **Organize move**
 - [ ] Queue one photo **from `DCIM/Camera`**, assign an album, `Move 1 to albums` → consent → the row leaves the queue, the photo is in that album in your gallery, and you get a **toast, not a dialog**.
@@ -766,3 +766,40 @@ Android's own words — which the classifier never reads — independently confi
 **The device pass earned its keep.** The first build shipped *"1 photo live in another app's own storage"* — the plural sentence had a test, the singular one did not. All four cause lines had the same bug. Fixed, and every line now has singular AND plural coverage.
 
 25 tests, 720 → 725. A `[organize] move failed:` field-diagnostic line rides along, on in every build until v1 like `[scan]` and `[perf]` — the one place a cause survives after the dialog is dismissed.
+
+---
+
+## 14. Acceptance-pass round (Tristan, 2026-07-31)
+
+§12 found three things. One was my documentation being wrong, one was a copy bug, and one was a rule nobody had ever vetted. All three are fixed; the release is now honestly "deletion, plus §10, §13 and this".
+
+### 14.1 The trash cancel heading said less than the app knew
+
+`CullListScreen` had three body cases and two headings, so a plain cancel — where nothing was attempted and the body says so plainly — shared **"Nothing confirmed moved"** with the genuinely ambiguous case. The heading is what a reader takes in first, so the hedge is what landed. Three truths now get three headings; a clean cancel reads **"Cancelled — nothing moved"**.
+
+### 14.2 Favourites do not prompt, and that is correct
+
+Not a bug — **§12.2's checklist line was wrong and has been corrected.** `createFavoriteRequest` lets the platform decide whether to ask, and it asked on none of the three targets. What matters is that Afterglow never trusts the outcome: `applyFavouriteBatch` re-reads every `IS_FAVORITE` flag and only drains the queue on a match. The destructive path is the one that must prompt, and it does.
+
+### 14.3 The album allow-list was an unvetted assumption — and Android's rule is real
+
+`ORGANIZE_ROOTS = ['DCIM/', 'Pictures/']` was tagged `(autonomous)` in m0.7 and never reached Tristan. It refused an ordinary "move this to Downloads" with copy that read like Android's rule rather than ours.
+
+**Both halves of that turned out to matter, in opposite directions:**
+
+- The restriction was *right*. Measured in-app on the S10e: `IllegalArgumentException: Primary directory Download not allowed for content://media/external_primary/images/media/143737; allowed directories are [DCIM, Pictures]`. The photo was not moved.
+- The *architecture* was wrong. A hand-copy of Android's rule is a second source of truth that drifts, and it was stated to the user as though it were ours.
+
+**Decision (Tristan): Android is the only authority.** So `validateOrganizeTarget` no longer consults an allow-list — it checks only what is genuinely ours (the volume, path sanity) — and a refusal is explained by §13's dialog in Android's own words. That is exactly what happened above: no tier-1 rule existed for this case, and tier 3 carried the entire answer, allow-list included.
+
+**Plus the filter Tristan asked for.** `androidAllowsImagesIn` mirrors the measured allow-list for the **picker only**, so the app stops offering targets the next step refuses. Being a convenience rather than an authority is what makes the duplication safe: if Android widens the rule this filter is merely stale — it can hide an option that would have worked, but can never block a move the platform allows, because nothing downstream reads it.
+
+Unplanned bonus: `Android/media/<pkg>` albums fail the same prefix test, so **WhatsApp Images (871) and CACHE_IMAGE (800) also left the picker** — the ownership refusal from §13 can no longer be reached from the destination side at all.
+
+### 14.4 Three plural bugs
+
+Found by the sweep behind `REVIEW_CLASSES.md` 46: `SettingsScreen.tsx:217-218` ("1 photos kept" / "1 photos removed") and `ShareQueueScreen.tsx:218` ("Clear all 1 photos"). Fixed.
+
+### 14.5 Re-verification
+
+727 tests in 47 files; typecheck, lint, format clean. Release APK rebuilt (`sdkVersion:'30'` / `targetSdkVersion:'36'`, versionCode 11) and installed on all three targets. **Both UI gates re-run and PASSED**, 28/28 each, zero failure screenshots. Downloads confirmed absent from the picker and legal albums confirmed still present, on device.

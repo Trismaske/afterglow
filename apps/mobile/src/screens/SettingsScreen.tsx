@@ -214,8 +214,8 @@ export function SettingsScreen({ navigation }: Props) {
           setAwayVolumes((prev) => prev.filter((v) => v.volume !== entry.volume));
           showToast(
             level === 'keep'
-              ? `Card forgotten — review history for ${result.photos.toLocaleString()} photos kept`
-              : `Card erased — ${result.rows.toLocaleString()} photos removed from your history`,
+              ? `Card forgotten — review history for ${result.photos.toLocaleString()} photo${result.photos === 1 ? '' : 's'} kept`
+              : `Card erased — ${result.rows.toLocaleString()} photo${result.rows === 1 ? '' : 's'} removed from your history`,
           );
           void refresh();
           // Forget rewrites scan OUTPUT without changing scan INPUT

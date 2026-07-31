@@ -557,32 +557,67 @@ or other docs quote the title, never the number**.
     (the ingestion half of the same family) and
     `docs/REVIEW_CLASSES.md` 43.
 
+27. **A failed organize move never says why, and the reason is
+    discarded before anything can show it** (measured on the S10e,
+    2026-07-31, during the m0.8.4 device walk). Two halves, one root;
+    the SECOND is the one to fix first.
+
+    **The failure.** A photo under another package's
+    `Android/media/<pkg>/` tree is one Android will never move.
+    WhatsApp's `WhatsApp Images` is the common case — 858 photos on the
+    S10e — and it is queued, album-assigned, and consented to like any
+    other before the platform refuses the `RELATIVE_PATH` update.
+
+    **The silence.** The native module already produces Android's own
+    explanation, `"<ExceptionName>: <message>"`
+    (`MediaStoreActionsModule.kt`, `moveToRelativePath`'s catch); the
+    screen carries it as `outcome.message` (`OrganizeQueueScreen.tsx`,
+    the move loop); `commitOrganizeOutcomes` (`db/organizeStore.ts`)
+    writes `state = 'error'` and drops it, because `photo_actions`
+    (`db/database.ts`) has no column for it. The user gets a red
+    `alert-circle`, a toast counting failures, and "retried on the next
+    move" — then retries forever. Nothing is lost or silently dropped,
+    so this is wasted taps rather than wrong data, but the app KNOWS the
+    answer and cannot say it.
+
+    Same drop swallows the `unsupported` message the TS wrapper returns
+    when the native module is absent, and `unsupported` is folded into
+    the `failed` count, so a module-absent build and a platform refusal
+    are indistinguishable on screen.
+
+    **Two fixes, very different costs — pick deliberately.**
+
+    - *In-the-moment alert (cheap).* The move loop already holds every
+      `outcome.message` in memory. Raise an alert naming the distinct
+      reasons after the run, alongside the existing toast. No schema
+      change, no re-scan, ~10 lines, and it covers the moment the user
+      is actually watching. Does not answer "why did THIS row fail?"
+      when revisited later.
+    - *Persist it (expensive).* A `message` column on `photo_actions`
+      plus a surface that reads it. `applied_target` must not be reused
+      — it means the real destination. A new column is a schema version
+      bump, and the pre-v1 policy makes that a destructive reset: every
+      tester re-scans AND re-embeds (~30 min measured on the S23's 27k
+      corpus, 2026-07-31). That is a steep price for a diagnostic
+      string, and the reason to do the cheap half first and see whether
+      the expensive half is ever missed.
+
+    Separately, the queue accepts photos it can never move. A queue-time
+    refusal is the shape m0.8.3 already used for SD, but it needs the
+    full set of unmovable path rules first (`Android/media/` is one; the
+    rule may be broader), which is why it is not the cheap half.
+
+    Not an m0.8.4 regression: `moveToRelativePath`'s only change there
+    was deleting an `SDK_INT < R` early return that could never fire
+    above the floor. It shipped with m0.8.2's organize redesign and
+    survived m0.8.3.
+
 ## Discovered, waiting for a real trigger
 
 Items found during implementation whose fix has a known shape but whose
 value is unproven — deliberately parked until a real user or tester hits
 them (Tristan, m0.8.3 grilling). Same hygiene as above: promote on
 trigger, delete when answered.
-
-- **A failed organize move never says why** (measured on the S10e,
-  2026-07-31). Two halves, one root.
-  *The failure:* a photo under another package's `Android/media/<pkg>/`
-  tree — WhatsApp's `WhatsApp Images`, 858 photos on that device — is
-  queued and album-assigned like any other, and Android refuses the
-  `RELATIVE_PATH` move only after the user has approved the OS write
-  consent. Same shape as the SD refusal m0.8.3 already added; the fix is
-  a queue-time refusal, and its cost is knowing which paths are
-  unmovable (`Android/media/` is one, the rule may be broader).
-  *The silence:* the native module already returns Android's own
-  explanation (`"<ExceptionName>: <message>"`), and
-  `commitOrganizeOutcomes` carries it to the write and drops it —
-  `photo_actions` has no column for it. So the user gets a red badge and
-  "retried on the next move", retries, and fails again forever, with the
-  diagnosis Android handed us thrown away. Nothing is lost or silently
-  dropped, so this is wasted taps rather than wrong data — but "we know
-  exactly why and do not say" is the part worth fixing first, and it is
-  the cheaper half (a column plus one surface, no path rules needed).
-  Trigger: a tester queueing app-media photos and hitting the failure.
 
 - **Rescued photos never window with same-moment dated photos**
   (m0.8.3 grilling Q9). A D15-rescued photo (in practice: NEF —

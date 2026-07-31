@@ -722,7 +722,7 @@ This is where m0.8.4's Kotlin deletions concentrate (`listMountedVolumes`, `coun
 
 Seen during the device walk, already parked — please do not spend time on them:
 
-- **A move fails with only a red badge, no reason.** Photos under `Android/media/<pkg>/` (WhatsApp) can never be moved by Android, and the app discards the explanation it receives. `docs/TODO.md`, "A failed organize move never says why".
+- **A move fails with only a red badge, no reason.** Photos under `Android/media/<pkg>/` (WhatsApp) can never be moved by Android, and the app discards the explanation it receives. `docs/TODO.md`, "A failed organize move never says why, and the reason is discarded before anything can show it".
 - **An ARW's date can be wrong.** MediaStore dates ARW by file mtime, not EXIF. `docs/TODO.md`, "Capture-time truth"; the README's RAW table now says so.
 - **A rescued (NEF) photo shows its modification time in Progress.** Pre-existing, fully designed, deliberately out of this release. `docs/TODO.md`.
 

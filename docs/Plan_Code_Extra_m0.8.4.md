@@ -40,7 +40,7 @@ The checklist named what to delete. It could not name what would *become* unused
 ## 3. Judgment calls the checklist left open
 
 - ADD `modules/media-store-actions/index.ts` — `mediaStoreActionsAvailable`'s doc comment now says *why* one predicate replaced four. The checklist said "keep one, repoint callers"; leaving the survivor's doc unchanged would have made the collapse look like an accident.
-- MOD `moveMediaToRelativePath`'s row message — the checklist said "name the missing module". Wording chosen: *"Afterglow's media module is not available in this build"*, matching §4.5's three alert bodies. This one is persisted per row by `commitOrganizeOutcomes` and shown in the Organize queue, so it is user-facing copy, not a log string.
+- MOD `moveMediaToRelativePath`'s row message — the checklist said "name the missing module". Wording chosen: *"Afterglow's media module is not available in this build"*, matching §4.5's three alert bodies. **It has no reader today** — §6 found that every move-outcome message is dropped at the write — so this is copy written for a string nothing displays. Kept as written rather than reduced to a log string: it is the right words for the moment that surfacing lands, and §6's fix is what gives it a reader.
 - MOD `apps/mobile/package.json` — npm resolved `expo-build-properties` to `^57.0.8`; changed to `~57.0.8` to match the plan and every other `expo-*` dependency in the file.
 - MOD `dates.ts` — `formatDay` made **private** rather than merely "may become private" (checklist's phrasing). It had no external caller, and a second entry point would let a surface print a differently-shaped date.
 - ADD `dates.ts` — `DAY_FORMAT` carries the rejected-alternative rationale (why unconditional beats "only when the year differs"), and `labelForDayKey` now names itself as the chokepoint for every day label. The decision was settled in the grilling but lived only in the plan, which gets deleted at ship.
@@ -53,14 +53,17 @@ The checklist named what to delete. It could not name what would *become* unused
   The ARW row also gained its known wrinkle (MediaStore dates ARW by file mtime, not EXIF, so a copied file can sort under the copy date). The plan parked the *fix* in `docs/TODO.md`; not telling testers would have left "Fully supported" saying more than the measurement supports.
 - ADD `apps/mobile/README.md:~190` — the compat statement also names what the failure looks like (`INSTALL_FAILED_OLDER_SDK` via adb, a bare "App not installed" on-device). §6.4 established that the on-device installer is silent about the cause; the sentence is what makes the README statement actionable.
 
-## 5. One consequence worth stating plainly
+## 5. The platform half of the deleted gates — kept deleted, deliberately
 
 The six deleted screen gates read `Platform.OS === 'android' && Version >= 30`.
-The plan analysed the **version** half (unconditionally true above the floor) and is right about it; the **platform** half is what the deletion also removes, so the four favourite chips and the best-of-group hand-off offer now render on non-Android too.
+The plan analysed the **version** half and is right about it; the deletion also removes the **platform** half, so the four favourite chips and the best-of-group hand-off offer now render on non-Android too.
 
-Unobservable in practice — there is no iOS build, the release flow produces an Android APK only — and coherent if there ever were one: the deck chips write the durable queue rather than calling native, and the queue screen's apply lands on `available() === false` → `unsupported` → the alert that now names the missing module. So it degrades into the D4 path by design rather than crashing.
+**Decision (Tristan, 2026-07-31): leave them unguarded — an iOS version is wanted later, and these surfaces should be there when it arrives.**
+Re-adding `Platform.OS === 'android'` would have written a second floor into six screens that a future iOS build then has to find and delete again.
 
-Named because "no behaviour change on any device that can install it" stays true, while the narrower claim "these predicates were unconditionally true" does not.
+It degrades correctly rather than crashing: the deck chips write the durable queue instead of calling native, and the queue screen's apply lands on `available() === false` → `unsupported`, which is exactly the D4 module-absent path. What an iOS build would still need is a real MediaStore equivalent behind those chips — that is a port, not a gate, and the gate's absence does not pretend otherwise.
+
+Recorded because "no behaviour change on any device that can install it" stays true, while the narrower claim "these predicates were unconditionally true" does not.
 
 ## 6. Found on device, not in the plan
 
@@ -70,7 +73,7 @@ Named because "no behaviour change on any device that can install it" stays true
 
   The cause is a schema hole, not a missing screen. `moveToRelativePath` already returns Android's own explanation — `"${error.javaClass.simpleName}: ${error.message}"` (`MediaStoreActionsModule.kt:536-540`) — and `commitOrganizeOutcomes` carries it as `outcome.message` all the way to the write, where it writes `state = 'error'` and drops it (`organizeStore.ts:299-304`). `photo_actions` has no column to put it in (`database.ts:89-103`), so no surface can show it, and none tries.
 
-  Two things follow, both left for a decision rather than fixed here: the queue accepts photos it can never move (queue-time refusal, the shape m0.8.3 already used for SD), and the diagnosis Android hands us is discarded (a column plus a surface). Parked in `docs/TODO.md`. Note the irony for §3: the wording chosen for `moveToRelativePath`'s `unsupported` message is copy for a string that currently has no reader.
+  Fully written up as `docs/TODO.md` **"A failed organize move never says why, and the reason is discarded before anything can show it"** — both fix shapes with their costs, and why the cheap one comes first. Note the irony for §3: the wording chosen for `moveToRelativePath`'s `unsupported` message is copy for a string the same drop swallows, and `unsupported` is folded into the `failed` count besides, so a module-absent build and a platform refusal look identical on screen.
 
 ## 7. Process
 

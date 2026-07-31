@@ -529,6 +529,14 @@ class MediaStoreActionsModule : Module() {
               // Missing/null path data is UNVERIFIED — reporting success
               // without a usable newData would clear the queue while the
               // stored uri stays stale, with no retry path.
+              //
+              // "verification failed" is a SENTINEL, not prose: it is the
+              // one message string the TS side compares (lib/
+              // organizeFailures.ts UNVERIFIED_SENTINEL), because it is
+              // ours rather than Android's. Every other message reaches
+              // the user quoted verbatim and unparsed. Reword this and
+              // that constant together, or an unconfirmed move silently
+              // degrades to the generic "Android refused" line.
               mapOf("uri" to uri.toString(), "status" to "error", "message" to "verification failed")
             }
           }

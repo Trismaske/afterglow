@@ -40,7 +40,7 @@ The checklist named what to delete. It could not name what would *become* unused
 ## 3. Judgment calls the checklist left open
 
 - ADD `modules/media-store-actions/index.ts` — `mediaStoreActionsAvailable`'s doc comment now says *why* one predicate replaced four. The checklist said "keep one, repoint callers"; leaving the survivor's doc unchanged would have made the collapse look like an accident.
-- MOD `moveMediaToRelativePath`'s row message — the checklist said "name the missing module". Wording chosen: *"Afterglow's media module is not available in this build"*, matching §4.5's three alert bodies. **It has no reader today** — §6 found that every move-outcome message is dropped at the write — so this is copy written for a string nothing displays. Kept as written rather than reduced to a log string: it is the right words for the moment that surfacing lands, and §6's fix is what gives it a reader.
+- MOD `moveMediaToRelativePath`'s row message — the checklist said "name the missing module". Wording chosen: *"Afterglow's media module is not available in this build"*, matching §4.5's three alert bodies. It had no reader when it was written — §6 found that every move-outcome message was dropped at the write — and §7's dialog is what gave it one. Kept as written rather than reduced to a log string, which turned out to be the right call by a few hours.
 - MOD `apps/mobile/package.json` — npm resolved `expo-build-properties` to `^57.0.8`; changed to `~57.0.8` to match the plan and every other `expo-*` dependency in the file.
 - MOD `dates.ts` — `formatDay` made **private** rather than merely "may become private" (checklist's phrasing). It had no external caller, and a second entry point would let a surface print a differently-shaped date.
 - ADD `dates.ts` — `DAY_FORMAT` carries the rejected-alternative rationale (why unconditional beats "only when the year differs"), and `labelForDayKey` now names itself as the chokepoint for every day label. The decision was settled in the grilling but lived only in the plan, which gets deleted at ship.
@@ -75,7 +75,16 @@ Recorded because "no behaviour change on any device that can install it" stays t
 
   Fully written up as `docs/TODO.md` **"A failed organize move never says why, and the reason is discarded before anything can show it"** — both fix shapes with their costs, and why the cheap one comes first. Note the irony for §3: the wording chosen for `moveToRelativePath`'s `unsupported` message is copy for a string the same drop swallows, and `unsupported` is folded into the `failed` count besides, so a module-absent build and a platform refusal look identical on screen.
 
-## 7. Process
+## 7. The one thing that grew into a change
+
+`Plan_m0.8.4.md` §13 carries it in full: the organize-failure dialog. It began here as a finding (§6), and it is in the release because the "persist it" framing that made deferring look sensible turned out to be unnecessary — error rows stay queued, so the next Move regenerates the reason, and a dialog raised from the run is the whole fix rather than half of one. No schema, no reset.
+
+Two things worth carrying out of it:
+
+- **The device pass caught a bug the tests did not.** The first build read *"1 photo live in another app's own storage"*. The plural sentence had a test; the singular one did not, and all four cause lines shared the fault. Copy that interpolates a count needs its `n = 1` case asserted, not just its shape.
+- **Android's own words validated a classifier that never reads them.** The dialog diagnoses from the photo's uri; Android independently said *"Changing ownership … not allowed"*. That is the tier-3 quote doing exactly the job it was added for — corroborating a guess without being the basis of one.
+
+## 8. Process
 
 - The **phase 2 gradle build ran against a phase-2 tree**, before phases 3-7 landed, and a second full `prebuild --clean` + `assembleRelease` ran at the end. Phase 2's proof is native-only, so running it early costs nothing and catches a Kotlin problem before 300 lines of TypeScript deletions can be entangled with it.
 - **The final `assembleRelease` failed once and passed on retry, with no source change.** `:app:mergeDexRelease` threw `DexArchiveMergerException: Error while merging dex archives:` with an empty cause — the signature of a dexer worker being killed, and two emulators plus a warm Gradle daemon were resident at the time. Recorded rather than ignored: a build failure that "went away" is worth one line, and the passing build is the one every artifact check below was run against.

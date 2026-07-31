@@ -35,6 +35,7 @@ import {
 } from '../../modules/media-store-actions';
 import { getEditableContentUri, PRIMARY_VOLUME } from '../lib/media';
 import { showToast } from '../lib/toast';
+import { describeOrganizeFailures, type OrganizeFailure } from '../lib/organizeFailures';
 import { colors, touch, useTheme } from '../theme';
 import { AlbumPicker } from '../components/AlbumPicker';
 import { Chip, QueueGridCell } from '../components/QueueGrid';
@@ -231,7 +232,10 @@ export function OrganizeQueueScreen(_props: Props) {
         byTarget.set(row.organize_path, list);
       }
       let moved = 0;
-      let failed = 0;
+      /** Every failed row of this run, with the two facts the dialog
+       * needs: the photo's own uri (which is how we diagnose without
+       * reading Android's error text) and whatever came back with it. */
+      const failures: OrganizeFailure[] = [];
       let declined = false;
       for (const [targetPath, members] of byTarget) {
         if (declined) break;
@@ -303,19 +307,47 @@ export function OrganizeQueueScreen(_props: Props) {
           }));
           await commitOrganizeOutcomes(db, outcomes, Date.now());
           moved += outcomes.filter((o) => o.status === 'moved' || o.status === 'already').length;
-          failed += outcomes.filter(
-            (o) => o.status === 'error' || o.status === 'unsupported',
-          ).length;
+          // Carry the failures OUT of the batch loop (m0.8.4): the row's
+          // uri and the outcome's message are the whole input to the
+          // explanation below, and nothing durable holds either —
+          // photo_actions has no message column, and adding one is a
+          // schema reset for a string the retry regenerates on demand
+          // (docs/TODO.md). So the dialog is raised while we still have
+          // them, from the run that produced them.
+          for (const outcome of outcomes) {
+            if (outcome.status !== 'error' && outcome.status !== 'unsupported') continue;
+            const row = batch.find((m) => m.photo_id === outcome.photoId);
+            failures.push({
+              uri: row?.uri ?? '',
+              status: outcome.status,
+              message: outcome.message,
+            });
+          }
         }
       }
+      const failed = failures.length;
+      // Field diagnostic, on in every build until v1 like the [scan] and
+      // [perf] lines: the one place a failed move's cause is recoverable
+      // after the dialog is dismissed.
+      for (const f of failures) console.warn('[organize] move failed:', f.status, f.message, f.uri);
       const skipped = freshUntargeted > 0 ? ` · ${freshUntargeted} without an album stayed` : '';
-      showToast(
-        declined
-          ? `Moved ${moved} — the rest stay queued`
-          : failed === 0
-            ? `Moved ${moved} photo${moved === 1 ? '' : 's'}${skipped}`
-            : `Moved ${moved}, ${failed} failed (kept queued)${skipped}`,
-      );
+      const report = describeOrganizeFailures(failures);
+      if (report) {
+        // A failure gets the DIALOG, not the toast: a toast that says
+        // "3 failed" and vanishes is exactly the dead end this replaces,
+        // and two notifications for one run is noise. The toast keeps
+        // the clean and declined paths, which have nothing to explain.
+        Alert.alert(
+          report.title,
+          `${moved > 0 ? `Moved ${moved}.\n\n` : ''}${report.body}${skipped}`,
+        );
+      } else {
+        showToast(
+          declined
+            ? `Moved ${moved} — the rest stay queued`
+            : `Moved ${moved} photo${moved === 1 ? '' : 's'}${skipped}`,
+        );
+      }
       await reload();
       if (moved > 0) {
         // Moves changed photos.uri (and possibly their source folder):

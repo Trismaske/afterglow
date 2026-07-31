@@ -700,7 +700,8 @@ The gate cancels or avoids all three, so these are the highest-value manual step
 - [ ] `Apply N favourites` → consent → the queue drains and the hearts show in your gallery.
 
 **Organize move**
-- [ ] Queue one photo **from `DCIM/Camera`** (see §12.5 — a WhatsApp photo will fail for an unrelated, known reason), assign an album, `Move 1 to albums` → consent → the row leaves the queue and the photo is in that album in your gallery.
+- [ ] Queue one photo **from `DCIM/Camera`**, assign an album, `Move 1 to albums` → consent → the row leaves the queue, the photo is in that album in your gallery, and you get a **toast, not a dialog**.
+- [ ] Now the failure path (§13, the release's second admitted exception): queue a **WhatsApp** photo, assign an album, Move, approve consent. You should get a dialog naming the cause in plain words, with Android's own message quoted underneath. Judge whether that dialog would tell you what to do if you had not just read this plan.
 
 ### 12.3 The one visible change (either phone, 2 min)
 
@@ -722,7 +723,7 @@ This is where m0.8.4's Kotlin deletions concentrate (`listMountedVolumes`, `coun
 
 Seen during the device walk, already parked — please do not spend time on them:
 
-- **A move fails with only a red badge, no reason.** Photos under `Android/media/<pkg>/` (WhatsApp) can never be moved by Android, and the app discards the explanation it receives. `docs/TODO.md`, "A failed organize move never says why, and the reason is discarded before anything can show it".
+- **A move can still be refused outright.** Photos under `Android/media/<pkg>/` (WhatsApp) can never be moved by Android. m0.8.4 makes the app say so (§13); what remains is that the queue accepts them at all, which costs a wasted consent tap — `docs/TODO.md`, "Organize accepts photos Android will never let it move".
 - **An ARW's date can be wrong.** MediaStore dates ARW by file mtime, not EXIF. `docs/TODO.md`, "Capture-time truth"; the README's RAW table now says so.
 - **A rescued (NEF) photo shows its modification time in Progress.** Pre-existing, fully designed, deliberately out of this release. `docs/TODO.md`.
 
@@ -731,3 +732,37 @@ Seen during the device walk, already parked — please do not spend time on them
 Do not run this speculatively; it exists for when a tap *feels* wrong. `docs/MOBILE_UI_GATE.md` has the method (`screenrecord` → `ffmpeg` frames). m0.8.1 reference: edit/favourite/share chips ≤ 100 ms, cull→advance ≤ 200 ms.
 
 m0.8.4 deletes branches and adds none on any hot path, so a regression here would be surprising — which is exactly why it is worth one honest look at the deck rather than a stopwatch.
+
+
+---
+
+## 13. Admitted exception — a failed organize move explains itself
+
+§4's discipline is that this release changes no behaviour, and §10 was admitted as the single visible exception. **This is the second, and it gets the same treatment: its own section, its own commit, so a reviewer sees why it is in the diff.**
+
+**Why it was allowed in.** The m0.8.4 device walk hit a move that failed with nothing but a red badge and *"retried on the next move"* — retry forever, no reason given. The app already had Android's explanation and threw it away, because `photo_actions` has no column for it. Deferring was the first instinct; it did not survive Tristan's question *"do we need to persist it?"* — no, because error rows stay queued and the next Move regenerates the same message, so a dialog raised from the run is the whole fix rather than half of one. That removed the schema bump, the destructive reset, and the ~30-minute re-embed that had made deferring look sensible.
+
+**The design: classify from facts we own, never from Android's error text.**
+Matching `"Primary directory … not allowed"` would stop matching the first time a vendor reworded it, and a diagnosis that silently degrades to nothing is worse than one that never claimed to know. So `lib/organizeFailures.ts` reads the photo's OWN uri (`Android/media/<pkg>` ⇒ another app owns it) and our OWN `unsupported` status. Three tiers, always in order:
+
+1. a cause we can prove from our data → specific, actionable copy
+2. anything else → an honest generic line
+3. **always, last** → Android's own words, verbatim and unparsed
+
+Tier 3 is what makes tiers 1-2 safe to be wrong: our reading sits above the ground truth, never instead of it. It is also what makes a tester's screenshot diagnosable. The one message string we compare is `"verification failed"` — ours, not Android's, and the Kotlin carries a note to change both sides together.
+
+If a future Android permits what tier 1 forbids, the move simply succeeds and the copy stops appearing — a rule that goes quiet when it becomes wrong rather than one that starts lying.
+
+**Measured on the S10e, 2026-07-31.** The dialog reads:
+
+> **Could not move 1 photo**
+> 1 photo lives in another app's own storage (com.whatsapp). Android does not let Afterglow move files out of another app's folder, so it will keep failing — remove it from the queue.
+>
+> Android said:
+> • IllegalArgumentException: Changing ownership from …/Android/media/com.whatsapp/… to …/DCIM/Table Mountain Lapse/… not allowed
+
+Android's own words — which the classifier never reads — independently confirm the diagnosis: *changing ownership*. Success path re-verified in the same session: a `DCIM/Camera` photo moved, the queue drained, and **no dialog appeared** (it is failure-only; the toast still carries the clean and declined paths).
+
+**The device pass earned its keep.** The first build shipped *"1 photo live in another app's own storage"* — the plural sentence had a test, the singular one did not. All four cause lines had the same bug. Fixed, and every line now has singular AND plural coverage.
+
+25 tests, 720 → 725. A `[organize] move failed:` field-diagnostic line rides along, on in every build until v1 like `[scan]` and `[perf]` — the one place a cause survives after the dialog is dismissed.

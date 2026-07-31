@@ -557,60 +557,26 @@ or other docs quote the title, never the number**.
     (the ingestion half of the same family) and
     `docs/REVIEW_CLASSES.md` 43.
 
-27. **A failed organize move never says why, and the reason is
-    discarded before anything can show it** (measured on the S10e,
-    2026-07-31, during the m0.8.4 device walk). Two halves, one root;
-    the SECOND is the one to fix first.
+27. **Organize accepts photos Android will never let it move**
+    (measured on the S10e, 2026-07-31). A photo under another package's
+    `Android/media/<pkg>/` tree — WhatsApp's `WhatsApp Images`, 858
+    photos on that device — is queued, album-assigned, and consented to
+    like any other before the platform refuses it. Android's own words,
+    captured on device:
+    `IllegalArgumentException: Changing ownership from …/Android/media/com.whatsapp/… to …/DCIM/… not allowed`.
 
-    **The failure.** A photo under another package's
-    `Android/media/<pkg>/` tree is one Android will never move.
-    WhatsApp's `WhatsApp Images` is the common case — 858 photos on the
-    S10e — and it is queued, album-assigned, and consented to like any
-    other before the platform refuses the `RELATIVE_PATH` update.
+    m0.8.4 fixed the SILENCE (`lib/organizeFailures.ts` — the move run
+    now explains itself), so what remains is purely the wasted trip: the
+    queue takes the photo, the user assigns an album and approves an OS
+    consent dialog, and only then learns it can never work. The fix is a
+    queue-time refusal, the shape m0.8.3 already used for SD photos, and
+    its real cost is knowing the full set of unmovable paths —
+    `Android/media/` and `Android/data/` are two, and whether that is the
+    whole rule is unverified. The dialog makes this cheap to leave: a
+    user who hits it is told exactly what happened and what to do.
 
-    **The silence.** The native module already produces Android's own
-    explanation, `"<ExceptionName>: <message>"`
-    (`MediaStoreActionsModule.kt`, `moveToRelativePath`'s catch); the
-    screen carries it as `outcome.message` (`OrganizeQueueScreen.tsx`,
-    the move loop); `commitOrganizeOutcomes` (`db/organizeStore.ts`)
-    writes `state = 'error'` and drops it, because `photo_actions`
-    (`db/database.ts`) has no column for it. The user gets a red
-    `alert-circle`, a toast counting failures, and "retried on the next
-    move" — then retries forever. Nothing is lost or silently dropped,
-    so this is wasted taps rather than wrong data, but the app KNOWS the
-    answer and cannot say it.
-
-    Same drop swallows the `unsupported` message the TS wrapper returns
-    when the native module is absent, and `unsupported` is folded into
-    the `failed` count, so a module-absent build and a platform refusal
-    are indistinguishable on screen.
-
-    **Two fixes, very different costs — pick deliberately.**
-
-    - *In-the-moment alert (cheap).* The move loop already holds every
-      `outcome.message` in memory. Raise an alert naming the distinct
-      reasons after the run, alongside the existing toast. No schema
-      change, no re-scan, ~10 lines, and it covers the moment the user
-      is actually watching. Does not answer "why did THIS row fail?"
-      when revisited later.
-    - *Persist it (expensive).* A `message` column on `photo_actions`
-      plus a surface that reads it. `applied_target` must not be reused
-      — it means the real destination. A new column is a schema version
-      bump, and the pre-v1 policy makes that a destructive reset: every
-      tester re-scans AND re-embeds (~30 min measured on the S23's 27k
-      corpus, 2026-07-31). That is a steep price for a diagnostic
-      string, and the reason to do the cheap half first and see whether
-      the expensive half is ever missed.
-
-    Separately, the queue accepts photos it can never move. A queue-time
-    refusal is the shape m0.8.3 already used for SD, but it needs the
-    full set of unmovable path rules first (`Android/media/` is one; the
-    rule may be broader), which is why it is not the cheap half.
-
-    Not an m0.8.4 regression: `moveToRelativePath`'s only change there
-    was deleting an `SDK_INT < R` early return that could never fire
-    above the floor. It shipped with m0.8.2's organize redesign and
-    survived m0.8.3.
+    Trigger: a tester organising app-media photos often enough that the
+    wasted consent tap, rather than the confusion, is the complaint.
 
 ## Discovered, waiting for a real trigger
 

@@ -26,10 +26,11 @@
  * docs/MOBILE_UI_GATE.md).
  *
  * Every step records PASS/FAIL (+ ms). Failures capture a screenshot
- * into the report dir. Exit code 1 when anything failed.
+ * into the report dir, which is cleared of prior screenshots at startup
+ * so it always shows exactly one run. Exit code 1 when anything failed.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const APP_ID = 'com.afterglow.companion';
@@ -40,6 +41,12 @@ function argOf(flag) {
 }
 const REPORT_DIR = argOf('--report-dir') ?? 'mobile-ui-gate-report';
 mkdirSync(REPORT_DIR, { recursive: true });
+// Clear this run's slate: screenshots are named fail-<step index>-<step
+// name>, so a file left by an earlier run survives a green run and reads
+// as a current failure. Only our own fail-*.png are removed — --report-dir
+// is caller-supplied, so a blanket recursive wipe is not ours to make.
+for (const entry of readdirSync(REPORT_DIR))
+  if (/^fail-.*\.png$/.test(entry)) rmSync(join(REPORT_DIR, entry));
 
 // ---------------------------------------------------------------- adb
 function adbRaw(list, opts = {}) {

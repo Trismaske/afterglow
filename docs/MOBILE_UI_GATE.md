@@ -15,7 +15,7 @@ node scripts/mobile-ui-gate-all.mjs             # ALL connected devices AT ONCE 
 node scripts/mobile-ui-gate-all.mjs SERIAL1 SERIAL2      # or exactly these
 ```
 
-Exit code 0 = gate passed; any FAIL line exits 1 and captures a screenshot.
+Exit code 0 = gate passed; any FAIL line exits 1 and captures a screenshot. Each run clears the report dir's `fail-*.png` first, so what's in there is always exactly the last run — a green run leaves it empty. The dir is gitignored throwaway evidence; nothing there needs keeping.
 
 ⚠️ **The gate makes real review decisions** (keeps, culls, edit flags, favourite/share intents) on the target's corpus. Run it on a test device or emulator, never on a phone whose review state matters.
 

@@ -64,10 +64,7 @@ describe('formatMatrixReport', () => {
         ['Device', 'samsung SM-G991B'],
         ['UID', '10434'],
       ],
-      {
-        uri: 'content://media/external_primary/images/media/1000168830',
-        source: 'canonical',
-      },
+      'content://media/external_primary/images/media/1000168830',
       [launched('view_read'), security('edit_readwrite')],
     );
     expect(report).toContain('constructed canonical volume-qualified uri');
@@ -79,14 +76,12 @@ describe('formatMatrixReport', () => {
   });
 
   it('flags a dispatch that launched with nothing observed opening', () => {
-    const report = formatMatrixReport([], { uri: 'content://media/1', source: 'canonical' }, [
-      launched('view_read', false),
-    ]);
+    const report = formatMatrixReport([], 'content://media/1', [launched('view_read', false)]);
     expect(report).toContain('NOTHING opened');
   });
 
   it('reports completion when the sequence is done', () => {
-    const report = formatMatrixReport([], { uri: 'content://media/1', source: 'canonical' }, [
+    const report = formatMatrixReport([], 'content://media/1', [
       launched('view_read'),
       launched('edit_read'),
       launched('edit_readwrite'),

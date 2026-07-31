@@ -114,12 +114,16 @@ export interface MoveResult {
 const native = requireOptionalNativeModule<NativeApi>('MediaStoreActions');
 
 function available(): boolean {
-  return Platform.OS === 'android' && Number(Platform.Version) >= 30 && native != null;
+  return Platform.OS === 'android' && native != null;
 }
 
-/** Whether the Android 11+ native module is present — callers that infer
- * "row absent" from a null query result MUST check this first (null from
- * an unavailable module is not evidence of anything). */
+/** Whether the native module is present — callers that infer "row absent"
+ * from a null query result MUST check this first (null from an
+ * unavailable module is not evidence of anything). Since m0.8.4's Android
+ * 11 floor this is the module's ONE capability predicate: the trash
+ * boundary, the canonical details query, the diagnostics and the D15 EXIF
+ * read all had separate version thresholds below 30, and every one of
+ * them is now satisfied by any device that can install the app. */
 export function mediaStoreActionsAvailable(): boolean {
   return available();
 }
@@ -159,15 +163,9 @@ export async function getMediaPresence(
 }
 
 // ---- Gate-0 editor-launch diagnostic matrix (m0.7 item A) ----------------
-// The env/probe calls work on any Android version (they diagnose, not
-// mutate); only the createWriteRequest probe needs Android 11+.
-
-function diagnosticsAvailable(): boolean {
-  return Platform.OS === 'android' && native != null;
-}
 
 export async function runEditDiagnostics(uri: string): Promise<EditDiagnosticsReport | null> {
-  if (!diagnosticsAvailable()) return null;
+  if (!available()) return null;
   return native!.editDiagnostics(contentUris([uri])[0]);
 }
 
@@ -176,7 +174,7 @@ export async function probeEditLaunch(
   action: string,
   withWrite: boolean,
 ): Promise<ProbeLaunchResult> {
-  if (!diagnosticsAvailable()) return { result: 'unsupported', message: 'Not on Android' };
+  if (!available()) return { result: 'unsupported', message: 'Not on Android' };
   return native!.probeLaunch(contentUris([uri])[0], action, withWrite);
 }
 
@@ -233,7 +231,7 @@ export async function getMediaChangedSince(
  * dropped volume, and can make the default-source probe conclude
  * DCIM/Camera is absent and broaden to every folder. */
 export async function listImageAlbums(): Promise<VolumeAlbum[]> {
-  if (!diagnosticsAvailable()) return [];
+  if (!available()) return [];
   return native!.listImageAlbums();
 }
 
@@ -256,19 +254,11 @@ export function subscribeVolumesChanged(listener: () => void): () => void {
   return () => subscription.remove();
 }
 
-/** The canonical read-only details query needs only named per-volume
- * MediaStore URIs (API 29) and the module — NOT the Android-11 mutation
- * boundary (final cycle S1): gating it at 30 would recreate the merged
- * raw-id collision on Android 10, the exact hole it exists to close. */
-export function imageDetailsAvailable(): boolean {
-  return Platform.OS === 'android' && Number(Platform.Version) >= 29 && native != null;
-}
-
 /** Image details by canonical content URI (Q2). Throws when unavailable
- * — callers gate on imageDetailsAvailable() and fall back to the
+ * — callers gate on mediaStoreActionsAvailable() and fall back to the
  * volume-guarded merged lookup. */
 export async function queryImageDetailsByUri(uris: string[]): Promise<ImageDetailsRow[]> {
-  if (!imageDetailsAvailable()) throw new Error('canonical details query unavailable');
+  if (!available()) throw new Error('canonical details query unavailable');
   return native!.queryImageDetails(contentUris(uris));
 }
 
@@ -281,7 +271,7 @@ export async function moveMediaToRelativePath(
     return uris.map((uri) => ({
       uri,
       status: 'unsupported' as const,
-      message: 'Requires Android 11',
+      message: "Afterglow's media module is not available in this build",
     }));
   }
   return native!.moveToRelativePath(contentUris(uris), relativePath);
@@ -289,24 +279,16 @@ export async function moveMediaToRelativePath(
 
 /** D15 EXIF date rescue: one header-only DateTimeOriginal read per uri.
  * Read-only by contract — the app never modifies original photo bytes.
- * Gated on module presence only (like the diagnostics), NOT the Android
- * 11 action boundary: the read has no API-30 dependency, and gating it
- * there would leave every undated photo on older Android permanently
- * undated (codex r1). Unavailable module → every row comes back erroring,
- * so callers degrade to "stays undated" and stay retry-eligible. */
+ * Unavailable module → every row comes back erroring, so callers degrade
+ * to "stays undated" and stay retry-eligible. Callers short-circuit the
+ * whole rescue on mediaStoreActionsAvailable() rather than probing: a
+ * "failed" that can never succeed must not defeat the unchanged-library
+ * skip forever (codex r2). */
 export async function readExifDateTimeOriginal(uris: string[]): Promise<ExifDateResult[]> {
-  if (!diagnosticsAvailable()) {
+  if (!available()) {
     return uris.map((uri) => ({ uri, dateTimeOriginal: null, error: 'module unavailable' }));
   }
   return native!.readExifDateTimeOriginal(contentUris(uris));
-}
-
-/** Whether the D15 read can run at all. Callers short-circuit the whole
- * rescue when it cannot (module absent — an Expo Go dev shell): probing
- * would report every photo failed, and a "failed" that can never succeed
- * must not defeat the unchanged-library skip forever (codex r2). */
-export function exifReadAvailable(): boolean {
-  return diagnosticsAvailable();
 }
 
 /** The mounted volume set (m0.8.3 phase 2, codex): the scan REQUIRES
@@ -315,7 +297,7 @@ export function exifReadAvailable(): boolean {
  * ABORTS rather than treating every volume as reachable. THROWS when
  * the module is absent or a mounted volume cannot be named. */
 export async function getMountedVolumes(): Promise<string[]> {
-  if (!diagnosticsAvailable()) throw new Error('mounted-volume enumeration unavailable');
+  if (!available()) throw new Error('mounted-volume enumeration unavailable');
   return native!.listMountedVolumes();
 }
 
@@ -334,6 +316,6 @@ export async function getImageCountsByVolume(volumes: string[]): Promise<Record<
 export async function shareMediaUris(
   uris: string[],
 ): Promise<{ result: 'dispatched' | 'error' | 'unsupported'; message: string }> {
-  if (!diagnosticsAvailable()) return { result: 'unsupported', message: 'Not on Android' };
+  if (!available()) return { result: 'unsupported', message: 'Not on Android' };
   return native!.shareUris(contentUris(uris));
 }

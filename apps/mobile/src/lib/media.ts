@@ -24,7 +24,6 @@ import type { MediaItem } from '@afterglow/core';
 import {
   getMediaPresence,
   getMountedVolumes,
-  imageDetailsAvailable,
   mediaStoreActionsAvailable,
   queryImageDetailsByUri,
   trashMedia,
@@ -304,7 +303,7 @@ export async function getAssetDetails(assetId: string): Promise<AssetDetails | n
   // the row permanently unresolvable (edit detection silent, the full
   // pass withholding its baseline every run). The merged path survives
   // as the module-absent fallback.
-  if (imageDetailsAvailable()) {
+  if (mediaStoreActionsAvailable()) {
     try {
       const [row] = await queryImageDetailsByUri([await getEditableContentUri(assetId)]);
       if (row.status !== 'found') return null;
@@ -415,24 +414,10 @@ export async function loadCandidatesCreatedBetween(
  * collection by raw `_ID` alone, and raw ids can collide across volumes
  * — a resolved uri can silently address another volume's photo, and
  * every action (trash, favourite, edit, share, presence, EXIF read)
- * flows through here. Below Android 10 there are no named volumes and
- * only the legacy `external` authority resolves (codex r2) — the one
- * Platform check lives here, at the impure boundary.
+ * flows through here.
  */
-export interface EditableContentUri {
-  uri: string;
-  source: 'canonical';
-}
-
-/** Named MediaStore volumes exist from Android 10 (API 29). */
-const LEGACY_MERGED_COLLECTION = Platform.OS === 'android' && Number(Platform.Version) < 29;
-
-export async function getEditableContentUriDetailed(assetId: string): Promise<EditableContentUri> {
-  return { uri: canonicalContentUri(assetId, LEGACY_MERGED_COLLECTION), source: 'canonical' };
-}
-
 export async function getEditableContentUri(assetId: string): Promise<string> {
-  return canonicalContentUri(assetId, LEGACY_MERGED_COLLECTION);
+  return canonicalContentUri(assetId);
 }
 
 /**

@@ -22,8 +22,11 @@ export const PRIMARY_VOLUME = 'external_primary';
  *                             spike A2: volume_name '0a91-e18d' for the
  *                             card at /storage/0A91-E18D)
  *
- * Legacy primary aliases (the STORAGE_PREFIX variants in sources.ts) map
- * to primary. Anything else — no file:// path, a relative path, a bare
+ * Legacy primary aliases (`/sdcard/…`, `/mnt/sdcard/…`,
+ * `/storage/self/primary/…`) map to primary —
+ * defensive path parsing, not a version gate: an OEM emitting one of
+ * those shapes would make the whole library unparseable, and a failed
+ * parse is a fail-closed skip. Anything else — no file:// path, a relative path, a bare
  * /storage file — returns null: FAIL CLOSED. Callers skip such rows
  * loudly and must not advance any scan baseline over them; shape
  * validation beyond this parse is the caller's mounted-volume-set check
@@ -55,18 +58,9 @@ export function canonicalPhotoId(volumeName: string, rawId: string): string {
  * can silently address another volume's photo. Spike A6 proved the
  * volume-qualified shape resolves rows on the right volume and that a
  * wrong-volume uri does NOT resolve — fail-closed beats mis-addressed.
- *
- * `legacyMergedCollection` (codex r2): named MediaStore volumes exist
- * only from Android 10 (API 29) — below that there is ONE `external`
- * collection covering all storage and `external_primary` resolves
- * nothing. Callers on pre-Q devices pass true and get the legacy
- * authority; ids stay volume-qualified either way (the raw id is unique
- * within the single pre-Q collection). The impure boundary (media.ts)
- * owns the Platform check.
  */
-export function canonicalContentUri(canonicalId: string, legacyMergedCollection = false): string {
-  const volume = legacyMergedCollection ? 'external' : volumeOf(canonicalId);
-  return `content://media/${volume}/images/media/${rawIdOf(canonicalId)}`;
+export function canonicalContentUri(canonicalId: string): string {
+  return `content://media/${volumeOf(canonicalId)}/images/media/${rawIdOf(canonicalId)}`;
 }
 
 /** The raw MediaStore id of a canonical id (tolerant of legacy bare ids). */

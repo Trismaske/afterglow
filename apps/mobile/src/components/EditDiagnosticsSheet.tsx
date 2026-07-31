@@ -17,7 +17,7 @@ import {
   runEditDiagnostics,
   type EditDiagnosticsReport,
 } from '../../modules/media-store-actions';
-import { getEditableContentUriDetailed } from '../lib/media';
+import { getEditableContentUri } from '../lib/media';
 import {
   MATRIX_PROBES,
   WRITE_REQUEST_TITLE,
@@ -25,7 +25,6 @@ import {
   nextMatrixStep,
   type MatrixRecord,
   type MatrixStepId,
-  type MatrixUriInfo,
 } from '../lib/editMatrix';
 import { colors, touch } from '../theme';
 
@@ -50,7 +49,7 @@ function envLines(env: EditDiagnosticsReport | null): (readonly [string, string]
 }
 
 export function EditDiagnosticsSheet({ assetId, onClose }: Props) {
-  const [uriInfo, setUriInfo] = useState<MatrixUriInfo | null>(null);
+  const [uri, setUri] = useState<string | null>(null);
   const [env, setEnv] = useState<EditDiagnosticsReport | null>(null);
   const [envDone, setEnvDone] = useState(false);
   const [records, setRecords] = useState<MatrixRecord[]>([]);
@@ -60,10 +59,10 @@ export function EditDiagnosticsSheet({ assetId, onClose }: Props) {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const info = await getEditableContentUriDetailed(assetId);
+      const contentUri = await getEditableContentUri(assetId);
       if (cancelled) return;
-      setUriInfo(info);
-      const report = await runEditDiagnostics(info.uri);
+      setUri(contentUri);
+      const report = await runEditDiagnostics(contentUri);
       if (cancelled) return;
       setEnv(report);
       setEnvDone(true);
@@ -77,7 +76,7 @@ export function EditDiagnosticsSheet({ assetId, onClose }: Props) {
 
   const runStep = useCallback(
     async (step: MatrixStepId) => {
-      if (!uriInfo || running) return;
+      if (uri === null || running) return;
       setRunning(true);
       try {
         if (step === 'write_request') {
@@ -86,7 +85,7 @@ export function EditDiagnosticsSheet({ assetId, onClose }: Props) {
           // exactly this failure mode instead of sticking on this step.
           let dispatch: MatrixRecord['dispatch'];
           try {
-            const { status } = await requestMediaWriteAccess([uriInfo.uri]);
+            const { status } = await requestMediaWriteAccess([uri]);
             dispatch = {
               result:
                 status === 'applied'
@@ -106,14 +105,14 @@ export function EditDiagnosticsSheet({ assetId, onClose }: Props) {
           return;
         }
         const probe = MATRIX_PROBES[step];
-        const dispatch = await probeEditLaunch(uriInfo.uri, probe.action, probe.withWrite);
+        const dispatch = await probeEditLaunch(uri, probe.action, probe.withWrite);
         setRecords((prev) => [...prev, { step, dispatch }]);
         if (dispatch.result === 'launched') setAwaitingObservation(step);
       } finally {
         setRunning(false);
       }
     },
-    [uriInfo, running],
+    [uri, running],
   );
 
   const recordObservation = useCallback((step: MatrixStepId, observedOpen: boolean) => {
@@ -123,8 +122,8 @@ export function EditDiagnosticsSheet({ assetId, onClose }: Props) {
 
   const report = useMemo(
     () =>
-      uriInfo ? formatMatrixReport(envLines(env), uriInfo, records) : 'Resolving content URI…',
-    [env, uriInfo, records],
+      uri === null ? 'Resolving content URI…' : formatMatrixReport(envLines(env), uri, records),
+    [env, uri, records],
   );
 
   const shareReport = useCallback(() => {
@@ -173,7 +172,7 @@ export function EditDiagnosticsSheet({ assetId, onClose }: Props) {
               {envDone && next !== null ? (
                 <Pressable
                   style={[styles.button, styles.primary]}
-                  disabled={running || !uriInfo}
+                  disabled={running || uri === null}
                   onPress={() => void runStep(next)}
                 >
                   <Text style={styles.buttonText}>

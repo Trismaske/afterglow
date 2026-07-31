@@ -45,11 +45,11 @@ import {
   scanFingerprint,
 } from '../lib/scanSkip';
 import {
-  exifReadAvailable,
   getImageCountsByVolume,
   getMediaChangedSince,
   getMediaGenerations,
   getMountedVolumes,
+  mediaStoreActionsAvailable,
   readExifDateTimeOriginal,
   type ChangedMediaRow,
 } from '../../modules/media-store-actions';
@@ -1054,7 +1054,7 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
  * the skip forever on devices without the native module.
  */
 async function applyExifDateRescue(db: SQLiteDatabase, batch: LoadedPhoto[]): Promise<number> {
-  if (!exifReadAvailable()) return 0;
+  if (!mediaStoreActionsAvailable()) return 0;
   const stored = await getRescueBaselines(
     db,
     batch.map((photo) => photo.item.id),

@@ -89,16 +89,4 @@ describe('canonical id helpers', () => {
     // Bare legacy ids address primary.
     expect(canonicalContentUri('42')).toBe('content://media/external_primary/images/media/42');
   });
-
-  it('uses the legacy merged authority below Android 10 (codex r2)', () => {
-    // Named volumes exist from API 29; before that only `external`
-    // resolves, and the single collection spans all storage — so every
-    // volume collapses to it.
-    expect(canonicalContentUri('external_primary/42', true)).toBe(
-      'content://media/external/images/media/42',
-    );
-    expect(canonicalContentUri('0a91-e18d/42', true)).toBe(
-      'content://media/external/images/media/42',
-    );
-  });
 });

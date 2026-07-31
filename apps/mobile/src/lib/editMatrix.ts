@@ -39,13 +39,6 @@ export interface MatrixRecord {
   observedOpen?: boolean;
 }
 
-/** The content URI under test. m0.8.3: always the CONSTRUCTED canonical
- * volume-qualified uri (media.ts) — there is no resolution path left. */
-export interface MatrixUriInfo {
-  uri: string;
-  source: 'canonical';
-}
-
 export const MATRIX_PROBES: Record<
   Exclude<MatrixStepId, 'write_request'>,
   { action: string; withWrite: boolean; title: string }
@@ -103,14 +96,17 @@ function observedLabel(r: MatrixRecord): string {
  * The full plain-text report — selectable/shareable so the Samsung tester
  * can send it back verbatim. `env` is the native environment probe, given
  * as label/value lines so this stays decoupled from the native shape.
+ * `uri` is the content URI under test — m0.8.3: always the CONSTRUCTED
+ * canonical volume-qualified uri (media.ts), there is no resolution path
+ * left, which is why the report's provenance line is a constant.
  */
 export function formatMatrixReport(
   env: readonly (readonly [string, string])[],
-  uriInfo: MatrixUriInfo,
+  uri: string,
   records: readonly MatrixRecord[],
 ): string {
   const lines: string[] = ['Afterglow editor-launch matrix (m0.7 gate 0)', ''];
-  lines.push(`URI: ${uriInfo.uri}`);
+  lines.push(`URI: ${uri}`);
   lines.push('URI source: constructed canonical volume-qualified uri');
   lines.push('');
   for (const [label, value] of env) lines.push(`${label}: ${value}`);

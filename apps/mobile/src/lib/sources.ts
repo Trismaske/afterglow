@@ -1,13 +1,12 @@
 /**
  * Photo-source (folder) targeting logic (m0.3.1) — pure TypeScript,
- * unit-tested. The impure catalog (MediaStore album listing + directory
- * probing) lives in sourceCatalog.ts.
+ * unit-tested. The impure catalog (the MediaStore album listing) lives
+ * in sourceCatalog.ts.
  *
  * MECHANISM. Android MediaStore "albums" are buckets: one bucket per
- * directory, non-recursive. The legacy expo-media-library builds
- * `asset.uri` as `"file://" + DATA` — a raw, un-percent-encoded
- * filesystem path — so a bucket's directory is derivable from any one of
- * its assets. A photo-source selection is a set of storage-relative
+ * directory, non-recursive, each carrying its own RELATIVE_PATH (the
+ * native cursor walk reads it directly — see sourceCatalog.ts). A
+ * photo-source selection is a set of storage-relative
  * directory ROOTS (e.g. "DCIM/Camera"); a bucket matches when its
  * directory equals a root or lies underneath one (recursive by path
  * prefix, case-insensitive — internal storage is case-sensitive ext4 but
@@ -20,7 +19,7 @@
  *
  * Two matchers exist on purpose:
  *  - MediaStore side: exact storage-relative path-prefix matching over
- *    the probed bucket directories, WITHIN the root's volume → a set of
+ *    the listed bucket directories, WITHIN the root's volume → a set of
  *    album ids to query. The ids are bare BUCKET_IDs queried against the
  *    merged collection; a bucket id is Android's hash of the bucket's
  *    lowercased absolute path, and two volumes' paths differ by their
@@ -97,43 +96,6 @@ export function parsePhotoSourceSetting(raw: string | null): PhotoSourceSetting 
 
 export function serializePhotoSourceSetting(setting: PhotoSourceSetting): string {
   return JSON.stringify(setting);
-}
-
-/**
- * Directory of a legacy-API asset uri ("file:///…/DCIM/Camera/IMG.jpg" →
- * "/…/DCIM/Camera"). The uri is a raw path with a file:// prefix — no
- * percent-decoding. Returns null when no directory can be derived (iOS
- * ph:// uris, malformed values).
- */
-export function dirOfUri(uri: string): string | null {
-  if (!uri.startsWith('file://')) return null;
-  const path = uri.slice('file://'.length);
-  const slash = path.lastIndexOf('/');
-  if (slash <= 0) return null;
-  return path.slice(0, slash);
-}
-
-/** Storage-volume prefixes stripped to get the user-facing relative dir.
- * `storage/self/primary` must precede the generic `storage/<segment>`
- * branch (codex r2): the generic one would strip only `/storage/self/`
- * and leave a phantom `primary/` segment on the relative dir. */
-const STORAGE_PREFIX =
-  /^\/(?:storage\/emulated\/\d+|storage\/self\/primary|storage\/[^/]+|sdcard|mnt\/sdcard)\//;
-
-/**
- * "/storage/emulated/0/DCIM/Camera" → "DCIM/Camera" (also handles SD-card
- * volumes like "/storage/ABCD-1234/…"). Unrecognized prefixes are kept
- * as-is — matching still works because both sides derive dirs the same way.
- */
-export function storageRelativeDir(absDir: string): string {
-  const m = absDir.match(STORAGE_PREFIX);
-  return m ? absDir.slice(m[0].length) : absDir.replace(/^\//, '');
-}
-
-/** Storage-relative directory of an asset uri, or null. */
-export function sourceDirOfUri(uri: string): string | null {
-  const dir = dirOfUri(uri);
-  return dir === null ? null : storageRelativeDir(dir);
 }
 
 /** Is `dir` equal to or underneath `rootDir`? Case-insensitive, whole-segment. */

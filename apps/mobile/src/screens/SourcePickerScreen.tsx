@@ -67,7 +67,11 @@ export function SourcePickerScreen({ navigation }: Props) {
   const db = useSQLiteContext();
   const { refresh, refreshScoped } = useReview();
   const [rows, setRows] = useState<Row[] | null>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
+  /** The catalog failure's own message, not a bare flag: an unreadable
+   * album is only ONE of its causes (the native module can be absent, or
+   * the all-volumes-or-none contract can reject), and a screen that names
+   * the wrong cause sends the reader after the wrong fix. */
+  const [loadFailed, setLoadFailed] = useState<string | null>(null);
   const [loadTick, setLoadTick] = useState(0);
   /** The user has toggled since the last load — a reload would clobber
    * the unsaved selection (the loader sets it from the PERSISTED
@@ -106,7 +110,7 @@ export function SourcePickerScreen({ navigation }: Props) {
     useCallback(() => {
       let cancelled = false;
       (async () => {
-        setLoadFailed(false);
+        setLoadFailed(null);
         let dirs: SourceDir[];
         let current: Awaited<ReturnType<typeof resolveSources>>;
         let mountedList: readonly string[] | null;
@@ -125,7 +129,7 @@ export function SourcePickerScreen({ navigation }: Props) {
           // A transient unreadable album fails the catalog (fail-closed
           // contract) — surface a retry instead of a stuck loader.
           console.warn('[sources] catalog unavailable:', String(error));
-          if (!cancelled) setLoadFailed(true);
+          if (!cancelled) setLoadFailed(error instanceof Error ? error.message : String(error));
           return;
         }
         if (cancelled) return;
@@ -361,11 +365,14 @@ export function SourcePickerScreen({ navigation }: Props) {
           </View>
         </Pressable>
 
-        {rows === null && !loadFailed && <Text style={styles.loading}>Listing photo folders…</Text>}
-        {loadFailed && (
+        {rows === null && loadFailed === null && (
+          <Text style={styles.loading}>Listing photo folders…</Text>
+        )}
+        {loadFailed !== null && (
           <View style={styles.loadFailed}>
             <Text style={styles.loading}>
-              Could not read the photo folders — an album was unreadable.
+              Could not read the photo folders.{'\n'}
+              {loadFailed}
             </Text>
             <Pressable style={styles.retryButton} onPress={() => setLoadTick((t) => t + 1)}>
               <Text style={[styles.retryText, { color: theme.accent }]}>Retry</Text>

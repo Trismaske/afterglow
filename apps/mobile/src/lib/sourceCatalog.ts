@@ -1,16 +1,17 @@
 /**
  * Photo-source catalog + selection resolution (m0.3.1) — the impure side
- * of sources.ts. Talks to MediaStore (album/bucket listing, one-asset
- * directory probes) and SQLite (the persisted selection).
+ * of sources.ts. Talks to MediaStore (album/bucket listing) and SQLite
+ * (the persisted selection).
  *
- * The catalog (API 30+) comes from ONE native cursor walk
- * (media-store-actions listImageAlbums: bucket → relative path + count).
- * Below API 30 the expo fallback probes each bucket with a `first: 1`
- * asset query and derives the directory from the asset's file uri.
+ * The catalog comes from ONE native cursor walk (media-store-actions
+ * listImageAlbums: bucket → relative path + count) — the ONLY path.
+ * Without that module there is no catalog and `buildCatalog` throws:
+ * returning an empty one would make the unset-default resolution
+ * conclude DCIM/Camera does not exist and silently broaden the scope to
+ * every folder, the exact fail-open this file's contract forbids.
  * Results are cached 10 min with a single-flighted cold build
  * (invalidated when the picker saves).
  */
-import * as MediaLibrary from 'expo-media-library/legacy';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import {
   listImageAlbums,
@@ -27,13 +28,12 @@ import {
   matchAlbumIdsByVolume,
   parsePhotoSourceSetting,
   PHOTO_SOURCES_KEY,
-  sourceDirOfUri,
   sourceLabel,
   type PhotoSourceSetting,
   type SourceDir,
   type SourceRoot,
 } from './sources';
-import { PRIMARY_VOLUME, volumeOfUriPath } from './mediaIdentity';
+import { PRIMARY_VOLUME } from './mediaIdentity';
 import { getSetting } from '../db/store';
 
 // The catalog entry shape + its pure fold live in sources.ts (the pure
@@ -41,9 +41,8 @@ import { getSetting } from '../db/store';
 export type { SourceDir } from './sources';
 
 /** 10 min (m0.8.1, was 60 s): the catalog is consulted by EVERY screen
- * loader via resolveSources, and a cold rebuild costs one MediaStore
- * probe per bucket — the recurring "screens load slowly" cost on older
- * devices. The picker force-refreshes and saves invalidate explicitly;
+ * loader via resolveSources, and a cold rebuild costs a full MediaStore
+ * cursor walk. The picker force-refreshes and saves invalidate explicitly;
  * a brand-new album appearing in the DEFAULT-source resolution within
  * 10 min is acceptable staleness. */
 const CATALOG_TTL_MS = 600_000;
@@ -89,13 +88,11 @@ export function invalidateSourceCatalog(): void {
 
 /**
  * Every photo directory on the device, derived from MediaStore buckets,
- * sorted by path. Buckets whose directory can't be derived (no photo
- * asset, non-file uri) are skipped — they contribute no photos anyway.
+ * sorted by path. Empty and zero-count buckets are skipped — they
+ * contribute no photos anyway.
  *
- * Fast path (API 30+): ONE native cursor walk (`listImageAlbums`)
- * returns every bucket's relative path + count — the expo fallback
- * costs one MediaStore probe PER bucket (an S10e with 895 buckets spent
- * 35 s here; the native walk is a few hundred ms).
+ * ONE native cursor walk (`listImageAlbums`) returns every bucket's
+ * relative path + count (a few hundred ms on an S10e with 642 buckets).
  */
 export async function listSourceDirs(force = false): Promise<SourceDir[]> {
   if (!force && catalogCache && Date.now() - catalogCache.at < CATALOG_TTL_MS) {
@@ -172,85 +169,23 @@ async function buildCatalog(): Promise<SourceDir[]> {
     if (generation === cacheGeneration) catalogCache = { at: Date.now(), dirs };
     return dirs;
   };
-  if (mediaStoreActionsAvailable()) {
-    // A forced listSourceDirs cleared the album cache before this build,
-    // so the plain call is fresh exactly when freshness was demanded.
-    const albums = await listImageAlbumsCached();
-    // Keyed by (volume, dir) — m0.8.3 D4: volume identity is preserved,
-    // so DCIM/Camera on primary and on the SD card stay two entries.
-    const dirs = commit(foldAlbumsToDirs(albums));
-    perfLog(() => `source catalog (native): ${albums.length} buckets in ${Date.now() - started}ms`);
-    return dirs;
+  if (!mediaStoreActionsAvailable()) {
+    // No catalog rather than an EMPTY one: an empty catalog reads as
+    // "this device has no DCIM/Camera", which broadens the unset default
+    // to every folder — a silent scope widening on a shell that cannot
+    // scan anything anyway (getMountedVolumes throws the same way). Every
+    // caller of resolveSources already fails closed on a rejection.
+    throw new Error('source catalog unavailable — the media-store-actions module is not installed');
   }
-  const albums = await MediaLibrary.getAlbumsAsync();
-  let failedProbes = 0;
-  // Probe buckets CONCURRENTLY (m0.8.1, was sequential): each probe is
-  // one first:1 MediaStore query; dozens of buckets in series took
-  // multiple seconds per cold rebuild on older devices. Results are
-  // folded in the ORIGINAL album order so dir aggregation stays
-  // deterministic.
-  const PROBE_CONCURRENCY = 6;
-  const probes: ({ albumId: string; uri: string; totalCount: number } | null | 'failed')[] =
-    new Array(albums.length).fill(null);
-  let next = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(PROBE_CONCURRENCY, albums.length) }, async () => {
-      for (;;) {
-        const index = next;
-        next += 1;
-        if (index >= albums.length) return;
-        try {
-          const page = await MediaLibrary.getAssetsAsync({
-            first: 1,
-            album: albums[index].id,
-            mediaType: MediaLibrary.MediaType.photo,
-          });
-          const asset = page.assets[0];
-          probes[index] =
-            asset && page.totalCount > 0
-              ? { albumId: albums[index].id, uri: asset.uri, totalCount: page.totalCount }
-              : null;
-        } catch {
-          probes[index] = 'failed';
-        }
-      }
-    }),
-  );
-  const probedAlbums: Parameters<typeof foldAlbumsToDirs>[0][number][] = [];
-  for (const probe of probes) {
-    if (probe === null) continue;
-    if (probe !== 'failed') {
-      const dir = sourceDirOfUri(probe.uri);
-      // SAME volume identity as ingestion (codex r1): the probe asset's
-      // uri parses under mechanism D exactly like the scan's assets, so
-      // a legacy device's SD bucket gets its real volume — a
-      // primary-labeled root over UUID-stamped rows would silently
-      // empty every dir-scoped read. A bucket whose uri parses to no
-      // volume is skipped, matching the adapter skipping its photos.
-      const volume = volumeOfUriPath(probe.uri);
-      if (dir === null || volume === null) continue;
-      probedAlbums.push({
-        volumeName: volume,
-        bucketId: probe.albumId,
-        relativePath: `${dir}/`,
-        photoCount: probe.totalCount,
-      });
-    } else {
-      // One unreadable bucket must not sink the whole catalog.
-      failedProbes += 1;
-    }
-  }
-  if (failedProbes > 0) {
-    // ANY failed probe makes the catalog incomplete — if the missing
-    // bucket is DCIM/Camera, the unset-default resolution would conclude
-    // Camera does not exist and silently broaden to "all folders". Fail
-    // so callers keep their last-known scope (never cached).
-    throw new Error(`source catalog incomplete — ${failedProbes} album probes failed`);
-  }
-  const dirs = commit(foldAlbumsToDirs(probedAlbums));
+  // A forced listSourceDirs cleared the album cache before this build,
+  // so the plain call is fresh exactly when freshness was demanded.
+  const albums = await listImageAlbumsCached();
+  // Keyed by (volume, dir) — m0.8.3 D4: volume identity is preserved,
+  // so DCIM/Camera on primary and on the SD card stay two entries.
+  const dirs = commit(foldAlbumsToDirs(albums));
   // Field diagnostic (once per cold rebuild): this is the shared cost of
   // every screen's source resolution — regressions show up here first.
-  perfLog(() => `source catalog: ${albums.length} buckets probed in ${Date.now() - started}ms`);
+  perfLog(() => `source catalog (native): ${albums.length} buckets in ${Date.now() - started}ms`);
   return dirs;
 }
 
@@ -360,7 +295,7 @@ async function resolveSourcesUncached(db: SQLiteDatabase, force = false): Promis
     };
   }
   // The default source resolves against the PRIMARY volume (plan §2) —
-  // an SD card's DCIM/Camera must not satisfy the probe.
+  // an SD card's DCIM/Camera must not satisfy the default.
   const defaultRoot: SourceRoot = { volume: PRIMARY_VOLUME, dir: DEFAULT_SOURCE_DIR };
   const hasCamera = dirs.some((d) => isUnderAnyRoot(d.volume, d.dir, [defaultRoot]));
   if (hasCamera) {

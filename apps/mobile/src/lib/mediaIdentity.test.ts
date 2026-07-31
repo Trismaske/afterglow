@@ -2,9 +2,8 @@
  * Mechanism D volume parser (m0.8.3, D7) + canonical-id helpers.
  *
  * The uri shapes here are the spike-A-observed ones (S10e, Android 12,
- * SD UUID 0A91-E18D) plus every STORAGE_PREFIX variant sources.ts
- * recognizes — the parser must agree with the dir-stripping side about
- * which prefixes exist.
+ * SD UUID 0A91-E18D) plus the legacy primary aliases this parser is the
+ * only remaining place to recognize.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -37,7 +36,7 @@ describe('volumeOfUriPath (mechanism D)', () => {
     expect(volumeOfUriPath('file:///storage/0a91-e18d/DCIM/x.jpg')).toBe('0a91-e18d');
   });
 
-  it('maps the legacy primary aliases to primary (STORAGE_PREFIX variants)', () => {
+  it('maps the legacy primary aliases to primary', () => {
     expect(volumeOfUriPath('file:///sdcard/DCIM/Camera/a.jpg')).toBe(PRIMARY_VOLUME);
     expect(volumeOfUriPath('file:///mnt/sdcard/DCIM/Camera/a.jpg')).toBe(PRIMARY_VOLUME);
     expect(volumeOfUriPath('file:///storage/self/primary/DCIM/Camera/a.jpg')).toBe(PRIMARY_VOLUME);

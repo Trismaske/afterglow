@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  dirOfUri,
   escapeLike,
   foldAlbumsToDirs,
   isUnderAnyRoot,
@@ -11,10 +10,8 @@ import {
   rootKey,
   rootLabel,
   serializePhotoSourceSetting,
-  sourceDirOfUri,
   sourceLabel,
   sourceLikePattern,
-  storageRelativeDir,
   volumeTag,
   type PhotoSourceSetting,
 } from './sources';
@@ -55,52 +52,6 @@ describe('parse/serialize round trip', () => {
 
   it('rejects the pre-m0.8.3 path-only shape (no migration, D4/D14)', () => {
     expect(parsePhotoSourceSetting('{"mode":"dirs","dirs":["DCIM/Camera"]}')).toBeNull();
-  });
-});
-
-describe('dirOfUri', () => {
-  it('extracts the directory from a legacy file:// uri', () => {
-    expect(dirOfUri('file:///storage/emulated/0/DCIM/Camera/IMG_001.jpg')).toBe(
-      '/storage/emulated/0/DCIM/Camera',
-    );
-  });
-
-  it('keeps raw paths raw (no percent-decoding, spaces intact)', () => {
-    expect(dirOfUri('file:///storage/emulated/0/My Photos/a.jpg')).toBe(
-      '/storage/emulated/0/My Photos',
-    );
-  });
-
-  it('returns null for non-file uris and malformed values', () => {
-    expect(dirOfUri('ph://ABC-123/L0/001')).toBeNull();
-    expect(dirOfUri('content://media/external/images/media/42')).toBeNull();
-    expect(dirOfUri('file:///rootfile.jpg')).toBeNull();
-  });
-});
-
-describe('storageRelativeDir', () => {
-  it('strips the internal-storage prefix', () => {
-    expect(storageRelativeDir('/storage/emulated/0/DCIM/Camera')).toBe('DCIM/Camera');
-  });
-
-  it('strips SD-card volume prefixes', () => {
-    expect(storageRelativeDir('/storage/ABCD-1234/DCIM/Camera')).toBe('DCIM/Camera');
-    expect(storageRelativeDir('/sdcard/Pictures')).toBe('Pictures');
-  });
-
-  it('strips the whole /storage/self/primary alias — no phantom primary/ segment (codex r2)', () => {
-    expect(storageRelativeDir('/storage/self/primary/DCIM/Camera')).toBe('DCIM/Camera');
-  });
-
-  it('keeps unrecognized prefixes (minus the leading slash)', () => {
-    expect(storageRelativeDir('/data/media/0/DCIM')).toBe('data/media/0/DCIM');
-  });
-});
-
-describe('sourceDirOfUri', () => {
-  it('composes dir extraction and volume stripping', () => {
-    expect(sourceDirOfUri('file:///storage/emulated/0/DCIM/Camera/IMG.jpg')).toBe('DCIM/Camera');
-    expect(sourceDirOfUri('ph://ABC/1')).toBeNull();
   });
 });
 

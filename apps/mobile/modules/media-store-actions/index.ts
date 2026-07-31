@@ -54,10 +54,10 @@ interface NativeApi {
 }
 
 /** One row MediaStore reports as added or modified since a generation.
- * `isTrashed` is the reason this exists: on Android 11+ a user deleting
- * a photo in their gallery TRASHES it, leaving the row in place with the
- * flag set — a modification the delta pass can see, not an absence it
- * has to infer. */
+ * `isTrashed` is the reason this exists: a user deleting a photo in
+ * their gallery TRASHES it, leaving the row in place with the flag set —
+ * a modification the delta pass can see, not an absence it has to
+ * infer. */
 export interface ChangedMediaRow {
   volumeName: string;
   rawId: string;

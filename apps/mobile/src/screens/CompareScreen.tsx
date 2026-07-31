@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -706,14 +706,12 @@ export function CompareScreen({ navigation, route }: Props) {
           disabled={busy}
           onPress={() => void toggleNeedsEdit(visible.id).catch(() => {})}
         />
-        {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
-          <ActionChip
-            kind="favourite"
-            active={favourite}
-            disabled={busy}
-            onPress={() => void toggleFavourite(visible.id).catch(() => {})}
-          />
-        )}
+        <ActionChip
+          kind="favourite"
+          active={favourite}
+          disabled={busy}
+          onPress={() => void toggleFavourite(visible.id).catch(() => {})}
+        />
         {/* Organize/Share write the queue tables DIRECTLY (no provider
             write-error surface behind them, unlike Edit/Favourite above),
             so THIS screen must surface both failure shapes — a returned

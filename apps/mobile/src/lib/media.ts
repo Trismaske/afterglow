@@ -5,7 +5,7 @@
  * the new class-based Query/Asset API landed in SDK 57 and the legacy
  * functions (`getAssetsAsync` paging) are the documented, battle-tested path.
  * Destructive actions deliberately bypass the legacy delete API and use the
- * app's Android 11+ MediaStore trash-request module below.
+ * app's MediaStore trash-request module below.
  *
  * DO NOT REMOVE `WRITE_EXTERNAL_STORAGE` FROM app.json. It looks dead — the
  * app calls no expo-media-library write API, and Android grants nothing for
@@ -478,8 +478,9 @@ export interface TrashAssetsResult {
 /**
  * Move assets to Android's recoverable system trash after the OS-owned
  * confirmation sheet. THIS IS THE ONLY MEDIA REMOVAL CALL IN THE APP.
- * There is deliberately no permanent-delete fallback below Android 11 or
- * when the native module is absent.
+ * Afterglow never permanently deletes a photo: the Android 11 floor
+ * guarantees a system trash exists, so there is no fallback to design.
+ * A build without the native module removes nothing at all.
  */
 export async function trashAssets(assetIds: readonly string[]): Promise<TrashAssetsResult> {
   if (assetIds.length === 0) return { status: 'applied' };

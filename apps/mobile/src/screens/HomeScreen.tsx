@@ -456,7 +456,7 @@ export function HomeScreen({ navigation }: Props) {
                   if (attempt.status === 'unsupported') {
                     Alert.alert(
                       'System trash unavailable',
-                      'Afterglow does not permanently delete photos. This action requires Android 11 or later.',
+                      "Afterglow's media module is not available in this build, so nothing was changed. Afterglow never permanently deletes photos — your culls are still staged and untouched.",
                     );
                   } else if (attempt.status === 'failed') {
                     Alert.alert(

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -20,8 +20,8 @@ type Props = NativeStackScreenProps<RootStackParamList, 'CullList'>;
  * The staged cull list. Tapping a photo opens the m0.5 re-decide sheet
  * (keep / to edit / stays culled) — the last stop where any decision is
  * still reversible. The ONE confirm button below is the only path in the
- * app that deletes anything; on Android 11+ the system dialog moves the
- * batch to recoverable system trash (retention is gallery-controlled).
+ * app that deletes anything; the system dialog moves the batch to
+ * recoverable system trash (retention is gallery-controlled).
  */
 export function CullListScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
@@ -47,7 +47,6 @@ export function CullListScreen({ navigation, route }: Props) {
   const [foregroundTick, setForegroundTick] = useState(0);
   useExternalRefresh(() => setForegroundTick((t) => t + 1));
   const loading = globalRows === null;
-  const systemTrashSupported = Platform.OS === 'android' && Number(Platform.Version) >= 30;
 
   // P4#1: the DURABLE GLOBAL cull queue is the confirmation truth — it
   // includes carried culls from replaced sessions, which the active
@@ -120,7 +119,7 @@ export function CullListScreen({ navigation, route }: Props) {
       } else if (result.status === 'unsupported') {
         Alert.alert(
           'System trash unavailable',
-          'Afterglow does not permanently delete photos. Moving culls to trash requires Android 11 or later.',
+          "Afterglow's media module is not available in this build, so nothing was changed. Afterglow never permanently deletes photos — your culls are still staged and untouched.",
         );
       } else if (result.status === 'failed') {
         // A later batch failing must not hide earlier verified moves —
@@ -204,11 +203,9 @@ export function CullListScreen({ navigation, route }: Props) {
           ? 'Could not load the cull queue.'
           : loading
             ? 'Loading…'
-            : !systemTrashSupported && staged.length > 0
-              ? 'System trash requires Android 11 or later. Culls remain staged and untouched.'
-              : staged.length === 0
-                ? 'Nothing staged to cull.'
-                : `${staged.length} staged · tap any photo to change its decision`}
+            : staged.length === 0
+              ? 'Nothing staged to cull.'
+              : `${staged.length} staged · tap any photo to change its decision`}
       </Text>
       <FlatList
         data={staged}
@@ -235,7 +232,7 @@ export function CullListScreen({ navigation, route }: Props) {
                   : `Trash ${staged.length} photo${staged.length === 1 ? '' : 's'}`
           }
           color={staged.length === 0 ? colors.keep : colors.cull}
-          disabled={busy || loading || (!systemTrashSupported && staged.length > 0)}
+          disabled={busy || loading}
           onPress={onConfirmPress}
         />
       </View>

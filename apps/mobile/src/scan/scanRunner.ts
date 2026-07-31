@@ -708,8 +708,8 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   // run blind — "unknown" aborting here (the throw fails the scan,
   // phase 'error', retried next open) is the only answer that cannot
   // treat an ejected card's photos as reachable. Independent of the
-  // generation read on purpose: generations are API 30+, this works
-  // from API 24.
+  // generation read on purpose: that one degrades to {} on failure (no
+  // skip evidence, so no skip), while this one may not degrade at all.
   const mounted = await getMountedVolumes();
   // SCOPE-RELEVANT volumes only, mounted only (m0.8.3 phase 2,
   // invariants 2 + 7): an out-of-scope card's activity must not defeat
@@ -841,8 +841,9 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     }
     // A DELTA enumerated only its ranges, so "not seen" means nothing and
     // the removal reconciliation below cannot run. Deletions arrive by a
-    // different route: on Android 11+ a gallery delete TRASHES the row,
-    // which the change query reports directly (measured on device).
+    // different route: a gallery delete TRASHES the row rather than
+    // removing it, which the change query reports directly (measured on
+    // device).
     // Those rows are acted on HERE rather
     // than by re-paging their range, because MediaStore filters trashed
     // rows out of the paging the scan does.

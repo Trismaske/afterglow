@@ -8,7 +8,6 @@ import {
   StyleSheet,
   Text,
   View,
-  Platform,
   TextInput,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -843,7 +842,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
       // an already-favourited photo (toggleFavourite would UN-favourite
       // it), and "Not now" stays a strict no-op.
       const offer = shouldOfferFavouriteHandoff(favouriteStatus(current.id));
-      if (!isBest && offer && Platform.OS === 'android' && Number(Platform.Version) >= 30) {
+      if (!isBest && offer) {
         Alert.alert('Best of this group', 'Would you also like to favourite it in your gallery?', [
           { text: 'Not now', style: 'cancel' },
           { text: 'Favourite', onPress: () => void toggleFavourite(current.id).catch(() => {}) },
@@ -1202,14 +1201,12 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
               disabled={busy || currentState === 'culled'}
               onPress={() => void run(() => decideCurrent('to_edit'))}
             />
-            {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
-              <ActionChip
-                kind="favourite"
-                active={favourite}
-                disabled={busy || currentState === 'culled'}
-                onPress={() => void run(() => toggleFavourite(current.id))}
-              />
-            )}
+            <ActionChip
+              kind="favourite"
+              active={favourite}
+              disabled={busy || currentState === 'culled'}
+              onPress={() => void run(() => toggleFavourite(current.id))}
+            />
             <ActionChip
               kind="organize"
               active={organizeQueued}
@@ -1309,14 +1306,12 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
               disabled={busy || currentState === 'culled'}
               onPress={() => void run(() => toggleNeedsEdit(current.id))}
             />
-            {Platform.OS === 'android' && Number(Platform.Version) >= 30 && (
-              <ActionChip
-                kind="favourite"
-                active={favourite}
-                disabled={busy || currentState === 'culled'}
-                onPress={() => void run(() => toggleFavourite(current.id))}
-              />
-            )}
+            <ActionChip
+              kind="favourite"
+              active={favourite}
+              disabled={busy || currentState === 'culled'}
+              onPress={() => void run(() => toggleFavourite(current.id))}
+            />
             <ActionChip
               kind="organize"
               active={organizeQueued}

@@ -5,7 +5,7 @@
  * visible and retryable across restarts.
  */
 import React, { useCallback, useMemo, useState } from 'react';
-import { Alert, FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -68,7 +68,6 @@ export function FavouritesQueueScreen() {
   const [busyTarget, setBusyTarget] = useState<boolean | null>(null);
   /** In-app full-screen viewer (gate 5) — thumbnail tap. */
   const [viewerId, setViewerId] = useState<string | null>(null);
-  const supported = Platform.OS === 'android' && Number(Platform.Version) >= 30;
 
   const applyRows = useMemo(() => (rows ?? []).filter((row) => row.favourite_target === 1), [rows]);
   const removeRows = useMemo(
@@ -126,7 +125,7 @@ export function FavouritesQueueScreen() {
           } else if (result.status === 'unsupported') {
             Alert.alert(
               'Gallery favourites unavailable',
-              'This feature requires Android 11 or later.',
+              "Afterglow's media module is not available in this build, so nothing was changed. The queued hearts are still waiting.",
             );
             break;
           } else {
@@ -151,9 +150,6 @@ export function FavouritesQueueScreen() {
       <Text style={styles.intro}>
         Apply queued hearts to the system gallery. Android shows one confirmation for each batch.
       </Text>
-      {!supported && (
-        <Text style={styles.unsupported}>Gallery favourites require Android 11 or later.</Text>
-      )}
       {failed && rows !== null ? (
         // codex r9: the reload kept the last rows on a failed read — the
         // list may be stale, and it has to say so.
@@ -205,14 +201,14 @@ export function FavouritesQueueScreen() {
           <BigButton
             label={`Apply ${applyRows.length} favourite${applyRows.length === 1 ? '' : 's'}`}
             color={colors.fav}
-            disabled={!supported || busyTarget !== null}
+            disabled={busyTarget !== null}
             onPress={() => void runBatch(true)}
           />
         )}
         {removeRows.length > 0 && (
           <Pressable
             style={[styles.removeButton, { borderColor: theme.accent }]}
-            disabled={!supported || busyTarget !== null}
+            disabled={busyTarget !== null}
             onPress={() => void runBatch(false)}
           >
             <Text style={[styles.removeText, { color: theme.accent }]}>
@@ -229,7 +225,6 @@ const styles = StyleSheet.create({
   heading: { color: colors.text, fontSize: 24, fontWeight: '800', marginBottom: 2 },
   root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 16 },
   intro: { color: colors.textDim, fontSize: 14, lineHeight: 20, marginBottom: 10 },
-  unsupported: { color: colors.cull, marginBottom: 10 },
   list: { gap: 10, paddingBottom: 12, flexGrow: 1 },
   empty: { color: colors.textDim, fontSize: 14, textAlign: 'center', marginTop: 40 },
   // codex r9: quiet stale-rows notice — dim like every read-failure line.

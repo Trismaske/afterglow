@@ -564,6 +564,20 @@ value is unproven — deliberately parked until a real user or tester hits
 them (Tristan, m0.8.3 grilling). Same hygiene as above: promote on
 trigger, delete when answered.
 
+- **Organize accepts photos Android will never let it move**
+  (measured on the S10e, 2026-07-31). A photo under another package's
+  `Android/media/<pkg>/` tree — WhatsApp's `WhatsApp Images` is the
+  common case, 858 photos on that device — is queued and album-assigned
+  like any other, and the platform refuses the `RELATIVE_PATH` move only
+  after the user has approved the OS write consent. The queue reports it
+  honestly (row badged failed, "retried on the next move", nothing
+  silently dropped), so this is a wasted-tap problem, not a correctness
+  one. Same shape as the SD refusal m0.8.3 already added: the fix is a
+  queue-time refusal naming the reason, and its cost is knowing which
+  paths are unmovable — `Android/media/` is one, but the rule may be
+  broader. Trigger: a tester queueing WhatsApp or other app-media photos
+  and hitting the failure.
+
 - **Rescued photos never window with same-moment dated photos**
   (m0.8.3 grilling Q9). A D15-rescued photo (in practice: NEF —
   measured on the S23: NEF `datetaken` NULL, DNG and ARW both dated)

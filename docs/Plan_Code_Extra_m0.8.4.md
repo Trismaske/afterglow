@@ -53,7 +53,14 @@ The checklist named what to delete. It could not name what would *become* unused
   The ARW row also gained its known wrinkle (MediaStore dates ARW by file mtime, not EXIF, so a copied file can sort under the copy date). The plan parked the *fix* in `docs/TODO.md`; not telling testers would have left "Fully supported" saying more than the measurement supports.
 - ADD `apps/mobile/README.md:~190` — the compat statement also names what the failure looks like (`INSTALL_FAILED_OLDER_SDK` via adb, a bare "App not installed" on-device). §6.4 established that the on-device installer is silent about the cause; the sentence is what makes the README statement actionable.
 
-## 5. Process
+## 5. Found on device, not in the plan
+
+- **An organize move failed, and it is not this release's doing.** The first move attempted on the S10e targeted a photo in `Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images/`, and Android refuses `RELATIVE_PATH` moves out of another package's `Android/media/` tree. It is a scoped-storage rule, not a version gate — `moveToRelativePath`'s only m0.8.4 change was deleting an `SDK_INT < R` early return that could never fire at API 31.
+  The app behaved correctly: the row stayed queued, badged failed, with *"1 queued · 1 failed, retried on the next move"*. A second move on a `DCIM/Camera` photo succeeded and verified (`relative_path=DCIM/Table Mountain Lapse/`), so the success path is measured too.
+  Worth a TODO of its own — the queue accepts a photo it can never move, and only says so after the OS consent tap. Not raised here because it predates this release and fixing it is a queue-time refusal, not a deletion.
+
+## 6. Process
 
 - The **phase 2 gradle build ran against a phase-2 tree**, before phases 3-7 landed, and a second full `prebuild --clean` + `assembleRelease` ran at the end. Phase 2's proof is native-only, so running it early costs nothing and catches a Kotlin problem before 300 lines of TypeScript deletions can be entangled with it.
+- **The final `assembleRelease` failed once and passed on retry, with no source change.** `:app:mergeDexRelease` threw `DexArchiveMergerException: Error while merging dex archives:` with an empty cause — the signature of a dexer worker being killed, and two emulators plus a warm Gradle daemon were resident at the time. Recorded rather than ignored: a build failure that "went away" is worth one line, and the passing build is the one every artifact check below was run against.
 - Two commits precede phase 1: the UI-gate screenshot fix and the plan-plus-durables commit, both of which were already in the working tree.

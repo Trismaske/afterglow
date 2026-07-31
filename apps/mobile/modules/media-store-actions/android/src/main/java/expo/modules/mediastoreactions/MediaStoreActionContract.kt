@@ -5,12 +5,10 @@ import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.provider.MediaStore
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts.StartIntentSenderForResult.Companion.ACTION_INTENT_SENDER_REQUEST
 import androidx.activity.result.contract.ActivityResultContracts.StartIntentSenderForResult.Companion.EXTRA_INTENT_SENDER_REQUEST
-import androidx.annotation.RequiresApi
 import expo.modules.kotlin.activityresult.AppContextActivityResultContract
 import expo.modules.kotlin.providers.AppContextProvider
 import java.io.Serializable
@@ -34,7 +32,6 @@ class MediaStoreActionContract(
     get() = appContextProvider.appContext.reactContext?.contentResolver
       ?: throw IllegalStateException("Android content resolver is unavailable")
 
-  @RequiresApi(Build.VERSION_CODES.R)
   override fun createIntent(context: Context, input: MediaStoreActionInput): Intent {
     val request = when (input.action) {
       MediaStoreAction.TRASH -> MediaStore.createTrashRequest(contentResolver, input.uris, input.value)

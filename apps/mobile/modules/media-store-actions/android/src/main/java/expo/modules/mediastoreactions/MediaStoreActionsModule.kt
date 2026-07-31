@@ -189,20 +189,18 @@ class MediaStoreActionsModule : Module() {
       val context = appContext.reactContext
         ?: throw IllegalStateException("Android context unavailable")
       val out = mutableMapOf<String, Double>()
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        for (volume in MediaStore.getExternalVolumeNames(context)) {
-          try {
-            val version = MediaStore.getVersion(context, volume)
-            out["$volume|$version"] = MediaStore.getGeneration(context, volume).toDouble()
-          } catch (error: Exception) {
-            // FAIL THE WHOLE CALL. This map is the scan skip's PROOF that
-            // nothing changed, and a proof missing a volume is not a
-            // proof — yet a partial map fingerprints and compares just
-            // fine, so the same volume failing on two launches would
-            // skip the scan forever while its photos changed underneath.
-            // The caller catches this and simply does not skip.
-            throw IllegalStateException("generation unreadable for volume $volume", error)
-          }
+      for (volume in MediaStore.getExternalVolumeNames(context)) {
+        try {
+          val version = MediaStore.getVersion(context, volume)
+          out["$volume|$version"] = MediaStore.getGeneration(context, volume).toDouble()
+        } catch (error: Exception) {
+          // FAIL THE WHOLE CALL. This map is the scan skip's PROOF that
+          // nothing changed, and a proof missing a volume is not a
+          // proof — yet a partial map fingerprints and compares just
+          // fine, so the same volume failing on two launches would
+          // skip the scan forever while its photos changed underneath.
+          // The caller catches this and simply does not skip.
+          throw IllegalStateException("generation unreadable for volume $volume", error)
         }
       }
       out
@@ -228,9 +226,6 @@ class MediaStoreActionsModule : Module() {
     AsyncFunction("mediaChangedSince") { volume: String, since: Double ->
       val context = appContext.reactContext
         ?: throw IllegalStateException("Android context unavailable")
-      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-        throw IllegalStateException("generation queries need API 30+")
-      }
       val out = mutableListOf<Map<String, Any?>>()
       val uri = MediaStore.Images.Media.getContentUri(volume)
       val selection =
@@ -289,34 +284,14 @@ class MediaStoreActionsModule : Module() {
     /**
      * The mounted volume set (m0.8.3 phase 2, codex): reachability
      * decisions must never run blind, so the scan REQUIRES this and
-     * aborts when it throws. API 29+ asks MediaStore directly; API
-     * 24-28 derives the same names from StorageManager (primary →
-     * 'external_primary', others → lowercased FS UUID — the identical
-     * mapping mechanism D applies to paths). ALL OR NONE: a mounted
-     * volume this cannot name is an error, not a silent omission.
+     * aborts when it throws. MediaStore names every mounted volume
+     * itself (primary → 'external_primary', others → lowercased FS UUID
+     * — the identical mapping mechanism D applies to paths).
      */
     AsyncFunction("listMountedVolumes") {
       val context = appContext.reactContext
         ?: throw IllegalStateException("Android context unavailable")
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        MediaStore.getExternalVolumeNames(context).toList()
-      } else {
-        val storage = context.getSystemService(android.content.Context.STORAGE_SERVICE)
-          as android.os.storage.StorageManager
-        storage.storageVolumes
-          .filter {
-            it.state == android.os.Environment.MEDIA_MOUNTED ||
-              it.state == android.os.Environment.MEDIA_MOUNTED_READ_ONLY
-          }
-          .map { volume ->
-            if (volume.isPrimary) {
-              "external_primary"
-            } else {
-              volume.uuid?.lowercase()
-                ?: throw IllegalStateException("mounted volume without a UUID")
-            }
-          }
-      }
+      MediaStore.getExternalVolumeNames(context).toList()
     }
 
     /**
@@ -333,9 +308,6 @@ class MediaStoreActionsModule : Module() {
     AsyncFunction("countImagesByVolume") { volumes: List<String> ->
       val context = appContext.reactContext
         ?: throw IllegalStateException("Android context unavailable")
-      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-        throw IllegalStateException("per-volume queries need API 29+")
-      }
       val out = mutableMapOf<String, Double>()
       for (volume in volumes) {
         try {
@@ -360,11 +332,7 @@ class MediaStoreActionsModule : Module() {
       val context = appContext.reactContext
         ?: throw IllegalStateException("Android context unavailable")
       val out = mutableListOf<Map<String, Any?>>()
-      val volumes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        MediaStore.getExternalVolumeNames(context)
-      } else {
-        setOf("external")
-      }
+      val volumes = MediaStore.getExternalVolumeNames(context)
       for (volume in volumes) {
         val uri = MediaStore.Images.Media.getContentUri(volume)
         val counts = HashMap<Long, Triple<String, String, Int>>()
@@ -501,11 +469,6 @@ class MediaStoreActionsModule : Module() {
     AsyncFunction("moveToRelativePath") { uriStrings: List<Uri>, relativePath: String ->
       val context = appContext.reactContext
         ?: throw IllegalStateException("Android context unavailable")
-      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-        return@AsyncFunction uriStrings.map {
-          mapOf("uri" to it.toString(), "status" to "unsupported", "message" to "Requires Android 11")
-        }
-      }
       val resolver = context.contentResolver
       uriStrings.map { uri ->
         try {
@@ -648,9 +611,6 @@ class MediaStoreActionsModule : Module() {
     action: MediaStoreAction,
     value: Boolean,
   ): Map<String, String> {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-      return mapOf("status" to "unsupported")
-    }
     if (uris.isEmpty()) {
       return mapOf("status" to "applied")
     }
@@ -673,7 +633,6 @@ class MediaStoreActionsModule : Module() {
   }
 
   private fun mediaPresenceOf(uri: Uri): String {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return "unknown"
     val resolver = appContext.reactContext?.contentResolver ?: return "unknown"
     val queryArgs = android.os.Bundle().apply {
       putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_INCLUDE)
@@ -703,7 +662,6 @@ class MediaStoreActionsModule : Module() {
   }
 
   private fun queryFlag(uri: Uri, column: String): Boolean? {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
     val resolver = appContext.reactContext?.contentResolver ?: return null
     return resolver.query(uri, arrayOf(column), null, null, null)?.use { cursor ->
       if (!cursor.moveToFirst()) return@use null

@@ -31,6 +31,37 @@ if (kind === 'desktop') {
     throw new Error(`Invalid Android versionCode ${String(versionCode)}`);
   }
 
+  // m0.8.4 floor: the APK's minSdkVersion comes from the expo-build-properties
+  // plugin config, which prebuild writes into the merged manifest. Asserting it
+  // here is redundant with the workflow's aapt check on the built APK — the
+  // point is that this one fails locally, before a tag is pushed, where the
+  // artifact gate can only fail afterwards. expo.plugins mixes bare strings
+  // with [name, config] pairs, so match both shapes.
+  const MIN_SDK_FLOOR = 30;
+  const plugins = Array.isArray(app.expo.plugins) ? app.expo.plugins : [];
+  const buildProperties = plugins.find(
+    (plugin) =>
+      plugin === 'expo-build-properties' ||
+      (Array.isArray(plugin) && plugin[0] === 'expo-build-properties'),
+  );
+  if (!buildProperties) {
+    throw new Error(
+      'apps/mobile/app.json: expo.plugins has no expo-build-properties entry — the APK would ' +
+        `fall back to Expo's default minSdkVersion. Add ["expo-build-properties", { "android": ` +
+        `{ "minSdkVersion": ${MIN_SDK_FLOOR} } }] to expo.plugins.`,
+    );
+  }
+  const minSdkVersion = Array.isArray(buildProperties)
+    ? buildProperties[1]?.android?.minSdkVersion
+    : undefined;
+  if (!Number.isInteger(minSdkVersion) || minSdkVersion < MIN_SDK_FLOOR) {
+    throw new Error(
+      `apps/mobile/app.json: expo-build-properties android.minSdkVersion is ` +
+        `${JSON.stringify(minSdkVersion) ?? 'undefined'}; set it to an integer >= ${MIN_SDK_FLOOR} ` +
+        `(Android 11), the floor every removal path depends on.`,
+    );
+  }
+
   // When older mobile tags are available, prove the Android installer can
   // upgrade in place. A missing/legacy app.json is ignored; an equal or lower
   // versionCode is a hard release failure.
@@ -62,5 +93,7 @@ if (kind === 'desktop') {
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('Android versionCode')) throw error;
   }
-  console.log(`Mobile release version OK: ${tag} (versionCode ${versionCode})`);
+  console.log(
+    `Mobile release version OK: ${tag} (versionCode ${versionCode}, minSdkVersion ${minSdkVersion})`,
+  );
 }

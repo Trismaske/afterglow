@@ -160,8 +160,8 @@ class MediaStoreActionsModule : Module() {
       }
     }
 
-    // createWriteRequest approval probe (Android 11+): the documented path
-    // to write access for other apps' media. Reuses the standard consent
+    // createWriteRequest approval probe: the documented path to write
+    // access for other apps' media. Reuses the standard consent
     // launcher; reports approved/cancelled like trash/favourite.
     AsyncFunction("requestWriteAccess") Coroutine { uris: List<Uri> ->
       launch(uris, MediaStoreAction.WRITE, true)
@@ -211,8 +211,8 @@ class MediaStoreActionsModule : Module() {
      * the change discovery a DELTA scan is built on (m0.8.2 phase 1).
      *
      * TRASHED ROWS ARE INCLUDED (`QUERY_ARG_MATCH_TRASHED` /
-     * `MATCH_INCLUDE`), and that is the point. On Android 11+ a user
-     * "deleting" a photo in their gallery is `createTrashRequest`: the
+     * `MATCH_INCLUDE`), and that is the point. A user "deleting" a photo
+     * in their gallery is `createTrashRequest`: the
      * row SURVIVES with `IS_TRASHED = 1` for 30 days, and MediaStore
      * filters such rows out of every query by default. So the deletion
      * that a full pass can only infer from an absence shows up here as

@@ -107,15 +107,18 @@ The app reviews what Android's MediaStore indexes as a photo on your
 device — everything your gallery treats as a picture (JPEG, PNG, WebP,
 HEIC, GIF) reviews normally. Videos are not reviewable yet.
 
-**RAW**, measured on real hardware (Samsung S23 / Android 16, 2026-07):
+**RAW**, measured on real hardware. The "measured on" column says which
+devices each row was actually run on — Samsung S23 (Android 16), Samsung
+S10e (Android 12), and an Android 11 emulator, which is the supported
+floor.
 
-| Format | Status |
-|---|---|
-| DNG (incl. Samsung Expert RAW) | **Fully supported** — grouped, rendered, reviewable like any photo |
-| NEF (Nikon) | **Fully supported** — Android does not extract its capture date, so Afterglow reads it from the file's own EXIF header at ingestion (0.8.3) and files the photo under its real day |
-| ARW (Sony) | **Fully supported** |
-| CR3 (Canon) | **Not supported** — Android does not classify CR3 as an image, so these files are invisible to the app (they are not shown, counted, or touched) |
-| Other RAW formats | Untested — the app shows whatever MediaStore indexes as an image |
+| Format | Status | Measured on |
+|---|---|---|
+| DNG (incl. Samsung Expert RAW) | **Fully supported** — grouped, rendered, reviewable like any photo | S23 only |
+| NEF (Nikon) | **Fully supported** — Android does not extract its capture date, so Afterglow reads it from the file's own EXIF header at ingestion (0.8.3) and files the photo under its real day | S23, S10e, Android 11 |
+| ARW (Sony) | **Supported**, with one known wrinkle: Android dates these by the file's modification time rather than its EXIF capture time, so an ARW copied off a card can sort under the copy date. Afterglow shows what Android reports; the EXIF rescue above cannot correct it, because the photo arrives dated — just wrongly | S23, S10e, Android 11 |
+| CR3 (Canon) | **Not supported** — Android does not classify CR3 as an image, so these files are invisible to the app (they are not shown, counted, or touched) | S23, S10e, Android 11 |
+| Other RAW formats | Untested — the app shows whatever MediaStore indexes as an image | — |
 
 Format handling is the OS's: results can vary by device and Android
 version; the table above is what we measured, not a promise about every
@@ -187,6 +190,12 @@ The embedder model is a pinned, SHA-verified download — see
 `modules/image-embedder/README.md` (the build fails loudly without it).
 Testers grab the release APK from the latest `mobile-m*` GitHub Release.
 
+**Afterglow requires Android 11 or later.** Every removal in the app goes
+through Android's system trash, which does not exist below Android 11 —
+so from m0.8.4 the APK declares that floor and older devices refuse to
+install it (the on-device installer says only "App not installed";
+`adb install` names it, `INSTALL_FAILED_OLDER_SDK`).
+
 ## The flow
 
 1. **Home** — grant photo access and the continuous scan starts: it
@@ -231,10 +240,9 @@ Testers grab the release APK from the latest `mobile-m*` GitHub Release.
    in the feed badged. **Keep remaining** sweeps the rest.
 7. **Cull list** — the durable global staging queue. Tap any photo to
    change its verdict (the sheet's chips re-decide; tapping the active
-   Cull chip restores to unreviewed). On Android 11+ the system dialog
-   moves batches to the system trash with verified results, dialog by
-   dialog until done. Below Android 11 there is no permanent-delete
-   fallback — deliberately.
+   Cull chip restores to unreviewed). One final confirmation moves
+   batches to the system trash with verified results, dialog by dialog
+   until done. Afterglow never permanently deletes a photo.
 8. **Standard photo viewer** — one full-screen viewer everywhere
    (deck browse, progress grids, History, all queue tabs; share uses
    long-press): paging, pinch or double-tap zoom, and a decision-detail
@@ -310,8 +318,8 @@ next open.
 - `src/lib/media.ts` is the only MediaStore adapter
   (`expo-media-library/legacy`, deliberately) and contains the app's
   single delete call. Trash and favourite operations go through the
-  local `modules/media-store-actions` module (Android 11+ system
-  dialogs, verified results).
+  local `modules/media-store-actions` module (system dialogs, verified
+  results).
 - SQLite (expo-sqlite async API) is the source of truth: `photos` keyed
   by canonical volume-qualified MediaStore id, `photo_actions` (the four
   queues), `photo_groups` +

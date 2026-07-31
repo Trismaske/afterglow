@@ -64,6 +64,28 @@ jobs:
               | while IFS= read -r line; do echo "::error::${line}"; done
             exit 1
           }
+      - name: Assert the Android 11 floor on the built APK
+        # The declared floor is what the package installer enforces, so assert
+        # it on the artifact that ships, not on app.json (release-preflight.mjs
+        # already covers the input). aapt lives under whichever build-tools
+        # version the runner image carries, so glob it and take the newest; a
+        # missing aapt fails the job rather than passing unverified.
+        env:
+          APK: apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          EXPECTED_MIN_SDK: '30'
+        run: |
+          set -euo pipefail
+          aapt="$(ls -1 "${ANDROID_HOME:-}"/build-tools/*/aapt 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$aapt" ]; then
+            echo "::error::No aapt found under ${ANDROID_HOME:-<ANDROID_HOME unset>}/build-tools/*/aapt — cannot verify the APK's minSdkVersion"
+            exit 1
+          fi
+          sdk="$("$aapt" dump badging "$APK" | sed -n "s/^sdkVersion:'\([0-9]*\)'.*/\1/p")"
+          echo "$aapt: sdkVersion:'${sdk}'"
+          if [ "$sdk" != "$EXPECTED_MIN_SDK" ]; then
+            echo "::error::${APK} declares minSdkVersion '${sdk}', expected '${EXPECTED_MIN_SDK}' — check the expo-build-properties android.minSdkVersion in apps/mobile/app.json"
+            exit 1
+          fi
       - name: Name and verify the APK
         run: |
           mkdir -p release/mobile

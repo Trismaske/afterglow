@@ -1,7 +1,15 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "noEmit": true
+    "noEmit": true,
+    // TEST TIER ONLY — deliberately absent from tsconfig.build.json:
+    // the grouping regression test reads its committed fixtures with
+    // node:fs. TS 6 stopped auto-including node_modules/@types, and
+    // vitest 4 dropped the transitive @types/node reference that had
+    // been covering it. Keeping this out of the BUILD config is what
+    // keeps the package's purity rule enforceable — src cannot reach a
+    // Node API without the build failing.
+    "types": ["node"]
   },
   "include": ["src", "test"]
 }

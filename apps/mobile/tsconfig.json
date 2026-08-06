@@ -1,6 +1,15 @@
 {
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "strict": true
+    "strict": true,
+    // TS 6 defaults `types` to [] — nothing is auto-included from
+    // node_modules/@types any more. The TEST tier genuinely uses Node
+    // APIs (`node:sqlite` in db/testDb.ts, `Buffer` in the real-DB
+    // tests); until now they resolved only because vitest 3's types
+    // referenced @types/node transitively, and vitest 4 dropped that
+    // chain. Declaring it states a real dependency, and it stays
+    // type-only: Metro bundles from the source graph, which no app
+    // file imports `node:` from.
+    "types": ["node"]
   }
 }

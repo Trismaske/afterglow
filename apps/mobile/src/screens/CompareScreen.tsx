@@ -3,7 +3,13 @@ import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import {
+  InterceptingGestureDetector,
+  usePanGesture,
+  usePinchGesture,
+  useSimultaneousGestures,
+  VirtualGestureDetector,
+} from 'react-native-gesture-handler';
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
@@ -16,7 +22,7 @@ import {
   type CompareDuelPref,
 } from '../lib/comparePrefs';
 import { showToast } from '../lib/toast';
-import { DOUBLE_TAP_MS } from '../lib/zoomTarget';
+import { DOUBLE_TAP_MS, pinchEngaged, pinchGain } from '../lib/zoomTarget';
 import { colors, touch, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded } from '../lib/format';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -29,7 +35,13 @@ import { useIsFocused } from '@react-navigation/native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Compare'>;
 
-const MAX_SCALE = 8;
+// 16× (Tristan, 2026-08-04). Past 1:1 pixels by design: a 50 MP frame
+// reaches one source pixel per screen pixel at ~5.7× on a 1440 px-wide
+// phone, so the top of this range magnifies interpolation rather than
+// revealing detail — wanted for inspecting a focus point, not for
+// judging sharpness. panBounds clamps to the photo's own edges, so a
+// deep zoom cannot wander off the content.
+const MAX_SCALE = 16;
 
 function clamp(value: number, max: number): number {
   'worklet';
@@ -256,13 +268,19 @@ export function CompareScreen({ navigation, route }: Props) {
   const savedTy = useSharedValue(0);
   const stageW = useSharedValue(0);
   const stageH = useSharedValue(0);
+  // A pinch must prove itself before it may change the zoom (see
+  // lib/zoomTarget PINCH_ENGAGE_DELTA): these carry that decision, and
+  // the raw scale it was made at, across the gesture's frames.
+  const pinchLive = useSharedValue(false);
+  const pinchBase = useSharedValue(1);
 
   const flip = useCallback(() => setShowB((v) => !v), []);
 
   // Taps live on the JS responder path (the stage is a Pressable), NOT
-  // on Gesture.Tap: any runOnJS from a gesture worklet segfaults this
-  // build (SIGSEGV in AroundLock::utf8; reanimated #9776, worklets
-  // 0.10.2 — see DeckScreen's bridge comment). Flip needs setState, so
+  // on a tap gesture (`useTapGesture`): any runOnJS from a gesture
+  // worklet segfaults this build (SIGSEGV in AroundLock::utf8;
+  // reanimated #9776, worklets 0.10.2 — see DeckScreen's bridge
+  // comment). Flip needs setState, so
   // the whole tap/double-tap arbitration moves here.
   // Not zoomed: every tap flips immediately (a double tap is two flips,
   // exactly the old fails-fast behavior). Zoomed: a tap waits one
@@ -301,59 +319,59 @@ export function CompareScreen({ navigation, route }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flip]);
 
-  const pinchGesture = useMemo(
-    () =>
-      Gesture.Pinch()
-        .onUpdate((event) => {
-          scale.value = Math.min(MAX_SCALE, Math.max(1, savedScale.value * event.scale));
-          // Keep the pan inside bounds while zooming back out.
-          const maxX = (stageW.value * (scale.value - 1)) / 2;
-          const maxY = (stageH.value * (scale.value - 1)) / 2;
-          tx.value = clamp(tx.value, maxX);
-          ty.value = clamp(ty.value, maxY);
-        })
-        .onEnd(() => {
-          savedScale.value = scale.value;
-          savedTx.value = tx.value;
-          savedTy.value = ty.value;
-          if (scale.value <= 1.02) {
-            scale.value = withTiming(1);
-            savedScale.value = 1;
-            tx.value = withTiming(0);
-            ty.value = withTiming(0);
-            savedTx.value = 0;
-            savedTy.value = 0;
-          }
-        }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  );
+  const pinchGesture = usePinchGesture({
+    onUpdate: (event) => {
+      if (!pinchLive.value) {
+        if (!pinchEngaged(event.scale)) return;
+        pinchLive.value = true;
+        pinchBase.value = event.scale;
+      }
+      const gain = pinchGain(event.scale, pinchBase.value);
+      scale.value = Math.min(MAX_SCALE, Math.max(1, savedScale.value * gain));
+      // Keep the pan inside bounds while zooming back out.
+      const maxX = (stageW.value * (scale.value - 1)) / 2;
+      const maxY = (stageH.value * (scale.value - 1)) / 2;
+      tx.value = clamp(tx.value, maxX);
+      ty.value = clamp(ty.value, maxY);
+    },
+    // onFinalize also fires when a pinch is CANCELLED, which onDeactivate
+    // does not — the engagement flag has to clear either way.
+    onFinalize: () => {
+      pinchLive.value = false;
+    },
+    onDeactivate: () => {
+      savedScale.value = scale.value;
+      savedTx.value = tx.value;
+      savedTy.value = ty.value;
+      if (scale.value <= 1.02) {
+        scale.value = withTiming(1);
+        savedScale.value = 1;
+        tx.value = withTiming(0);
+        ty.value = withTiming(0);
+        savedTx.value = 0;
+        savedTy.value = 0;
+      }
+    },
+  });
 
-  const panGesture = useMemo(
-    () =>
-      Gesture.Pan()
-        .minPointers(1)
-        .maxPointers(2)
-        .averageTouches(true)
-        .onUpdate((event) => {
-          if (scale.value <= 1) return;
-          const maxX = (stageW.value * (scale.value - 1)) / 2;
-          const maxY = (stageH.value * (scale.value - 1)) / 2;
-          tx.value = clamp(savedTx.value + event.translationX, maxX);
-          ty.value = clamp(savedTy.value + event.translationY, maxY);
-        })
-        .onEnd(() => {
-          savedTx.value = tx.value;
-          savedTy.value = ty.value;
-        }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  );
+  const panGesture = usePanGesture({
+    minPointers: 1,
+    maxPointers: 2,
+    averageTouches: true,
+    onUpdate: (event) => {
+      if (scale.value <= 1) return;
+      const maxX = (stageW.value * (scale.value - 1)) / 2;
+      const maxY = (stageH.value * (scale.value - 1)) / 2;
+      tx.value = clamp(savedTx.value + event.translationX, maxX);
+      ty.value = clamp(savedTy.value + event.translationY, maxY);
+    },
+    onDeactivate: () => {
+      savedTx.value = tx.value;
+      savedTy.value = ty.value;
+    },
+  });
 
-  const composedGesture = useMemo(
-    () => Gesture.Simultaneous(pinchGesture, panGesture),
-    [pinchGesture, panGesture],
-  );
+  const composedGesture = useSimultaneousGestures(pinchGesture, panGesture);
 
   const zoomStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: tx.value }, { translateY: ty.value }, { scale: scale.value }],
@@ -629,40 +647,46 @@ export function CompareScreen({ navigation, route }: Props) {
         </Text>
       </View>
 
-      <GestureDetector gesture={composedGesture}>
-        {/* The stage itself is the tap target: presses flip (JS thread),
-            while drags and pinches hand over to the gestures above. */}
-        <Pressable
-          style={styles.stage}
-          onPress={onStagePress}
-          onLayout={(event) => {
-            stageW.value = event.nativeEvent.layout.width;
-            stageH.value = event.nativeEvent.layout.height;
-          }}
-        >
-          <Animated.View style={[styles.stack, zoomStyle]}>
-            <Image
-              source={{ uri: pair.a.uri }}
-              style={StyleSheet.absoluteFill}
-              contentFit="contain"
-              recyclingKey={pair.a.id}
-            />
-            {/* Stacked on top; opacity flip keeps both mounted so the zoom
+      {/* A VIRTUAL detector under an intercepting host (see DeckScreen):
+          v3's plain GestureDetector is a HOST component, and this stage's
+          child is a Pressable whose press IS the flip — the tap must keep
+          reaching the JS responder path underneath. */}
+      <InterceptingGestureDetector>
+        <VirtualGestureDetector gesture={composedGesture}>
+          {/* The stage itself is the tap target: presses flip (JS thread),
+              while drags and pinches hand over to the gestures above. */}
+          <Pressable
+            style={styles.stage}
+            onPress={onStagePress}
+            onLayout={(event) => {
+              stageW.value = event.nativeEvent.layout.width;
+              stageH.value = event.nativeEvent.layout.height;
+            }}
+          >
+            <Animated.View style={[styles.stack, zoomStyle]}>
+              <Image
+                source={{ uri: pair.a.uri }}
+                style={StyleSheet.absoluteFill}
+                contentFit="contain"
+                recyclingKey={pair.a.id}
+              />
+              {/* Stacked on top; opacity flip keeps both mounted so the zoom
                 transform (on the shared parent) applies to both at once. */}
-            <Image
-              source={{ uri: pair.b.uri }}
-              style={[StyleSheet.absoluteFill, { opacity: showB ? 1 : 0 }]}
-              contentFit="contain"
-              recyclingKey={pair.b.id}
-            />
-          </Animated.View>
-          <View style={styles.abBadge} pointerEvents="none">
-            <Text style={styles.abBadgeText}>
-              {visibleLabel} · {formatClockPrecise(visible.timestamp, withMs)}
-            </Text>
-          </View>
-        </Pressable>
-      </GestureDetector>
+              <Image
+                source={{ uri: pair.b.uri }}
+                style={[StyleSheet.absoluteFill, { opacity: showB ? 1 : 0 }]}
+                contentFit="contain"
+                recyclingKey={pair.b.id}
+              />
+            </Animated.View>
+            <View style={styles.abBadge} pointerEvents="none">
+              <Text style={styles.abBadgeText}>
+                {visibleLabel} · {formatClockPrecise(visible.timestamp, withMs)}
+              </Text>
+            </View>
+          </Pressable>
+        </VirtualGestureDetector>
+      </InterceptingGestureDetector>
 
       <View style={styles.subRow}>
         <View style={styles.abChips}>

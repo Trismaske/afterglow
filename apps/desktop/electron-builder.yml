@@ -4,7 +4,7 @@ productName: Afterglow
 # electron is hoisted to the workspace root, so electron-builder cannot
 # resolve the exact range on its own. Keep in sync with the installed version
 # (npm ls electron).
-electronVersion: 43.1.1
+electronVersion: 43.2.0
 
 directories:
   output: release

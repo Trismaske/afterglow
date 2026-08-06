@@ -18,14 +18,28 @@ usage() {
 Usage:
   scripts/android-device.sh list
   scripts/android-device.sh discover
+  scripts/android-device.sh find IP [FIRST_PORT LAST_PORT]
   scripts/android-device.sh pair IP:PAIRING_PORT
   scripts/android-device.sh connect IP:CONNECTION_PORT
+  scripts/android-device.sh pin SELECTOR
   scripts/android-device.sh adb SELECTOR ADB_ARGUMENT...
   scripts/android-device.sh scrcpy SELECTOR [SCRCPY_ARGUMENT...]
 
 SELECTOR may be the current adb transport, model, or hardware serial shown by
 "list". Model matching is case-insensitive and treats "-" and "_" alike.
 Use the hardware serial when two connected devices have the same model.
+
+"discover" only works on the phone's own network segment: it asks adb for mDNS
+services, and mDNS is link-local, so it finds nothing across a VPN/tailnet — and
+nothing on a Wi-Fi network that blocks multicast, which is the common case.
+"find" answers the same question by probing ports directly, so it works wherever
+the phone is reachable at all.
+
+"pin" moves an already-connected phone onto the fixed port 5555, so its address
+stops changing every time wireless debugging restarts. It lasts until the phone
+reboots. Note the trade: port 5555 is the classic adb daemon, authorised by this
+workstation's adb key but not by the TLS pairing — use it on a private network
+(a tailnet, or a trusted LAN) and on a dedicated test phone.
 EOF
 }
 
@@ -142,6 +156,63 @@ case "$command_name" in
   discover)
     [ "$#" -eq 1 ] || die "discover takes no arguments"
     "$adb_path" mdns services
+    ;;
+  find)
+    [ "$#" -ge 2 ] && [ "$#" -le 4 ] || die "find requires IP [FIRST_PORT LAST_PORT]"
+    find_ip=$2
+    # Every wireless-debugging port observed on the two test phones has
+    # fallen inside this window (34895, 36349, 37519, 43105, 45851, 46019,
+    # 46477 — pairing and connection alike), which keeps a scan short
+    # enough to be usable. Widen it with the optional arguments if a phone
+    # ever lands outside.
+    first_port=${3:-30000}
+    last_port=${4:-50000}
+    printf 'Probing %s ports %s-%s …\n' "$find_ip" "$first_port" "$last_port" >&2
+    # Parallelism is deliberately modest: these probes may cross a relayed
+    # VPN link, where a few hundred simultaneous connections are dropped
+    # rather than refused and the scan reports a false "nothing here".
+    # `|| true`: xargs exits 123 when ANY probe fails, which is every closed
+    # port — under `set -e` that kills the scan instead of reporting it.
+    open_ports=$(
+      {
+        seq "$first_port" "$last_port" |
+          xargs -P 60 -I{} bash -c "timeout 3 bash -c 'echo > /dev/tcp/$find_ip/{}' 2>/dev/null && echo {}" ||
+          true
+      } | sort -n
+    )
+    [ -n "$open_ports" ] ||
+      die "no open port on $find_ip — is wireless debugging still enabled on the phone?"
+    # A phone in wireless-debugging mode listens on TWO ports: the pairing
+    # service and the connection service. Only the latter accepts a
+    # connect, so report what actually connected rather than a guess.
+    for port in $open_ports; do
+      # "connected to …" is NOT proof: adb prints it for a TCP connection
+      # whose ADB handshake then fails, leaving the device parked in
+      # "offline" — which is what a pairing-service port, or a phone that
+      # has forgotten this workstation, actually looks like. Wait for the
+      # transport to reach the "device" state before believing it.
+      "$adb_path" connect "$find_ip:$port" >/dev/null 2>&1 || true
+      for _ in 1 2 3 4 5 6; do
+        if "$adb_path" devices | awk -v t="$find_ip:$port" '$1 == t && $2 == "device" { found = 1 } END { exit !found }'; then
+          printf 'connected: %s:%s\n' "$find_ip" "$port"
+          exit 0
+        fi
+        sleep 1
+      done
+      "$adb_path" disconnect "$find_ip:$port" >/dev/null 2>&1 || true
+    done
+    printf 'open but not accepting a connection (pairing service?): %s\n' "$open_ports" >&2
+    die "found no connection port on $find_ip; pair the phone first"
+    ;;
+  pin)
+    [ "$#" -eq 2 ] || die "pin requires SELECTOR"
+    transport=$(resolve_transport "$2")
+    pin_ip=${transport%%:*}
+    [ "$pin_ip" != "$transport" ] ||
+      die "pin needs a network device (SELECTOR resolved to the USB/emulator transport $transport)"
+    "$adb_path" -s "$transport" tcpip 5555
+    sleep 4
+    "$adb_path" connect "$pin_ip:5555"
     ;;
   pair)
     [ "$#" -eq 2 ] || die "pair requires IP:PAIRING_PORT"

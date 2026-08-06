@@ -19,12 +19,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: git diff --check
-      # TEMPORARY (2026-07-25): =critical while brace-expansion
-      # CVE-2026-14257 (GHSA-mh99-v99m-4gvg, high, dev-tooling-only via
-      # eslint/electron-builder/expo -> minimatch) has no 1.x/2.x backport
-      # yet. Restore --audit-level=high once the backports land and
-      # `npm audit fix` clears it (see docs/TODO.md).
-      - run: npm audit --audit-level=critical
+      - run: npm audit --audit-level=high
       - run: npm run lint
       - run: npm run format:check
       - run: npm run build -w @afterglow/core

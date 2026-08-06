@@ -181,4 +181,4 @@ Permissions are **unchanged**. `WRITE_EXTERNAL_STORAGE` (`app.json:24`) is load-
 - The `async` on `getEditableContentUri` — vestigial, 6 call sites, no gain.
 - `mediaIdentity.ts:36` STORAGE_PREFIX aliases — defensive path parsing, not a version gate.
 - `requestLegacyExternalStorage` — plugin-owned, inert while `targetSdk ≥ 30`.
-- The rescued-date defect — `docs/TODO.md`, "A D15-rescued photo's date does not reach the Progress library scope".
+- The rescued-date defect — `docs/Feedback_m0.8.x.md` (m0.8.6), "A D15-rescued photo's date does not reach the Progress library scope".

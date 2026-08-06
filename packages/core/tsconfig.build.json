@@ -2,6 +2,11 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
+    // TS 6 stopped inferring rootDir from the input set: without this the
+    // emitted layout would follow the common source directory implicitly,
+    // which the compiler now refuses to guess (TS5011). "src" is what it
+    // always resolved to — dist/index.js, not dist/src/index.js.
+    "rootDir": "src",
     "declaration": true,
     "noEmit": false
   },

@@ -14,7 +14,14 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import {
+  InterceptingGestureDetector,
+  usePanGesture,
+  usePinchGesture,
+  useSimultaneousGestures,
+  useTapGesture,
+  VirtualGestureDetector,
+} from 'react-native-gesture-handler';
 import Animated, {
   useAnimatedProps,
   useAnimatedStyle,
@@ -54,7 +61,11 @@ import { useSQLiteContext } from 'expo-sqlite';
 import { addToShareQueue, removeFromShareQueue } from '../db/shareStore';
 import { queueOrganize, unqueueOrganize } from '../db/organizeStore';
 import { useDoubleTapZoom } from '../components/useDoubleTapZoom';
-import { panBounds } from '../lib/zoomTarget';
+import { panBounds, pinchEngaged, pinchGain } from '../lib/zoomTarget';
+
+/** Which control started the in-flight write — 'finish' is the big
+ * Keep-remaining button, everything else is 'other'. */
+type BusyOwner = 'finish' | 'other';
 
 type DeckProps = NativeStackScreenProps<RootStackParamList, 'Deck'>;
 type SinglesProps = NativeStackScreenProps<RootStackParamList, 'Singles'>;
@@ -71,7 +82,13 @@ type SharedProps = {
 };
 
 const THUMB = 52;
-const MAX_SCALE = 8;
+// 16× (Tristan, 2026-08-04). Past 1:1 pixels by design: a 50 MP frame
+// reaches one source pixel per screen pixel at ~5.7× on a 1440 px-wide
+// phone, so the top of this range magnifies interpolation rather than
+// revealing detail — wanted for inspecting a focus point, not for
+// judging sharpness. panBounds clamps to the photo's own edges, so a
+// deep zoom cannot wander off the content.
+const MAX_SCALE = 16;
 
 /** The write-error surface for the deck's DIRECT queue writes (codex r7:
  * toggleShare/toggleOrganize bypass the provider, so its decision alert
@@ -165,6 +182,8 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
     consumeCelebration,
   } = useReview();
   const [busy, setBusy] = useState(false);
+  /** Which control owns the in-flight write (see `run`). */
+  const [busyOwner, setBusyOwner] = useState<BusyOwner | null>(null);
   const [pageW, setPageW] = useState(0);
   const [comparePicker, setComparePicker] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
@@ -365,6 +384,11 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   // value, the safe bridge direction). Pans clamp to the photo's own
   // rendered edges via panBounds — 0 means not yet loaded.
   const imageAspect = useSharedValue(0);
+  // A pinch must prove itself before it may change the zoom (see
+  // lib/zoomTarget PINCH_ENGAGE_DELTA): these carry that decision, and
+  // the raw scale it was made at, across the gesture's frames.
+  const pinchLive = useSharedValue(false);
+  const pinchBase = useSharedValue(1);
 
   const resetZoom = useCallback(() => {
     scale.value = 1;
@@ -389,9 +413,19 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   // single runOnJS'd tap callback killed the process on the 2nd double
   // tap; removed, 8+ were clean. Dead ends, each verified: declaring
   // worklets 0.11 over the pin ships TWO copies of a native library
-  // (worse), and `.runOnJS(true)` trades the segfault for a TypeError in
+  // (worse), and asking for the JS thread outright (`runOnJS: true` in
+  // a gesture config) trades the segfault for a TypeError in
   // onGestureHandlerEvent (the Babel plugin treats those callbacks
-  // differently). So "is the deck zoomed?" lives ONLY in shared values:
+  // differently).
+  //
+  // Gesture Handler 3 makes this a WRITING rule, not just a design one:
+  // the worklets Babel plugin only workletizes callbacks written INLINE
+  // in a gesture's config object. Extract one to a named function — or
+  // wrap it in useCallback/useMemo — and it silently becomes a JS-thread
+  // callback, which is the crash above. Every callback below is inline
+  // for that reason.
+  //
+  // So "is the deck zoomed?" lives ONLY in shared values:
   // the overlay is always mounted and its visibility + touchability are
   // animated props derived from `scale` on the UI thread, and the stage
   // tap is a plain Pressable on the page (RN responder path, no
@@ -409,80 +443,84 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   // (a gesture rebuilt while a touch is in flight is its own crash).
   // Panning belongs to the zoom overlay, which only receives touches
   // while zoomed (see `zoomedGesture`).
-  const stageGesture = useMemo(() => {
-    return (
-      Gesture.Pinch()
-        .onUpdate((event) => {
-          scale.value = Math.min(MAX_SCALE, Math.max(1, savedScale.value * event.scale));
-          const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
-          tx.value = clampPan(tx.value, bounds.maxX);
-          ty.value = clampPan(ty.value, bounds.maxY);
-        })
-        .onEnd(() => {
-          savedScale.value = scale.value;
-          savedTx.value = tx.value;
-          savedTy.value = ty.value;
-        })
-        // onFinalize (unlike onEnd) also fires on cancellation, so a broken
-        // gesture can never strand the overlay barely above scale 1,
-        // covering the pager.
-        .onFinalize(() => {
-          // Follows onBegin, so it fires for plain taps too — do nothing
-          // when there was never a zoom to unwind.
-          if (scale.value === 1 && savedScale.value === 1) return;
-          if (scale.value <= 1.02) {
-            scale.value = withTiming(1);
-            savedScale.value = 1;
-            tx.value = withTiming(0);
-            ty.value = withTiming(0);
-            savedTx.value = 0;
-            savedTy.value = 0;
-          }
-        })
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  /** Pan + double-tap, attached to the zoom overlay, which only receives
-   * touches while zoomed (animated pointerEvents) — so the pan never
-   * competes with the pager's scroll. */
-  const zoomedGesture = useMemo(() => {
-    const pan = Gesture.Pan()
-      // A SECOND pinch (fingers lifted, then pinching again) lands on
-      // the overlay, whose detector has no pinch of its own — without
-      // this link an off-centre two-finger touch can activate the pan
-      // first and cancel the ancestor pinch, freezing the zoom level
-      // (codex r50). Simultaneous restores the pre-split behavior where
-      // pan and pinch shared one composition.
-      .simultaneousWithExternalGesture(stageGesture)
-      .minPointers(1)
-      .maxPointers(2)
-      .averageTouches(true)
-      .onUpdate((event) => {
-        if (scale.value <= 1) return;
-        const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
-        tx.value = clampPan(savedTx.value + event.translationX, bounds.maxX);
-        ty.value = clampPan(savedTy.value + event.translationY, bounds.maxY);
-      })
-      .onEnd(() => {
-        savedTx.value = tx.value;
-        savedTy.value = ty.value;
-      });
-    // m0.7 (#18): double-tap resets zoom. The timing animation carries
-    // scale back to exactly 1, which is what hides the overlay.
-    const doubleTap = Gesture.Tap()
-      .numberOfTaps(2)
-      .onEnd(() => {
+  const stageGesture = usePinchGesture({
+    onUpdate: (event) => {
+      if (!pinchLive.value) {
+        if (!pinchEngaged(event.scale)) return;
+        pinchLive.value = true;
+        pinchBase.value = event.scale;
+      }
+      const gain = pinchGain(event.scale, pinchBase.value);
+      scale.value = Math.min(MAX_SCALE, Math.max(1, savedScale.value * gain));
+      const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
+      tx.value = clampPan(tx.value, bounds.maxX);
+      ty.value = clampPan(ty.value, bounds.maxY);
+    },
+    onDeactivate: () => {
+      savedScale.value = scale.value;
+      savedTx.value = tx.value;
+      savedTy.value = ty.value;
+    },
+    // onFinalize (unlike onDeactivate) also fires on cancellation, so a
+    // broken gesture can never strand the overlay barely above scale 1,
+    // covering the pager.
+    onFinalize: () => {
+      // The engagement decision belongs to ONE pinch: left standing, the
+      // next two fingers down would resume mid-zoom from a stale base.
+      pinchLive.value = false;
+      // Follows onBegin, so it fires for plain taps too — do nothing
+      // when there was never a zoom to unwind.
+      if (scale.value === 1 && savedScale.value === 1) return;
+      if (scale.value <= 1.02) {
         scale.value = withTiming(1);
         savedScale.value = 1;
         tx.value = withTiming(0);
         ty.value = withTiming(0);
         savedTx.value = 0;
         savedTy.value = 0;
-      });
-    return Gesture.Simultaneous(pan, doubleTap);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stageGesture]);
+      }
+    },
+  });
+
+  /* Pan + double-tap, attached to the zoom overlay, which only receives
+   * touches while zoomed (animated pointerEvents) — so the pan never
+   * competes with the pager's scroll. */
+  const overlayPan = usePanGesture({
+    // A SECOND pinch (fingers lifted, then pinching again) lands on the
+    // overlay, whose detector has no pinch of its own — without this
+    // link an off-centre two-finger touch can activate the pan first
+    // and cancel the ancestor pinch, freezing the zoom level (codex
+    // r50). Simultaneous restores the pre-split behavior where pan and
+    // pinch shared one composition.
+    simultaneousWith: stageGesture,
+    minPointers: 1,
+    maxPointers: 2,
+    averageTouches: true,
+    onUpdate: (event) => {
+      if (scale.value <= 1) return;
+      const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
+      tx.value = clampPan(savedTx.value + event.translationX, bounds.maxX);
+      ty.value = clampPan(savedTy.value + event.translationY, bounds.maxY);
+    },
+    onDeactivate: () => {
+      savedTx.value = tx.value;
+      savedTy.value = ty.value;
+    },
+  });
+  // m0.7 (#18): double-tap resets zoom. The timing animation carries
+  // scale back to exactly 1, which is what hides the overlay.
+  const overlayDoubleTap = useTapGesture({
+    numberOfTaps: 2,
+    onDeactivate: () => {
+      scale.value = withTiming(1);
+      savedScale.value = 1;
+      tx.value = withTiming(0);
+      ty.value = withTiming(0);
+      savedTx.value = 0;
+      savedTy.value = 0;
+    },
+  });
+  const zoomedGesture = useSimultaneousGestures(overlayPan, overlayDoubleTap);
 
   // The overlay's whole lifecycle is UI-thread-derived from `scale`: it
   // fades in the moment a pinch pushes past 1 and swallows the pager's
@@ -506,8 +544,9 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   }));
 
   // Page taps — a plain Pressable press (RN responder system),
-  // deliberately not a Gesture.Tap, so no worklet is involved (see the
-  // bridge comment above). Double tap zooms to the tapped point; a
+  // deliberately not a tap gesture (`useTapGesture`), so no worklet is
+  // involved (see the bridge comment above). Double tap zooms to the
+  // tapped point; a
   // single tap (after the double-tap window) opens the standard
   // full-screen viewer in browse mode. Ref-dispatched so renderPage
   // stays stable.
@@ -745,9 +784,15 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   );
 
   const run = useCallback(
-    async (action: () => Promise<void>) => {
+    /** `owner` names the control that started the write, so a control can
+     * show ITS OWN progress instead of borrowing the screen's. Without
+     * it the big Keep-remaining button flashed on every chip press —
+     * label swapping to "Saving…" and the button fading to 40% for a
+     * write it had nothing to do with (Tristan, S23 pass 2026-08-04). */
+    async (action: () => Promise<void>, owner: BusyOwner = 'other') => {
       if (busy) return;
       setBusy(true);
+      setBusyOwner(owner);
       try {
         await action();
       } catch {
@@ -755,6 +800,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
         // rejection must not escape as unhandled.
       } finally {
         setBusy(false);
+        setBusyOwner(null);
       }
     },
     [busy],
@@ -831,7 +877,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
       // advance the goal for verdicts that were never written.
       const kept = await keepRest(group.groupId);
       bumpDecisions(kept);
-    });
+    }, 'finish');
   }, [group, run, keepRest, bumpDecisions]);
 
   const toggleBest = useCallback(() => {
@@ -1019,90 +1065,104 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
         </Text>
       </View>
 
-      <GestureDetector gesture={stageGesture}>
-        <View
-          style={styles.stage}
-          onLayout={(event) => {
-            setPageW(event.nativeEvent.layout.width);
-            stageW.value = event.nativeEvent.layout.width;
-            stageH.value = event.nativeEvent.layout.height;
-          }}
-        >
-          {pageW > 0 && (
-            <>
-              <View style={styles.pager}>
-                <FlatList
-                  ref={listRef}
-                  data={deckItems}
-                  keyExtractor={(i) => i.id}
-                  renderItem={renderPage}
-                  horizontal
-                  pagingEnabled
-                  showsHorizontalScrollIndicator={false}
-                  initialScrollIndex={Math.min(cursor, deckItems.length - 1)}
-                  getItemLayout={(_data, index) => ({
-                    length: pageW,
-                    offset: pageW * index,
-                    index,
-                  })}
-                  onMomentumScrollEnd={onMomentumEnd}
-                />
-              </View>
-            </>
-          )}
-          {/* Always mounted; visibility + touchability are UI-thread
-              animated props (see zoomStyle/zoomOverlayProps). The image
-              is the same URI the pager page shows, so expo-image serves
-              it from cache rather than decoding twice. */}
-          <GestureDetector gesture={zoomedGesture}>
-            {/* The opaque backdrop lives on this UNtransformed layer, so
-                it covers the stage by construction. On the transformed
-                layer it was one rounding error away from leaking: for a
-                photo that fills an axis, the content clamp is exactly
-                the coverage bound, and pixel snapping let the pager's
-                photo peek out in a sliver at the edge (device-observed
-                on both phones). The photo transforms INSIDE it; a few-px
-                edge miss now shows flat stage colour instead. */}
-            <Animated.View
-              style={[
-                StyleSheet.absoluteFill,
-                { backgroundColor: colors.surface },
-                zoomOverlayStyle,
-              ]}
-              animatedProps={zoomOverlayProps}
-            >
-              <Animated.View style={[StyleSheet.absoluteFill, zoomStyle]}>
-                <Image
-                  source={{ uri: current.uri }}
-                  style={StyleSheet.absoluteFill}
-                  contentFit="contain"
-                  recyclingKey={`zoom-${current.id}`}
-                  onLoad={(event) => {
-                    const { width, height } = event.source;
-                    if (width > 0 && height > 0) imageAspect.value = width / height;
-                  }}
-                />
+      {/* VIRTUAL detectors under ONE intercepting host (Gesture Handler
+          3). The plain `GestureDetector` is now a HOST component, and
+          two things in this tree cannot survive one: the pager's native
+          scroll (a host detector above it swallows the horizontal drag —
+          the deck could not be swiped at all, caught by the UI gate),
+          and the always-mounted zoom overlay, whose touchability is an
+          ANIMATED pointerEvents prop on the Animated.View — a host
+          detector wrapped around it is not covered by that prop, so it
+          would eat every stage touch while unzoomed. `VirtualGestureDetector`
+          is the RNGH2-shaped detector: it attaches gestures to the child
+          it already has instead of inserting a view, so the hierarchy —
+          and both behaviours above — stay exactly as they were. */}
+      <InterceptingGestureDetector>
+        <VirtualGestureDetector gesture={stageGesture}>
+          <View
+            style={styles.stage}
+            onLayout={(event) => {
+              setPageW(event.nativeEvent.layout.width);
+              stageW.value = event.nativeEvent.layout.width;
+              stageH.value = event.nativeEvent.layout.height;
+            }}
+          >
+            {pageW > 0 && (
+              <>
+                <View style={styles.pager}>
+                  <FlatList
+                    ref={listRef}
+                    data={deckItems}
+                    keyExtractor={(i) => i.id}
+                    renderItem={renderPage}
+                    horizontal
+                    pagingEnabled
+                    showsHorizontalScrollIndicator={false}
+                    initialScrollIndex={Math.min(cursor, deckItems.length - 1)}
+                    getItemLayout={(_data, index) => ({
+                      length: pageW,
+                      offset: pageW * index,
+                      index,
+                    })}
+                    onMomentumScrollEnd={onMomentumEnd}
+                  />
+                </View>
+              </>
+            )}
+            {/* Always mounted; visibility + touchability are UI-thread
+                animated props (see zoomStyle/zoomOverlayProps). The image
+                is the same URI the pager page shows, so expo-image serves
+                it from cache rather than decoding twice. */}
+            <VirtualGestureDetector gesture={zoomedGesture}>
+              {/* The opaque backdrop lives on this UNtransformed layer, so
+                  it covers the stage by construction. On the transformed
+                  layer it was one rounding error away from leaking: for a
+                  photo that fills an axis, the content clamp is exactly
+                  the coverage bound, and pixel snapping let the pager's
+                  photo peek out in a sliver at the edge (device-observed
+                  on both phones). The photo transforms INSIDE it; a few-px
+                  edge miss now shows flat stage colour instead. */}
+              <Animated.View
+                style={[
+                  StyleSheet.absoluteFill,
+                  { backgroundColor: colors.surface },
+                  zoomOverlayStyle,
+                ]}
+                animatedProps={zoomOverlayProps}
+              >
+                <Animated.View style={[StyleSheet.absoluteFill, zoomStyle]}>
+                  <Image
+                    source={{ uri: current.uri }}
+                    style={StyleSheet.absoluteFill}
+                    contentFit="contain"
+                    recyclingKey={`zoom-${current.id}`}
+                    onLoad={(event) => {
+                      const { width, height } = event.source;
+                      if (width > 0 && height > 0) imageAspect.value = width / height;
+                    }}
+                  />
+                </Animated.View>
               </Animated.View>
-            </Animated.View>
-          </GestureDetector>
-          <View style={styles.posBadge} pointerEvents="none">
-            <Text style={styles.posBadgeText}>
-              {cursor + 1}/{keepCount}
-            </Text>
+            </VirtualGestureDetector>
+            <View style={styles.posBadge} pointerEvents="none">
+              <Text style={styles.posBadgeText}>
+                {cursor + 1}/{keepCount}
+              </Text>
+            </View>
+            <View style={styles.timeBadge} pointerEvents="none">
+              <Text style={styles.timeBadgeText}>
+                {formatClockPrecise(current.timestamp, needMs[cursor] ?? false)}
+              </Text>
+            </View>
+            <BadgeCluster
+              badges={badgesFor(current)}
+              size={24}
+              accent={theme.accent}
+              style={styles.flagBadge}
+            />
           </View>
-          <View style={styles.timeBadge} pointerEvents="none">
-            <Text style={styles.timeBadgeText}>
-              {formatClockPrecise(current.timestamp, needMs[cursor] ?? false)}
-            </Text>
-          </View>
-          <BadgeCluster
-            badges={badgesFor(current)}
-            size={24}
-            accent={theme.accent}
-            style={styles.flagBadge}
-          />
-        </View>
-      </GestureDetector>
+        </VirtualGestureDetector>
+      </InterceptingGestureDetector>
 
       <ScrollView
         horizontal
@@ -1357,12 +1417,12 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
 
           <BigButton
             label={
-              busy
+              busyOwner === 'finish'
                 ? 'Saving…'
                 : `Keep remaining (${singlesMode ? singlesPending : aliveItems.length})`
             }
             color={colors.keep}
-            disabled={busy || (singlesMode ? singlesPending === 0 : aliveItems.length === 0)}
+            disabled={singlesMode ? singlesPending === 0 : aliveItems.length === 0}
             onPress={() =>
               singlesMode
                 ? day &&
@@ -1372,7 +1432,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
                     // moved singles in or out mid-view (codex r8).
                     const kept = await keepAllSingles(day, range ?? null);
                     bumpDecisions(kept);
-                  })
+                  }, 'finish')
                 : finishGroup()
             }
           />

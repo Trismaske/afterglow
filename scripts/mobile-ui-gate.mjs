@@ -123,6 +123,44 @@ function scrollDown() {
   shell('input swipe 540 1700 540 600 300');
 }
 
+/** Scroll the current page up one screenful. */
+function scrollUp() {
+  shell('input swipe 540 600 540 1700 300');
+}
+
+/** Wait for Home, scrolling BACK UP to find it.
+ *
+ * "Daily goal" is Home's first card, so several steps use it to mean "we
+ * are on Home" — matched as a PREFIX, because the card renames itself to
+ * "Daily goal reached 🎉" once today's count passes the goal, and this
+ * walk makes ~50 decisions of its own. Anchored exactly, the gate stopped
+ * recognising Home the moment its own reviewing crossed the S23's goal of
+ * 53, and every later step timed out on a perfectly healthy screen.
+ *
+ * The other half: the gate itself scrolls Home down to reach the
+ * Progress row, and on a phone with many day cards Home stays where it
+ * was left. The card is then merely off-screen, and every later step
+ * inherits the misreading: the deck step concluded "no unreviewed photos
+ * on target" on an S10e whose Home was showing "27 to review" one
+ * screenful below (2026-08-04). Being on Home and being at the TOP of
+ * Home are different claims; this asserts the first by restoring the
+ * second. */
+async function waitForHome(timeoutMs = 40000) {
+  const deadline = Date.now() + timeoutMs;
+  for (let scrolls = 0; ; scrolls += 1) {
+    const nodes = dumpUi();
+    if (nodes.length > 0 && findNode(nodes, /^Daily goal/)) return;
+    if (Date.now() > deadline) throw new Error('timed out waiting for the top of Home');
+    // Scroll unconditionally rather than testing "are we on Home first?":
+    // Home's own "Afterglow" title scrolls away with its content, so the
+    // obvious marker is absent in exactly the case this exists to fix.
+    // A scroll on some other screen is harmless — the deadline still
+    // reports the real failure, that Home never appeared.
+    if (scrolls < 8) scrollUp();
+    await new Promise((r) => setTimeout(r, 400));
+  }
+}
+
 /** Swipe the deck's pager one photo to the left, in DEVICE coordinates
  * (the two test phones differ by 1080 vs 1440 wide). */
 function swipeDeckLeft() {
@@ -136,6 +174,30 @@ function swipeDeckRight() {
   const { width, height } = screenSize();
   const y = Math.round(height * 0.38);
   shell(`input swipe ${Math.round(width * 0.12)} ${y} ${Math.round(width * 0.8)} ${y} 250`);
+}
+
+/** Double-tap the middle of the photo stage.
+ *
+ * Two separate `adb shell input tap` calls land ~500 ms apart — past the
+ * app's 300 ms DOUBLE_TAP_MS window, so they read as two single taps and
+ * nothing zooms (measured on the API 30 emulator). The two `input`
+ * processes are therefore started TOGETHER on the device, the second
+ * delayed by a fraction of the window, so the gap is the sleep rather
+ * than two JVM start-ups. */
+function doubleTapStage() {
+  const { width, height } = screenSize();
+  const x = Math.round(width / 2);
+  const y = Math.round(height * 0.38);
+  shell(`input tap ${x} ${y} & (sleep 0.12; input tap ${x} ${y}); wait`);
+}
+
+/** The deck/viewer pager position as [current, total], or null when no
+ * indicator is on screen. */
+function pagerPosition(nodes = dumpUi()) {
+  const node = findNode(nodes, /^\d+\/\d+$/);
+  if (!node) return null;
+  const [pos, total] = node.text.split('/').map(Number);
+  return [pos, total];
 }
 
 /** Poll until a node matching `re` appears; returns { node, ms }. */
@@ -285,7 +347,7 @@ shell('input keyevent KEYCODE_WAKEUP');
 shell('wm dismiss-keyguard 2>/dev/null || true');
 shell(`am start -n ${APP_ID}/.MainActivity >/dev/null`);
 
-await step('home renders (goal card)', 20000, () => waitFor(/^Daily goal$/, 20000));
+await step('home renders (goal card)', 20000, () => waitFor(/^Daily goal/, 20000));
 // Give the startup refresh a moment so queue-dependent steps see truth.
 await new Promise((r) => setTimeout(r, 3000));
 
@@ -337,7 +399,7 @@ for (const [label, heading] of [
 }
 await step('home button returns home', null, async () => {
   await tapText(/^Home$/, 20000);
-  await waitFor(/^Daily goal$/, 20000);
+  await waitForHome();
 });
 
 // Stats (m0.8.2): three tabs, opening on Activity. Each tab loads its own
@@ -369,7 +431,7 @@ await step('stats Habits tab loads its own numbers', null, async () => {
 });
 await step('stats returns to Home', null, async () => {
   shell('input keyevent KEYCODE_BACK');
-  await waitFor(/^Daily goal$/, 20000);
+  await waitForHome();
 });
 
 // Progress (m0.8.2 redesign): the chips are the bar's legend and the grid
@@ -416,11 +478,15 @@ await step('progress page opens with both chip rows', null, async () => {
   await waitFor(/^Share$/, 20000, 'action chips');
   await waitFor(/^PHOTOS · /, 20000, 'grid header');
   shell('input keyevent KEYCODE_BACK');
-  await waitFor(/^Daily goal$/, 20000);
+  await waitForHome();
 });
 
 // Deck flow — requires unreviewed photos on the target.
 await ensureForeground();
+// Restore Home's top BEFORE reading the CTA: absent, the else-branch
+// below reports "no unreviewed photos on target — seed the target
+// first", which is a claim about the corpus made from a scroll position.
+await waitForHome().catch(() => {});
 const cta = await waitFor(/^Continue reviewing$|^All reviewed$/, 20000, 'review CTA').catch(
   () => null,
 );
@@ -481,7 +547,7 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
     // find a big-enough "N pending" and tap the title next to it.
     await waitFor(/^\d+\/\d+$/, 20000, 'pager indicator'); // the CTA landed in a deck
     shell('input keyevent KEYCODE_BACK');
-    await waitFor(/^Daily goal$/, 20000, 'home');
+    await waitForHome();
     await tapText(/\d+ to review$/, 20000);
     await waitFor(/^Review$/, 20000, 'overview heading');
     const bigCard = () => {
@@ -576,6 +642,100 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
     }
   });
 
+  // ZOOM, asserted through the pager rather than through pixels. The
+  // zoom overlay is always mounted and its touchability is an animated
+  // `pointerEvents` prop, so "is it zoomed?" has no text to read — but
+  // it has a BEHAVIOUR: while zoomed the overlay swallows the stage, so
+  // a horizontal drag pans the photo instead of paging. That makes one
+  // chain prove four things without a pixel or a testID: the double-tap
+  // zoomed (or the swipe would have paged), the overlay is taking
+  // touches, the second double-tap reset it (the reset is a real tap
+  // GESTURE — the migrated `useTapGesture`), and paging came back.
+  //
+  // Gesture Handler 3 is why this earns a step: its detector became a
+  // host component, and the first migration attempt silently broke both
+  // halves — the pager could not be swiped at all, and an overlay
+  // detector wrapped outside the animated prop ate every stage touch.
+  await dependentStep(
+    'deck double-tap zooms, and the zoomed stage swallows the pager',
+    null,
+    async () => {
+      const before = pagerPosition();
+      if (!before) throw new Error('no pager indicator on the deck');
+      const [pos, total] = before;
+      if (total < 2) throw new Error(`deck has ${total} photo(s) — need 2+ to detect paging`);
+      // Page AWAY from whichever end we are on. The step before this one
+      // leaves the pager wherever its swipes ended — on the S23 that was
+      // the last photo, where a leftward swipe cannot advance and the
+      // final assertion could never have passed.
+      const swipeAway = pos >= total ? swipeDeckRight : swipeDeckLeft;
+
+      doubleTapStage();
+      await new Promise((r) => setTimeout(r, 1200));
+      swipeAway();
+      await new Promise((r) => setTimeout(r, 1200));
+      const zoomed = pagerPosition();
+      if (!zoomed) throw new Error('pager indicator vanished while zoomed');
+      if (zoomed[0] !== pos)
+        throw new Error(
+          `zoomed stage still paged (${pos}/${total} → ${zoomed[0]}/${zoomed[1]}) — the double tap did not zoom, or the overlay is not taking touches`,
+        );
+
+      doubleTapStage(); // reset — the overlay's own double-tap gesture
+      await new Promise((r) => setTimeout(r, 1200));
+      swipeAway();
+      await new Promise((r) => setTimeout(r, 1200));
+      const after = pagerPosition();
+      if (!after) throw new Error('pager indicator vanished after the zoom reset');
+      if (after[0] === pos)
+        throw new Error(
+          `pager still stuck at ${pos}/${total} after the reset — the zoom never returned to 1x, so the deck is frozen behind the overlay`,
+        );
+    },
+  );
+
+  // COMPARE's tap-to-flip. The stage there is a Pressable and the flip
+  // rides the JS responder path UNDER the gesture detector, which is a
+  // different arrangement from the deck's and broke independently under
+  // Gesture Handler 3's host detector. Run before the cull, so every
+  // member is still an eligible candidate and the opponent PICKER is on
+  // the path too (it opens whenever more than two are eligible); the
+  // cull step below re-finds its own position afterwards.
+  await dependentStep('compare flips between the two photos', null, async () => {
+    // The button reads "Compare with…" once more than two candidates are
+    // eligible (it then opens the opponent picker) and plain "Compare"
+    // otherwise — the walk must accept whichever this unit renders.
+    await tapText(/^Compare( with…)?$/, 20000);
+    const { node: landed } = await waitFor(
+      /^(Actions apply to photo \d+|Compare with…)$/,
+      20000,
+      'compare screen or opponent picker',
+    );
+    if (landed.text === 'Compare with…') {
+      // Thumbnails are labelled with their DECK position; take the first
+      // one below the picker's title.
+      const thumb = dumpUi()
+        .filter((n) => /^\d+$/.test(n.text) && n.y > landed.y)
+        .sort((a, b) => a.y - b.y || a.x - b.x)[0];
+      if (!thumb) throw new Error('opponent picker showed no numbered candidate');
+      tap(thumb);
+    }
+    const { node: first } = await waitFor(/^Actions apply to photo \d+$/, 20000, 'compare screen');
+    const { width, height } = screenSize();
+    shell(`input tap ${Math.round(width / 2)} ${Math.round(height * 0.38)}`);
+    const deadline = Date.now() + 8000;
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 600));
+      const now = findNode(dumpUi(), /^Actions apply to photo \d+$/);
+      if (now && now.text !== first.text) break;
+      if (Date.now() > deadline)
+        throw new Error(`compare stage tap did not flip (still "${first.text}")`);
+    }
+    // Leave without writing a verdict — this step must not decide anything.
+    await tapText(/^Close — no verdict$/, 20000);
+    await waitFor(/^\d+\/\d+$/, 20000, 'back on the deck');
+  });
+
   await dependentStep('deck Cull advances the pager', null, async () => {
     // The swipe step above legitimately leaves the pager past the start,
     // but the v18 badge assertion below depends on culling the START
@@ -648,7 +808,7 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
   });
   await dependentStep('back home: the badges tell both halves of the v18 rule', null, async () => {
     for (let i = 0; i < 4; i += 1) {
-      if (findNode(dumpUi(), /^Daily goal$/)) break;
+      if (findNode(dumpUi(), /^Daily goal/)) break;
       shell('input keyevent KEYCODE_BACK');
       await new Promise((r) => setTimeout(r, 700));
     }
@@ -706,7 +866,7 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
     // best-effort return so the deck-independent steps below still start
     // from a known screen instead of cascading misleading timeouts.
     for (let i = 0; i < 4; i += 1) {
-      if (findNode(dumpUi(), /^Daily goal$/)) break;
+      if (findNode(dumpUi(), /^Daily goal/)) break;
       shell('input keyevent KEYCODE_BACK');
       await new Promise((r) => setTimeout(r, 700));
     }
@@ -749,7 +909,7 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
     }
     // Home is the raised CENTER BUTTON, not a back target.
     await tapText(/^Home$/, 20000);
-    await waitFor(/^Daily goal$/, 20000);
+    await waitForHome();
   });
 
   // The timeline overview is reached through the queue-breakdown link
@@ -759,7 +919,7 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
     await waitFor(/^Review$/, 20000, 'overview heading');
     await waitFor(/^(Group|Singles) ·/, 20000, 'timeline cards');
     shell('input keyevent KEYCODE_BACK');
-    await waitFor(/^Daily goal$/, 20000);
+    await waitForHome();
   });
 
   // The album picker moved from the deck to the Organize queue (m0.8.2
@@ -779,13 +939,52 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
       await waitFor(/assign albums here/, 8000, 'organize empty state');
     }
     await tapText(/^Home$/, 20000);
-    await waitFor(/^Daily goal$/, 20000);
+    await waitForHome();
   });
 
   await step('cull list opens', null, async () => {
     await tapText(/^Cull list$/);
     await waitFor(/\d+ staged ·/, 20000, 'cull list screen');
     shell('input keyevent KEYCODE_BACK');
+  });
+
+  // The STANDARD VIEWER's own pager (PhotoViewer — the one every grid,
+  // queue and History row opens). It is a second pager under a second
+  // gesture stack, and nothing else in this walk touches it: the deck's
+  // swipe passing says nothing about it. Reached through History because
+  // its rows are addressable by their date text, and by this point the
+  // walk's own decisions have put rows there.
+  await step('the standard viewer pages between photos', null, async () => {
+    await tapText(/^History$/, 20000);
+    await waitFor(/^History$/, 20000, 'history screen');
+    // Match the row by its "· HH:MM" tail, never by the date's word
+    // order: `formatDayClock` builds the date half with
+    // `toLocaleDateString(undefined, …)`, so it follows the DEVICE
+    // locale — "Aug 4 · 9:18 AM" on the emulator, "04 Aug · 10:32" on
+    // the S23. Anchoring on the month-first spelling failed the S23 on a
+    // feed that was plainly full of rows.
+    const row = findNode(dumpUi(), / · \d{1,2}:\d{2}/);
+    if (!row) throw new Error('history feed showed no photo rows');
+    tap(row);
+    const opened = await waitFor(/^\d+\/\d+$/, 20000, 'viewer pager indicator');
+    const [pos, total] = opened.node.text.split('/').map(Number);
+    if (total >= 2) {
+      const { width, height } = screenSize();
+      const y = Math.round(height * 0.4);
+      const deadline = Date.now() + 15000;
+      for (let swipes = 0; ; swipes += 1) {
+        shell(`input swipe ${Math.round(width * 0.85)} ${y} ${Math.round(width * 0.15)} ${y} 250`);
+        await new Promise((r) => setTimeout(r, 1000));
+        const now = pagerPosition();
+        if (now && now[0] !== pos) break;
+        if (swipes >= 2 || Date.now() > deadline)
+          throw new Error(`viewer stuck at ${pos}/${total} — its pager cannot be swiped`);
+      }
+    }
+    shell('input keyevent KEYCODE_BACK');
+    await new Promise((r) => setTimeout(r, 600));
+    shell('input keyevent KEYCODE_BACK');
+    await waitForHome();
   });
 } else {
   // Distinguish "the target is fully reviewed" (a real seeding problem)

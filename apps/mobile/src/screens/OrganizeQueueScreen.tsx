@@ -312,7 +312,7 @@ export function OrganizeQueueScreen(_props: Props) {
           // explanation below, and nothing durable holds either —
           // photo_actions has no message column, and adding one is a
           // schema reset for a string the retry regenerates on demand
-          // (docs/TODO.md). So the dialog is raised while we still have
+          // (docs/Errors_design.md). So the dialog is raised while we still have
           // them, from the run that produced them.
           for (const outcome of outcomes) {
             if (outcome.status !== 'error' && outcome.status !== 'unsupported') continue;

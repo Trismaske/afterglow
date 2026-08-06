@@ -26,7 +26,7 @@ The only path whose behaviour changes is the album catalog on a device with **no
 
 `targetSdkVersion` and `compileSdkVersion` do not move — but they are now **pinned** at their current 36 rather than left following Expo's default (D8, §3.1).
 
-Not in scope: the schema, the state model, and every queue. The rescued-date defect found during this release's spikes was deliberately scoped OUT and lives fully designed at `docs/TODO.md` ("A D15-rescued photo's date does not reach the Progress library scope").
+Not in scope: the schema, the state model, and every queue. The rescued-date defect found during this release's spikes was deliberately scoped OUT and lives fully designed in `docs/Feedback_m0.8.x.md`, scheduled into m0.8.6 ("A D15-rescued photo's date does not reach the Progress library scope").
 
 One small addition that is **not** legacy removal rides along: day labels always carrying the year (§10). It is one line plus tests for a pure function, it touches nothing §4 touches, and it is what makes the parked defect's eventual fix verifiable by eye.
 
@@ -488,7 +488,7 @@ Version markers that tell testers what a release changed are the documented exce
 | `PLAN.md:181` | m0.9 is already rescoped to Videos (+ per-ABI splits, visual group vet). **No edit needed** — it was already done in commit `2febe5b`. |
 | `apps/mobile/README.md` | §6.4. |
 | `apps/mobile/AGENTS.md` | Two map rows carry legacy claims: `sources.ts / sourceCatalog.ts` ("the pre-API-30 expo fallback yields primary-only entries" — doubly wrong once deleted, since m0.8.3 had already corrected the primary-only claim) and the `media-store-actions` description of the API 24+ mounted-volume arm. Also drop `sourceDirOfUri` from any helper listing. |
-| `docs/TODO.md` | **No legacy edits** — swept for legacy-conditioned entries and found none; the two "permanent delete" hits are about a *user* deleting outside the app, not our floor. Two entries were **added** from this release's spikes, both already applied: "Capture-time truth" gained the ARW mtime-dating finding, and **"A D15-rescued photo's date does not reach the Progress library scope" carries the rescued-date defect, fully designed and scoped out of this release**. |
+| `docs/TODO.md` | **No legacy edits** — swept for legacy-conditioned entries and found none; the two "permanent delete" hits are about a *user* deleting outside the app, not our floor. Two entries were **added** from this release's spikes, both already applied: "Capture-time truth" gained the ARW mtime-dating finding, and **the rescued-date defect was written up fully designed and scoped out of this release as "A D15-rescued photo's date does not reach the Progress library scope" — since promoted into m0.8.6 (`docs/Feedback_m0.8.x.md`)**. |
 | `docs/STATE_MODEL.md` | No edit — it contains no version claims. |
 | `docs/REVIEW_CLASSES.md` | **Done 2026-07-30** — classes 41-43 added under a new "Deletions and dual sources" heading: a dead branch left behind a raised floor, an inert-looking declaration a dependency treats as load-bearing, and two engines behind one screen. Applied ahead of implementation deliberately: they are lessons already learned, and 41 and 42 guide this release's own work. |
 | `handoff-m0.8.4-drop-legacy-android.md` | **Already deleted** (Tristan, 2026-07-31) — it existed only to carry a session boundary, and this plan supersedes it. Its one wrong claim is corrected here: it said the catalog fallback's deletion takes "its tests" with it, but `sourceCatalog.ts` has none (§4.3). |
@@ -613,7 +613,7 @@ Three checks: MediaStore indexes NEF/ARW/JPG and not CR3; the scan embeds the NE
 
 **Known hole:** the corpus contains no DNG, so the README's "DNG (incl. Samsung Expert RAW) — Fully supported" row remains a single-device (S23 / Android 16) measurement, untouched by either target. Either source a DNG or narrow the README's wording to the formats actually verified — do not leave it implied.
 
-**Defect surfaced and scoped OUT** (reproduces on the shipped build, so neither created nor cured here): a D15-rescued photo shows its *modification* time on the Progress library grid and is missing from its own capture-month filter. Fully investigated on API 30, 31 and 36 during these spikes, with an agreed six-change fix — parked at `docs/TODO.md` ("A D15-rescued photo's date does not reach the Progress library scope") rather than admitted here, so this release stays a pure deletion.
+**Defect surfaced and scoped OUT** (reproduces on the shipped build, so neither created nor cured here): a D15-rescued photo shows its *modification* time on the Progress library grid and is missing from its own capture-month filter. Fully investigated on API 30, 31 and 36 during these spikes, with an agreed six-change fix — designed in `docs/Feedback_m0.8.x.md` and scheduled into m0.8.6 ("A D15-rescued photo's date does not reach the Progress library scope") rather than admitted here, so this release stays a pure deletion.
 
 **Device matrix (S23 `R5CW20KBA2W`, S10e `RF8M72Q4FGE` with the microSD, volume `0a91-e18d`).**
 Full matrix, not a light pass — §5.3 explains why. The edits land in the m0.8.3 mount/scan contract, and the S10e is the only device that exercises a second volume at all.
@@ -662,7 +662,7 @@ Nothing in this plan is an unvetted assumption; implement against the sections a
 **REJECTED by measurement** (2026-07-30 gate-0 spike): removing `WRITE_EXTERNAL_STORAGE`.
 It is load-bearing for `expo-media-library` reads on API 30–32, and its removal leaves the app permanently unable to scan on Android 11/12 — §4.6 carries the evidence and the control experiment. Recorded rather than deleted so nobody re-proposes it from the same plausible reasoning.
 
-**Scoped out to `docs/TODO.md`:** the rescued-date read-source defect, fully designed, as "A D15-rescued photo's date does not reach the Progress library scope"; and ARW capture dates coming from file mtime rather than EXIF, appended to "Capture-time truth". Both were found by this release's spikes; neither is legacy removal.
+**Scoped out:** the rescued-date read-source defect, fully designed, now scheduled into m0.8.6 as "A D15-rescued photo's date does not reach the Progress library scope" (`docs/Feedback_m0.8.x.md`); and ARW capture dates coming from file mtime rather than EXIF, appended to "Capture-time truth". Both were found by this release's spikes; neither is legacy removal.
 
 ---
 

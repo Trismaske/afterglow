@@ -1,6 +1,7 @@
 # Error surfacing across the platform boundaries — design
 
 **Status:** DRAFT, not decision-complete. §6 lists the open decisions; none has been put to Tristan yet, and the doc should not be implemented before they are settled.
+**Release:** m0.8.7 (Tristan, 2026-08-04) — three of its four boundaries are queue screens, which is that release's subject. Run the §6 grilling EARLY in the release: §7's phases are provisional pending those answers. See [Feedback_m0.8.x.md](Feedback_m0.8.x.md).
 **Audience:** Tristan and the implementing agent.
 **Deliverable:** one contract for what the app says when Android refuses, applied at every boundary where an OS refusal can be systematic rather than transient.
 

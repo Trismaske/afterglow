@@ -104,6 +104,38 @@ dynamic; never save one in a script. After reinstalling the workstation, its
 new ADB key must be paired again. The old entry can be removed from the phone's
 **Paired devices** list.
 
+### When the port has rotated and mDNS cannot find it
+
+`discover` asks ADB for mDNS services, and mDNS is link-local, so it finds
+nothing across a VPN or tailnet. The catch is that this holds even when the
+phone sits on the same `/24` as the workstation: with a VPN client capturing the
+phone's interface — Tailscale on both test phones — the phone never advertises
+`_adb-tls-connect._tcp` on the LAN at all, which is what `avahi-browse` reports
+here. So moving the phones onto LAN addresses does not fix discovery; the VPN
+does not care which address you dial.
+
+Turning the VPN off on the phone restores mDNS on the local network, and is the
+fallback worth remembering if the tailnet is ever unavailable. It is not needed
+for the two commands below, which work with the VPN on.
+
+Two things that do work, wherever the phone is reachable:
+
+```bash
+scripts/android-device.sh find 100.104.71.0    # probe for the current port
+scripts/android-device.sh pin SM-S918B         # then fix it at 5555
+```
+
+`find` probes ports directly and connects to the one that answers — a phone in
+wireless-debugging mode listens on two, and only the connection service accepts
+a connect. `pin` then moves the phone to the fixed port 5555, so the address
+stops moving until the phone reboots.
+
+`pin` is worth understanding before using it: port 5555 is the classic ADB
+daemon, authorised by this workstation's ADB key but outside the TLS pairing.
+Keep it to a private network and a dedicated test phone — the same standard the
+top of this guide sets. Re-enable wireless debugging and re-run `find` after a
+reboot.
+
 ## 4. Address the intended device
 
 Always specify a device when more than one phone or emulator is online.

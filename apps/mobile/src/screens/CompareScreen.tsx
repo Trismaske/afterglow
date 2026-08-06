@@ -85,6 +85,12 @@ function surfaceQueueWriteError(error: unknown): void {
  * no verdict — repeated burst duels pick best/worst, they do not keep.
  * Eligibility is undecided-or-KEPT (F11), so a duel can re-decide a
  * prior keep; "Cull N" always just stages the visible photo.
+ *
+ * m0.8.3: the whole-table claim is judged over the RENDERED reachable
+ * table — the deck's load-time mounted snapshot rides into the write
+ * (PersistDecisionExtras.mounted, store-revalidated) — so a hidden
+ * unreachable member neither vetoes nor joins a verdict; its own
+ * question waits for remount.
  */
 export function CompareScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();

@@ -19,7 +19,9 @@ import { formatBytes } from '../lib/format';
 type Props = NativeStackScreenProps<RootStackParamList, 'Summary'>;
 
 /** Daily summary: the "done for today" moment (m0.8: day-based —
- * decisions complete as you swipe; the gate-4 daily goal builds on it). */
+ * decisions complete as you swipe; the gate-4 daily goal builds on it).
+ * Today's numbers plus the lifetime totals and the goal-based streaks
+ * (current / longest). */
 export function SummaryScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();

@@ -1,11 +1,11 @@
 /**
- * Settings (m0.4, grown in m0.5), reached from the gear on Home:
- * photo source (→ the existing picker), the m0.5 "Sessions" section
- * (max photos per session / don't-split-groups / draw order —
- * accent color
- * (accentTheme.ts + ThemeProvider, live-applied), a reset for
- * suppressed confirmation dialogs, and the app version. Values persist
- * in the m0.3.1 settings table.
+ * Settings, reached from the gear on Home: photo source (→ the existing
+ * picker, with per-volume unreachable tags and "Forget this card" rows),
+ * daily-goal chips + the validated custom-goal dialog, the "Keeping up"
+ * coverage chips, accent color (accentTheme.ts + ThemeProvider,
+ * live-applied), the Library scan status row with manual rescan, a reset
+ * for suppressed confirmation dialogs, and the app version. Values
+ * persist in the m0.3.1 settings table.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {

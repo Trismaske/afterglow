@@ -234,7 +234,8 @@ function nextDayKey(key: string): string {
  * and streaks read — decision days, so a re-decide re-stamps like
  * everywhere else). The streak definition matches goalStreaks': a run
  * of CONSECUTIVE calendar days each reaching the goal — but unbounded,
- * where the Home/Activity streak window is 120 days.
+ * where the Home/Activity streak window is 120 days. Records only:
+ * there is deliberately NO days-since-goal guilt counter.
  */
 export function personalRecords(
   reviewedByDay: ReadonlyMap<string, number>,

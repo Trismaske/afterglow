@@ -8,10 +8,11 @@
  * the first unreviewed member is "next"; screens keep any transient
  * browsing position locally.
  *
- * Verdicts (decision 2): keep = 'done' at swipe time; cull stages the
- * durable global cull queue; to-edit flags + queues; tapping the active
- * verdict clears back to 'unreviewed'. Un-staging a cull re-decide lands
- * on 'done'; CullList "Restore" lands on 'unreviewed'.
+ * Verdicts (decision 2): keep = 'kept' at swipe time; cull stages the
+ * durable global cull queue; the Edit chip queues an edit ACTION without
+ * touching the verdict; tapping the active verdict clears back to
+ * 'unreviewed'. Un-staging a cull re-decide lands on 'kept'; CullList
+ * "Restore" lands on 'unreviewed'.
  *
  * RESPONSIVENESS (m0.8.1): a decision write resolves when its transaction
  * COMMITS. The matching optimistic patch (lib/reviewPatch.ts — exact SQL
@@ -188,7 +189,7 @@ interface ReviewContextValue {
   /** A decision write failed — the row is unchanged; retry the action. */
   writeError: string | null;
   clearWriteError: () => void;
-  /** Verdict writes (decision 2 semantics; 'keep' → done). The optional
+  /** Verdict writes (decision 2 semantics; 'keep' → kept). The optional
    * expected assignment (group id, or null for a single) is validated in
    * the transaction — a scan reassignment between render and tap must
    * reject rather than freeze a group the user never reviewed;
@@ -204,7 +205,7 @@ interface ReviewContextValue {
    * keep leaves pending actions alone; to_edit starts a fresh cycle; both
    * resolve pending copy matches. */
   redecideDecided: (assetId: string, target: 'keep' | 'to_edit') => Promise<void>;
-  /** Finish a group: every remaining unreviewed member keeps (done). */
+  /** Finish a group: every remaining unreviewed member keeps (kept). */
   /** Resolves to the number actually kept (codex r10 — see keepAllSingles). */
   keepRest: (groupId: number) => Promise<number>;
   markBest: (groupId: number, assetId: string | null) => Promise<void>;

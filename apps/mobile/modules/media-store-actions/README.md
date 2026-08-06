@@ -1,12 +1,11 @@
 # media-store-actions (local Expo module)
 
-MediaStore actions for moving photos to the system trash and changing the
-system favourite flag. Android owns the confirmation sheet; a cancelled
-sheet is returned separately from an operational failure.
+MediaStore actions that move photos to the system trash and set the system favourite flag.
+Android owns the confirmation sheet.
+A cancelled sheet returns separately from an operational failure.
 
-The module reports `unsupported` when it is absent — Expo Go, or a
-development client built without it. That is the only remaining cause:
-since m0.8.4 the app's own floor is API 30, so every version gate this
-module carried is gone. It never falls back to permanent delete.
+The module reports `unsupported` only when it is absent: Expo Go, or a development client built without it.
+The app's floor is API 30 (since m0.8.4), so the module has no version gates.
+It never falls back to a permanent delete.
 
-Native changes require a development-client rebuild (`npx expo run:android`).
+If you change native code, rebuild the development client (`npx expo run:android`).

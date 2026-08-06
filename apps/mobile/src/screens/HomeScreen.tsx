@@ -1,3 +1,13 @@
+/**
+ * Home — the raised center tab: daily-goal ring + streaks, the day rows,
+ * and the doors to everything else. This screen's contracts are mostly
+ * documented at their render sites below; two that are not:
+ * - The scan-status line renders ONLY while a scan runs or has failed —
+ *   an idle healthy scan says nothing here (Settings' Library-scan row
+ *   is the standing "are my numbers current?" surface).
+ * - The title-row icons open Stats, History and Settings; the four
+ *   action queues live on the tab bar instead of Home rows.
+ */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';

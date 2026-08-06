@@ -26,10 +26,10 @@ type Props = MainTabScreenProps<'EditQueue'>;
  * The to-edit queue (PLAN.md: Android has no virtual gallery albums, so
  * the queue lives in-app). Every photo flagged "needs edit", across all
  * days. Two explicit launch buttons per row (m0.7 item A, tester
- * decision): **Edit** fires write-request-first ACTION_EDIT (Google
- * Photos-style editors); **Gallery** opens the read-only viewer whose own
- * edit button has its own write powers (Samsung Gallery-style). Mark done
- * is always available manually (edit *detection* is m0.3).
+ * decision): **Edit here** fires write-request-first ACTION_EDIT (Google
+ * Photos-style editors); **View only** opens the read-only viewer whose
+ * own edit button has its own write powers (Samsung Gallery-style). Mark
+ * done is always available manually (edit *detection* is m0.3).
  */
 export function EditQueueScreen(_props: Props) {
   const insets = useSafeAreaInsets();

@@ -415,6 +415,9 @@ export async function loadCandidatesCreatedBetween(
  * — a resolved uri can silently address another volume's photo, and
  * every action (trash, favourite, edit, share, presence, EXIF read)
  * flows through here.
+ *
+ * Deliberately still async (m0.8.4): the body no longer awaits, but
+ * de-asyncing is churn across every caller for no gain.
  */
 export async function getEditableContentUri(assetId: string): Promise<string> {
   return canonicalContentUri(assetId);

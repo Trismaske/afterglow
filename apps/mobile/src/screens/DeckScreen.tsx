@@ -109,9 +109,11 @@ function clampPan(value: number, max: number): number {
 
 /**
  * Swipe-deck group review (m0.4, replacing the duel bracket): the group is
- * a horizontally swipeable stack of its alive photos. Cull any photo as
- * you meet it (brief Undo affordance), star one as best, flag needs-edit,
- * eject a mis-grouped photo to the singles flow, or open the Compare tool.
+ * a horizontally swipeable deck of ALL its photos — a decided photo stays
+ * in place wearing its badges, and re-tapping the active verdict clears
+ * it (the badge is the undo). Cull any photo as you meet it, star one as
+ * best, flag needs-edit, eject a mis-grouped photo to the singles flow,
+ * or open the Compare tool.
  *
  * m0.5:
  * - `route.params.groupId` opens a SPECIFIC group (Groups screen, any
@@ -126,8 +128,17 @@ function clampPan(value: number, max: number): number {
  *   two pointers so one-finger swipes always reach the pager; while
  *   zoomed the overlay sits over the pager and swallows its touches.
  * - "Compare with…": the Compare button opens a thumbnail picker of the
- *   group's other alive members (straight into Compare when only two
- *   are alive). Long-pressing a strip thumbnail stays as the shortcut.
+ *   group's other undecided-or-kept members (straight into Compare when
+ *   only two are eligible). Long-pressing a strip thumbnail stays as the
+ *   shortcut.
+ *
+ * m0.8.2 (F10): ONE unified deck for both kinds. A unit is a group or a
+ * day-scoped singles run/day — the `Singles` route takes {day, from?,
+ * to?}, and the global singles-feed deck is gone. Controls are the big
+ * three Keep / Compare / Cull plus the queue row
+ * Edit·Favourite·Organize·Share (Edit is a flag toggle in live decks,
+ * both kinds; browse mode routes it through the state-aware re-decide
+ * path instead).
  */
 export function DeckScreen({ navigation, route }: DeckProps) {
   return (

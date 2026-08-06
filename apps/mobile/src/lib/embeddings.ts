@@ -6,7 +6,10 @@
  * embeds each photo natively; vectors persist immediately per photo into
  * photo_embeddings (interrupt-safe by construction — a killed scan loses
  * at most the in-flight photos), keyed by asset id and invalidated when
- * `mod_time` moves (in-place edit). Failures are per-photo and non-fatal:
+ * `mod_time` moves (in-place edit). With `withHashes` the same pass also
+ * backfills photo_hashes, stored with source 'native': a fresh embed's
+ * dHash rides the SAME native decode (module `withDhash`); see
+ * ensureEmbeddings for the cache-miss split. Failures are per-photo and non-fatal:
  * a null vector is NOT cached (transient read errors retry next scan) and
  * the photo stays a singleton in grouping (core's null-vector rule).
  *

@@ -106,7 +106,8 @@ const SCAN_FULL_AT_KEY = 'scan_full_at';
 /** A full pass runs at least this often, whatever the delta thinks.
  * The backstop for the one deletion a delta cannot see: a PERMANENT
  * delete (no trash) hidden behind an add, which leaves the counts equal
- * and the change query silent. */
+ * and the change query silent. Insurance while the delta is young —
+ * revisited in docs/TODO.md ("Revisit the weekly full pass"). */
 const FULL_PASS_MAX_AGE_MS = 7 * 86_400_000;
 
 export interface ScanStatus {
@@ -117,7 +118,8 @@ export interface ScanStatus {
   embedded: number;
   /** Merge windows grouped and persisted this run. */
   windowsGrouped: number;
-  /** THIS pass's progress denominator (m0.8.2, F3): the in-source
+  /** THIS pass's progress denominator (m0.8.2, F3 — Home and Settings
+   * render the percent from it): the in-source
    * MediaStore count for a FULL pass; null for a delta (its coverage is
    * a handful of ranges — the line shows counts instead) and until the
    * cheap totalCount query lands or when it failed (the scan itself

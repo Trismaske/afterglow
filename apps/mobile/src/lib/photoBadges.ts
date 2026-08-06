@@ -19,6 +19,9 @@
  *               a plain disc: a permanent property of the photo, not a
  *               chore. Never grey — a greyed action reads as disabled.
  *
+ * The deck and Groups read each photo's per-action weight from
+ * ReviewContext's `actionWeights`.
+ *
  * The verdict and the best star have no lifecycle, so they always render
  * at full strength. (The time-attached scan annotation is deliberately
  * NOT a badge since m0.8.2 — it is internal scan quality the user cannot

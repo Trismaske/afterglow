@@ -2,18 +2,16 @@
  * Persistence operations over the schema in database.ts.
  * All multi-statement writes run in exclusive transactions.
  *
- * State machine (PLAN.md, m0.2): SQLite `photos.state` is the source of
- * truth and everything converges on 'kept':
+ * Verdicts (docs/STATE_MODEL.md): SQLite `photos.state` is the source of
+ * truth and holds exactly ONE verdict per photo:
  *
  *   unreviewed ──review──┬─▶ culled ─▶ (system trash) ─▶ trashed
- *                        └─▶ kept ──┬─▶ to_edit ─▶ done
- *                                   └─(session finish)─▶ done
+ *                        └─▶ kept
  *
- * m0.8: a keep writes 'kept' at swipe time (no kept state); 'kept' +
- * needs_edit = 1 is stored as 'to_edit' — the CASE expressions below keep
- * that invariant no matter which path writes the state. 'confirmed' is
- * deliberately never persisted (m0.1 decision: SQLite keeps 'culled'
- * until the system trash request succeeds).
+ * A keep writes 'kept' at swipe time. Edit is a pending ACTION in
+ * photo_actions (m0.8.2), never a verdict. 'confirmed' is deliberately
+ * never persisted (m0.1 decision: SQLite keeps 'culled' until the system
+ * trash request succeeds).
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { withReadTransaction, withWriteTransaction } from './database';
@@ -160,7 +158,10 @@ function reachClause(
   };
 }
 
-/** Read one settings value (null when unset). */
+/** Read one settings value (null when unset). Settings are plain
+ * key/value rows; every consumer parses the raw string with
+ * fallback-to-default (the lib/comparePrefs.ts / lib/accentTheme.ts
+ * pattern), so an unset or unparseable row never wedges a screen. */
 export async function getSetting(db: SQLiteDatabase, key: string): Promise<string | null> {
   const row = await db.getFirstAsync<{ value: string }>(
     'SELECT value FROM settings WHERE key = ?',
@@ -2308,7 +2309,10 @@ export interface ToEditRow {
 /** The to-edit queue: every photo flagged for editing, newest first.
  * Live work only — a staged cull is not waiting to be edited, and
  * (m0.8.3 §5) neither is a photo whose volume is out; its action row
- * survives and the queue re-lists it on remount. */
+ * survives and the queue re-lists it on remount. Decided or not: a flag
+ * on an undecided photo is legitimate ("the edit is what tells me
+ * whether to keep it"), and the completed edit leaves the verdict alone
+ * either way (see markEditDone). */
 export async function getToEditPhotos(
   db: SQLiteDatabase,
   mounted: readonly string[] | null = null,

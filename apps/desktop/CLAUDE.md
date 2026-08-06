@@ -1,13 +1,32 @@
 # Afterglow Desktop — map
 
-Electron, vanilla TS (no framework), esbuild. Three processes: **main** (Node), **preload** (contextBridge), **renderer** (DOM). The IPC surface and `Settings`/`SettingsPatch` types live in `src/shared/api.ts` — to add a capability: extend api.ts → handle in `main/index.ts` → expose in `preload/index.ts` → consume in renderer. One renderer window swaps between settings screen, message screen, and the slideshow stage; the flag-queue window is separate (`queue-window.ts` + `queue.*`).
+Electron app in vanilla TS, built with esbuild, no framework.
+Three processes: **main** (Node), **preload** (contextBridge), **renderer** (DOM).
+The IPC surface and the `Settings`/`SettingsPatch` types live in `src/shared/api.ts`.
+To add a capability: extend api.ts → handle in `main/index.ts` → expose in `preload/index.ts` → consume in renderer.
+One renderer window swaps between the settings screen, the message screen, and the slideshow stage.
+The flag-queue window is separate (`queue-window.ts` + `queue.*`).
 
-## Behavior contracts (don't regress)
+## Behavior contracts (do not regress)
 
-- **Launch modes** (`main/launch.ts`): plain launch → settings screen ("Start slideshow" button) in an ordinary resizable window (close/minimize work); the window goes fullscreen only while the show runs. `--show` → straight into the show, fullscreen+frameless for the whole run; win32 screensaver args `/s`=show, `/p`=quit, `/c`=settings. Exit semantics: manual launch → any non-shortcut input returns to (windowed) settings; `--show` → quits. Non-exiting keys: O Q S, D/E/M/R/N/T flags, arrows. App icon: `build/icon.png` (chevron on dark slate; mobile has the matching dark set in `assets/`).
-- **Arrow nav**: ←/→ prev(history)/next, ↑ restart moment, ↓ skip moment (shuffle mode: ↑ restarts slide, ↓ = next). History is what was actually shown (200 entries).
+- **Launch modes** (`main/launch.ts`).
+  A plain launch opens the settings screen ("Start slideshow" button) in an ordinary resizable window, where close/minimize work.
+  The window goes fullscreen only while the show runs.
+  `--show` starts the show directly, fullscreen and frameless for the whole run.
+  Win32 screensaver args: `/s`=show, `/p`=quit, `/c`=settings.
+  Exit semantics: after a manual launch, any non-shortcut input returns to the windowed settings screen.
+  Under `--show`, it quits.
+  Non-exiting keys: O Q S, the D/E/M/R/N/T flags, and the arrows.
+  App icon: `build/icon.png` (chevron on dark slate).
+  Mobile has the matching dark set in `assets/`.
+- **Arrow nav**: ←/→ = previous (from history) / next.
+  ↑ restarts the moment.
+  ↓ skips the moment.
+  Shuffle mode: ↑ restarts the slide, ↓ = next.
+  History records what the show actually displayed (200 entries).
 - **Settings clamps** (`main/settings.ts`): slide 2–3600 s, gap 1–720 min, clusterCap 2–100, videoMaxSeconds **0 (= full length)** or 2–600.
-- Show starts in shuffle and hot-swaps to smart when the index lands; warm start serves the persisted index immediately, rescans in background.
+- The show starts in shuffle and hot-swaps to smart when the index lands.
+  A warm start serves the persisted index immediately and rescans in the background.
 
 ## src/main/
 
@@ -43,4 +62,10 @@ Electron, vanilla TS (no framework), esbuild. Three processes: **main** (Node), 
 
 ## Verify
 
-`npm run typecheck|test|build -w afterglow-desktop`; headless e2e: `xvfb-run -a npx electron apps/desktop --smoke --show` (env knobs `AFTERGLOW_SMOKE_*` — see main/index.ts). Packaging: `electron-builder.yml` (NSIS include `build/installer.nsh`; `package.json` `homepage` is required by the deb target; `electronVersion` is pinned there because electron is hoisted to the workspace root — bump it in sync whenever electron is upgraded). Tests live in `test/*.test.ts`, one file per module.
+Run `npm run typecheck|test|build -w afterglow-desktop`.
+Headless e2e: `xvfb-run -a npx electron apps/desktop --smoke --show` (env knobs `AFTERGLOW_SMOKE_*`, see main/index.ts).
+Packaging: `electron-builder.yml`, with NSIS include `build/installer.nsh`.
+The deb target requires the `package.json` `homepage` field.
+`electronVersion` is pinned in `electron-builder.yml` because electron is hoisted to the workspace root.
+Whenever you upgrade electron, bump `electronVersion` in sync.
+Tests live in `test/*.test.ts`, one file per module.

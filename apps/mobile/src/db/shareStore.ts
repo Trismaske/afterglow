@@ -330,7 +330,10 @@ export async function countNeverShared(
  *
  * m0.8.3 §5 (codex phase-3): the clear touches ONLY the rows the screen
  * showed — an unreachable photo's action row survives byte-for-byte and
- * re-lists on remount (it batches into whichever cycle is open then). */
+ * re-lists on remount (it batches into whichever cycle is open then).
+ * Such a partial clear leaves the cycle OPEN: the hidden unreachable
+ * rows are still queued, and closeShareCycleIfQueueEmpty only ends a
+ * cycle when the queue truly empties. */
 export async function clearShareQueue(
   db: SQLiteDatabase,
   at: number,

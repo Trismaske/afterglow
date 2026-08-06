@@ -12,6 +12,9 @@
  * - **erase**: the rows and every satellite are hard-deleted — all-time
  *   counts VISIBLY drop, which the confirmation copy must say.
  *
+ * Offered where the unreachable state is named: the Settings row and the
+ * Home banner's press-through (both land in Settings).
+ *
  * Honest edge (stated in the flow copy): if a forgotten card returns
  * with files intact, the scan re-ingests — state-intact but needing
  * re-embedding (keep) or as brand-new unreviewed photos (erase).

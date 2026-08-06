@@ -1,7 +1,8 @@
 # Developing Afterglow
 
-Everything a new developer needs to build, test, and run both apps. Linux
-(Ubuntu/Mint) is the primary dev platform; Windows/macOS notes at the end.
+This guide contains everything a new developer needs to build, test, and run both apps.
+Linux (Ubuntu/Mint) is the primary development platform.
+Windows and macOS notes are at the end.
 
 ## Repository layout
 
@@ -13,15 +14,16 @@ Everything a new developer needs to build, test, and run both apps. Linux
 | `scripts/` | Dev-environment setup + helpers |
 | `docs/` | Plans, assumptions, this file |
 
-npm workspaces tie it together: run `npm install` **once, at the repo root**.
-`@afterglow/core` builds to `dist/` automatically on install; after editing
-core, rebuild it with `npm run build -w @afterglow/core`.
+npm workspaces tie the repository together.
+Run `npm install` **once, at the repository root**.
+`@afterglow/core` builds to `dist/` automatically on install.
+After you edit core, rebuild it with `npm run build -w @afterglow/core`.
 
 ## Prerequisites
 
 - **Node.js ≥ 22.13.0** and npm ≥ 10 (React Native 0.86's enforced floor)
 - git, curl, unzip, tar (all standard on Ubuntu/Mint)
-- ~20 GB free disk if you're doing Android work
+- Approximately 20 GB of free disk space, if you do Android work
 
 ## First-time setup
 
@@ -33,7 +35,8 @@ npm run typecheck      # sanity check: should be clean
 npm test               # core + desktop + mobile unit tests, all green
 ```
 
-That's all the **desktop** app needs. For **Android**, continue below.
+This is all the **desktop** app needs.
+For **Android**, continue below.
 
 ### Android toolchain (one command)
 
@@ -41,25 +44,24 @@ That's all the **desktop** app needs. For **Android**, continue below.
 bash scripts/setup-android-env.sh
 ```
 
-This installs — entirely under `~/Android`, no sudo, checksum-verified,
-idempotent (safe to re-run):
+The script installs everything under `~/Android`, needs no sudo, verifies checksums, and is idempotent (safe to re-run).
+It installs:
 
-- Temurin **JDK 21** (Gradle 9 needs JDK 17+; system JDK 11 won't work)
-- Android SDK command-line tools, platform-tools (adb), **platform 36**,
-  **build-tools 36.0.0**, **NDK 27.1.12297006**, cmake 3.22.1 — the exact
-  versions Expo SDK 57 / React Native 0.86 pin
-- The emulator + an Android 16 (API 36, Google APIs, x86_64) system image
-- An AVD named **`afterglow-pixel7`** (Pixel 7, 4 GB RAM, 8 GB storage)
+- Temurin **JDK 21**. Gradle 9 needs JDK 17 or newer, so the system JDK 11 does not work.
+- Android SDK command-line tools, platform-tools (adb), **platform 36**, **build-tools 36.0.0**, **NDK 27.1.12297006**, and cmake 3.22.1. These are the exact versions that Expo SDK 57 / React Native 0.86 pin.
+- The emulator and an Android 16 (API 36, Google APIs, x86_64) system image.
+- An AVD named **`afterglow-pixel7`** (Pixel 7, 4 GB RAM, 8 GB storage).
 
-Then activate it (add this line to your `~/.bashrc` to make it permanent):
+Then activate the environment.
+To make it permanent, add this line to your `~/.bashrc`:
 
 ```bash
 source scripts/android-env.sh
 ```
 
-**KVM:** the emulator needs `/dev/kvm` access to be usable. The setup script
-checks and tells you the fix if you lack it (`sudo gpasswd -a $USER kvm`,
-then log out/in). On most desktop logins an ACL already grants it.
+**KVM:** the emulator needs `/dev/kvm` access to be usable.
+The setup script checks for access and tells you the fix if you lack it (`sudo gpasswd -a $USER kvm`, then log out and in).
+On most desktop logins an ACL already grants access.
 
 ## Daily commands
 
@@ -81,16 +83,14 @@ npm run dist -w afterglow-desktop      # package installers (electron-builder)
 xvfb-run -a npx electron apps/desktop --smoke --show
 ```
 
-In-app keys: any input leaves the show (back to settings on a manual
-launch, quit under `--show`); exceptions are `O` overlay, `D/E/M/R/N/T`
-flag, `←/→/↑/↓` navigate, `Q` queue window, `S` settings.
+In-app keys: any input leaves the show (back to settings on a manual launch, quit under `--show`).
+The exceptions are `O` overlay, `D/E/M/R/N/T` flag, `←/→/↑/↓` navigate, `Q` queue window, and `S` settings.
 
 ### Mobile (Android)
 
-> ⚠️ **Run all mobile commands from `apps/mobile`** (or use the root
-> `npm run …` aliases below). Running `npx expo …` from the repo root
-> will scaffold a junk Expo project into the root — that's the classic
-> "why is there an `android/` folder next to `package.json`" mistake.
+> ⚠️ **Run all mobile commands from `apps/mobile`** (or use the root `npm run …` aliases below).
+> If you run `npx expo …` from the repository root, it scaffolds a junk Expo project into the root.
+> That is the classic "why is there an `android/` folder next to `package.json`" mistake.
 
 ```bash
 # 1. Boot the emulator (leave it running; skip if a USB device is plugged in)
@@ -109,7 +109,7 @@ npx expo prebuild --platform android --clean --no-install
 cd android && ./gradlew :app:assembleDebug --console=plain
 ```
 
-Root-level aliases (work from anywhere in the repo):
+Root-level aliases (these work from anywhere in the repository):
 
 ```bash
 npm run setup:android                  # = bash scripts/setup-android-env.sh
@@ -118,15 +118,16 @@ npm run mobile:android                 # = expo run:android in apps/mobile
 npm run mobile:start                   # = expo start in apps/mobile
 ```
 
-**Expo Go does not work** for this app — media-library permissions and
-SQLite need a dev build, which is exactly what `expo run:android` produces.
+**Expo Go does not work** for this app.
+Media-library permissions and SQLite need a dev build, which is what `expo run:android` produces.
 
-**Physical device instead of emulator:** for a one-off USB run, enable USB
-debugging, plug in, check `adb devices` shows it, then run
-`npx expo run:android` as usual (it prefers a connected device over the
-emulator). For persistent wireless pairing, multiple named devices, screenshots,
-input automation, and recovery after reinstalling a workstation, follow
-[ANDROID_DEVICE_TESTING.md](ANDROID_DEVICE_TESTING.md).
+**The floor emulator:** the app's declared floor (Android 11, API 30) has no physical device behind it, so floor coverage comes from an emulator.
+Create an AVD `afterglow-api30` (Pixel 5, `system-images;android-30;google_apis;x86_64`) and run the app on it for any release that touches floor-adjacent or native code.
+Its evidence is asymmetric: the AOSP image lacks Samsung's codecs, so a success there is strong evidence and a failure is ambiguous.
+
+**Physical device instead of emulator:** for a one-off USB run, enable USB debugging, plug the device in, and check that `adb devices` shows it.
+Then run `npx expo run:android` as usual (it prefers a connected device over the emulator).
+For persistent wireless pairing, multiple named devices, screenshots, input automation, and recovery after you reinstall a workstation, follow [ANDROID_DEVICE_TESTING.md](ANDROID_DEVICE_TESTING.md).
 
 ### Useful emulator/adb commands
 
@@ -139,18 +140,15 @@ adb shell pm clear com.afterglow.companion   # wipe app data
 
 ## Version pins & bumping
 
-`electronVersion` is pinned in `apps/desktop/electron-builder.yml` (electron
-is hoisted to the workspace root, so electron-builder can't resolve the
-semver range itself) — bump it manually whenever electron is upgraded.
+`electronVersion` is pinned in `apps/desktop/electron-builder.yml`.
+Electron is hoisted to the workspace root, so electron-builder cannot resolve the semver range itself.
+Bump the pin manually whenever you upgrade electron.
 
-The Android toolchain versions live at the top of
-`scripts/setup-android-env.sh` and mirror
-`node_modules/react-native/gradle/libs.versions.toml` (compileSdk,
-build-tools, NDK). When upgrading Expo/RN, update those constants to match
-the new toml, and refresh the JDK pin from
-`https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=x64&image_type=jdk&os=linux&vendor=eclipse`
-(URL + `sha256` fields). Google lists only SHA-1 for cmdline-tools — pin the
-SHA-256 by computing it from a download you've verified against their SHA-1.
+The Android toolchain versions live at the top of `scripts/setup-android-env.sh` and mirror `node_modules/react-native/gradle/libs.versions.toml` (compileSdk, build-tools, NDK).
+When you upgrade Expo/RN, update those constants to match the new toml.
+Also refresh the JDK pin from `https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=x64&image_type=jdk&os=linux&vendor=eclipse` (URL + `sha256` fields).
+Google lists only SHA-1 for cmdline-tools.
+Pin the SHA-256 by computing it from a download that you have verified against their SHA-1.
 
 ## Troubleshooting
 
@@ -167,9 +165,12 @@ SHA-256 by computing it from a download you've verified against their SHA-1.
 
 ## Windows / macOS
 
-The setup script is Linux-only. Elsewhere, install manually and match the
-same pins: Temurin JDK 21, Android Studio (or cmdline-tools) with platform
-36 / build-tools 36.0.0 / NDK 27.1.12297006, and create any x86_64/arm64
-API 36 AVD. `scripts/android-env.sh` concepts translate directly
-(`ANDROID_HOME`, `JAVA_HOME`, PATH). The desktop app builds anywhere Node
-and Electron run.
+The setup script is Linux-only.
+On other platforms, install the tools manually and match the same pins:
+
+- Temurin JDK 21
+- Android Studio (or cmdline-tools) with platform 36 / build-tools 36.0.0 / NDK 27.1.12297006
+- Any x86_64/arm64 API 36 AVD, which you create yourself
+
+The concepts in `scripts/android-env.sh` translate directly (`ANDROID_HOME`, `JAVA_HOME`, PATH).
+The desktop app builds anywhere Node and Electron run.

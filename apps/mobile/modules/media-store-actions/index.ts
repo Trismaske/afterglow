@@ -123,7 +123,12 @@ function available(): boolean {
  * 11 floor this is the module's ONE capability predicate: the trash
  * boundary, the canonical details query, the diagnostics and the D15 EXIF
  * read all had separate version thresholds below 30, and every one of
- * them is now satisfied by any device that can install the app. */
+ * them is now satisfied by any device that can install the app.
+ *
+ * Non-Android is deliberately unguarded ABOVE this predicate (Tristan,
+ * m0.8.4): re-adding `Platform.OS === 'android'` gates would write a
+ * second floor into six screens a future iOS build must find and delete.
+ * A missing module degrades through the `unsupported` status instead. */
 export function mediaStoreActionsAvailable(): boolean {
   return available();
 }

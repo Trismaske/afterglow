@@ -38,7 +38,7 @@ export type ActionState = 'queued' | 'applied' | 'error';
 /**
  * SQL: is this photo still LIVE WORK?
  *
- * Queue membership is `state = 'queued'` AND this. A photo staged for
+ * Queue membership is `state IN ('queued', 'error')` AND this. A photo staged for
  * deletion or already trashed is not waiting for you, however many
  * actions are attached to it — showing it in the Edit tab next to its own
  * row in the cull list is two answers to one question. Before v18 the

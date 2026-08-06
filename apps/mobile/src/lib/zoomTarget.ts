@@ -9,7 +9,9 @@
  * (tx = -(x - W/2) · (s - 1)), clamped to those same bounds.
  *
  * The impure partners live in the screens: DeckScreen / PhotoViewer wire
- * this into their gesture worklets and page Pressables — taps stay off
+ * this into their gesture worklets and page Pressables (the double-tap
+ * Pressable arbitration is the shared hook
+ * components/useDoubleTapZoom.ts) — taps stay off
  * Gesture.Tap because a gesture worklet may not cross the worklets→JS
  * bridge (see DeckScreen's bridge comment), while writing shared values
  * FROM JS (the double-tap zoom, the onLoad aspect) is the safe

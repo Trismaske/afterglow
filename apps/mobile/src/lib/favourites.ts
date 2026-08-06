@@ -18,6 +18,12 @@ export interface FavouriteBatchResult {
 
 /**
  * Run one Android-owned favourite batch and verify every returned flag.
+ *
+ * createFavoriteRequest lets the PLATFORM decide whether to ask the user,
+ * and no consent dialog appears on any tested API (30/31/36 — m0.8.4
+ * acceptance pass). That is correct: the destructive path (trash) is the
+ * one that must prompt, and the verify-after re-read below is what makes
+ * the silent apply honest.
  * Callers only mark the durable queue applied when `status` is `applied`.
  */
 export async function applyFavouriteBatch(

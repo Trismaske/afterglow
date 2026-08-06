@@ -1,8 +1,10 @@
 /**
  * The mounted-volume set for QUERY scoping (m0.8.3 phase 3, D5/D5b) —
- * the impure provider behind "reachability is scope, not state". Every
+ * the impure provider behind "reachability is scope, not state"
+ * (docs/STATE_MODEL.md). Every
  * review-scope read adds `volume_name IN (mounted)` beside
- * `is_present = 1`; this module answers "mounted right now?" once per
+ * `is_present = 1` (store.ts `reachClause`, actions.ts `reachExists`);
+ * this module answers "mounted right now?" once per
  * refresh burst, the same lifecycle as resolveSources.
  *
  * NULL means "unknowable" (module absent — Expo Go, iOS): queries then

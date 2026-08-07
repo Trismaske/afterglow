@@ -156,7 +156,7 @@ export function DayProgressScreen({ route, navigation }: Props) {
               );
               if (pendingGroup)
                 navigation.navigate('Deck', { groupId: String(pendingGroup.groupId) });
-              else navigation.navigate('Singles', { day });
+              else navigation.navigate('Deck', { day });
             }}
           />
           {groups === 'failed' && (

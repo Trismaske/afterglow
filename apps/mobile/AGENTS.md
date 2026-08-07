@@ -56,6 +56,7 @@ Both removal affordances use the local `modules/media-store-actions` trash reque
 | organizeFailures.ts                                    | Organize-failure classification: three tiers, from facts we own                               |
 | sources.ts / sourceCatalog.ts                          | Volume-qualified source roots / the native album catalog                                      |
 | timeline.ts                                            | The merged review timeline: units, truncation, pending-only routing                           |
+| deckUnit.ts                                            | The deck's unit identity + the Deck route's param round trip (L4)                             |
 | progress.ts / progressPager.ts                         | Progress/state-bar logic + `groupedUnderlineRuns` / newest-first k-way merged pager           |
 | reviewPatch.ts                                         | Optimistic queue patches, SQL-parity tested                                                   |
 | photoBadges.ts                                         | The badge set a photo wears, each action at a live or carried weight                          |
@@ -89,7 +90,7 @@ The screen file's header is the contract.
 
 - **Home**: goal ring + streaks, the forecast-headline Progress row, day sections, scan status, unreachable-volume banners.
 - **Groups**: the review overview, the merged timeline of unit cards.
-- **Deck/Singles** (`DeckScreen.tsx`): ONE unified deck over groups and day-scoped singles runs.
+- **Deck** (`DeckScreen.tsx`): ONE unified deck over groups and day-scoped singles runs, on ONE route. The unit is state and advances in place (m0.8.5, L4) — never remount it per unit.
 - **Compare**: A/B flip with synchronized zoom. Whole-table duels decide, all others triage.
 - **CullList**: the durable global cull queue. Confirm loops the trash-attempt lifecycle.
 - **EditQueue / FavouritesQueue / ShareQueue / OrganizeQueue**: the four action queues (the M5 rule governs bulk writes).

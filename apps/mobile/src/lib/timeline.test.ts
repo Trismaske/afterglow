@@ -175,7 +175,7 @@ describe('destinationAfterUnit', () => {
     // Group 1 completed and left the list — the run slid into index 0.
     const remaining = units().slice(1);
     expect(destinationAfterUnit(remaining, { kind: 'group', groupId: '1' }, 0)).toEqual({
-      screen: 'Singles',
+      kind: 'run',
       day,
       from: 25,
       to: 30,
@@ -185,7 +185,7 @@ describe('destinationAfterUnit', () => {
   it('a completed run advances to the next group', () => {
     const remaining = units().filter((u) => u.kind === 'group');
     expect(destinationAfterUnit(remaining, { kind: 'run', day, from: 25, to: 30 }, 1)).toEqual({
-      screen: 'Deck',
+      kind: 'group',
       groupId: '2',
     });
   });
@@ -194,7 +194,7 @@ describe('destinationAfterUnit', () => {
     // Group 2 (last) completed first; group 1 and the run remain.
     const remaining = units().slice(0, 2);
     expect(destinationAfterUnit(remaining, { kind: 'group', groupId: '2' }, 2)).toEqual({
-      screen: 'Deck',
+      kind: 'group',
       groupId: '1',
     });
   });
@@ -211,7 +211,7 @@ describe('destinationAfterUnit', () => {
       NOT_FULL,
     );
     expect(destinationAfterUnit(all, { kind: 'group', groupId: '1' }, 0)).toEqual({
-      screen: 'Singles',
+      kind: 'run',
       day,
       from: 25,
       to: 30,
@@ -233,7 +233,7 @@ describe('destinationAfterUnit', () => {
       NOT_FULL,
     );
     expect(destinationAfterUnit(widened, { kind: 'run', day, from: 25, to: 30 }, 0)).toEqual({
-      screen: 'Singles',
+      kind: 'run',
       day,
       from: 10,
       to: 30,
@@ -242,7 +242,7 @@ describe('destinationAfterUnit', () => {
 
   it('nothing left goes to the cull list', () => {
     expect(destinationAfterUnit([], { kind: 'group', groupId: '1' }, 0)).toEqual({
-      screen: 'CullList',
+      kind: 'cullList',
     });
   });
 
@@ -256,7 +256,7 @@ describe('destinationAfterUnit', () => {
     expect(remaining).toHaveLength(1);
     expect(unitHasPending(remaining[0])).toBe(false);
     expect(destinationAfterUnit(remaining, { kind: 'group', groupId: '2' }, 1)).toEqual({
-      screen: 'CullList',
+      kind: 'cullList',
     });
   });
 
@@ -285,7 +285,7 @@ describe('unit identity', () => {
 
   it('unitDestination round-trips a run’s scope into route params', () => {
     const [run] = buildTimeline([], [member('s1', 30, day), member('s0', 25, day)], NOT_FULL);
-    expect(unitDestination(run)).toEqual({ screen: 'Singles', day, from: 25, to: 30 });
+    expect(unitDestination(run)).toEqual({ kind: 'run', day, from: 25, to: 30 });
   });
 });
 

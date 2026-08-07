@@ -25,12 +25,28 @@ export type RootStackParamList = {
   Main: NavigatorScreenParams<MainTabParamList> | undefined;
   Groups: undefined;
   /**
-   * Swipe-deck group review (m0.4): page through a group, cull as you go.
-   * m0.5: `groupId` opens a SPECIFIC group (any order, even a completed
-   * one — browse/re-decide mode); omitted = the linear "continue" flow
-   * (next incomplete group, then singles, then the cull list).
+   * Swipe-deck review (m0.4): page through a unit, cull as you go.
+   *
+   * ONE route for both unit kinds since m0.8.5 (L4). The deck holds its
+   * current unit in state and advances internally, so the app enters
+   * this route once per review sitting instead of remounting per unit —
+   * the remount cost ~300 ms of blank screen between units (F6).
+   * The params name the unit the deck OPENS on, and the deck keeps them
+   * in step as it advances, so re-entering from Home or the Timeline
+   * always re-seeds even when it names the unit the route opened on.
+   *
+   * `day` present  = a singles unit: ONE day (a local "YYYY-MM-DD" key,
+   *   or the undated pseudo-day), optionally narrowed by `from`/`to` to
+   *   a timeline RUN's inclusive taken_at range (lib/timeline.ts).
+   * `groupId` only = a SPECIFIC group, in any order, a completed one
+   *   included (browse/re-decide mode).
+   * neither       = the linear "continue" flow (next incomplete unit,
+   *   then the cull list).
+   *
+   * Read them through `unitFromParams` (screens/DeckScreen.tsx) rather
+   * than by hand: it is the one place that discriminates the shapes.
    */
-  Deck: { groupId?: string } | undefined;
+  Deck: { groupId?: string; day?: string; from?: number; to?: number } | undefined;
   /**
    * On-demand A/B flip + synced-zoom compare tool for two deck photos.
    * The verdict buttons record a compare (DuelRecord-shaped) and may
@@ -47,13 +63,6 @@ export type RootStackParamList = {
     from?: number;
     to?: number;
   };
-  /** A singles deck (m0.8.2 timeline: there is no global singles feed
-   * deck any more). `day` (a local "YYYY-MM-DD" key, or the undated
-   * pseudo-day) scopes it to ONE day — the DayProgress CTA; `from`/`to`
-   * additionally narrow it to a timeline RUN's inclusive taken_at range
-   * (lib/timeline.ts), which is how the merged review flow opens the
-   * singles between two groups. */
-  Singles: { day: string; from?: number; to?: number };
   /** fromHome: opened via the Home queue card for global-queue
    * maintenance — confirming returns Home instead of the Summary. */
   CullList: { fromHome?: boolean } | undefined;

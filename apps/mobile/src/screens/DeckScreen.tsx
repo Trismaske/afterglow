@@ -62,23 +62,26 @@ import { addToShareQueue, removeFromShareQueue } from '../db/shareStore';
 import { queueOrganize, unqueueOrganize } from '../db/organizeStore';
 import { useDoubleTapZoom } from '../components/useDoubleTapZoom';
 import { panBounds, pinchEngaged, pinchGain } from '../lib/zoomTarget';
+import {
+  deckUnitKey,
+  paramsForUnit,
+  unitFromDestination,
+  unitFromParams,
+  type DeckUnit,
+} from '../lib/deckUnit';
 
 /** Which control started the in-flight write — 'finish' is the big
  * Keep-remaining button, everything else is 'other'. */
 type BusyOwner = 'finish' | 'other';
 
 type DeckProps = NativeStackScreenProps<RootStackParamList, 'Deck'>;
-type SinglesProps = NativeStackScreenProps<RootStackParamList, 'Singles'>;
+
 type SharedProps = {
   navigation: NativeStackNavigationProp<RootStackParamList>;
-  explicitGroupId?: string;
-  singlesMode: boolean;
-  /** Singles mode (m0.8.2): the deck's day scope, always present — the
-   * global singles feed deck is gone with the merged timeline. */
-  day?: string;
-  /** A timeline RUN's inclusive taken_at range; absent = the whole day
-   * (the DayProgress CTA's deck). */
-  range?: { from: number; to: number };
+  /** The unit to review. Replacing it advances the deck in place. */
+  unit: DeckUnit;
+  /** Advance to another unit without leaving the route. */
+  advanceTo: (unit: DeckUnit) => void;
 };
 
 const THUMB = 52;
@@ -133,36 +136,76 @@ function clampPan(value: number, max: number): number {
  *   shortcut.
  *
  * m0.8.2 (F10): ONE unified deck for both kinds. A unit is a group or a
- * day-scoped singles run/day — the `Singles` route takes {day, from?,
- * to?}, and the global singles-feed deck is gone. Controls are the big
- * three Keep / Compare / Cull plus the queue row
+ * day-scoped singles run/day, and the global singles-feed deck is gone.
+ * Controls are the big three Keep / Compare / Cull plus the queue row
  * Edit·Favourite·Organize·Share (Edit is a flag toggle in live decks,
  * both kinds; browse mode routes it through the state-aware re-decide
  * path instead).
+ *
+ * m0.8.5 (L4, F6): ONE ROUTE, and the unit is STATE. Every advance used
+ * to be `navigation.replace`, which unmounted the screen — measured on
+ * the S10e as ~300 ms of blank between units, re-decoding the photo and
+ * resetting the strip and zoom overlay each time. Now `advanceTo`
+ * swaps the unit in place and only a destination that leaves review
+ * (the cull list, a day page) still navigates. `destinationAfterUnit`
+ * still decides WHERE to go; only the mechanism changed.
+ *
+ * Two consequences the code carries deliberately, because the unmount
+ * used to hide them:
+ * - Async row reads are STAMPED with `unitKey`, so a previous unit's
+ *   rows can never render as this one's — nor satisfy `singlesReady`
+ *   long enough to advance again.
+ * - Anything that was per-visit is now keyed on the unit, not on mount:
+ *   the cursor, the compare picker, and the entered-complete revisit
+ *   test. A ref left holding the previous unit's answer would stop the
+ *   flow dead.
+ * The route params follow each advance (`paramsForUnit`), so re-entering
+ * from Home or the Timeline re-seeds the deck even when it names the
+ * unit the route was opened on.
  */
 export function DeckScreen({ navigation, route }: DeckProps) {
-  return (
-    <ReviewDeck
-      navigation={navigation}
-      explicitGroupId={route.params?.groupId}
-      singlesMode={false}
-    />
+  const [unit, setUnit] = useState<DeckUnit>(() => unitFromParams(route.params));
+  /** The params this screen has already consumed. Its own advances write
+   * here too, so the adopt-params effect below reacts to EXTERNAL
+   * navigation only. */
+  const consumedParamsRef = useRef(deckUnitKey(unitFromParams(route.params)));
+
+  const advanceTo = useCallback(
+    (next: DeckUnit) => {
+      consumedParamsRef.current = deckUnitKey(next);
+      setUnit(next);
+      // Keep the route honest. Without this the params would still name
+      // the unit the deck opened on, and re-entering from Home or the
+      // Timeline on that same unit would be a no-op param change —
+      // leaving the deck wherever it had advanced to.
+      navigation.setParams(paramsForUnit(next));
+    },
+    [navigation],
   );
+
+  const paramKey = deckUnitKey(unitFromParams(route.params));
+  useEffect(() => {
+    if (consumedParamsRef.current === paramKey) return;
+    consumedParamsRef.current = paramKey;
+    setUnit(unitFromParams(route.params));
+  }, [paramKey, route.params]);
+
+  // Per-unit title: one route now serves both kinds, so the screen names
+  // itself rather than the navigator naming it once.
+  useEffect(() => {
+    navigation.setOptions({ title: unit.kind === 'run' ? 'Singles review' : 'Group review' });
+  }, [navigation, unit.kind]);
+
+  return <ReviewDeck navigation={navigation} unit={unit} advanceTo={advanceTo} />;
 }
 
-export function SinglesDeckScreen({ navigation, route }: SinglesProps) {
-  const { day, from, to } = route.params;
-  return (
-    <ReviewDeck
-      navigation={navigation as DeckProps['navigation']}
-      singlesMode
-      day={day}
-      range={from !== undefined && to !== undefined ? { from, to } : undefined}
-    />
-  );
-}
-
-function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: SharedProps) {
+function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
+  const singlesMode = unit.kind === 'run';
+  const day = unit.kind === 'run' ? unit.day : undefined;
+  // Referentially stable: `unit` is state, replaced only by an advance,
+  // so this object identity is safe in the loaders' dependency arrays.
+  const range = unit.kind === 'run' ? unit.range : undefined;
+  const explicitGroupId = unit.kind === 'group' ? (unit.groupId ?? undefined) : undefined;
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const isFocused = useIsFocused();
@@ -195,6 +238,20 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   const [busy, setBusy] = useState(false);
   /** Which control owns the in-flight write (see `run`). */
   const [busyOwner, setBusyOwner] = useState<BusyOwner | null>(null);
+  /**
+   * A finish is under way and this unit is on its way out (F6).
+   *
+   * Completing a unit flips `browse`, which swaps the whole live control
+   * block for the browse one. Before L4 nobody saw it — the
+   * `navigation.replace` had already blanked the screen. Now the advance
+   * is a state change, so that swap would paint for a frame and read as
+   * the layout "reflowing" under your thumb.
+   *
+   * Cleared by the unit change the finish causes, or — if the write left
+   * the unit incomplete after all, e.g. a scan added rows mid-write — by
+   * the deck settling back out of browse.
+   */
+  const [finishing, setFinishing] = useState(false);
   const [pageW, setPageW] = useState(0);
   const [comparePicker, setComparePicker] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
@@ -212,26 +269,40 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
     const first = firstPendingUnit(timeline);
     return first?.kind === 'group' ? String(first.group.groupId) : null;
   }, [explicitGroupId, timeline, singlesMode]);
+  /**
+   * The RESOLVED unit's identity — the linear flow's group is bound
+   * above, so this changes when the deck lands on a real group.
+   *
+   * It does two jobs, and both matter more since L4 kept the screen
+   * mounted across units: it keys the per-unit effects (cursor, picker,
+   * revisit), and it STAMPS the async row state below, so rows read for
+   * a previous unit can never be mistaken for this one's.
+   */
+  const unitKey = singlesMode
+    ? `r:${day ?? ''}:${range?.from ?? ''}:${range?.to ?? ''}`
+    : `g:${groupId ?? ''}`;
   /** How THIS deck names itself against the timeline (advance flow). */
   const unitRef = useMemo<UnitRef | null>(() => {
     if (singlesMode)
       return day && range ? { kind: 'run', day, from: range.from, to: range.to } : null;
     return groupId ? { kind: 'group', groupId } : null;
   }, [singlesMode, day, range, groupId]);
-  /** Send the deck where the advance flow points. */
+  /**
+   * Send the deck where the advance flow points (m0.8.5, L4).
+   *
+   * A destination that is still a UNIT is a state change: the screen
+   * stays mounted, and the photo, strip and controls swap in place. Only
+   * a destination that leaves review entirely still navigates.
+   *
+   * Before L4 every advance was `navigation.replace`, which unmounted
+   * the screen and left ~300 ms of blank between units (F6, measured).
+   */
   const goToDestination = useCallback(
     (destination: UnitDestination) => {
-      if (destination.screen === 'Deck')
-        navigation.replace('Deck', { groupId: destination.groupId });
-      else if (destination.screen === 'Singles')
-        navigation.replace('Singles', {
-          day: destination.day,
-          from: destination.from,
-          to: destination.to,
-        });
-      else navigation.replace('CullList');
+      if (destination.kind === 'cullList') navigation.replace('CullList');
+      else advanceTo(unitFromDestination(destination));
     },
-    [navigation],
+    [navigation, advanceTo],
   );
   const queueGroup: ReviewGroupRow | null = useMemo(
     () => (groupId ? (groups.find((g) => String(g.groupId) === groupId) ?? null) : null),
@@ -245,30 +316,35 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   // it renders the inline retry card and never feeds the advance
   // routing, which would otherwise skip the unit the user opened over a
   // transient SQLite error.
-  const [loadedGroup, setLoadedGroup] = useState<ReviewGroupRow | 'loading' | 'missing' | 'failed'>(
-    'loading',
-  );
+  // STAMPED with the unit it was read for. The deck no longer remounts
+  // between units (L4), so an unstamped result would keep rendering the
+  // previous unit's rows until the new read lands.
+  const [groupLoad, setGroupLoad] = useState<{
+    unit: string;
+    value: ReviewGroupRow | 'loading' | 'missing' | 'failed';
+  }>({ unit: unitKey, value: 'loading' });
+  const loadedGroup = groupLoad.unit === unitKey ? groupLoad.value : 'loading';
   // Bumped by the failure card's Retry — re-runs whichever load failed.
   const [loadTick, setLoadTick] = useState(0);
   useEffect(() => {
     let cancelled = false;
     if (singlesMode || !explicitGroupId || queueGroup) {
-      setLoadedGroup('loading');
+      setGroupLoad({ unit: unitKey, value: 'loading' });
       return;
     }
     void loadGroup(Number(explicitGroupId)).then(
       (fetched) => {
-        if (!cancelled) setLoadedGroup(fetched ?? 'missing');
+        if (!cancelled) setGroupLoad({ unit: unitKey, value: fetched ?? 'missing' });
       },
       (error) => {
         console.warn('[deck] group load failed:', String(error));
-        if (!cancelled) setLoadedGroup('failed');
+        if (!cancelled) setGroupLoad({ unit: unitKey, value: 'failed' });
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [explicitGroupId, queueGroup, loadGroup, singlesMode, version, loadTick]);
+  }, [explicitGroupId, queueGroup, loadGroup, singlesMode, version, loadTick, unitKey]);
   const group: ReviewGroupRow | null =
     queueGroup ?? (typeof loadedGroup === 'object' ? loadedGroup : null);
   // m0.8.3 §5 (D9): a group straddling volumes shows only reachable
@@ -281,13 +357,21 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   // loadGroup exists above: the queue's singles feed is a bounded
   // newest-first pending page. `version` re-fetches, so a decision's
   // patch lands here too.
-  const [deckSingles, setDeckSingles] = useState<ReviewMemberRow[] | 'failed' | null>(null);
+  // Stamped for the same reason as the group load above — and here the
+  // stale case is worse: unstamped rows from the previous run would
+  // satisfy `singlesReady`, and a run whose rows were all decided would
+  // read as complete and advance again immediately.
+  const [singlesLoad, setSinglesLoad] = useState<{
+    unit: string;
+    rows: ReviewMemberRow[] | 'failed' | null;
+  }>({ unit: unitKey, rows: null });
+  const deckSingles = singlesLoad.unit === unitKey ? singlesLoad.rows : null;
   useEffect(() => {
     if (!singlesMode || !day) return;
     let cancelled = false;
     void loadDeckSingles(day, range ?? null).then(
       (rows) => {
-        if (!cancelled) setDeckSingles(rows);
+        if (!cancelled) setSinglesLoad({ unit: unitKey, rows });
       },
       (error) => {
         // An unreadable scope is NOT an empty one: 'failed' renders the
@@ -296,13 +380,13 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
         // advances past it — never routes on a transient read failure.
         // It must also never widen to some broader feed.
         console.warn('[deck] singles load failed:', String(error));
-        if (!cancelled) setDeckSingles('failed');
+        if (!cancelled) setSinglesLoad({ unit: unitKey, rows: 'failed' });
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [day, range, singlesMode, loadDeckSingles, version, loadTick]);
+  }, [day, range, singlesMode, loadDeckSingles, version, loadTick, unitKey]);
   /** The rows this deck reviews (singles mode). */
   const singleRows = useMemo(() => (Array.isArray(deckSingles) ? deckSingles : []), [deckSingles]);
   // Derived deck info (the old core groupInfo shape, DB-backed): a group
@@ -581,14 +665,20 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   useEffect(() => {
     setComparePicker(false);
     setViewerOpen(false);
-  }, [groupId, browse, singlesMode]);
+  }, [unitKey, browse]);
+  useEffect(() => {
+    setFinishing(false);
+  }, [unitKey]);
+  useEffect(() => {
+    if (finishing && !busy && !browse) setFinishing(false);
+  }, [finishing, busy, browse]);
+  /** What the CONTROLS render as. Held on the live block through a
+   * finish so the advance, not a swap, is what ends the unit. */
+  const browseControls = browse && !finishing;
   // A fresh unit opens on its FIRST pending photo (m0.8.2): a
   // half-finished run or group re-entered from the overview lands on the
   // work, not on a decided photo at index 0. Applied once per unit, when
   // its rows are actually there (the singles fetch is async).
-  const unitKey = singlesMode
-    ? `s:${day ?? ''}:${range?.from ?? ''}:${range?.to ?? ''}`
-    : `g:${groupId ?? ''}`;
   const cursorAppliedRef = useRef<string | null>(null);
   useEffect(() => {
     if (cursorAppliedRef.current === unitKey) return;
@@ -666,7 +756,11 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
   // happened DURING this visit. A fully-reviewed run/day opened from the
   // overview is a deliberate revisit and stays in browse mode — exactly
   // like reopening a completed group.
-  const singlesEnteredCompleteRef = useRef<boolean | null>(null);
+  // Keyed on the UNIT, not on mount: since L4 a run→run advance keeps
+  // this component mounted, and a ref left holding the previous run's
+  // answer would make a genuinely-completed-here run read as a revisit
+  // and stop the flow dead.
+  const singlesEnteredCompleteRef = useRef<{ unit: string; complete: boolean } | null>(null);
   useEffect(() => {
     if (!singlesMode) {
       singlesEnteredCompleteRef.current = null;
@@ -674,11 +768,11 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
     }
     // The deck cannot judge this until its rows have landed.
     if (!singlesReady) return;
-    if (singlesEnteredCompleteRef.current === null) {
-      singlesEnteredCompleteRef.current = singlesPending === 0;
+    if (singlesEnteredCompleteRef.current?.unit !== unitKey) {
+      singlesEnteredCompleteRef.current = { unit: unitKey, complete: singlesPending === 0 };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [singlesMode, singlesReady]);
+  }, [singlesMode, singlesReady, unitKey]);
   useEffect(() => {
     if (!singlesMode || !singlesReady || busy || !isFocused) return;
     // A scope with GENUINELY no rows (the scan regrouped the last one
@@ -692,7 +786,8 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
       return;
     }
     if (singlesPending > 0) return;
-    if (singlesEnteredCompleteRef.current === true) return; // deliberate revisit
+    const entered = singlesEnteredCompleteRef.current;
+    if (entered?.unit === unitKey && entered.complete) return; // deliberate revisit
     // A RUN follows the merged flow to the next timeline unit; a DAY
     // deck returns to the day page it promised.
     if (range && unitRef)
@@ -710,6 +805,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
     singlesReady,
     singleRows,
     range,
+    unitKey,
   ]);
 
   // A group that becomes complete during this visit advances immediately.
@@ -804,6 +900,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
       if (busy) return;
       setBusy(true);
       setBusyOwner(owner);
+      if (owner === 'finish') setFinishing(true);
       try {
         await action();
       } catch {
@@ -971,8 +1068,8 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
         <Pressable
           style={styles.retryButton}
           onPress={() => {
-            if (singlesMode) setDeckSingles(null);
-            else setLoadedGroup('loading');
+            if (singlesMode) setSinglesLoad({ unit: unitKey, rows: null });
+            else setGroupLoad({ unit: unitKey, value: 'loading' });
             setLoadTick((t) => t + 1);
           }}
         >
@@ -1215,7 +1312,7 @@ function ReviewDeck({ navigation, explicitGroupId, singlesMode, day, range }: Sh
         ))}
       </ScrollView>
 
-      {browse ? (
+      {browseControls ? (
         // BROWSE (m0.8.2 unification): a completed group and a completed
         // singles run re-decide identically — Keep/Cull chips, the
         // actions, no Compare (its verdicts reject decided photos; the

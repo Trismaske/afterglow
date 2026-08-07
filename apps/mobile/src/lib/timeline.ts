@@ -60,10 +60,13 @@ export type TimelineUnit = TimelineGroupUnit | TimelineRunUnit;
 export type UnitRef =
   { kind: 'group'; groupId: string } | { kind: 'run'; day: string; from: number; to: number };
 
+/** Where the review flow goes next. Named for the UNIT, not a screen:
+ * since m0.8.5 (L4) both unit kinds are the one `Deck` route, which the
+ * deck re-seeds in place rather than remounting. */
 export type UnitDestination =
-  | { screen: 'Deck'; groupId: string }
-  | { screen: 'Singles'; day: string; from: number; to: number }
-  | { screen: 'CullList' };
+  | { kind: 'group'; groupId: string }
+  | { kind: 'run'; day: string; from: number; to: number }
+  | { kind: 'cullList' };
 
 const dayOf = (member: ReviewMemberRow): string => member.day ?? UNDATED_DAY_KEY;
 
@@ -75,8 +78,8 @@ export function unitRefOf(unit: TimelineUnit): UnitRef {
 
 export function unitDestination(unit: TimelineUnit): UnitDestination {
   return unit.kind === 'group'
-    ? { screen: 'Deck', groupId: String(unit.group.groupId) }
-    : { screen: 'Singles', day: unit.day, from: unit.from, to: unit.to };
+    ? { kind: 'group', groupId: String(unit.group.groupId) }
+    : { kind: 'run', day: unit.day, from: unit.from, to: unit.to };
 }
 
 function sameUnit(unit: TimelineUnit, ref: UnitRef): boolean {
@@ -233,7 +236,7 @@ export function destinationAfterUnit(
   completed: UnitRef,
   formerIndex: number,
 ): UnitDestination {
-  if (units.length === 0) return { screen: 'CullList' };
+  if (units.length === 0) return { kind: 'cullList' };
   const found = findUnitIndex(units, completed);
   // A unit MATCHING the completed ref can still hold pending work: run
   // identity is range OVERLAP, and a scan can dissolve a neighbouring
@@ -251,5 +254,5 @@ export function destinationAfterUnit(
     // advances (see unitHasPending).
     if (unitHasPending(unit)) return unitDestination(unit);
   }
-  return { screen: 'CullList' };
+  return { kind: 'cullList' };
 }

@@ -12,6 +12,7 @@ import { colors, useTheme } from '../theme';
 import { formatClock } from '../lib/format';
 import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { firstPendingUnit, unitDestination, type TimelineUnit } from '../lib/timeline';
+import { deckParamsFor } from '../lib/deckUnit';
 import { photoBadges, type PhotoBadge } from '../lib/photoBadges';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Groups'>;
@@ -56,15 +57,8 @@ export function GroupsScreen({ navigation }: Props) {
   const openUnit = useCallback(
     (unit: TimelineUnit) => {
       const destination = unitDestination(unit);
-      if (destination.screen === 'Deck')
-        navigation.navigate('Deck', { groupId: destination.groupId });
-      else if (destination.screen === 'Singles')
-        navigation.navigate('Singles', {
-          day: destination.day,
-          from: destination.from,
-          to: destination.to,
-        });
-      else navigation.navigate('CullList');
+      if (destination.kind === 'cullList') navigation.navigate('CullList');
+      else navigation.navigate('Deck', deckParamsFor(destination));
     },
     [navigation],
   );

@@ -15,7 +15,7 @@ import { DATABASE_NAME, migrateDatabase } from './src/db/database';
 import { ReviewProvider, useReview } from './src/review/ReviewContext';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { GroupsScreen } from './src/screens/GroupsScreen';
-import { DeckScreen, SinglesDeckScreen } from './src/screens/DeckScreen';
+import { DeckScreen } from './src/screens/DeckScreen';
 import { CompareScreen } from './src/screens/CompareScreen';
 import { CullListScreen } from './src/screens/CullListScreen';
 import { SummaryScreen } from './src/screens/SummaryScreen';
@@ -191,13 +191,10 @@ function ThemedNavigator() {
       >
         <Stack.Screen name="Main" component={MainTabs} options={{ headerShown: false }} />
         <Stack.Screen name="Groups" component={GroupsScreen} options={{ title: 'Review' }} />
-        <Stack.Screen name="Deck" component={DeckScreen} options={{ title: 'Group review' }} />
+        {/* ONE deck route for both unit kinds (m0.8.5, L4). The title is
+            per-unit, so the screen sets it itself as it advances. */}
+        <Stack.Screen name="Deck" component={DeckScreen} options={{ title: 'Review' }} />
         <Stack.Screen name="Compare" component={CompareScreen} options={{ title: 'Compare' }} />
-        <Stack.Screen
-          name="Singles"
-          component={SinglesDeckScreen}
-          options={{ title: 'Singles review' }}
-        />
         <Stack.Screen name="CullList" component={CullListScreen} options={{ title: 'Cull list' }} />
         <Stack.Screen
           name="Summary"

@@ -73,6 +73,7 @@ import {
 import { Ghost } from '../components/Ghost';
 import { GoalRing } from '../components/GoalRing';
 import { firstPendingUnit, unitDestination } from '../lib/timeline';
+import { deckParamsFor } from '../lib/deckUnit';
 import { useReview } from '../review/ReviewContext';
 import { BigButton } from '../components/BigButton';
 import { StateProgressBar } from '../components/StateProgressBar';
@@ -977,15 +978,9 @@ export function HomeScreen({ navigation }: Props) {
                 return;
               }
               const destination = unitDestination(first);
-              if (destination.screen === 'Deck')
-                navigation.navigate('Deck', { groupId: destination.groupId });
-              else if (destination.screen === 'Singles')
-                navigation.navigate('Singles', {
-                  day: destination.day,
-                  from: destination.from,
-                  to: destination.to,
-                });
-              else navigation.navigate('CullList', { fromHome: true });
+              if (destination.kind === 'cullList')
+                navigation.navigate('CullList', { fromHome: true });
+              else navigation.navigate('Deck', deckParamsFor(destination));
             }}
           />
           {/* Only a RUNNING scan (or a failed one) talks below the CTA

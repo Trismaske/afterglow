@@ -107,3 +107,27 @@ Its corpus at session start: 8 998 photos, 8 950 to review, 1 620 groups, 2 772 
 **Chosen.** The third. `finishing` is set when a finish write starts and cleared by the unit change it causes — or, if the write left the unit incomplete after all (a scan adding rows mid-write), by the deck settling back out of browse.
 **Why.** The reported symptom is "the layout reflows", and this is the reflow. The second clearing rule is what stops a finish that does not advance from stranding the deck on live controls.
 **Tier:** **read**; §10's check 2 is the device confirmation.
+
+### 11 · F5's celebrated marker parses the old day-only value as "nothing celebrated"
+
+**Context.** `goal_celebrated_day` changes shape from `2026-08-07` to `2026-08-07:50`.
+**Options.** Migrate the old value (treat a bare day as celebrated at the current goal); or parse-with-fallback to null.
+**Chosen.** Fallback to null — nothing celebrated.
+**Why.** The cost is exactly one extra moment, on upgrade day only, for a user who had already crossed their goal that day. The alternative silently swallows a goal the user did reach, which is the worse lie in a feature whose whole point is acknowledgement. Pre-v1 policy carries no back-compat constraint, so a migration would be code earned by nothing. The parse test documents the old shape by name.
+**Tier:** **read**.
+
+### 12 · Milestone bars take the hue of what each counts, rather than one shared colour
+
+**Context.** The accent pass had to give the three Stats milestone bars (photos reviewed, culled, edits completed) a non-accent colour.
+**Options.** One shared hue (near-white, rule 3's "no hue of its own" fallback); or per-bar hues from the reserved palette.
+**Chosen.** Per-bar: keep-green, cull-red, edit-blue.
+**Why.** Rule 3 says a series takes the hue of what it counts, and these are three separate bars with three subjects rather than one series. Near-white would have been defensible only if the family were heterogeneous in a way the palette cannot name — it is not; each subject has a reserved hue already. The reservation I set aside: a cull-red progress bar could read as alarm rather than as "cull", and that is a judgment about taste, not about the rule. Worth a look during the device pass.
+**Tier:** **assumed** (visual judgment, unverified on a screen).
+
+### 13 · Device verification ran on the emulator, not the S10e
+
+**Context.** L4 and F17 needed a real run. Tristan was asked, but not answered, whether m0.8.5 builds may replace 0.8.4 on the S10e.
+**Chosen.** Install and verify on the `afterglow-api30` emulator only; leave the S10e on 0.8.4.
+**Why.** The question touches his device rather than the repo, so it stays his. The emulator answers the structural questions (does the advance stay in place, does the badge render a day, does the merged route keep a per-unit title); it cannot answer the feel questions, and those are on the acceptance list for him anyway.
+**Result (measured, release build of the pre-review-fix tree):** a run-to-run advance keeps the header, badge, control rows and finish button on screen throughout — no blank frame, against 0.8.4's ~300 ms of black. The badge reads `Jul 16, 2026 · 09:05:00`. The header title still switches per unit after the route merge.
+**Tier:** **measured** for those three; the rest of §10 stays human.

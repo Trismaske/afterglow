@@ -190,9 +190,9 @@ Six rules. They apply to every surface that paints a state.
    It is the only hue that carries two meanings, and it is not a licence for the others.
 3. **The accent means interaction only**: selection, links, chevrons, primary buttons, tab state.
    The user chooses it (Material You), so it can never carry meaning that must stay stable.
-   Six sites still break this (goal ring, Keeping-up bar, coverage markers, activity bars, milestone fills, the best star) and are fixed in **m0.8.5**.
+   One site still breaks this: **the best star**, decided in m0.8.6 with the rest of its knot, because whether it survives at all is open.
+   The other five (goal ring, Keeping-up bar, coverage markers, activity bars, milestone fills) were fixed in m0.8.5.
    [Feedback_m0.8.x.md](Feedback_m0.8.x.md), "The accent must stop carrying meaning", carries the measurements that show why a curated accent picker cannot be the answer.
-   The star is the exception: it is decided in m0.8.6 with the rest of its knot, because whether it survives at all is open.
 
    **A data series takes the hue of what it counts.** Heat over reviewing is keep-green. The reviewed series in a chart is keep-green.
    If the counted thing has no hue of its own, it takes **near-white** (`colors.text`), the one strong colour that means nothing else.
@@ -229,8 +229,12 @@ Six rules. They apply to every surface that paints a state.
   A borrowed action hue for "this is picked" says the item carries that action.
 - **Home day rows** — kept and staged fill the bar. A queued edit appears only in the hint line beneath it.
   A third segment for it counted the same photo twice, since a flagged photo is already kept.
-- **Goal ring and coverage bar** — unaffected.
-  They show *progress over time*, not photo state, and correctly use the accent until complete, then keep-green.
+- **Progress displays** (goal rings, the Keeping-up bar, coverage markers, the 30-day activity bars) — **keep-green throughout**.
+  They show progress over time rather than photo state, but what they count is *reviewing*, so rule 3's "a series takes the hue of what it counts" governs them like anything else.
+  Completeness is carried by the GEOMETRY each already has — the ring closes, the bar fills, the marker tops out, a day's bar rises against the grey goal line — never by changing hue.
+  They used to run accent-until-complete, then keep-green: a two-state pattern that could not send its one signal under the Green accent, where the two nearly merge.
+- **Milestone bars** — the hue of what each one counts: reviewed keep-green, culled cull-red, edits completed edit-blue.
+  Three bars with three subjects, so one shared colour would have claimed they measured the same thing.
 
 ## Deliberately not states
 

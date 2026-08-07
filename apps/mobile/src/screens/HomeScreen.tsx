@@ -862,7 +862,13 @@ export function HomeScreen({ navigation }: Props) {
               size={132}
               strokeWidth={12}
               progress={goalLoaded ? goalProgress(reviewedToday, goal) : 0}
-              color={goalLoaded && reviewedToday >= goal ? colors.keep : theme.accent}
+              // Keep-green throughout (m0.8.5, A6): what this counts is
+              // REVIEWING, and rule 3 gives a series the hue of what it
+              // counts. Completeness is the closed ring, not a hue
+              // change — under the Green accent the old two-state
+              // pattern had the "you got there" colour nearly merge with
+              // the colour it was supposed to replace.
+              color={colors.keep}
               // Placeholder until the loader's single commit (F2): a
               // hardcoded "0 of 50" is a wrong number, not a loading one.
               centerTitle={goalLoaded ? `${reviewedToday}` : '–'}
@@ -1074,7 +1080,9 @@ export function HomeScreen({ navigation }: Props) {
                   styles.coverageBarFill,
                   {
                     width: `${Math.round(coverageState.ratio * 100)}%`,
-                    backgroundColor: coverageState.pending === 0 ? colors.keep : theme.accent,
+                    // Keep-green throughout (A6); the FILLED WIDTH is
+                    // what says how far along this is.
+                    backgroundColor: colors.keep,
                   },
                 ]}
               />

@@ -254,7 +254,7 @@ export function StatsScreen({ navigation }: Props) {
         style={styles.scroll}
         contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
       >
-        {tab === 'activity' && <ActivityTab decisions={decisions} accent={theme.accent} />}
+        {tab === 'activity' && <ActivityTab decisions={decisions} />}
         {tab === 'forecast' && (
           <ForecastTab
             forecast={forecast}
@@ -278,7 +278,7 @@ export function StatsScreen({ navigation }: Props) {
 
 // ------------------------------------------------------------- Activity
 
-function ActivityTab({ decisions, accent }: { decisions: DecisionStats | null; accent: string }) {
+function ActivityTab({ decisions }: { decisions: DecisionStats | null }) {
   if (!decisions) return <Text style={styles.loading}>Loading stats…</Text>;
 
   const reviewedToday = decisions.reviewedByDay.get(decisions.day) ?? 0;
@@ -304,7 +304,8 @@ function ActivityTab({ decisions, accent }: { decisions: DecisionStats | null; a
             size={116}
             strokeWidth={11}
             progress={goalProgress(reviewedToday, decisions.goal)}
-            color={reviewedToday >= decisions.goal ? colors.keep : accent}
+            // Keep-green throughout (m0.8.5, A6) — see HomeScreen's ring.
+            color={colors.keep}
             centerTitle={`${reviewedToday}`}
             centerSubtitle={`of ${decisions.goal} today`}
           />
@@ -351,7 +352,7 @@ function ActivityTab({ decisions, accent }: { decisions: DecisionStats | null; a
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Last {ACTIVITY_WINDOW_DAYS} days</Text>
-        <ActivityChart activity={activity} accent={accent} />
+        <ActivityChart activity={activity} />
         <View style={styles.chartAxis}>
           <Text style={styles.axisLabel}>
             {labelForDayKey(activity.bars[0]?.day ?? decisions.day)}
@@ -378,7 +379,7 @@ function ActivityTab({ decisions, accent }: { decisions: DecisionStats | null; a
       {decisions.coverageGoal !== 'off' && coverageChart !== null && (
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Keeping up</Text>
-          <CoverageChart coverage={coverageChart} accent={accent} />
+          <CoverageChart coverage={coverageChart} />
           <View style={styles.chartAxis}>
             <Text style={styles.axisLabel}>
               {labelForDayKey(coverageChart.markers[0]?.day ?? decisions.day)}
@@ -660,10 +661,14 @@ function HabitsTab({
   const rhythm = rhythmLine(habits.rhythm);
   const sittings = sittingLine(habits.sittings);
   const trend = decisivenessLine(habits.decisiveness);
+  // Each bar takes the hue of what it COUNTS (rule 3), not the
+  // user-chosen accent (m0.8.5, A6). Three bars, three subjects: the
+  // palette teaches itself here rather than painting three different
+  // things one colour.
   const milestones = [
-    milestone('photos reviewed', habits.lifetime.reviewed),
-    milestone('culled', habits.lifetime.culled),
-    milestone('edits completed', habits.lifetime.editsCompleted),
+    { item: milestone('photos reviewed', habits.lifetime.reviewed), hue: colors.keep },
+    { item: milestone('culled', habits.lifetime.culled), hue: colors.cull },
+    { item: milestone('edits completed', habits.lifetime.editsCompleted), hue: colors.edit },
   ];
 
   return (
@@ -738,7 +743,7 @@ function HabitsTab({
           <MaterialCommunityIcons name="chart-box-outline" size={21} color={accent} />
           <Text style={styles.cardTitle}>Milestones</Text>
         </View>
-        {milestones.map((item) => (
+        {milestones.map(({ item, hue }) => (
           <View key={item.label} style={styles.milestone}>
             <Text style={styles.milestoneLabel}>{milestoneLine(item)}</Text>
             <View style={styles.milestoneTrack}>
@@ -747,7 +752,7 @@ function HabitsTab({
                   styles.milestoneFill,
                   {
                     width: `${Math.round(milestoneProgress(item) * 100)}%`,
-                    backgroundColor: accent,
+                    backgroundColor: hue,
                   },
                 ]}
               />
@@ -819,7 +824,7 @@ function RhythmHeatmap({ grid }: { grid: RhythmGrid }) {
 // --------------------------------------------------------------- charts
 
 /** Bar chart of daily decisions with the goal line across the plot. */
-function ActivityChart({ activity, accent }: { activity: ActivityWindow; accent: string }) {
+function ActivityChart({ activity }: { activity: ActivityWindow }) {
   return (
     <View style={[styles.plot, { height: PLOT_HEIGHT }]}>
       {activity.goalLine > 0 && (
@@ -835,8 +840,10 @@ function ActivityChart({ activity, accent }: { activity: ActivityWindow; accent:
                   // A zero day keeps a 2 px stub so the axis reads as a
                   // calendar, not as a chart that lost its days.
                   height: Math.max(2, Math.round(bar.height * PLOT_HEIGHT)),
-                  backgroundColor:
-                    bar.count === 0 ? colors.surfaceRaised : bar.goalReached ? colors.keep : accent,
+                  // Keep-green for every day with work (A6). Reaching
+                  // the goal is read off the grey goal line this card
+                  // already draws, not off a hue that changes under it.
+                  backgroundColor: bar.count === 0 ? colors.surfaceRaised : colors.keep,
                 },
               ]}
             />
@@ -895,7 +902,7 @@ function IntakeChart({ intake }: { intake: IntakeWindow }) {
  * cleared, a part-filled one showing how much of it is still unreviewed,
  * and a thin centred stub for a day nothing was shot.
  */
-function CoverageChart({ coverage, accent }: { coverage: CoverageWindow; accent: string }) {
+function CoverageChart({ coverage }: { coverage: CoverageWindow }) {
   return (
     <View style={styles.coverageRow}>
       {coverage.markers.map((marker) => {
@@ -909,7 +916,10 @@ function CoverageChart({ coverage, accent }: { coverage: CoverageWindow; accent:
         const doneFraction = (marker.total - marker.pending) / marker.total;
         return (
           <View key={marker.day} style={styles.coverageColumn}>
-            <View style={[styles.coverageMarker, { backgroundColor: accent }]}>
+            {/* The day's unreviewed remainder is the empty TRACK
+                (rule 1), not a second meaning-carrying colour; the
+                reviewed share fills it in keep-green. */}
+            <View style={[styles.coverageMarker, { backgroundColor: colors.surfaceRaised }]}>
               <View
                 style={[
                   styles.coverageMarkerDone,

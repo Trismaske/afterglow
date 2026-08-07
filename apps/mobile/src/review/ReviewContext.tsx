@@ -31,6 +31,22 @@
  * A failed decision write surfaces as `writeError` (loud alert in
  * App.tsx); the durable row is unchanged, so the user simply retries the
  * action.
+ *
+ * THE DAILY GOAL IS CREDITED BY THE WRITE (m0.8.5, A3). `applyReviewDecisions`
+ * reports how many rows went unreviewed → decided, and `write` notes that
+ * count. Callers pass nothing and can forget nothing: before this, each
+ * screen counted its own fresh decisions from a rendered member list, and
+ * the screens that never learned to — the state editor, History
+ * re-decides — simply did not count, so a goal crossed there celebrated
+ * on the next deck decision instead. Paths that cannot produce a fresh
+ * decision return void deliberately: `applyRedecision` and the un-stage
+ * paths are gated in SQL to already-decided states.
+ *
+ * Drawing the moment is separate from counting it. A review surface
+ * registers as a HOST while focused; a crossing with a host arms the
+ * consume-once overlay flag, and a crossing with none says so with a
+ * toast instead of leaving a moment pending for a surface that may not
+ * open again today.
  */
 import { AppState } from 'react-native';
 import React, {
@@ -64,6 +80,7 @@ import {
 } from '../lib/favouriteState';
 import type { BadgeWeight } from '../lib/photoBadges';
 import { perfLog } from '../lib/perfLog';
+import { showToast } from '../lib/toast';
 import { applyLocalAction, queueEquals, type LocalAction } from '../lib/reviewPatch';
 import {
   buildTimeline,
@@ -80,6 +97,7 @@ import {
 import { dayKey, rangeOfDayKey } from '../lib/dates';
 import {
   applyReviewDecisions,
+  type ReviewDecisionResult,
   readReviewQueue,
   getNeedsEditAssets,
   getQueuedForAssets,
@@ -269,7 +287,11 @@ interface ReviewContextValue {
    * review surface that writes verdicts calls this (deck AND Compare)
    * with the count of photos that just left `unreviewed`, so the moment
    * fires wherever the crossing actually happens. */
-  noteDecisions: (n: number) => void;
+  /** Register as a surface that can DRAW the goal moment; call the
+   * returned function on unfocus. With no host registered a crossing
+   * says so with a toast instead of arming an overlay nothing will
+   * claim (m0.8.5, A4). */
+  registerCelebrationHost: () => () => void;
   /** Bumps when a goal moment arrives — focused surfaces re-check. */
   celebrationTick: number;
   /** Claim the pending moment: returns the goal to celebrate exactly
@@ -997,6 +1019,147 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     setVersion((v) => v + 1);
   }, []);
 
+  // -------------------------------------- goal celebration (F14, amended)
+  // The counter lives HERE so a crossing fires wherever it happens —
+  // Tristan's blocker was a goal crossed on the Compare screen that
+  // never celebrated because the old counter was deck-local. Loaded
+  // lazily per day; the moment is a consume-once flag any focused
+  // review surface claims and renders.
+  const celebrationInfoRef = useRef<{
+    day: string;
+    goal: number;
+    count: number;
+    celebratedDay: string | null;
+  } | null>(null);
+  const celebrationPendingRef = useRef<number | null>(null);
+  const [celebrationTick, setCelebrationTick] = useState(0);
+  /**
+   * How many review surfaces can draw the moment right now (m0.8.5, A4).
+   *
+   * The durable "celebrated today" marker is written BEFORE the moment
+   * arms, so a crossing nothing can claim would mark the day celebrated
+   * and show nothing — and then fire stale, hours later, on whatever
+   * review surface happened to focus next. Since the count is now
+   * sourced from the write itself, crossings can happen on surfaces that
+   * host no overlay at all (the state editor, History), so this stopped
+   * being theoretical.
+   *
+   * A registered host means arm the overlay; none means say it plainly
+   * and consume the moment there and then.
+   */
+  const celebrationHostsRef = useRef(0);
+  const registerCelebrationHost = useCallback(() => {
+    celebrationHostsRef.current += 1;
+    return () => {
+      celebrationHostsRef.current -= 1;
+    };
+  }, []);
+  /** Notes queue behind one chain, and the sum of not-yet-applied notes
+   * rides in a synchronous counter: two rapid decisions can BOTH commit
+   * before the first initialization read resolves, so that read includes
+   * every pending note — backing out only the caller's own `n` would
+   * double-count the rest, and two concurrent initializers could arm two
+   * celebrations or overwrite each other's counter (codex r3). */
+  const celebrationChainRef = useRef<Promise<void>>(Promise.resolve());
+  const celebrationUnappliedRef = useRef(0);
+  const noteDecisions = useCallback(
+    (n: number) => {
+      if (n <= 0) return;
+      // The decision's DAY is captured synchronously at the call — the
+      // chained body can start after local midnight, and crediting an
+      // old-day decision to the new day could celebrate the wrong day
+      // and suppress the real crossing (codex r6). A stale-day note
+      // simply drops: its day is over, no celebration can fire for it.
+      const noteDay = dayKey(Date.now());
+      celebrationUnappliedRef.current += n; // synchronous, before any await
+      celebrationChainRef.current = celebrationChainRef.current
+        .then(async () => {
+          const today = dayKey(Date.now());
+          if (noteDay !== today) {
+            celebrationUnappliedRef.current -= n;
+            return;
+          }
+          let info = celebrationInfoRef.current;
+          if (!info || info.day !== today) {
+            const [rawGoal, celebratedDay, byDay] = await Promise.all([
+              getSetting(db, DAILY_GOAL_KEY),
+              getSetting(db, GOAL_CELEBRATED_KEY),
+              getReviewedCountsByDay(db, rangeOfDayKey(today).startMs),
+            ]);
+            // Every queued note's write COMMITTED before its call, so
+            // the fresh read includes them — back out the whole
+            // unapplied sum; each chained step then applies its own.
+            // RESIDUAL RACE, deliberately kept in the LATE direction
+            // (scoped review): a note registering mid-read whose write
+            // missed the snapshot is over-subtracted, so a crossing can
+            // fire one note late. The pre-read sample tried the other
+            // way and could DOUBLE-count into a false EARLY celebration
+            // that durably suppresses the real one — the worse lie. The
+            // exact fix (a per-note count re-read) is parked for the
+            // next cycle.
+            info = {
+              day: today,
+              goal: parseDailyGoal(rawGoal),
+              count: Math.max(0, (byDay.get(today) ?? 0) - celebrationUnappliedRef.current),
+              celebratedDay,
+            };
+            celebrationInfoRef.current = info;
+          } else {
+            // The GOAL re-reads on every note (one keyed row): Settings
+            // can change it mid-day, and a threshold cached at the
+            // day's first decision would celebrate against the OLD
+            // number (codex r4). The count stays cached — it is this
+            // serialized chain's own truth.
+            info.goal = parseDailyGoal(await getSetting(db, DAILY_GOAL_KEY));
+          }
+          const before = info.count;
+          info.count += n;
+          celebrationUnappliedRef.current -= n;
+          if (
+            shouldCelebrateGoal({
+              before,
+              after: info.count,
+              goal: info.goal,
+              celebratedDay: info.celebratedDay,
+              today,
+            })
+          ) {
+            // The durable marker lands BEFORE the moment arms (codex
+            // r8): an armed-but-unrecorded celebration re-fires after a
+            // restart, and once-per-day is the durable contract. The
+            // in-memory mark still sets on failure so this process never
+            // doubles; the skipped overlay is the lesser lie.
+            info.celebratedDay = today;
+            try {
+              await setSetting(db, GOAL_CELEBRATED_KEY, today);
+            } catch (error) {
+              console.warn('[review] goal celebration not recorded — skipped:', String(error));
+              return;
+            }
+            if (celebrationHostsRef.current > 0) {
+              celebrationPendingRef.current = info.goal;
+              setCelebrationTick((tick) => tick + 1);
+            } else {
+              // Nothing can draw it — say it now rather than leave a
+              // moment pending for a surface that may not open today.
+              showToast(`Daily goal reached — ${info.goal} today`);
+            }
+          }
+        })
+        .catch(() => {
+          // No goal info = no celebration; the note still leaves the
+          // unapplied sum, or the next init would over-subtract it.
+          celebrationUnappliedRef.current -= n;
+        });
+    },
+    [db],
+  );
+  const consumeCelebration = useCallback((): number | null => {
+    const goal = celebrationPendingRef.current;
+    celebrationPendingRef.current = null;
+    return goal;
+  }, []);
+
   /** Run a decision write; failures surface loudly, rows stay unchanged.
    * Takes WRITE PRIORITY: the scan yields at its next boundary instead
    * of queueing the decision behind a burst of window transactions.
@@ -1007,10 +1170,18 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
    * shape is only known after fn ran (batch keeps); returning null skips
    * patching (nothing changed). */
   const write = useCallback(
-    async (fn: () => Promise<void>, patch?: LocalAction | (() => LocalAction | null)) => {
+    async (
+      fn: () => Promise<void | ReviewDecisionResult>,
+      patch?: LocalAction | (() => LocalAction | null),
+    ) => {
       try {
-        await withUserWritePriority(fn);
+        const result = await withUserWritePriority(fn);
         setWriteError(null);
+        // The goal is credited HERE, from what the write committed
+        // (m0.8.5, A3). Every verdict path that returns its result is
+        // counted, so a new surface cannot quietly fail to celebrate the
+        // way the state editor and History re-decides did.
+        if (result) noteDecisions(result.freshDecisions);
         const action = typeof patch === 'function' ? patch() : patch;
         if (action) patchLocal(action);
       } catch (error) {
@@ -1020,7 +1191,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
         void refresh().catch(() => {});
       }
     },
-    [refresh, patchLocal],
+    [refresh, patchLocal, noteDecisions],
   );
 
   const decide = useCallback(
@@ -1032,14 +1203,13 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       const verdict: ReviewVerdict = action === 'cull' ? 'culled' : 'kept';
       const queueEdit = action === 'to_edit';
       return write(
-        async () => {
-          await applyReviewDecisions(db, [[assetId, verdict]], Date.now(), {
+        () =>
+          applyReviewDecisions(db, [[assetId, verdict]], Date.now(), {
             ...(queueEdit ? { needsEditChanges: [{ assetId, needsEdit: true }] } : {}),
             ...(expectedGroupId !== undefined
               ? { requireAssignment: [{ assetId, groupId: expectedGroupId }] }
               : {}),
-          });
-        },
+          }),
         { kind: 'verdict', assetId, verdict, ...(queueEdit ? { queueEdit: true } : {}) },
       );
     },
@@ -1048,18 +1218,20 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
 
   const clearDecision = useCallback(
     (assetId: string) =>
-      write(
-        async () => {
-          await applyReviewDecisions(db, [[assetId, 'unreviewed']], Date.now());
-        },
-        { kind: 'verdict', assetId, verdict: 'unreviewed' },
-      ),
+      write(() => applyReviewDecisions(db, [[assetId, 'unreviewed']], Date.now()), {
+        kind: 'verdict',
+        assetId,
+        verdict: 'unreviewed',
+      }),
     [db, write],
   );
 
   const keepRest = useCallback(
     async (groupId: number) => {
-      let kept: string[] = [];
+      // A holder, not a plain `let`: the assignment happens inside the
+      // write callback, and TypeScript's flow analysis would otherwise
+      // narrow the variable to its `null` initializer after the await.
+      const outcome: { result: ReviewDecisionResult | null } = { result: null };
       await write(
         async () => {
           // The queue page holds only GROUP_PAGE groups — an explicitly
@@ -1089,7 +1261,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           // APPLIED ids (codex r10): a dissolved off-page group silently
           // keeps nothing, and the caller's goal credit must follow what
           // committed, exactly like keepAllSingles.
-          kept =
+          outcome.result =
             changes.length > 0
               ? await applyReviewDecisions(db, changes, Date.now(), {
                   // Validated in the transaction: a warm scan can rebuild
@@ -1097,11 +1269,15 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
                   // list must not freeze photos inside superseding groups.
                   requireGroupMembership: { groupId, assetIds: changes.map(([id]) => id) },
                 })
-              : [];
+              : null;
+          return outcome.result ?? undefined;
         },
-        () => (kept.length > 0 ? { kind: 'keepMany', assetIds: kept } : null),
+        () =>
+          outcome.result && outcome.result.appliedIds.length > 0
+            ? { kind: 'keepMany', assetIds: outcome.result.appliedIds }
+            : null,
       );
-      return kept.length;
+      return outcome.result?.appliedIds.length ?? 0;
     },
     [db, write],
   );
@@ -1171,7 +1347,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
             ]
           : []
         : [[loserId, 'culled']];
-      await applyReviewDecisions(db, verdicts, duel.at, {
+      return applyReviewDecisions(db, verdicts, duel.at, {
         duel,
         setBest: { groupId, assetId: winnerId },
         // The whole-table revalidation judges outsiders over the SAME
@@ -1216,8 +1392,8 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       // validated STILL single (a scan may have grouped one mid-compare,
       // and keeping it would silently freeze the newly formed group).
       return write(
-        async () => {
-          await applyReviewDecisions(
+        () =>
+          applyReviewDecisions(
             db,
             [
               [winnerId, 'kept'],
@@ -1230,8 +1406,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
                 { assetId: loserId, groupId: null },
               ],
             },
-          );
-        },
+          ),
         { kind: 'keepMany', assetIds: [winnerId, loserId] },
       );
     },
@@ -1345,7 +1520,10 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
 
   const keepAllSingles = useCallback(
     async (day?: string, range: { from: number; to: number } | null = null) => {
-      let kept: string[] = [];
+      // A holder, not a plain `let`: the assignment happens inside the
+      // write callback, and TypeScript's flow analysis would otherwise
+      // narrow the variable to its `null` initializer after the await.
+      const outcome: { result: ReviewDecisionResult | null } = { result: null };
       await write(
         async () => {
           // The deck's rows are NOT the global snapshot (they can sit
@@ -1370,7 +1548,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           // silently skips externally-reconciled rows, and both the
           // optimistic patch and the goal credit must follow what
           // committed.
-          kept =
+          outcome.result =
             changes.length > 0
               ? await applyReviewDecisions(db, changes, Date.now(), {
                   // Every target must STILL be a single — a scan can move
@@ -1378,11 +1556,15 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
                   // silently freeze the newly formed group.
                   requireAssignment: changes.map(([id]) => ({ assetId: id, groupId: null })),
                 })
-              : [];
+              : null;
+          return outcome.result ?? undefined;
         },
-        () => (kept.length > 0 ? { kind: 'keepMany', assetIds: kept } : null),
+        () =>
+          outcome.result && outcome.result.appliedIds.length > 0
+            ? { kind: 'keepMany', assetIds: outcome.result.appliedIds }
+            : null,
       );
-      return kept.length;
+      return outcome.result?.appliedIds.length ?? 0;
     },
     [db, write, scopedRoots],
   );
@@ -1434,120 +1616,6 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
 
   const clearWriteError = useCallback(() => setWriteError(null), []);
 
-  // -------------------------------------- goal celebration (F14, amended)
-  // The counter lives HERE so a crossing fires wherever it happens —
-  // Tristan's blocker was a goal crossed on the Compare screen that
-  // never celebrated because the old counter was deck-local. Loaded
-  // lazily per day; the moment is a consume-once flag any focused
-  // review surface claims and renders.
-  const celebrationInfoRef = useRef<{
-    day: string;
-    goal: number;
-    count: number;
-    celebratedDay: string | null;
-  } | null>(null);
-  const celebrationPendingRef = useRef<number | null>(null);
-  const [celebrationTick, setCelebrationTick] = useState(0);
-  /** Notes queue behind one chain, and the sum of not-yet-applied notes
-   * rides in a synchronous counter: two rapid decisions can BOTH commit
-   * before the first initialization read resolves, so that read includes
-   * every pending note — backing out only the caller's own `n` would
-   * double-count the rest, and two concurrent initializers could arm two
-   * celebrations or overwrite each other's counter (codex r3). */
-  const celebrationChainRef = useRef<Promise<void>>(Promise.resolve());
-  const celebrationUnappliedRef = useRef(0);
-  const noteDecisions = useCallback(
-    (n: number) => {
-      if (n <= 0) return;
-      // The decision's DAY is captured synchronously at the call — the
-      // chained body can start after local midnight, and crediting an
-      // old-day decision to the new day could celebrate the wrong day
-      // and suppress the real crossing (codex r6). A stale-day note
-      // simply drops: its day is over, no celebration can fire for it.
-      const noteDay = dayKey(Date.now());
-      celebrationUnappliedRef.current += n; // synchronous, before any await
-      celebrationChainRef.current = celebrationChainRef.current
-        .then(async () => {
-          const today = dayKey(Date.now());
-          if (noteDay !== today) {
-            celebrationUnappliedRef.current -= n;
-            return;
-          }
-          let info = celebrationInfoRef.current;
-          if (!info || info.day !== today) {
-            const [rawGoal, celebratedDay, byDay] = await Promise.all([
-              getSetting(db, DAILY_GOAL_KEY),
-              getSetting(db, GOAL_CELEBRATED_KEY),
-              getReviewedCountsByDay(db, rangeOfDayKey(today).startMs),
-            ]);
-            // Every queued note's write COMMITTED before its call, so
-            // the fresh read includes them — back out the whole
-            // unapplied sum; each chained step then applies its own.
-            // RESIDUAL RACE, deliberately kept in the LATE direction
-            // (scoped review): a note registering mid-read whose write
-            // missed the snapshot is over-subtracted, so a crossing can
-            // fire one note late. The pre-read sample tried the other
-            // way and could DOUBLE-count into a false EARLY celebration
-            // that durably suppresses the real one — the worse lie. The
-            // exact fix (a per-note count re-read) is parked for the
-            // next cycle.
-            info = {
-              day: today,
-              goal: parseDailyGoal(rawGoal),
-              count: Math.max(0, (byDay.get(today) ?? 0) - celebrationUnappliedRef.current),
-              celebratedDay,
-            };
-            celebrationInfoRef.current = info;
-          } else {
-            // The GOAL re-reads on every note (one keyed row): Settings
-            // can change it mid-day, and a threshold cached at the
-            // day's first decision would celebrate against the OLD
-            // number (codex r4). The count stays cached — it is this
-            // serialized chain's own truth.
-            info.goal = parseDailyGoal(await getSetting(db, DAILY_GOAL_KEY));
-          }
-          const before = info.count;
-          info.count += n;
-          celebrationUnappliedRef.current -= n;
-          if (
-            shouldCelebrateGoal({
-              before,
-              after: info.count,
-              goal: info.goal,
-              celebratedDay: info.celebratedDay,
-              today,
-            })
-          ) {
-            // The durable marker lands BEFORE the moment arms (codex
-            // r8): an armed-but-unrecorded celebration re-fires after a
-            // restart, and once-per-day is the durable contract. The
-            // in-memory mark still sets on failure so this process never
-            // doubles; the skipped overlay is the lesser lie.
-            info.celebratedDay = today;
-            try {
-              await setSetting(db, GOAL_CELEBRATED_KEY, today);
-            } catch (error) {
-              console.warn('[review] goal celebration not recorded — skipped:', String(error));
-              return;
-            }
-            celebrationPendingRef.current = info.goal;
-            setCelebrationTick((tick) => tick + 1);
-          }
-        })
-        .catch(() => {
-          // No goal info = no celebration; the note still leaves the
-          // unapplied sum, or the next init would over-subtract it.
-          celebrationUnappliedRef.current -= n;
-        });
-    },
-    [db],
-  );
-  const consumeCelebration = useCallback((): number | null => {
-    const goal = celebrationPendingRef.current;
-    celebrationPendingRef.current = null;
-    return goal;
-  }, []);
-
   /** Derived, never stored: the patch model keeps operating on the two
    * pages, and the timeline re-derives after every commit or patch. */
   const timeline = useMemo(
@@ -1594,7 +1662,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       keepAllSingles,
       redecideStaged,
       confirmStagedCulls,
-      noteDecisions,
+      registerCelebrationHost,
       celebrationTick,
       consumeCelebration,
     }),
@@ -1636,7 +1704,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       keepAllSingles,
       redecideStaged,
       confirmStagedCulls,
-      noteDecisions,
+      registerCelebrationHost,
       celebrationTick,
       consumeCelebration,
     ],

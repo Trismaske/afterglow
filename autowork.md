@@ -75,3 +75,35 @@ Its corpus at session start: 8 998 photos, 8 950 to review, 1 620 groups, 2 772 
 **Chosen.** Reuse **`Unknown day`** verbatim for the deck badge's null case.
 **Why.** The phrase is already in the product for exactly this fact, so a second wording would be a second vocabulary for one thing. This device's corpus has 2 504 undated photos, so the null path is the common case here, not an edge case.
 **Tier:** **measured**.
+
+### 7 · One `Deck` route instead of two, rather than keeping `Singles`
+
+**Context.** L4 makes the unit state. The route then names only the unit the deck OPENED on, and the two routes (`Deck`, `Singles`) can no longer express a cross-kind advance.
+**Research.** A concrete defect, not a tidiness argument: `navigation.navigate('Deck', {groupId})` to a route already on the stack pops back to it and merges params. With the deck advanced internally to another unit, re-entering on the unit the route was opened on is a no-op param change — so the deck would stay where it had advanced to, and tapping a group on the Timeline would open the wrong one.
+**Options.** (a) Keep both routes and accept param drift on cross-kind advances. (b) One route with a flat param shape, kept in step by `setParams` on every advance.
+**Chosen.** (b). Params are `{groupId?, day?, from?, to?}`, read through one function.
+**Why.** (a) leaves a known-wrong route state and cannot express half the advances at all. Pre-v1 policy allows breaking route changes, we own all four call sites, and AGENTS.md says migrate everything once with no shims. The header title was per-route, so the screen now sets it per unit — which also fixes a title that would otherwise have gone stale on every advance.
+**Tier:** the re-entry defect is **read** from React Navigation's documented `navigate` semantics, not reproduced on device. §10's check 4 exercises it.
+
+### 8 · `UnitDestination.screen` renamed to `kind`
+
+**Context.** The field's values were `'Deck' | 'Singles' | 'CullList'` — route names. After decision 7, `Singles` is not a route.
+**Chosen.** Rename to `kind: 'group' | 'run' | 'cullList'`, matching `UnitRef`'s existing vocabulary. Six test assertions updated with it.
+**Why.** A field naming a screen that does not exist sends the next reader looking for it. AGENTS.md: sweep for everything a removed subsystem was the sole setter of, and name things for a reader without the author's context.
+**Tier:** naming.
+
+### 9 · The unit/param logic lives in `lib/deckUnit.ts`, not in the screen
+
+**Context.** L4 introduced a unit type, an identity key, and a two-direction param mapping. They started inside `DeckScreen.tsx`.
+**Chosen.** Moved to `src/lib/deckUnit.ts` with 15 tests.
+**Why.** The repo's rule is to split pure logic from impure bindings, and the round-trip rule wants both directions tested together — which a screen full of React Native imports cannot be. The tests pin the two traps the design has: a run must not share an identity key with the whole day it sits in, and `paramsForUnit` must spell out `undefined` for the other kind's fields, because `setParams` merges.
+**Tier:** structure; the traps are **read** and now test-pinned.
+
+### 10 · Hold the browse-control swap through a finish (`finishing`)
+
+**Context.** Completing a unit flips `browse`, which swaps the whole live control block for the browse one. Before L4 nobody saw it — the `navigation.replace` had already blanked the screen.
+**Research.** `useEffect` runs after paint, so with the advance now a state update in an effect, the completed-unit render WOULD paint for one frame before the advance lands.
+**Options.** Accept the frame; freeze on `busyOwner === 'finish'` alone (too short — it clears when the write resolves, before the advance); or hold from the start of the finish until the unit actually changes.
+**Chosen.** The third. `finishing` is set when a finish write starts and cleared by the unit change it causes — or, if the write left the unit incomplete after all (a scan adding rows mid-write), by the deck settling back out of browse.
+**Why.** The reported symptom is "the layout reflows", and this is the reflow. The second clearing rule is what stops a finish that does not advance from stranding the deck on live controls.
+**Tier:** **read**; §10's check 2 is the device confirmation.

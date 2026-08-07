@@ -119,6 +119,93 @@ async function flagForEdit(d: TestDb, rawId: string, at: number): Promise<void> 
   await setNeedsEdit(asExpo(d), id(rawId), true, at);
 }
 
+describe("freshDecisions — the write counts the day's own work (m0.8.5, A3)", () => {
+  it('counts a photo moving unreviewed to decided', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2']);
+    const result = await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('1'), 'kept'],
+        [id('2'), 'culled'],
+      ],
+      AT + 100,
+    );
+    expect(result.freshDecisions).toBe(2);
+    expect(result.appliedIds).toEqual([id('1'), id('2')]);
+  });
+
+  it('does NOT count a re-decide', async () => {
+    // The goal counts reviewing work, and this photo was counted on the
+    // day it was first decided. Changing your mind is not new work.
+    const d = await fresh();
+    await seed(d, ['1']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
+    const again = await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 200);
+    expect(again.freshDecisions).toBe(0);
+    expect(again.appliedIds).toEqual([id('1')]);
+  });
+
+  it('does NOT count a cleared verdict, and counts the photo again once re-decided', async () => {
+    const d = await fresh();
+    await seed(d, ['1']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
+    const cleared = await applyReviewDecisions(asExpo(d), [[id('1'), 'unreviewed']], AT + 200);
+    expect(cleared.freshDecisions).toBe(0);
+    // Back to unreviewed, so deciding it IS fresh work again — the same
+    // answer getReviewedCountsByDay gives, which is what the goal reads.
+    const redone = await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 300);
+    expect(redone.freshDecisions).toBe(1);
+  });
+
+  it('counts only the rows that committed in a mixed batch', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3']);
+    await applyReviewDecisions(asExpo(d), [[id('2'), 'kept']], AT + 50);
+    const batch = await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('1'), 'kept'],
+        [id('2'), 'kept'],
+        [id('3'), 'kept'],
+      ],
+      AT + 100,
+    );
+    // Three rows applied, but only the two that were still unreviewed
+    // are the day's new work.
+    expect(batch.appliedIds).toHaveLength(3);
+    expect(batch.freshDecisions).toBe(2);
+  });
+
+  it('counts nothing for an action-only write', async () => {
+    const d = await fresh();
+    await seed(d, ['1']);
+    const result = await applyReviewDecisions(asExpo(d), [], AT + 100, {
+      needsEditChanges: [{ assetId: id('1'), needsEdit: true }],
+    });
+    expect(result.freshDecisions).toBe(0);
+  });
+
+  it('agrees with the per-day counts the goal actually reads', async () => {
+    // The count and the celebration must never disagree: one is the
+    // running total the goal ring shows, the other arms the moment.
+    const d = await fresh();
+    await seed(d, ['1', '2', '3']);
+    const dayStart = rangeOfDayKey(dayKey(AT)).startMs;
+    const first = await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT);
+    const second = await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('2'), 'culled'],
+        [id('3'), 'kept'],
+      ],
+      AT,
+    );
+    const byDay = await getReviewedCountsByDay(asExpo(d), dayStart);
+    expect(first.freshDecisions + second.freshDecisions).toBe(byDay.get(dayKey(AT)) ?? 0);
+  });
+});
+
 describe('applyReviewDecisions (decision 2)', () => {
   it('a keep writes done at swipe time and first-stamps reviewed_at', async () => {
     const d = await fresh();

@@ -231,7 +231,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     queuedFor,
     actionWeights,
     refreshQueuedFor,
-    noteDecisions,
+    registerCelebrationHost,
     celebrationTick,
     consumeCelebration,
   } = useReview();
@@ -752,6 +752,26 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     if (unitIndex >= 0) completionRef.current.index = unitIndex;
   }, [unitIndex]);
 
+  // ------------------------------------------ goal celebration (F14)
+  // The counter lives in ReviewContext (a crossing can happen on the
+  // Compare screen too); this surface claims and renders the pending
+  // moment whenever it is the focused one.
+  const [celebrating, setCelebrating] = useState(false);
+  const [celebrationGoal, setCelebrationGoal] = useState(0);
+  useEffect(() => {
+    if (!isFocused) return;
+    const goal = consumeCelebration();
+    if (goal !== null) {
+      setCelebrationGoal(goal);
+      setCelebrating(true);
+    }
+  }, [celebrationTick, isFocused, consumeCelebration]);
+  // Claim the right to DRAW the moment while focused (m0.8.5, A4).
+  useEffect(() => {
+    if (!isFocused) return;
+    return registerCelebrationHost();
+  }, [isFocused, registerCelebrationHost]);
+
   // m0.7 (#20): only advance out of a singles deck when completion
   // happened DURING this visit. A fully-reviewed run/day opened from the
   // overview is a deliberate revisit and stays in browse mode — exactly
@@ -775,6 +795,11 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   }, [singlesMode, singlesReady, unitKey]);
   useEffect(() => {
     if (!singlesMode || !singlesReady || busy || !isFocused) return;
+    // Hold for the goal moment (m0.8.5, F4/A1). The celebration is drawn
+    // ON this screen, so advancing while it plays tears it down mid-way
+    // — which is exactly what the replace used to do. `celebrating`
+    // clears on the overlay's own onDone and this effect re-runs.
+    if (celebrating) return;
     // A scope with GENUINELY no rows (the scan regrouped the last one
     // away) must not strand an empty deck: a RUN advances along the
     // timeline from its former spot, a DAY deck returns to its day page.
@@ -806,6 +831,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     singleRows,
     range,
     unitKey,
+    celebrating,
   ]);
 
   // A group that becomes complete during this visit advances immediately.
@@ -823,10 +849,12 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       completionRef.current = { ref: unitRef, complete: info.complete, index: unitIndex };
       return;
     }
-    // Do not consume the transition while its write is still in flight, or
-    // while Compare/another screen is on top. The next focused, idle render
-    // performs the advance.
-    if (!isFocused || busy) return;
+    // Do not consume the transition while its write is still in flight,
+    // while Compare/another screen is on top, or while the goal moment is
+    // playing (m0.8.5, F4/A1). The next focused, idle, quiet render
+    // performs the advance — completionRef is deliberately left untouched
+    // until then, exactly as it is for an in-flight write.
+    if (!isFocused || busy || celebrating) return;
     const justCompleted = completedDuringVisit(
       { ref: previous.ref, complete: previous.complete },
       unitRef,
@@ -860,6 +888,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     isFocused,
     navigation,
     unitRef,
+    celebrating,
   ]);
 
   // Keep the pager aligned with the cursor whenever the deck's membership
@@ -942,22 +971,6 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     await refreshQueuedFor().catch(() => {});
   }, [db, current, queuedFor, refreshQueuedFor]);
 
-  // ------------------------------------------ goal celebration (F14)
-  // The counter lives in ReviewContext (a crossing can happen on the
-  // Compare screen too); this surface claims and renders the pending
-  // moment whenever it is the focused one.
-  const [celebrating, setCelebrating] = useState(false);
-  const [celebrationGoal, setCelebrationGoal] = useState(0);
-  const bumpDecisions = noteDecisions;
-  useEffect(() => {
-    if (!isFocused) return;
-    const goal = consumeCelebration();
-    if (goal !== null) {
-      setCelebrationGoal(goal);
-      setCelebrating(true);
-    }
-  }, [celebrationTick, isFocused, consumeCelebration]);
-
   const toggleOrganize = useCallback(async () => {
     if (!current) return;
     const id = current.id;
@@ -979,14 +992,10 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
 
   const finishGroup = useCallback(() => {
     if (!group) return;
-    void run(async () => {
-      // Credit what the WRITE kept (codex r10): a dissolved off-page
-      // group keeps nothing, and the rendered pending count would
-      // advance the goal for verdicts that were never written.
-      const kept = await keepRest(group.groupId);
-      bumpDecisions(kept);
-    }, 'finish');
-  }, [group, run, keepRest, bumpDecisions]);
+    // The goal is credited by the WRITE (m0.8.5, A3), which is what
+    // makes a dissolved off-page group that keeps nothing count nothing.
+    void run(() => keepRest(group.groupId).then(() => {}), 'finish');
+  }, [group, run, keepRest]);
 
   const toggleBest = useCallback(() => {
     if (!group || !current) return;
@@ -1139,9 +1148,10 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
    * looking at that one). */
   const decideCurrent = async (target: RedecideTarget) => {
     const index = cursor;
+    // Still read here, but only to decide whether the PAGER advances —
+    // the goal credit comes from the write itself (m0.8.5, A3).
     const wasUnreviewed = (stateOf.get(current.id) ?? 'unreviewed') === 'unreviewed';
     await redecide(current.id, target);
-    if (wasUnreviewed) bumpDecisions(1);
     if (wasUnreviewed && index + 1 < deckItems.length) jumpTo(index + 1);
   };
 
@@ -1533,14 +1543,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
             disabled={singlesMode ? singlesPending === 0 : aliveItems.length === 0}
             onPress={() =>
               singlesMode
-                ? day &&
-                  void run(async () => {
-                    // Credit what the WRITE kept, not the rendered count:
-                    // the write re-reads its scope, and a scan can have
-                    // moved singles in or out mid-view (codex r8).
-                    const kept = await keepAllSingles(day, range ?? null);
-                    bumpDecisions(kept);
-                  }, 'finish')
+                ? day && void run(() => keepAllSingles(day, range ?? null).then(() => {}), 'finish')
                 : finishGroup()
             }
           />

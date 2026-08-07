@@ -268,17 +268,32 @@ export type ReviewVerdict = 'kept' | 'culled' | 'unreviewed';
  * verdict — the CASE ladders that kept state and needs_edit in lockstep
  * are gone with the column.
  */
+export interface ReviewDecisionResult {
+  /** Ids whose verdict UPDATE actually landed. */
+  appliedIds: string[];
+  /**
+   * How many of those went unreviewed → kept/culled: the day's FRESH
+   * review work, and the only thing the daily goal counts.
+   *
+   * Sourced here rather than by the caller (m0.8.5, A3) so that every
+   * verdict path credits the goal by construction — including the ones
+   * that do not exist yet.
+   */
+  freshDecisions: number;
+}
+
 export async function applyReviewDecisions(
   db: SQLiteDatabase,
   changes: readonly [assetId: string, verdict: ReviewVerdict][],
   at: number,
   extras: PersistDecisionExtras = {},
-): Promise<string[]> {
+): Promise<ReviewDecisionResult> {
   // The ids whose verdict UPDATE actually landed (codex r9): a batch
   // deliberately skips externally-reconciled rows without throwing, so
   // callers crediting counts (goal notes, optimistic patches) must be
   // told what committed, not what was requested.
   const appliedIds: string[] = [];
+  let freshDecisions = 0;
   await withWriteTransaction(db, async (txn) => {
     for (const expected of extras.requireAssignment ?? []) {
       const row = await txn.getFirstAsync<{ group_id: number | null }>(
@@ -397,6 +412,24 @@ export async function applyReviewDecisions(
         throw new Error('This photo is no longer available — it was removed outside Afterglow.');
       }
     }
+    // Prior states for the whole batch, read INSIDE the transaction
+    // (m0.8.5, A3). The daily goal counts FRESH review work — a photo
+    // going unreviewed → decided — and that judgment must come from the
+    // write's own view of the rows, never from what a screen rendered:
+    // every caller used to compute it from a cached member list, and
+    // every caller that forgot simply did not count (the state editor,
+    // History re-decides). Chunked to stay clear of SQLite's variable
+    // limit; one query per 400 rows, against a loop that already runs
+    // one UPDATE per row.
+    const priorStates = new Map<string, string>();
+    for (let i = 0; i < changes.length; i += 400) {
+      const slice = changes.slice(i, i + 400);
+      const rows = await txn.getAllAsync<{ asset_id: string; state: string }>(
+        `SELECT asset_id, state FROM photos WHERE asset_id IN (${slice.map(() => '?').join(',')})`,
+        ...slice.map(([assetId]) => assetId),
+      );
+      for (const row of rows) priorStates.set(row.asset_id, row.state);
+    }
     let staleChanges = 0;
     for (const [assetId, verdict] of changes) {
       const applied = await txn.runAsync(
@@ -445,6 +478,10 @@ export async function applyReviewDecisions(
         continue;
       }
       appliedIds.push(assetId);
+      // Fresh work only: a re-decide (kept → culled) was already counted
+      // on the day it was first decided, and a clear is not work at all.
+      if ((verdict === 'kept' || verdict === 'culled') && priorStates.get(assetId) === 'unreviewed')
+        freshDecisions += 1;
       if (verdict === 'culled') {
         // A staged cull is not ALIVE — a star pointing at it would show a
         // cull as best and freeze the group via the metadata boundary.
@@ -535,7 +572,7 @@ export async function applyReviewDecisions(
       );
     }
   });
-  return appliedIds;
+  return { appliedIds, freshDecisions };
 }
 
 /**

@@ -112,8 +112,8 @@ export function CompareScreen({ navigation, route }: Props) {
     refreshQueuedFor,
     loadGroup,
     loadDeckSingles,
-    noteDecisions,
     celebrationTick,
+    registerCelebrationHost,
     consumeCelebration,
   } = useReview();
   const isFocused = useIsFocused();
@@ -194,7 +194,7 @@ export function CompareScreen({ navigation, route }: Props) {
       // A day-scoped pair resolves from its OWN feed ONLY (codex r51):
       // the bounded global singles page can hold the ids by coincidence,
       // which used to keep a failed day fetch actionable over the WRONG
-      // population — '?' position labels and unknown priorState.
+      // population — '?' position labels.
       for (const m of dayList ?? [])
         map.set(m.asset_id, { id: m.asset_id, timestamp: m.taken_at, uri: m.uri });
       return map;
@@ -411,19 +411,13 @@ export function CompareScreen({ navigation, route }: Props) {
       setCelebrating(true);
     }
   }, [celebrationTick, isFocused, consumeCelebration]);
-  /** The photo's state BEFORE this duel wrote — the fresh-decision count
-   * for noteDecisions (only unreviewed → decided counts). Null = UNKNOWN
-   * (a failed day fetch), and unknown counts as NOT fresh: a fresh
-   * decision is never fabricated from missing data. Day rows are the
-   * only singles source — the global feed leg is gone with posOf's. */
-  const priorState = useCallback(
-    (id: string): string | null => {
-      const member = group?.members.find((m) => m.asset_id === id);
-      if (member) return member.state;
-      return (dayList ?? []).find((m) => m.asset_id === id)?.state ?? null;
-    },
-    [group, dayList],
-  );
+  // Claim the right to DRAW the moment while focused (m0.8.5, A4). A
+  // crossing with no host registered anywhere says so with a toast
+  // rather than arming an overlay nothing will claim.
+  useEffect(() => {
+    if (!isFocused) return;
+    return registerCelebrationHost();
+  }, [isFocused, registerCelebrationHost]);
 
   /** Triage (3+ comparable in the group, F15): star the winner + record
    * the duel, NO verdicts — repeated burst duels pick best/worst, they
@@ -446,7 +440,6 @@ export function CompareScreen({ navigation, route }: Props) {
    * atomically, with the winner's star + duel row in the group case. */
   const keepBothNow = useCallback(
     async (winnerId: string, loserId: string) => {
-      const fresh = [winnerId, loserId].filter((id) => priorState(id) === 'unreviewed').length;
       try {
         await compareKeepBoth(
           winnerId,
@@ -456,7 +449,6 @@ export function CompareScreen({ navigation, route }: Props) {
       } catch {
         return; // surfaced by the provider alert; stay on the screen
       }
-      noteDecisions(fresh);
       showToast(
         singles
           ? `Kept photos ${posOf(winnerId)} and ${posOf(loserId)}`
@@ -464,7 +456,7 @@ export function CompareScreen({ navigation, route }: Props) {
       );
       navigation.goBack();
     },
-    [compareKeepBoth, singles, numericGroupId, posOf, navigation, priorState, noteDecisions],
+    [compareKeepBoth, singles, numericGroupId, posOf, navigation],
   );
 
   /** Dialog/auto-cull outcome "Cull": stage the loser; the winner stays
@@ -475,7 +467,6 @@ export function CompareScreen({ navigation, route }: Props) {
    * writes through `decideCull` instead. */
   const cullLoserNow = useCallback(
     async (winnerId: string, loserId: string) => {
-      const fresh = priorState(loserId) === 'unreviewed' ? 1 : 0;
       try {
         if (singles) {
           await decide(loserId, 'cull', null);
@@ -489,10 +480,9 @@ export function CompareScreen({ navigation, route }: Props) {
       } catch {
         return; // surfaced by the provider alert; stay on the screen
       }
-      noteDecisions(fresh);
       navigation.goBack();
     },
-    [singles, decide, numericGroupId, compareCull, posOf, navigation, priorState, noteDecisions],
+    [singles, decide, numericGroupId, compareCull, posOf, navigation],
   );
 
   const decideBetter = useCallback(
@@ -590,20 +580,18 @@ export function CompareScreen({ navigation, route }: Props) {
       if (busy) return;
       setBusy(true);
       try {
-        const fresh = priorState(loserId) === 'unreviewed' ? 1 : 0;
         try {
           await decide(loserId, 'cull', singles ? null : (numericGroupId ?? undefined));
         } catch {
           return; // surfaced by the provider alert; stay on the screen
         }
-        noteDecisions(fresh);
         showToast(`Photo ${posOf(loserId)} staged to cull`);
         navigation.goBack();
       } finally {
         setBusy(false);
       }
     },
-    [busy, priorState, decide, singles, numericGroupId, noteDecisions, posOf, navigation],
+    [busy, decide, singles, numericGroupId, posOf, navigation],
   );
 
   // A failed unit read renders the inline retry INSTEAD of the empty

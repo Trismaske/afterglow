@@ -388,9 +388,11 @@ function ActivityTab({ decisions, accent }: { decisions: DecisionStats | null; a
           <Text style={styles.cardText}>
             {coverageChart.daysWithPhotos === 0
               ? `No photos captured in the last ${ACTIVITY_WINDOW_DAYS} days.`
-              : `${coverageChart.clearedDays} of ${coverageChart.daysWithPhotos} day${
+              : // One family of words with Home's coverage streak (F1):
+                // both count DAYS WITH PHOTOS, and both say so.
+                `${coverageChart.clearedDays} of ${coverageChart.daysWithPhotos} day${
                   coverageChart.daysWithPhotos === 1 ? '' : 's'
-                } fully reviewed` +
+                } with photos fully reviewed` +
                 (coverageChart.pending > 0 ? ` · ${coverageChart.pending} left over` : '')}
           </Text>
           <Text style={styles.cardText}>

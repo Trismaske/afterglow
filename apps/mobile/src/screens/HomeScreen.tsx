@@ -910,7 +910,15 @@ export function HomeScreen({ navigation }: Props) {
                       </Text>
                     </Pressable>
                   ))}
-                  {queueTotal === 0 ? (
+                  {queueTotal === 0 && scan.phase === 'scanning' ? (
+                    // F3: an empty queue DURING a scan is "not known
+                    // yet", not "all reviewed". The scan fills the queue
+                    // in bursts, so claiming completeness here flips to a
+                    // lie the moment the next window lands.
+                    <Text style={styles.cardText}>
+                      Nothing to review yet — the scan is still running.
+                    </Text>
+                  ) : queueTotal === 0 ? (
                     <Text style={styles.cardText}>
                       Everything reviewed — new photos join the queue as they are found.
                     </Text>
@@ -958,8 +966,21 @@ export function HomeScreen({ navigation }: Props) {
             </View>
           </View>
           <BigButton
+            // The completeness claim survives only where it is earned
+            // (F3): a running scan means the queue is unknown, and a
+            // failed one means it is unfinished. Both stay disabled —
+            // there is nothing to continue into — but neither says
+            // everything is reviewed.
             label={
-              !review.loaded ? 'Loading…' : queueTotal === 0 ? 'All reviewed' : 'Continue reviewing'
+              !review.loaded
+                ? 'Loading…'
+                : queueTotal > 0
+                  ? 'Continue reviewing'
+                  : scan.phase === 'scanning'
+                    ? 'Scanning…'
+                    : scan.phase === 'error'
+                      ? 'Scan incomplete'
+                      : 'All reviewed'
             }
             color={colors.keep}
             disabled={queueTotal === 0}
@@ -1071,7 +1092,16 @@ export function HomeScreen({ navigation }: Props) {
                   : `${coverageState.pending} left from ${COVERAGE_GOAL_LABELS[coverage].toLowerCase()}`}
           </Text>
           {coverageState.streak !== null && coverageState.streak > 0 && (
-            <Text style={styles.streakText}>🔥 {coverageState.streak}-day clear streak</Text>
+            // F1: this and the goal streak one card above were both
+            // "🔥 N-day streak", and they count different things — the
+            // goal streak counts DECISION days (work you did), this one
+            // counts CAPTURE days that ended fully reviewed. Naming the
+            // unit is what tells them apart; "last N days" would not be
+            // true, since a stretch with no photos neither breaks the run
+            // nor extends it.
+            <Text style={styles.streakText}>
+              📅 {coverageState.streak} days with photos fully reviewed in a row
+            </Text>
           )}
         </View>
       )}

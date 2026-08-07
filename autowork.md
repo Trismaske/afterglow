@@ -131,3 +131,12 @@ Its corpus at session start: 8 998 photos, 8 950 to review, 1 620 groups, 2 772 
 **Why.** The question touches his device rather than the repo, so it stays his. The emulator answers the structural questions (does the advance stay in place, does the badge render a day, does the merged route keep a per-unit title); it cannot answer the feel questions, and those are on the acceptance list for him anyway.
 **Result (measured, release build of the pre-review-fix tree):** a run-to-run advance keeps the header, badge, control rows and finish button on screen throughout — no blank frame, against 0.8.4's ~300 ms of black. The badge reads `Jul 16, 2026 · 09:05:00`. The header title still switches per unit after the route merge.
 **Tier:** **measured** for those three; the rest of §10 stays human.
+
+### 14 · The goal crossing was verified on the emulator, by moving the goal rather than reviewing 50 photos
+
+**Context.** The celebration hand-off was rewritten twice during the codex rounds, both times against reasoning about React's effect ordering, and had never been seen running. It was the session's largest unverified risk.
+**Options.** Leave it to Tristan's device pass; seed enough photos to reach a goal of 50; or move the goal to meet the count.
+**Chosen.** Move the goal. Set it to 2 (today's count was already 2, so the ring read "Daily goal reached" and correctly refused to fire — sailing past is not a moment), then raise it to 3 and keep one more photo.
+**Why.** It exercises F5's re-arm and F4's hold in ONE crossing, and it is the only way to reach a crossing on a corpus of eight photos.
+**Result (measured):** the ring dropped its reached state when the goal rose above the count; the crossing fired at 3; the moment played over the COMPLETED unit with its header, badge and 3/3 position intact; the next group appeared only after the overlay faded.
+**Tier:** **measured**. Acceptance checks 8 and 9 are answered; 10 (lowering the goal) and 11 (a crossing with no review surface open) are not.

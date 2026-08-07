@@ -91,14 +91,20 @@ On the crossing decision, the deck holds the completed unit until `GoalCelebrati
 Every other unit completion advances as it does now.
 The overlay is unchanged: still `pointerEvents="none"`, still self-dismissing on its own timer.
 
+The hold has **two** gates, not one.
+`celebrating` covers the moment while it plays; `celebrationSettling` covers the window before it, between the write committing and its goal evaluation finishing.
+Without the second the hold is unarmable in exactly the case F4 is about: the write resolves first, so the deck would advance while the crossing was still being decided.
+
 ### 4.2 Counting from the write (A3, A4)
 
 Today `noteDecisions` has four call sites, all in the deck and Compare, and each computes its own fresh count from a local `priorState` helper.
 `ReDecideSheet` and the state editor write verdicts and note nothing.
 
-- The context's verdict writes report how many rows went `unreviewed` → decided, and note that count themselves.
-- Callers stop passing `fresh`. Both `priorState` helpers are deleted. **(autonomous)** the exact reporting shape — a returned count versus a changed-rows read — is settled during implementation against what the store already returns.
-- Review surfaces register as celebration hosts while focused. At arm time: a host registered → arm as now; none → `showToast` and no pending ref.
+- `applyReviewDecisions` reports the day's fresh work, and `write` notes that count. Callers pass nothing and can forget nothing.
+- Freshness is judged on the row's prior `decided_at`, not on its prior verdict, so the counter agrees with `getReviewedCountsByDay` exactly: one row per photo stamped that day, a clear keeps the stamp, and an earlier day's stamp does count because that row moves into today's bucket. Judging on the verdict counted a decide→clear→decide twice against a ring showing one.
+- Both `priorState` helpers and the caller-side `fresh` arguments are deleted.
+- Review surfaces register as celebration hosts while **mounted**; consuming stays focus-scoped. Mount-scoped because opening Compare unfocuses the deck without removing the surface that will draw the moment. With no host registered anywhere a crossing shows a toast, and the last host to leave takes any unclaimed moment with it — as the same toast.
+- Compare hosts but never draws: every decision path there navigates away within a frame or two.
 
 ### 4.3 Re-celebrating a raised goal (F5, A5)
 
@@ -258,6 +264,13 @@ Run against a **release** build on the S10e.
 10. Lower the goal below today's count: nothing fires.
 11. Cross the goal from a surface with no deck open: a toast appears, and no celebration fires later on the next deck.
 
+**What the review round added**
+
+12. Advancing to a singles run shows the outgoing photo, never a blank stage, while its rows load.
+13. Finish a unit from a NON-ZERO cursor: the next unit's visible photo must match its position badge. (The pager could keep the old page while the controls pointed at the new unit's first photo.)
+14. Decide a photo, undo it, decide it again: the goal ring must rise by ONE, and the celebration must not fire early.
+15. Open a duel and come back: no goal toast fires on the way, and a crossing decided in the duel plays on the deck it returns to.
+
 **Copy and colour (F1/F3/F17/F13/accent)**
 
 12. Home during a scan with an empty queue: the button reads `Scanning…` and the card does not claim everything is reviewed.
@@ -268,5 +281,25 @@ Run against a **release** build on the S10e.
 
 ## 11. Autonomous decisions
 
-Judgment calls made without Tristan, numbered as implemented.
-Filled during the build; `autowork.md` carries the full reasoning until each is vetted and pruned.
+Judgment calls made without Tristan during the 2026-08-07 session.
+`autowork.md` carries the full reasoning — context, options, evidence tier — until each is vetted, and is deleted once they are.
+
+| # | Call | Tier |
+|---|---|---|
+| 1 | Reproduce against the shipped 0.8.4 before installing anything | procedure |
+| 2 | Do NOT wipe the S10e database to reproduce F3; use the emulator | read |
+| 3 | F13's Compare gap was not reachable on any tested path — fix it as parity anyway | measured / read |
+| 4 | F6's acceptance criterion becomes "no blank frame", from the measured trace | measured |
+| 5 | Two groups were completed on the S10e during reproduction and not undone | measured |
+| 6 | F17's null-day case reuses the timeline's existing "Unknown day" | measured |
+| 7 | One `Deck` route instead of two, rather than keeping `Singles` | read |
+| 8 | `UnitDestination.screen` renamed to `kind` | naming |
+| 9 | The unit/param logic lives in `lib/deckUnit.ts`, not in the screen | structure |
+| 10 | Hold the browse-control swap through a finish (`finishing`) | read |
+| 11 | F5's marker parses the old day-only value as "nothing celebrated" | read |
+| 12 | Milestone bars take the hue of what each counts | **assumed** |
+| 13 | Device verification ran on the emulator, not the S10e | measured |
+
+Five more assumptions came out of the codex round and live in `codex-review.md`: the once-per-day count rule, the earlier-day re-decide, the holding frame's content, Compare no longer drawing the moment, and the advance now waiting on the goal evaluation.
+
+**Number 12 is the one to look at on a screen**: a cull-red progress bar follows the rule but may read as alarm rather than as "cull".

@@ -135,9 +135,9 @@ describe("freshDecisions — the write counts the day's own work (m0.8.5, A3)", 
     expect(result.appliedIds).toEqual([id('1'), id('2')]);
   });
 
-  it('does NOT count a re-decide', async () => {
-    // The goal counts reviewing work, and this photo was counted on the
-    // day it was first decided. Changing your mind is not new work.
+  it('does NOT count a same-day re-decide', async () => {
+    // The photo is already inside today's count; changing your mind
+    // does not add a row to it.
     const d = await fresh();
     await seed(d, ['1']);
     await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
@@ -146,16 +146,32 @@ describe("freshDecisions — the write counts the day's own work (m0.8.5, A3)", 
     expect(again.appliedIds).toEqual([id('1')]);
   });
 
-  it('does NOT count a cleared verdict, and counts the photo again once re-decided', async () => {
+  it('counts a photo ONCE per day, however often it is cleared and re-decided', async () => {
+    // getReviewedCountsByDay counts one row per photo stamped that day,
+    // and clearing deliberately keeps the stamp. Counting the re-decide
+    // would put the celebration ahead of the ring.
     const d = await fresh();
     await seed(d, ['1']);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
+    const first = await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
     const cleared = await applyReviewDecisions(asExpo(d), [[id('1'), 'unreviewed']], AT + 200);
-    expect(cleared.freshDecisions).toBe(0);
-    // Back to unreviewed, so deciding it IS fresh work again — the same
-    // answer getReviewedCountsByDay gives, which is what the goal reads.
     const redone = await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 300);
-    expect(redone.freshDecisions).toBe(1);
+    expect([first.freshDecisions, cleared.freshDecisions, redone.freshDecisions]).toEqual([
+      1, 0, 0,
+    ]);
+    const byDay = await getReviewedCountsByDay(asExpo(d), rangeOfDayKey(dayKey(AT)).startMs);
+    expect(byDay.get(dayKey(AT))).toBe(1);
+  });
+
+  it('counts a photo decided on an EARLIER day again today', async () => {
+    // Its row moves into today's bucket, so today's count does rise.
+    const d = await fresh();
+    await seed(d, ['1']);
+    const yesterday = AT - 86_400_000;
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], yesterday);
+    const again = await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT);
+    expect(again.freshDecisions).toBe(1);
+    const byDay = await getReviewedCountsByDay(asExpo(d), rangeOfDayKey(dayKey(yesterday)).startMs);
+    expect(byDay.get(dayKey(AT))).toBe(1);
   });
 
   it('counts only the rows that committed in a mixed batch', async () => {
@@ -171,10 +187,12 @@ describe("freshDecisions — the write counts the day's own work (m0.8.5, A3)", 
       ],
       AT + 100,
     );
-    // Three rows applied, but only the two that were still unreviewed
-    // are the day's new work.
+    // Three rows applied, but one was already stamped today, so only
+    // two are new work — exactly what the day's count rises by.
     expect(batch.appliedIds).toHaveLength(3);
     expect(batch.freshDecisions).toBe(2);
+    const byDay = await getReviewedCountsByDay(asExpo(d), rangeOfDayKey(dayKey(AT)).startMs);
+    expect(byDay.get(dayKey(AT))).toBe(3);
   });
 
   it('counts nothing for an action-only write', async () => {

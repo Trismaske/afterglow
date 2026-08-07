@@ -28,7 +28,7 @@ import type { LoadedPhoto } from '../lib/media';
 import { frozenPhotos, reconcileWindowGroups } from '../lib/regroupBoundary';
 import { sourceLikePattern, type SourceRoot } from '../lib/sources';
 import { rawIdOf, volumeOf } from '../lib/mediaIdentity';
-import { rangeOfDayKey, UNDATED_DAY_KEY } from '../lib/dates';
+import { dayKey, rangeOfDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import type { StateCounts } from '../lib/progress';
 
 /** Max ids per IN (...) chunk — stays under SQLite's bind-parameter limit. */
@@ -412,24 +412,37 @@ export async function applyReviewDecisions(
         throw new Error('This photo is no longer available — it was removed outside Afterglow.');
       }
     }
-    // Prior states for the whole batch, read INSIDE the transaction
-    // (m0.8.5, A3). The daily goal counts FRESH review work — a photo
-    // going unreviewed → decided — and that judgment must come from the
-    // write's own view of the rows, never from what a screen rendered:
-    // every caller used to compute it from a cached member list, and
-    // every caller that forgot simply did not count (the state editor,
-    // History re-decides). Chunked to stay clear of SQLite's variable
-    // limit; one query per 400 rows, against a loop that already runs
-    // one UPDATE per row.
-    const priorStates = new Map<string, string>();
+    // Each row's prior decided_at, read INSIDE the transaction (m0.8.5,
+    // A3). The daily goal counts today's reviewing WORK, and that
+    // judgment must come from the write's own view of the rows, never
+    // from what a screen rendered: every caller used to compute it from
+    // a cached member list, and every caller that forgot simply did not
+    // count (the state editor, History re-decides).
+    //
+    // decided_at, not the prior verdict, is what makes a decision
+    // "fresh", because that is exactly what `getReviewedCountsByDay`
+    // counts — one row per photo whose LATEST stamp falls in the day. A
+    // photo already stamped today therefore adds nothing however often
+    // it is re-decided, cleared and decided again included (clearing
+    // deliberately keeps the stamp). A photo stamped on an earlier day
+    // does count: its row moves into today's bucket. Judging on the
+    // verdict alone drifted from the number the ring shows, which is how
+    // a celebration fires before the goal is visibly reached.
+    //
+    // Chunked to stay clear of SQLite's variable limit; one query per
+    // 400 rows, against a loop that already runs one UPDATE per row.
+    const priorDecidedAt = new Map<string, number | null>();
     for (let i = 0; i < changes.length; i += 400) {
       const slice = changes.slice(i, i + 400);
-      const rows = await txn.getAllAsync<{ asset_id: string; state: string }>(
-        `SELECT asset_id, state FROM photos WHERE asset_id IN (${slice.map(() => '?').join(',')})`,
+      const rows = await txn.getAllAsync<{ asset_id: string; decided_at: number | null }>(
+        `SELECT asset_id, decided_at FROM photos WHERE asset_id IN (${slice
+          .map(() => '?')
+          .join(',')})`,
         ...slice.map(([assetId]) => assetId),
       );
-      for (const row of rows) priorStates.set(row.asset_id, row.state);
+      for (const row of rows) priorDecidedAt.set(row.asset_id, row.decided_at);
     }
+    const today = dayKey(at);
     let staleChanges = 0;
     for (const [assetId, verdict] of changes) {
       const applied = await txn.runAsync(
@@ -478,9 +491,13 @@ export async function applyReviewDecisions(
         continue;
       }
       appliedIds.push(assetId);
-      // Fresh work only: a re-decide (kept → culled) was already counted
-      // on the day it was first decided, and a clear is not work at all.
-      if ((verdict === 'kept' || verdict === 'culled') && priorStates.get(assetId) === 'unreviewed')
+      // Fresh work only: a clear writes no stamp, and a row already
+      // stamped today is already inside the number the goal ring shows.
+      const stamp = priorDecidedAt.get(assetId) ?? null;
+      if (
+        (verdict === 'kept' || verdict === 'culled') &&
+        (stamp === null || dayKey(stamp) !== today)
+      )
         freshDecisions += 1;
       if (verdict === 'culled') {
         // A staged cull is not ALIVE — a star pointing at it would show a

@@ -295,6 +295,10 @@ interface ReviewContextValue {
    * says so with a toast instead of arming an overlay nothing will
    * claim (m0.8.5, A4). */
   registerCelebrationHost: () => () => void;
+  /** True while a decision's goal evaluation is still in flight. A
+   * surface that advances on completion must WAIT for this, or it can
+   * leave the unit before the crossing it caused is known (F4). */
+  celebrationSettling: boolean;
   /** Bumps when a goal moment arrives — focused surfaces re-check. */
   celebrationTick: number;
   /** Claim the pending moment: returns the goal to celebrate exactly
@@ -1055,6 +1059,17 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     celebrationHostsRef.current += 1;
     return () => {
       celebrationHostsRef.current -= 1;
+      // The LAST host leaving takes any unclaimed moment with it (codex
+      // r1/r3). A crossing armed while a host was focused, whose consume
+      // effect had not run before that host blurred, would otherwise sit
+      // in the ref and play on whatever review surface opened next —
+      // possibly hours later, for a goal crossed this morning. That
+      // delayed overlay is the exact thing A4 exists to prevent, so it
+      // degrades to the same toast a host-less crossing gets.
+      if (celebrationHostsRef.current > 0) return;
+      const pending = celebrationPendingRef.current;
+      celebrationPendingRef.current = null;
+      if (pending !== null) showToast(`Daily goal reached — ${pending} today`);
     };
   }, []);
   /** Notes queue behind one chain, and the sum of not-yet-applied notes
@@ -1065,9 +1080,31 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
    * celebrations or overwrite each other's counter (codex r3). */
   const celebrationChainRef = useRef<Promise<void>>(Promise.resolve());
   const celebrationUnappliedRef = useRef(0);
+  /**
+   * A crossing may still be under evaluation (m0.8.5, codex r1).
+   *
+   * `noteDecisions` is deliberately fire-and-forget — the write resolves
+   * at COMMIT and nothing user-facing waits on a database read. But that
+   * left F4's hold unarmable: the deck gates its advance on
+   * `celebrating`, which cannot be true until this chain has re-read the
+   * goal, written the durable marker and a host has claimed the moment.
+   * A goal-crossing final decision would advance to the next unit first,
+   * and the overlay would play over the successor.
+   *
+   * So the deck also holds while a note is settling. This is a few
+   * hundred microseconds of cached reads in the common case, and it is
+   * the ONLY thing between "the write committed" and "we know whether
+   * this was the crossing".
+   */
+  const [celebrationSettling, setCelebrationSettling] = useState(0);
   const noteDecisions = useCallback(
     (n: number) => {
       if (n <= 0) return;
+      // Raised BEFORE the chain is queued and lowered inside its own
+      // step, so there is no window where a note is pending and nothing
+      // says so.
+      setCelebrationSettling((pending) => pending + 1);
+      const settled = () => setCelebrationSettling((pending) => Math.max(0, pending - 1));
       // The decision's DAY is captured synchronously at the call — the
       // chained body can start after local midnight, and crediting an
       // old-day decision to the new day could celebrate the wrong day
@@ -1080,6 +1117,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           const today = dayKey(Date.now());
           if (noteDay !== today) {
             celebrationUnappliedRef.current -= n;
+            settled();
             return;
           }
           let info = celebrationInfoRef.current;
@@ -1143,6 +1181,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
               await setSetting(db, GOAL_CELEBRATED_KEY, serializeCelebratedGoal(celebrated));
             } catch (error) {
               console.warn('[review] goal celebration not recorded — skipped:', String(error));
+              settled();
               return;
             }
             if (celebrationHostsRef.current > 0) {
@@ -1154,11 +1193,13 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
               showToast(`Daily goal reached — ${info.goal} today`);
             }
           }
+          settled();
         })
         .catch(() => {
           // No goal info = no celebration; the note still leaves the
           // unapplied sum, or the next init would over-subtract it.
           celebrationUnappliedRef.current -= n;
+          settled();
         });
     },
     [db],
@@ -1672,6 +1713,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       redecideStaged,
       confirmStagedCulls,
       registerCelebrationHost,
+      celebrationSettling: celebrationSettling > 0,
       celebrationTick,
       consumeCelebration,
     }),
@@ -1714,6 +1756,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       redecideStaged,
       confirmStagedCulls,
       registerCelebrationHost,
+      celebrationSettling,
       celebrationTick,
       consumeCelebration,
     ],

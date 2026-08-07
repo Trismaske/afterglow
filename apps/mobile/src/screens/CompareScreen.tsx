@@ -28,7 +28,6 @@ import { formatClockPrecise, millisNeeded } from '../lib/format';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { isFavouriteSelected } from '../lib/favouriteState';
 import { ActionChip } from '../components/ActionChip';
-import { GoalCelebration } from '../components/GoalCelebration';
 import { addToShareQueue, removeFromShareQueue } from '../db/shareStore';
 import { queueOrganize, unqueueOrganize } from '../db/organizeStore';
 import { useIsFocused } from '@react-navigation/native';
@@ -112,9 +111,7 @@ export function CompareScreen({ navigation, route }: Props) {
     refreshQueuedFor,
     loadGroup,
     loadDeckSingles,
-    celebrationTick,
     registerCelebrationHost,
-    consumeCelebration,
   } = useReview();
   const isFocused = useIsFocused();
   const numericGroupId = groupId ? Number(groupId) : null;
@@ -420,26 +417,23 @@ export function CompareScreen({ navigation, route }: Props) {
     if (!pair && !groupPending && !dayPending && !loadFailed) navigation.goBack();
   }, [pair, groupPending, dayPending, loadFailed, navigation]);
 
-  // Goal moment (F14, amended): a crossing HERE celebrates HERE — the
-  // context holds the counter; this screen notes its fresh decisions and
-  // claims the pending moment while it is the focused surface.
-  const [celebrating, setCelebrating] = useState(false);
-  const [celebrationGoal, setCelebrationGoal] = useState(0);
-  useEffect(() => {
-    if (!isFocused) return;
-    const goal = consumeCelebration();
-    if (goal !== null) {
-      setCelebrationGoal(goal);
-      setCelebrating(true);
-    }
-  }, [celebrationTick, isFocused, consumeCelebration]);
-  // Claim the right to DRAW the moment while focused (m0.8.5, A4). A
-  // crossing with no host registered anywhere says so with a toast
-  // rather than arming an overlay nothing will claim.
-  useEffect(() => {
-    if (!isFocused) return;
-    return registerCelebrationHost();
-  }, [isFocused, registerCelebrationHost]);
+  /**
+   * The goal moment: Compare HOSTS it but never draws it (m0.8.5, A2,
+   * codex r1).
+   *
+   * Every decision path here ends in `goBack()`, so a moment claimed on
+   * this screen would be torn down within a frame or two — F4's defect
+   * in miniature. The deck this screen returns to draws it instead, and
+   * the consume-once ref survives the transition.
+   *
+   * Registering still matters: it is what stops a crossing decided in a
+   * duel from degrading to the no-host toast while a perfectly good deck
+   * sits mounted underneath. Registration is MOUNT-scoped, not
+   * focus-scoped, for the same reason — the deck below is unfocused
+   * while this screen is up, and a moment armed here must still find a
+   * host.
+   */
+  useEffect(() => registerCelebrationHost(), [registerCelebrationHost]);
 
   /** Triage (3+ comparable in the group, F15): star the winner + record
    * the duel, NO verdicts — repeated burst duels pick best/worst, they
@@ -914,15 +908,6 @@ export function CompareScreen({ navigation, route }: Props) {
           </View>
         </View>
       </Modal>
-
-      {/* The goal moment (F14): a crossing decided HERE shows HERE. */}
-      {celebrating && (
-        <GoalCelebration
-          goal={celebrationGoal}
-          accent={theme.accent}
-          onDone={() => setCelebrating(false)}
-        />
-      )}
     </View>
   );
 }

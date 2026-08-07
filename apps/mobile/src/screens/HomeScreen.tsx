@@ -916,13 +916,20 @@ export function HomeScreen({ navigation }: Props) {
                       </Text>
                     </Pressable>
                   ))}
-                  {queueTotal === 0 && scan.phase === 'scanning' ? (
-                    // F3: an empty queue DURING a scan is "not known
-                    // yet", not "all reviewed". The scan fills the queue
-                    // in bursts, so claiming completeness here flips to a
-                    // lie the moment the next window lands.
+                  {queueTotal === 0 && (scan.phase === 'scanning' || scan.phase === 'error') ? (
+                    // F3: an empty queue is only "all reviewed" once a
+                    // scan has FINISHED saying so. A running scan fills
+                    // the queue in bursts, so the claim would flip as
+                    // each window lands; a failed one stopped early, so
+                    // the queue is unfinished rather than empty. Neither
+                    // establishes completeness (codex r1/r2/r3 — the
+                    // error sibling was left claiming it). A finished or
+                    // not-yet-started scan leaves the DB as the truth,
+                    // which is what the claim below rests on.
                     <Text style={styles.cardText}>
-                      Nothing to review yet — the scan is still running.
+                      {scan.phase === 'error'
+                        ? 'Nothing to review yet — the scan did not finish.'
+                        : 'Nothing to review yet — the scan is still running.'}
                     </Text>
                   ) : queueTotal === 0 ? (
                     <Text style={styles.cardText}>

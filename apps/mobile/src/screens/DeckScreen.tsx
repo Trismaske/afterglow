@@ -235,6 +235,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     actionWeights,
     refreshQueuedFor,
     registerCelebrationHost,
+    celebrationSettling,
     celebrationTick,
     consumeCelebration,
   } = useReview();
@@ -714,6 +715,11 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   const stripOffsetRef = useRef(0);
   const stripViewportRef = useRef(0);
   const stripContentRef = useRef(0);
+  /** Bumped when layout or content width lands. Without it the follow
+   * effect runs once against a zero viewport — or the previous unit's
+   * content width — and returns null, leaving a half-reviewed unit open
+   * with its current thumbnail off-screen (codex r3). */
+  const [stripMeasured, setStripMeasured] = useState(0);
   useEffect(() => {
     const target = stripScrollOffset(cursor, stripOffsetRef.current, {
       pitch: THUMB + THUMB_GAP,
@@ -727,7 +733,12 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     stripRef.current?.scrollTo({ x: target, animated: true });
     // deckItems is a dependency because a cull or an undo changes the
     // content width under a cursor that did not move.
-  }, [cursor, deckItems]);
+  }, [cursor, deckItems, stripMeasured]);
+  /** The photo the stage last showed, for the holding frame below. */
+  const lastPhotoRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (current) lastPhotoRef.current = current.uri;
+  }, [current]);
   // The zoom overlay shows the CURRENT photo — leave zoom when it changes.
   useEffect(() => {
     resetZoom();
@@ -805,11 +816,14 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       setCelebrating(true);
     }
   }, [celebrationTick, isFocused, consumeCelebration]);
-  // Claim the right to DRAW the moment while focused (m0.8.5, A4).
-  useEffect(() => {
-    if (!isFocused) return;
-    return registerCelebrationHost();
-  }, [isFocused, registerCelebrationHost]);
+  // Host the moment while MOUNTED, not merely while focused (m0.8.5,
+  // A4, codex r1). Opening Compare unfocuses this screen without
+  // removing the surface that will draw the moment — and the last host
+  // to leave surfaces any unclaimed moment as a toast, so a
+  // focus-scoped registration would fire that toast every time a duel
+  // opened. Consuming is still focus-scoped, just above: hosting says
+  // "someone can draw this", consuming says "I am the visible one".
+  useEffect(() => registerCelebrationHost(), [registerCelebrationHost]);
 
   // m0.7 (#20): only advance out of a singles deck when completion
   // happened DURING this visit. A fully-reviewed run/day opened from the
@@ -838,7 +852,11 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     // ON this screen, so advancing while it plays tears it down mid-way
     // — which is exactly what the replace used to do. `celebrating`
     // clears on the overlay's own onDone and this effect re-runs.
-    if (celebrating) return;
+    // `celebrationSettling` covers the window BEFORE that: the write
+    // commits before its goal evaluation finishes, so without it the
+    // crossing decision would advance while the moment was still being
+    // decided (codex r1).
+    if (celebrating || celebrationSettling) return;
     // A scope with GENUINELY no rows (the scan regrouped the last one
     // away) must not strand an empty deck: a RUN advances along the
     // timeline from its former spot, a DAY deck returns to its day page.
@@ -871,6 +889,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     range,
     unitKey,
     celebrating,
+    celebrationSettling,
   ]);
 
   // A group that becomes complete during this visit advances immediately.
@@ -893,7 +912,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     // playing (m0.8.5, F4/A1). The next focused, idle, quiet render
     // performs the advance — completionRef is deliberately left untouched
     // until then, exactly as it is for an in-flight write.
-    if (!isFocused || busy || celebrating) return;
+    if (!isFocused || busy || celebrating || celebrationSettling) return;
     const justCompleted = completedDuringVisit(
       { ref: previous.ref, complete: previous.complete },
       unitRef,
@@ -928,17 +947,26 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     navigation,
     unitRef,
     celebrating,
+    celebrationSettling,
   ]);
 
   // Keep the pager aligned with the cursor whenever the deck's membership
-  // changes (cull/undo/make-single/re-decide) or a new group starts.
-  // Swiping itself never triggers this (the key ignores the cursor).
+  // changes (cull/undo/make-single/re-decide) or a new unit starts.
+  //
+  // `cursor` is a dependency (codex r1/r2/r3): an in-place advance sets
+  // the new unit's first-pending cursor in a LATER render than the one
+  // that changed deckKey, so keying on membership alone left the native
+  // list showing the previous unit's page while every control pointed at
+  // the new unit's first photo — a tap would then decide a photo other
+  // than the one on screen. A swipe also lands here now, where the
+  // scroll target is the offset the list already settled on, so it is a
+  // no-op rather than a fight.
   const deckKey = `${singlesMode ? 'singles' : (groupId ?? '')}:${browse ? 'b' : 'r'}:${deckItems.map((i) => i.id).join(',')}`;
   useEffect(() => {
     if (!pageW || deckItems.length === 0) return;
     listRef.current?.scrollToOffset({ offset: cursor * pageW, animated: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deckKey, pageW]);
+  }, [deckKey, pageW, cursor]);
 
   const onMomentumEnd = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -1128,7 +1156,29 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   }
 
   if (!current || (!singlesMode && (!groupId || !info))) {
-    return <View style={styles.root} />;
+    // A HOLDING frame, not a blank one (codex r1/r3). An in-place
+    // advance changes the unit before its rows can load — the singles
+    // read is async — so returning an empty root here would reproduce
+    // the header-only blank that L4 exists to remove, just for fewer
+    // milliseconds. The outgoing photo stays on the stage instead.
+    //
+    // It carries NO controls, badges or gestures: it is the photo you
+    // were looking at, not an actionable one, so nothing can be decided
+    // against a stale target while the next unit arrives.
+    return (
+      <View style={[styles.root, { paddingBottom: insets.bottom + 8 }]}>
+        {lastPhotoRef.current !== null && (
+          <View style={styles.stage}>
+            <Image
+              source={{ uri: lastPhotoRef.current }}
+              style={StyleSheet.absoluteFill}
+              contentFit="contain"
+              transition={0}
+            />
+          </View>
+        )}
+      </View>
+    );
   }
 
   // Compare eligibility mirrors openCompare exactly: undecided or KEPT
@@ -1343,10 +1393,14 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
           stripOffsetRef.current = event.nativeEvent.contentOffset.x;
         }}
         onLayout={(event) => {
+          if (stripViewportRef.current === event.nativeEvent.layout.width) return;
           stripViewportRef.current = event.nativeEvent.layout.width;
+          setStripMeasured((n) => n + 1);
         }}
         onContentSizeChange={(width) => {
+          if (stripContentRef.current === width) return;
           stripContentRef.current = width;
+          setStripMeasured((n) => n + 1);
         }}
       >
         {deckItems.map((item, index) => (
@@ -1601,7 +1655,10 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                 : `Keep remaining (${singlesMode ? singlesPending : aliveItems.length})`
             }
             color={colors.keep}
-            disabled={singlesMode ? singlesPending === 0 : aliveItems.length === 0}
+            // `busy` included (codex r3): the label already said "Saving…"
+            // while the control stayed pressable, so the disabled look and
+            // the disabled behaviour disagreed for the whole write.
+            disabled={busy || (singlesMode ? singlesPending === 0 : aliveItems.length === 0)}
             onPress={() =>
               singlesMode
                 ? day && void run(() => keepAllSingles(day, range ?? null).then(() => {}), 'finish')

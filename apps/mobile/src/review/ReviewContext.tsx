@@ -91,8 +91,11 @@ import {
 import {
   DAILY_GOAL_KEY,
   GOAL_CELEBRATED_KEY,
+  parseCelebratedGoal,
   parseDailyGoal,
+  serializeCelebratedGoal,
   shouldCelebrateGoal,
+  type CelebratedGoal,
 } from '../lib/dailyGoal';
 import { dayKey, rangeOfDayKey } from '../lib/dates';
 import {
@@ -1029,7 +1032,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     day: string;
     goal: number;
     count: number;
-    celebratedDay: string | null;
+    celebrated: CelebratedGoal | null;
   } | null>(null);
   const celebrationPendingRef = useRef<number | null>(null);
   const [celebrationTick, setCelebrationTick] = useState(0);
@@ -1081,7 +1084,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           }
           let info = celebrationInfoRef.current;
           if (!info || info.day !== today) {
-            const [rawGoal, celebratedDay, byDay] = await Promise.all([
+            const [rawGoal, rawCelebrated, byDay] = await Promise.all([
               getSetting(db, DAILY_GOAL_KEY),
               getSetting(db, GOAL_CELEBRATED_KEY),
               getReviewedCountsByDay(db, rangeOfDayKey(today).startMs),
@@ -1101,7 +1104,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
               day: today,
               goal: parseDailyGoal(rawGoal),
               count: Math.max(0, (byDay.get(today) ?? 0) - celebrationUnappliedRef.current),
-              celebratedDay,
+              celebrated: parseCelebratedGoal(rawCelebrated),
             };
             celebrationInfoRef.current = info;
           } else {
@@ -1120,7 +1123,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
               before,
               after: info.count,
               goal: info.goal,
-              celebratedDay: info.celebratedDay,
+              celebrated: info.celebrated,
               today,
             })
           ) {
@@ -1129,9 +1132,15 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
             // restart, and once-per-day is the durable contract. The
             // in-memory mark still sets on failure so this process never
             // doubles; the skipped overlay is the lesser lie.
-            info.celebratedDay = today;
+            //
+            // The marker carries the goal it was reached at (m0.8.5, F5),
+            // and only ever moves UP within a day — the recorded value is
+            // the highest celebrated, which is what stops a goal lowered
+            // and re-raised from re-arming a moment already had.
+            const celebrated: CelebratedGoal = { day: today, goal: info.goal };
+            info.celebrated = celebrated;
             try {
-              await setSetting(db, GOAL_CELEBRATED_KEY, today);
+              await setSetting(db, GOAL_CELEBRATED_KEY, serializeCelebratedGoal(celebrated));
             } catch (error) {
               console.warn('[review] goal celebration not recorded — skipped:', String(error));
               return;

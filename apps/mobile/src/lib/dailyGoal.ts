@@ -151,27 +151,71 @@ export function goalStreaks(
 // ------------------------------------------------------------------
 // In-deck goal celebration (m0.8.2, F14)
 
-/** Settings key: the local day ("YYYY-MM-DD") already celebrated, so the
- * moment fires once per day however often the deck remounts. */
+/** Settings key: what has already been celebrated — the local day plus
+ * the goal it was reached at, so the moment fires once per day and again
+ * for a goal you deliberately raised (m0.8.5, F5). */
 export const GOAL_CELEBRATED_KEY = 'goal_celebrated_day';
+
+/** The day already celebrated, and the highest goal celebrated on it. */
+export interface CelebratedGoal {
+  day: string;
+  goal: number;
+}
+
+/**
+ * ONE settings row, not two: a day and a value written separately can
+ * tear, leaving a day marked at no value — which would either
+ * re-celebrate every crossing or suppress them all, depending on which
+ * write survived.
+ *
+ * The stored shape is "YYYY-MM-DD:GOAL".
+ */
+export function serializeCelebratedGoal(celebrated: CelebratedGoal): string {
+  return `${celebrated.day}:${celebrated.goal}`;
+}
+
+/**
+ * Parse-with-fallback, like every other setting here. Anything
+ * unreadable means "nothing celebrated", which can only ever cost one
+ * extra moment — the honest failure direction, since the alternative is
+ * silently swallowing a goal the user did reach.
+ */
+export function parseCelebratedGoal(raw: string | null): CelebratedGoal | null {
+  if (raw === null) return null;
+  const match = /^(\d{4}-\d{2}-\d{2}):(\d+)$/.exec(raw.trim());
+  if (!match) return null;
+  const goal = Number(match[2]);
+  return isValidDailyGoal(goal) ? { day: match[1], goal } : null;
+}
 
 /**
  * Fire exactly at the CROSSING — the decision that takes today's count
- * from below the goal to at or past it — and only once per day. Sailing
- * past an already-reached goal is not a moment, and neither is opening
- * a deck when the day was celebrated earlier.
+ * from below the goal to at or past it.
+ *
+ * Once per day, and again when the goal is RAISED above the one already
+ * celebrated (F5): raising the goal past today's count drops today from
+ * the streak, so reaching the new number is a real achievement and gets
+ * its moment. There is no cap, because nothing in the app counts
+ * celebrations — every goal figure (`goalDays`, both streaks) is derived
+ * per day from reviewed counts, so repeated crossings cannot inflate any
+ * statistic, and each one still costs the work of reaching a higher
+ * number.
+ *
+ * Lowering the goal never re-arms: `celebrated.goal` only ever holds the
+ * HIGHEST value celebrated today. Neither does raising it to a number
+ * today's count has already passed — `before < goal` fails — which keeps
+ * m0.8.2's rule that sailing past an already-reached goal was never a
+ * moment.
  */
 export function shouldCelebrateGoal(args: {
   before: number;
   after: number;
   goal: number;
-  celebratedDay: string | null;
+  celebrated: CelebratedGoal | null;
   today: string;
 }): boolean {
-  return (
-    args.goal > 0 &&
-    args.before < args.goal &&
-    args.after >= args.goal &&
-    args.celebratedDay !== args.today
-  );
+  if (args.goal <= 0) return false;
+  if (args.before >= args.goal || args.after < args.goal) return false;
+  const { celebrated } = args;
+  return celebrated === null || celebrated.day !== args.today || args.goal > celebrated.goal;
 }

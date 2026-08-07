@@ -6,9 +6,11 @@ import {
   goalProgress,
   goalStreaks,
   MAX_DAILY_GOAL,
+  parseCelebratedGoal,
   parseCustomDailyGoal,
   parseDailyGoal,
   ringArcs,
+  serializeCelebratedGoal,
   serializeDailyGoal,
   shouldCelebrateGoal,
   visibleArcRange,
@@ -115,8 +117,8 @@ describe('ringArcs (regression: 1/50 rendered a half-full ring)', () => {
   });
 });
 
-describe('shouldCelebrateGoal (F14)', () => {
-  const base = { goal: 50, celebratedDay: null, today: '2026-07-29' };
+describe('shouldCelebrateGoal (F14, F5)', () => {
+  const base = { goal: 50, celebrated: null, today: '2026-07-29' };
 
   it('fires exactly at the crossing decision', () => {
     expect(shouldCelebrateGoal({ ...base, before: 49, after: 50 })).toBe(true);
@@ -126,12 +128,69 @@ describe('shouldCelebrateGoal (F14)', () => {
     expect(shouldCelebrateGoal({ ...base, before: 10, after: 20 })).toBe(false);
   });
 
-  it('fires once per day, however often the deck remounts', () => {
+  it('fires once per day at the same goal', () => {
+    const celebrated = { day: '2026-07-29', goal: 50 };
+    expect(shouldCelebrateGoal({ ...base, before: 49, after: 50, celebrated })).toBe(false);
     expect(
-      shouldCelebrateGoal({ ...base, before: 49, after: 50, celebratedDay: '2026-07-29' }),
-    ).toBe(false);
-    expect(
-      shouldCelebrateGoal({ ...base, before: 49, after: 50, celebratedDay: '2026-07-28' }),
+      shouldCelebrateGoal({
+        ...base,
+        before: 49,
+        after: 50,
+        celebrated: { day: '2026-07-28', goal: 50 },
+      }),
     ).toBe(true);
+  });
+
+  it('fires again for a goal raised above the one already celebrated (F5)', () => {
+    // Raising the goal past today's count drops today from the streak,
+    // so reaching the new number is a new achievement.
+    const celebrated = { day: '2026-07-29', goal: 50 };
+    expect(shouldCelebrateGoal({ ...base, goal: 70, before: 69, after: 70, celebrated })).toBe(
+      true,
+    );
+  });
+
+  it('does not re-arm when the goal is LOWERED', () => {
+    // Sailing past an already-reached goal was never a moment (m0.8.2).
+    const celebrated = { day: '2026-07-29', goal: 70 };
+    expect(shouldCelebrateGoal({ ...base, goal: 50, before: 49, after: 50, celebrated })).toBe(
+      false,
+    );
+    // Nor when it is lowered and raised back to a value already had.
+    expect(shouldCelebrateGoal({ ...base, goal: 70, before: 69, after: 70, celebrated })).toBe(
+      false,
+    );
+  });
+
+  it("does not fire for a goal raised BELOW today's count", () => {
+    // 60 reviewed, goal moved 50 -> 55: already past it, no crossing.
+    const celebrated = { day: '2026-07-29', goal: 50 };
+    expect(shouldCelebrateGoal({ ...base, goal: 55, before: 60, after: 61, celebrated })).toBe(
+      false,
+    );
+  });
+
+  it('refuses a goal of zero', () => {
+    expect(shouldCelebrateGoal({ ...base, goal: 0, before: 0, after: 1 })).toBe(false);
+  });
+});
+
+describe('the celebrated-goal row (F5)', () => {
+  it('survives serialize and parse', () => {
+    const celebrated = { day: '2026-07-29', goal: 70 };
+    expect(parseCelebratedGoal(serializeCelebratedGoal(celebrated))).toEqual(celebrated);
+  });
+
+  it.each([
+    ['absent', null],
+    ['the old day-only shape', '2026-07-29'],
+    ['a torn value', '2026-07-29:'],
+    ['a non-numeric goal', '2026-07-29:many'],
+    ['a goal out of range', '2026-07-29:0'],
+    ['nonsense', 'yesterday'],
+  ])('reads %s as nothing celebrated', (_label, raw) => {
+    // Unreadable costs at most one extra moment; the alternative is
+    // silently swallowing a goal the user did reach.
+    expect(parseCelebratedGoal(raw)).toBeNull();
   });
 });

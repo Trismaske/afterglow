@@ -950,6 +950,11 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     celebrationSettling,
   ]);
 
+  /** The offset the pager was last told to show. `jumpTo` animates there
+   * itself, and the alignment effect below runs on every cursor change —
+   * without this it would re-issue the same scroll unanimated and snap
+   * the motion jumpTo had just started. */
+  const pagerTargetRef = useRef(-1);
   // Keep the pager aligned with the cursor whenever the deck's membership
   // changes (cull/undo/make-single/re-decide) or a new unit starts.
   //
@@ -964,7 +969,13 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   const deckKey = `${singlesMode ? 'singles' : (groupId ?? '')}:${browse ? 'b' : 'r'}:${deckItems.map((i) => i.id).join(',')}`;
   useEffect(() => {
     if (!pageW || deckItems.length === 0) return;
-    listRef.current?.scrollToOffset({ offset: cursor * pageW, animated: false });
+    const offset = cursor * pageW;
+    // The ref holds a physical OFFSET, so an equal one means the list is
+    // already where this unit wants it — including across a unit change,
+    // where the new first-pending index can land on the same page.
+    if (pagerTargetRef.current === offset) return;
+    pagerTargetRef.current = offset;
+    listRef.current?.scrollToOffset({ offset, animated: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deckKey, pageW, cursor]);
 
@@ -981,6 +992,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     (index: number) => {
       if (!pageW) return;
       setBrowseCursor(index);
+      pagerTargetRef.current = index * pageW;
       listRef.current?.scrollToOffset({ offset: index * pageW, animated: true });
     },
     [pageW],

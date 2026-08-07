@@ -40,7 +40,7 @@ import type { ReviewGroupRow, ReviewMemberRow } from '../db/store';
 import { BigButton } from '../components/BigButton';
 import { colors, touch, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded } from '../lib/format';
-import { labelForDayKey } from '../lib/dates';
+import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import {
   completedDuringVisit,
   destinationAfterUnit,
@@ -399,6 +399,22 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     const map = new Map<string, ReviewMemberRow['state']>();
     if (group) for (const m of group.members) map.set(m.asset_id, m.state);
     for (const m of singleRows) map.set(m.asset_id, m.state);
+    return map;
+  }, [group, singleRows]);
+  /**
+   * Each photo's CAPTURE DAY, for the time badge (m0.8.5, F17).
+   *
+   * `photos.day` is the honest field: for an undated photo `taken_at` is
+   * the mtime fallback, so printing a date from it would turn a soft
+   * claim into a confident one. The deck already carries `day` on its
+   * member rows, so the badge needs no new plumbing — and a null day
+   * renders through `labelForDayKey`, which is where the timeline's own
+   * "Unknown day" wording comes from.
+   */
+  const dayOf = useMemo(() => {
+    const map = new Map<string, string | null>();
+    if (group) for (const m of group.members) map.set(m.asset_id, m.day);
+    for (const m of singleRows) map.set(m.asset_id, m.day);
     return map;
   }, [group, singleRows]);
   const info = useMemo(() => {
@@ -1291,8 +1307,14 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
               </Text>
             </View>
             <View style={styles.timeBadge} pointerEvents="none">
+              {/* Day AND time (F17): a time with no date says nothing
+                  about WHEN in a library you are reviewing out of order.
+                  Rendered from `day`, NEVER from taken_at. */}
               <Text style={styles.timeBadgeText}>
-                {formatClockPrecise(current.timestamp, needMs[cursor] ?? false)}
+                {`${labelForDayKey(dayOf.get(current.id) ?? UNDATED_DAY_KEY)} · ${formatClockPrecise(
+                  current.timestamp,
+                  needMs[cursor] ?? false,
+                )}`}
               </Text>
             </View>
             <BadgeCluster

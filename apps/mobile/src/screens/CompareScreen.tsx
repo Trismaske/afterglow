@@ -188,15 +188,27 @@ export function CompareScreen({ navigation, route }: Props) {
   const dayPending = !!day && dayRows === null;
   /** The day's rows once landed; null while loading or failed. */
   const dayList = Array.isArray(dayRows) ? dayRows : null;
+  /** Each candidate photo, WITH its verdict: the action chips gate on a
+   * staged cull (m0.8.5, F13) and must read the state from the same
+   * population the pair itself resolves from — a second lookup with its
+   * own source rules is how the two would drift. */
   const itemLookup = useMemo(() => {
-    const map = new Map<string, { id: string; timestamp: number; uri: string }>();
+    const map = new Map<
+      string,
+      { id: string; timestamp: number; uri: string; state: ReviewMemberRow['state'] }
+    >();
     if (day) {
       // A day-scoped pair resolves from its OWN feed ONLY (codex r51):
       // the bounded global singles page can hold the ids by coincidence,
       // which used to keep a failed day fetch actionable over the WRONG
       // population — '?' position labels.
       for (const m of dayList ?? [])
-        map.set(m.asset_id, { id: m.asset_id, timestamp: m.taken_at, uri: m.uri });
+        map.set(m.asset_id, {
+          id: m.asset_id,
+          timestamp: m.taken_at,
+          uri: m.uri,
+          state: m.state,
+        });
       return map;
     }
     if (numericGroupId !== null) {
@@ -207,11 +219,21 @@ export function CompareScreen({ navigation, route }: Props) {
       // assignment guard while the action chips mutated borrowed photos.
       const source = queueGroup ?? (typeof loadedGroup === 'object' ? loadedGroup : null);
       for (const m of source?.members ?? [])
-        map.set(m.asset_id, { id: m.asset_id, timestamp: m.taken_at, uri: m.uri });
+        map.set(m.asset_id, {
+          id: m.asset_id,
+          timestamp: m.taken_at,
+          uri: m.uri,
+          state: m.state,
+        });
       return map;
     }
     for (const m of singleRows)
-      map.set(m.asset_id, { id: m.asset_id, timestamp: m.taken_at, uri: m.uri });
+      map.set(m.asset_id, {
+        id: m.asset_id,
+        timestamp: m.taken_at,
+        uri: m.uri,
+        state: m.state,
+      });
     return map;
   }, [singleRows, day, dayList, numericGroupId, queueGroup, loadedGroup]);
   const [busy, setBusy] = useState(false);
@@ -621,6 +643,19 @@ export function CompareScreen({ navigation, route }: Props) {
   }
 
   const visible = showB ? pair.b : pair.a;
+  /**
+   * A staged cull's actions are SUSPENDED (docs/STATE_MODEL.md rule 6):
+   * they demote to carried and leave every queue, so offering the chips
+   * would let you queue work on a photo that is on its way out.
+   *
+   * The deck has always gated on this; Compare gated on `busy` alone
+   * (F13). The two surfaces draw the same chips and must answer the same
+   * way — the more so since m0.8.5 changed the deck's navigation, and a
+   * divergence hidden by today's routing is a defect waiting for the
+   * next routing change.
+   */
+  const visibleCulled = itemLookup.get(visible.id)?.state === 'culled';
+  const actionsDisabled = busy || visibleCulled;
   const hidden = showB ? pair.a : pair.b;
   const visibleLabel = posOf(visible.id);
   const favourite = isFavouriteSelected(favouriteStatus(visible.id));
@@ -721,13 +756,13 @@ export function CompareScreen({ navigation, route }: Props) {
         <ActionChip
           kind="edit"
           active={needsEdit(visible.id)}
-          disabled={busy}
+          disabled={actionsDisabled}
           onPress={() => void toggleNeedsEdit(visible.id).catch(() => {})}
         />
         <ActionChip
           kind="favourite"
           active={favourite}
-          disabled={busy}
+          disabled={actionsDisabled}
           onPress={() => void toggleFavourite(visible.id).catch(() => {})}
         />
         {/* Organize/Share write the queue tables DIRECTLY (no provider
@@ -741,7 +776,7 @@ export function CompareScreen({ navigation, route }: Props) {
         <ActionChip
           kind="organize"
           active={queuedFor(visible.id).organize}
-          disabled={busy}
+          disabled={actionsDisabled}
           onPress={() =>
             void (async () => {
               try {
@@ -765,7 +800,7 @@ export function CompareScreen({ navigation, route }: Props) {
         <ActionChip
           kind="share"
           active={queuedFor(visible.id).share}
-          disabled={busy}
+          disabled={actionsDisabled}
           onPress={() =>
             void (async () => {
               try {

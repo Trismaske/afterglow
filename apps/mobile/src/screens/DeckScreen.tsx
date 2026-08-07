@@ -236,7 +236,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     refreshQueuedFor,
     registerCelebrationHost,
     celebrationSettling,
-    celebrationTick,
+    celebrationPending,
     consumeCelebration,
   } = useReview();
   const [busy, setBusy] = useState(false);
@@ -809,13 +809,13 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   const [celebrating, setCelebrating] = useState(false);
   const [celebrationGoal, setCelebrationGoal] = useState(0);
   useEffect(() => {
-    if (!isFocused) return;
+    if (!isFocused || celebrationPending === null) return;
     const goal = consumeCelebration();
     if (goal !== null) {
       setCelebrationGoal(goal);
       setCelebrating(true);
     }
-  }, [celebrationTick, isFocused, consumeCelebration]);
+  }, [celebrationPending, isFocused, consumeCelebration]);
   // Host the moment while MOUNTED, not merely while focused (m0.8.5,
   // A4, codex r1). Opening Compare unfocuses this screen without
   // removing the surface that will draw the moment — and the last host
@@ -852,11 +852,15 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     // ON this screen, so advancing while it plays tears it down mid-way
     // — which is exactly what the replace used to do. `celebrating`
     // clears on the overlay's own onDone and this effect re-runs.
-    // `celebrationSettling` covers the window BEFORE that: the write
-    // commits before its goal evaluation finishes, so without it the
-    // crossing decision would advance while the moment was still being
-    // decided (codex r1).
-    if (celebrating || celebrationSettling) return;
+    // Three gates, one per stage of the hand-off (codex r1, r2):
+    // `celebrationSettling` while the write's goal evaluation is still
+    // running — the write commits first, so without it the crossing
+    // decision advances before anyone knows it WAS the crossing;
+    // `celebrationPending` once a moment is claimed but not yet drawn —
+    // arming and lowering the barrier land in one batched render, so the
+    // consume effect has not set `celebrating` when these effects run in
+    // that same flush; and `celebrating` while it plays.
+    if (celebrating || celebrationSettling || celebrationPending !== null) return;
     // A scope with GENUINELY no rows (the scan regrouped the last one
     // away) must not strand an empty deck: a RUN advances along the
     // timeline from its former spot, a DAY deck returns to its day page.
@@ -890,6 +894,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     unitKey,
     celebrating,
     celebrationSettling,
+    celebrationPending,
   ]);
 
   // A group that becomes complete during this visit advances immediately.
@@ -912,7 +917,8 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     // playing (m0.8.5, F4/A1). The next focused, idle, quiet render
     // performs the advance — completionRef is deliberately left untouched
     // until then, exactly as it is for an in-flight write.
-    if (!isFocused || busy || celebrating || celebrationSettling) return;
+    if (!isFocused || busy || celebrating || celebrationSettling || celebrationPending !== null)
+      return;
     const justCompleted = completedDuringVisit(
       { ref: previous.ref, complete: previous.complete },
       unitRef,
@@ -948,6 +954,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     unitRef,
     celebrating,
     celebrationSettling,
+    celebrationPending,
   ]);
 
   /** The offset the pager was last told to show. `jumpTo` animates there

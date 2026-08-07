@@ -299,8 +299,11 @@ interface ReviewContextValue {
    * surface that advances on completion must WAIT for this, or it can
    * leave the unit before the crossing it caused is known (F4). */
   celebrationSettling: boolean;
+  /** The goal of a crossing that has been claimed but not yet drawn.
+   * Non-null means a host is about to render the moment, so nothing may
+   * advance out from under it. */
+  celebrationPending: number | null;
   /** Bumps when a goal moment arrives — focused surfaces re-check. */
-  celebrationTick: number;
   /** Claim the pending moment: returns the goal to celebrate exactly
    * once (null when nothing pending / already claimed). */
   consumeCelebration: () => number | null;
@@ -1038,8 +1041,22 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     count: number;
     celebrated: CelebratedGoal | null;
   } | null>(null);
+  /**
+   * The claimed-but-not-yet-drawn moment, as STATE (m0.8.5, codex r2).
+   *
+   * It was a ref plus a tick, and that left a hole exactly where the
+   * barrier below was supposed to close one: arming and lowering the
+   * barrier landed in the same batched render, so the deck's consume
+   * effect had not yet set `celebrating` when the advance effects ran in
+   * that same passive flush — and they advanced. Observable state means
+   * "a moment is waiting to be drawn" is readable in the very render
+   * that arms it, with no ordering assumption between effects.
+   *
+   * The ref mirrors it for the unregister callback, which runs outside
+   * render and cannot read state.
+   */
+  const [celebrationPending, setCelebrationPending] = useState<number | null>(null);
   const celebrationPendingRef = useRef<number | null>(null);
-  const [celebrationTick, setCelebrationTick] = useState(0);
   /**
    * How many review surfaces can draw the moment right now (m0.8.5, A4).
    *
@@ -1069,6 +1086,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       if (celebrationHostsRef.current > 0) return;
       const pending = celebrationPendingRef.current;
       celebrationPendingRef.current = null;
+      setCelebrationPending(null);
       if (pending !== null) showToast(`Daily goal reached — ${pending} today`);
     };
   }, []);
@@ -1186,7 +1204,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
             }
             if (celebrationHostsRef.current > 0) {
               celebrationPendingRef.current = info.goal;
-              setCelebrationTick((tick) => tick + 1);
+              setCelebrationPending(info.goal);
             } else {
               // Nothing can draw it — say it now rather than leave a
               // moment pending for a surface that may not open today.
@@ -1207,6 +1225,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   const consumeCelebration = useCallback((): number | null => {
     const goal = celebrationPendingRef.current;
     celebrationPendingRef.current = null;
+    setCelebrationPending(null);
     return goal;
   }, []);
 
@@ -1714,7 +1733,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       confirmStagedCulls,
       registerCelebrationHost,
       celebrationSettling: celebrationSettling > 0,
-      celebrationTick,
+      celebrationPending,
       consumeCelebration,
     }),
     [
@@ -1757,7 +1776,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       confirmStagedCulls,
       registerCelebrationHost,
       celebrationSettling,
-      celebrationTick,
+      celebrationPending,
       consumeCelebration,
     ],
   );

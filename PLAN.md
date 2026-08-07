@@ -442,6 +442,9 @@ Items, evidence, and the eight settled decisions: [docs/Feedback_m0.8.x.md](docs
 - **Per-ABI APK splits** (deferred from m0.8's Gate 6): the universal APK is ~163 MB with MediaPipe.
   Splits reclaim most of it once the release workflow handles multiple artifacts.
 - **Visual vet of live groups** (deferred from m0.8): a contact sheet from a device DB's actual continuous groups, to eyeball the fitted curve's real-world behavior.
+- **All-time "days the goal was reached"** on a Stats tab (Tristan, 2026-08-07).
+  The 30-day version already exists (`activityWindow`'s `goalDays`, printed beside the goal line), so this is the same figure over the whole history.
+  One decision it carries: like every goal figure, it re-scores against the CURRENT goal, so the number moves when the goal changes — defensible on a 30-day chart, stranger on an all-time total.
 
 **After m0.9**: hardening and tester-driven fixes to 1.0.
 This includes the planned **one-time identity break**, which bundles everything that forces a reinstall into a single tester disruption: the real release keystore, the **application id aligned to the "Afterglow" name** (drops `com.afterglow.companion`), and a **versionCode reset to 1** (fresh installs have no downgrade check).

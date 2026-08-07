@@ -8,6 +8,16 @@ Photos that need editing wait in an in-app queue that launches your editor.
 Usually those are keepers, but you can flag one before you have decided about it, when the edit is what tells you whether to keep it.
 A daily goal ring and per-day progress views carry you to inbox zero.
 
+> **What changed in 0.8.5:** the review loop.
+> Finishing a group no longer blanks the screen between units — the deck now moves to the next one in place, so the photo, the strip and the buttons never flash away.
+> The goal moment waits for you to see it instead of being cut off by the next group, and raising your goal above today's count lets you earn it again.
+> The thumbnail strip follows the photo you are on, however long the run.
+> The deck's badge names the day as well as the time, and says "Unknown day" for a photo with no date rather than guessing one.
+> Home no longer says "All reviewed" while it is still scanning.
+> The two streak lines on Home now read differently, because they count different things.
+> Progress rings and bars are green throughout — how full they are is the progress, not what colour they are.
+> Your review data survives this upgrade (no schema change).
+
 > **What changed in 0.8.4:** Afterglow now requires **Android 11 or later**.
 > On an older device the install is refused: the installer says only "App not installed", and `adb install` names the cause, `INSTALL_FAILED_OLDER_SDK`.
 > See Compatibility below for why.
@@ -142,7 +152,7 @@ Photos deleted outside Afterglow drop out.
 Photos restored from the system trash re-enter review automatically.
 
 > **Pre-1.0 testers:** a 0.x upgrade resets the app's local database whenever the release changes the schema baseline (0.8, 0.8.2, and 0.8.3 all do).
-> A release that leaves the schema unchanged (0.8.4) keeps your data.
+> A release that leaves the schema unchanged (0.8.4, 0.8.5) keeps your data.
 > Your photos are never touched either way.
 
 ## Running it (dev build required — NOT Expo Go)

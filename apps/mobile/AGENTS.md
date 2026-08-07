@@ -66,6 +66,7 @@ Both removal affordances use the local `modules/media-store-actions` trash reque
 | libraryInsights.ts                                     | The Progress page's math: capture histogram, frontier, storage, burst tax                     |
 | forecast.ts / forecastCopy.ts                          | The forward-looking math, refusals included / every sentence the forecast may say             |
 | comparePrefs.ts / zoomTarget.ts                        | Tri-state duel preference / double-tap zoom math (impure partner: `components/useDoubleTapZoom`) |
+| stripScroll.ts                                         | Keeping the deck's thumbnail strip on the current photo (F7)                                  |
 | hash.ts / concurrency.ts / format.ts / toast.ts / accentTheme.ts | Content-hash fallback id, bounded-parallel map, formatting, toasts, accent tokens   |
 
 `src/db/`: `database.ts` (schema + the fresh-baseline destructive reset), `store.ts` (verdict writes + queue reads), `actions.ts` (the one four-action queue shape), `trashStore.ts`, `shareStore.ts`, `organizeStore.ts`, `embeddingStore.ts` (the model-SHA pin), `volumeLifecycle.ts` ("Forget this card").

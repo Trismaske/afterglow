@@ -62,6 +62,7 @@ import { addToShareQueue, removeFromShareQueue } from '../db/shareStore';
 import { queueOrganize, unqueueOrganize } from '../db/organizeStore';
 import { useDoubleTapZoom } from '../components/useDoubleTapZoom';
 import { panBounds, pinchEngaged, pinchGain } from '../lib/zoomTarget';
+import { stripScrollOffset } from '../lib/stripScroll';
 import {
   deckUnitKey,
   paramsForUnit,
@@ -85,6 +86,8 @@ type SharedProps = {
 };
 
 const THUMB = 52;
+const THUMB_GAP = 6;
+const THUMB_INSET = 2;
 // 16× (Tristan, 2026-08-04). Past 1:1 pixels by design: a 50 MP frame
 // reaches one source pixel per screen pixel at ~5.7× on a 1440 px-wide
 // phone, so the top of this range magnifies interpolation rather than
@@ -689,6 +692,26 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     );
     setBrowseCursor(firstPending > 0 ? firstPending : 0);
   }, [unitKey, singlesMode, singlesReady, group, deckItems, stateOf]);
+  // The thumbnail strip's live geometry. Refs, not state: these change
+  // on every scroll frame and nothing renders from them.
+  const stripRef = useRef<ScrollView>(null);
+  const stripOffsetRef = useRef(0);
+  const stripViewportRef = useRef(0);
+  const stripContentRef = useRef(0);
+  useEffect(() => {
+    const target = stripScrollOffset(cursor, stripOffsetRef.current, {
+      pitch: THUMB + THUMB_GAP,
+      size: THUMB,
+      leadingInset: THUMB_INSET,
+      viewport: stripViewportRef.current,
+      content: stripContentRef.current,
+    });
+    if (target === null) return; // already visible — do not fight a manual scroll
+    stripOffsetRef.current = target;
+    stripRef.current?.scrollTo({ x: target, animated: true });
+    // deckItems is a dependency because a cull or an undo changes the
+    // content width under a cursor that did not move.
+  }, [cursor, deckItems]);
   // The zoom overlay shows the CURRENT photo — leave zoom when it changes.
   useEffect(() => {
     resetZoom();
@@ -1282,11 +1305,27 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
         </VirtualGestureDetector>
       </InterceptingGestureDetector>
 
+      {/* The strip FOLLOWS the current photo (m0.8.5, F7). It used to be
+          a plain ScrollView with no ref, so past roughly the seventh
+          photo of a run the thumbnail you were on sat off-screen while
+          the pager tracked the cursor perfectly. Geometry in, offset out
+          — the rule and its edge cases live in lib/stripScroll.ts. */}
       <ScrollView
+        ref={stripRef}
         horizontal
         showsHorizontalScrollIndicator={false}
         style={styles.thumbStrip}
         contentContainerStyle={styles.thumbStripContent}
+        scrollEventThrottle={16}
+        onScroll={(event) => {
+          stripOffsetRef.current = event.nativeEvent.contentOffset.x;
+        }}
+        onLayout={(event) => {
+          stripViewportRef.current = event.nativeEvent.layout.width;
+        }}
+        onContentSizeChange={(width) => {
+          stripContentRef.current = width;
+        }}
       >
         {deckItems.map((item, index) => (
           <Pressable
@@ -1682,7 +1721,9 @@ const styles = StyleSheet.create({
   },
   flagBadgeText: { fontSize: 13, fontWeight: '700' },
   thumbStrip: { flexGrow: 0 },
-  thumbStripContent: { gap: 6, paddingHorizontal: 2 },
+  // Both numbers feed lib/stripScroll's geometry as well as this style,
+  // so the follow effect and the layout can never drift apart (F7).
+  thumbStripContent: { gap: THUMB_GAP, paddingHorizontal: THUMB_INSET },
   thumb: {
     width: THUMB,
     height: THUMB,

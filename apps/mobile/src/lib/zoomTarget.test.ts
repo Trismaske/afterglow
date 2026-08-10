@@ -4,7 +4,9 @@ import {
   doubleTapZoomTarget,
   panBounds,
   PINCH_ENGAGE_DELTA,
+  PINCH_TRACKING_START,
   pinchEngaged,
+  pinchFrame,
   pinchGain,
 } from './zoomTarget';
 
@@ -74,5 +76,90 @@ describe('pinch engagement', () => {
     expect(pinchGain(1.15, 1.15)).toBe(1);
     expect(pinchGain(2.3, 1.15)).toBeCloseTo(2, 10);
     expect(pinchGain(1.5, 0)).toBe(1);
+  });
+});
+
+describe('pinchFrame', () => {
+  /** Feed frames through, carrying the tracking like the worklet does. */
+  function play(frames: [raw: number, pointers: number][], startScale = 4) {
+    let tracking = PINCH_TRACKING_START;
+    let scale = startScale;
+    for (const [raw, pointers] of frames) {
+      const step = pinchFrame(tracking, raw, pointers, scale);
+      tracking = step.tracking;
+      if (step.scale !== null) scale = step.scale;
+    }
+    return { scale, tracking };
+  }
+
+  it('leaves the zoom alone on the first frame, whatever it reports', () => {
+    // The first frame always re-anchors (tracking starts at 0 pointers),
+    // so a pinch that activates mid-gesture cannot yank the photo.
+    expect(play([[3.7, 2]]).scale).toBe(4);
+  });
+
+  it('holds the zoom while two fingers RUN across the photo', () => {
+    // The reported defect: fingers landing and lifting alternately while
+    // panning a zoomed photo. Each pointer change swings the measured
+    // distance wildly with no zoom intended — here 2→1→2→1 pointers with
+    // the raw scale lurching each time. The zoom must not move.
+    const { scale } = play([
+      [1, 2],
+      [0.4, 1],
+      [2.6, 2],
+      [0.3, 1],
+      [3.1, 2],
+      [0.5, 1],
+    ]);
+    expect(scale).toBe(4);
+  });
+
+  it('does not jump when the pinch crosses the engage threshold', () => {
+    // The engaging frame re-anchors instead of applying its own delta —
+    // the PINCH_ENGAGE_DELTA no-jump rule, kept over the drafted
+    // design's exact tracking (which snapped by the threshold's worth).
+    const { scale, tracking } = play([
+      [1, 2],
+      [1.2, 2],
+    ]);
+    expect(scale).toBe(4);
+    expect(tracking.live).toBe(true);
+  });
+
+  it('zooms when the same fingers deliberately open', () => {
+    // Anchor at 4×, engage at 1.16 — just PAST the 0.15 threshold,
+    // which has no exact binary form (see the engagement suite) —
+    // re-anchoring at 4×; then the fingers double their engaged
+    // separation and the zoom doubles.
+    const { scale } = play([
+      [1, 2],
+      [1.16, 2],
+      [2.32, 2],
+    ]);
+    expect(scale).toBeCloseTo(8, 10);
+  });
+
+  it('resumes zooming from where a finger change left the photo', () => {
+    // Zoom to 8×, lose a finger, regain it, then open to double again:
+    // the second stretch must build on 8×, not on the original 4×, and
+    // needs no re-engagement — the pinch already proved itself.
+    const { scale } = play([
+      [1, 2],
+      [1.16, 2],
+      [2.32, 2],
+      [1.4, 1],
+      [0.9, 2],
+      [1.8, 2],
+    ]);
+    expect(scale).toBeCloseTo(16, 10);
+  });
+
+  it('keeps a proven pinch live across finger changes', () => {
+    const { tracking } = play([
+      [1, 2],
+      [2, 2],
+      [1.1, 1],
+    ]);
+    expect(tracking.live).toBe(true);
   });
 });

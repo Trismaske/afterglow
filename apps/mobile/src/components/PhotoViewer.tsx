@@ -54,7 +54,7 @@ import { VERDICT_META } from './progress/stateMeta';
 import { StateEditorSheet } from './progress/StateEditorSheet';
 import type { GridPhoto } from './progress/PhotoStateGrid';
 import { useDoubleTapZoom } from './useDoubleTapZoom';
-import { panBounds, pinchEngaged, pinchGain } from '../lib/zoomTarget';
+import { PINCH_TRACKING_START, panBounds, pinchFrame } from '../lib/zoomTarget';
 
 /** What a host must know about each photo it shows. */
 export interface ViewerItem {
@@ -151,8 +151,7 @@ export function PhotoViewer({
   // A pinch must prove itself before it may change the zoom (see
   // lib/zoomTarget PINCH_ENGAGE_DELTA): these carry that decision, and
   // the raw scale it was made at, across the gesture's frames.
-  const pinchLive = useSharedValue(false);
-  const pinchBase = useSharedValue(1);
+  const pinchTracking = useSharedValue(PINCH_TRACKING_START);
   const pagerGesture = useNativeGesture();
 
   const resetZoom = useCallback(() => {
@@ -178,13 +177,18 @@ export function PhotoViewer({
   const zoomGesture = usePinchGesture({
     simultaneousWith: pagerGesture,
     onUpdate: (event) => {
-      if (!pinchLive.value) {
-        if (!pinchEngaged(event.scale)) return;
-        pinchLive.value = true;
-        pinchBase.value = event.scale;
-      }
-      const gain = pinchGain(event.scale, pinchBase.value);
-      scale.value = Math.min(MAX_SCALE, Math.max(1, savedScale.value * gain));
+      // pinchFrame carries engagement AND finger-change re-anchoring
+      // (§10 check 9): a finger landing or lifting mid-gesture holds
+      // the zoom instead of leaping with the new finger distance.
+      const step = pinchFrame(
+        pinchTracking.value,
+        event.scale,
+        event.numberOfPointers,
+        scale.value,
+      );
+      pinchTracking.value = step.tracking;
+      if (step.scale === null) return;
+      scale.value = Math.min(MAX_SCALE, Math.max(1, step.scale));
       const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
       tx.value = clampPan(tx.value, bounds.maxX);
       ty.value = clampPan(ty.value, bounds.maxY);
@@ -199,7 +203,7 @@ export function PhotoViewer({
     onFinalize: () => {
       // The engagement decision belongs to ONE pinch: left standing, the
       // next two fingers down would resume mid-zoom from a stale base.
-      pinchLive.value = false;
+      pinchTracking.value = PINCH_TRACKING_START;
       // Follows onBegin, so it fires for plain taps too — do nothing
       // when there was never a zoom to unwind (DeckScreen's guard): a
       // tap's finalize otherwise races the JS double-tap zoom

@@ -22,7 +22,7 @@ import {
   type CompareDuelPref,
 } from '../lib/comparePrefs';
 import { showToast } from '../lib/toast';
-import { DOUBLE_TAP_MS, pinchEngaged, pinchGain } from '../lib/zoomTarget';
+import { DOUBLE_TAP_MS, PINCH_TRACKING_START, pinchFrame } from '../lib/zoomTarget';
 import { colors, touch, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded } from '../lib/format';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -296,8 +296,7 @@ export function CompareScreen({ navigation, route }: Props) {
   // A pinch must prove itself before it may change the zoom (see
   // lib/zoomTarget PINCH_ENGAGE_DELTA): these carry that decision, and
   // the raw scale it was made at, across the gesture's frames.
-  const pinchLive = useSharedValue(false);
-  const pinchBase = useSharedValue(1);
+  const pinchTracking = useSharedValue(PINCH_TRACKING_START);
 
   const flip = useCallback(() => setShowB((v) => !v), []);
 
@@ -346,13 +345,18 @@ export function CompareScreen({ navigation, route }: Props) {
 
   const pinchGesture = usePinchGesture({
     onUpdate: (event) => {
-      if (!pinchLive.value) {
-        if (!pinchEngaged(event.scale)) return;
-        pinchLive.value = true;
-        pinchBase.value = event.scale;
-      }
-      const gain = pinchGain(event.scale, pinchBase.value);
-      scale.value = Math.min(MAX_SCALE, Math.max(1, savedScale.value * gain));
+      // pinchFrame carries engagement AND finger-change re-anchoring
+      // (§10 check 9): a finger landing or lifting mid-gesture holds
+      // the zoom instead of leaping with the new finger distance.
+      const step = pinchFrame(
+        pinchTracking.value,
+        event.scale,
+        event.numberOfPointers,
+        scale.value,
+      );
+      pinchTracking.value = step.tracking;
+      if (step.scale === null) return;
+      scale.value = Math.min(MAX_SCALE, Math.max(1, step.scale));
       // Keep the pan inside bounds while zooming back out.
       const maxX = (stageW.value * (scale.value - 1)) / 2;
       const maxY = (stageH.value * (scale.value - 1)) / 2;
@@ -362,7 +366,7 @@ export function CompareScreen({ navigation, route }: Props) {
     // onFinalize also fires when a pinch is CANCELLED, which onDeactivate
     // does not — the engagement flag has to clear either way.
     onFinalize: () => {
-      pinchLive.value = false;
+      pinchTracking.value = PINCH_TRACKING_START;
     },
     onDeactivate: () => {
       savedScale.value = scale.value;

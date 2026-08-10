@@ -357,6 +357,7 @@ The table stays only as the release record; `autowork.md` and `codex-review.md` 
 | 11 | F5's marker parses the old day-only value as "nothing celebrated" | read |
 | 12 | Milestone bars take the hue of what each counts | **assumed** |
 | 13 | Device verification ran on the emulator, not the S10e | measured |
+| 14 | **(autonomous, unvetted)** Check 9's fail landed `pinchFrame` (the m0.8.4 drafted design), with two deviations from its recovered tests: the engaging frame re-anchors (keeping the shipped no-jump rule the drafted tests contradicted), and the fix went to all three pinch surfaces (deck, viewer, Compare) — same wiring, same defect | read |
 
 The codex rounds' five assumptions were vetted in the same grilling: the once-per-day count rule (and the ring keeps counting *decided today* — first-ever-only was weighed and declined), the earlier-day re-decide, the holding frame (outgoing photo under the NEW header), Compare hosting without drawing, and the advance waiting on the goal evaluation.
 The last ships unwrapped by choice: the evaluation's reads do not take user-write priority, so **check 8 doubles as the stall probe** — a multi-second "Saving…" on a crossing while a scan runs means wrapping the chain in `withUserWritePriority`, a known one-line fix.

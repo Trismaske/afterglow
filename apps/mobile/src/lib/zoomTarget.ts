@@ -58,6 +58,68 @@ export function pinchGain(rawScale: number, base: number): number {
   return base === 0 ? 1 : rawScale / base;
 }
 
+/**
+ * Per-frame pinch tracking that survives FINGER CHANGES (m0.8.5 §10
+ * check 9, S10e). The raw gesture scale is a ratio of finger distances,
+ * so a finger landing or lifting mid-gesture swings it wildly with no
+ * zoom intended — on device the viewport leapt across the photo. The
+ * rule: a frame whose pointer count differs from the last frame's
+ * RE-ANCHORS (the zoom holds still and the new finger set's distance
+ * becomes the new base); a frame with a stable finger set zooms
+ * relative to its anchor. Engagement (PINCH_ENGAGE_DELTA) is proven
+ * once per gesture and then persists across finger changes, and the
+ * engaging frame also re-anchors, keeping the no-jump rule above.
+ *
+ * Pure and worklet-safe; the screens carry the tracking in one shared
+ * value and reset it to PINCH_TRACKING_START on finalize.
+ */
+export type PinchTracking = {
+  /** Pointer count of the previous frame; 0 = no frame seen yet. */
+  pointers: number;
+  /** Raw gesture scale at the current anchor frame. */
+  base: number;
+  /** The displayed zoom when the anchor was set. */
+  anchorScale: number;
+  /** Has this gesture proven itself a deliberate pinch? */
+  live: boolean;
+};
+
+export const PINCH_TRACKING_START: PinchTracking = {
+  pointers: 0,
+  base: 1,
+  anchorScale: 1,
+  live: false,
+};
+
+/** One gesture frame in, the tracking to carry and the zoom to show
+ * out. `scale: null` = leave the zoom exactly where it is. */
+export function pinchFrame(
+  tracking: PinchTracking,
+  raw: number,
+  pointers: number,
+  currentScale: number,
+): { tracking: PinchTracking; scale: number | null } {
+  'worklet';
+  if (pointers !== tracking.pointers) {
+    // The finger set changed: this distance is not comparable to the
+    // anchor's. Hold the zoom, measure everything after from here.
+    return {
+      tracking: { pointers, base: raw, anchorScale: currentScale, live: tracking.live },
+      scale: null,
+    };
+  }
+  if (!tracking.live) {
+    if (!pinchEngaged(pinchGain(raw, tracking.base))) return { tracking, scale: null };
+    // Engaged: re-anchor at THIS frame so crossing the threshold does
+    // not jump the photo by the threshold's worth.
+    return {
+      tracking: { pointers, base: raw, anchorScale: currentScale, live: true },
+      scale: null,
+    };
+  }
+  return { tracking, scale: tracking.anchorScale * pinchGain(raw, tracking.base) };
+}
+
 /** Pan bounds at `scale` for a contain-fit photo of aspect `aspect`
  * (width / height, from the image's onLoad) centred in a stage of
  * stageW × stageH. Axis bound: (rendered · scale − stage) / 2, floored

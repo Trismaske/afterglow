@@ -185,3 +185,24 @@ Spend part of any cycle's budget on device runs, because static review has never
     The `n = 1` case is the one that ships as "1 photo live in".
     Every generated sentence that carries a count needs its singular asserted, not just its shape.
     Assert the verb and the pronoun, not only the noun.
+
+## Keeping a screen alive, and async hand-offs (m0.8.5)
+
+47. **A per-visit reset the unmount used to do for free.**
+    A refactor that keeps a component mounted across what used to be remounts inherits every reset the unmount performed silently: cursors, native scroll offsets, pickers, entered-with state, async results.
+    Enumerate them by asking what a fresh mount initialises, then key each on the new identity (the unit, not the mount).
+    Async results additionally need STAMPING with the identity they were read for, or the previous visit's rows render as this one's.
+    Three instances in one release, one introduced by the fix for another.
+48. **A UI transition gated on state an async chain sets.**
+    If a transition may proceed only after an async evaluation (was this the crossing? is the moment claimed?), gating on the evaluation's OUTPUT loses the race: the transition runs before the chain resolves.
+    Gate on observable state that is raised synchronously BEFORE the async work is queued and lowered on every exit path — one gate per stage of the hand-off.
+    The second-order form: arming stage N+1 and lowering stage N in the same batched render lets an effect between them run with both gates open.
+    This class recurred within one review cycle; its fix is where its next instance lived.
+49. **An incrementally maintained counter beside a documented aggregate.**
+    A counter kept in step with events (fresh decisions, bytes freed) must agree with the query that defines the number users see.
+    Judge each increment by the AGGREGATE's semantics — the same column, the same once-per-bucket rule — not by a plausible event-level rule; "unreviewed became decided" and "one row per photo stamped today" disagree exactly when a user undoes.
+    Test the running SUM against the query, not increments in isolation: the isolated test encoded the wrong rule confidently.
+50. **A pending hand-off outliving its receiver.**
+    A consume-once flag armed for a receiver that unmounts or blurs before consuming does not disappear — it fires stale on whatever claims it next, hours later.
+    Every producer→consumer flag needs an owner for the abandoned case: the last receiver leaving either consumes it, degrades it (a toast), or clears it.
+    Registration scope matters too: scope receivers to MOUNT when a covering screen must not count as departure, and keep consuming scoped to focus.

@@ -190,8 +190,9 @@ Compare gates its four chips on `busy` alone (`CompareScreen.tsx:706-786`); the 
 Compare takes the deck's rule.
 
 Measured on device: the deck is already correct, and **PhotoViewer's panel has no action chips on a staged cull** — it shows the verdict and a single `Change decision` row, so the rule does not extend there. That surface inherits it in m0.8.6 with F9.
-Also measured: no tested path enters Compare with a staged-cull participant, because the deck disables Compare on a culled photo and a two-shot group with one cull leaves Compare disabled entirely.
-The fix is therefore parity, not a reachable-bug fix — but the divergence is real, and L4 is changing navigation in this very release.
+Also measured, completed on the S10e during the closing grilling: **no path enters Compare with a staged-cull participant**.
+The deck disables Compare on a culled photo in 2-shot and 12-shot groups alike, and the "Compare with…" picker in a 12-shot group with one staged cull offers only the alive members — the culled photo is excluded from the candidate list.
+The fix is therefore deliberately defensive parity: two surfaces drawing identical chips answer identically, so the divergence cannot resurface when navigation changes again (it changed in this very release, and F9 adds cull paths next).
 
 ## 7. `pinchFrame` — closed out (A7)
 
@@ -259,7 +260,7 @@ Run against a **release** build on the S10e.
 
 **The goal moment (F4/F5)**
 
-8. Set the goal just above today's count, cross it in the deck: the moment plays fully and the deck holds until it ends.
+8. Set the goal just above today's count, cross it in the deck **while a scan runs**: the moment plays fully, the deck holds until it ends, and "Saving…" does not hang multi-second (the settling barrier's reads sit outside user-write priority — decision of 2026-08-10, probe before wrapping).
 9. Raise the goal above the new count and cross again: it celebrates again.
 10. Lower the goal below today's count: nothing fires.
 11. Cross the goal from a surface with no deck open: a toast appears, and no celebration fires later on the next deck.
@@ -281,8 +282,8 @@ Run against a **release** build on the S10e.
 
 ## 11. Autonomous decisions
 
-Judgment calls made without Tristan during the 2026-08-07 session.
-`autowork.md` carries the full reasoning — context, options, evidence tier — until each is vetted, and is deleted once they are.
+Judgment calls made without Tristan during the 2026-08-07 session — **all vetted and approved in the closing grilling of 2026-08-10**, so none is an open assumption.
+The table stays only as the release record; `autowork.md` and `codex-review.md` are deleted.
 
 | # | Call | Tier |
 |---|---|---|
@@ -300,6 +301,6 @@ Judgment calls made without Tristan during the 2026-08-07 session.
 | 12 | Milestone bars take the hue of what each counts | **assumed** |
 | 13 | Device verification ran on the emulator, not the S10e | measured |
 
-Five more assumptions came out of the codex round and live in `codex-review.md`: the once-per-day count rule, the earlier-day re-decide, the holding frame's content, Compare no longer drawing the moment, and the advance now waiting on the goal evaluation.
-
-**Number 12 is the one to look at on a screen**: a cull-red progress bar follows the rule but may read as alarm rather than as "cull".
+The codex rounds' five assumptions were vetted in the same grilling: the once-per-day count rule (and the ring keeps counting *decided today* — first-ever-only was weighed and declined), the earlier-day re-decide, the holding frame (outgoing photo under the NEW header), Compare hosting without drawing, and the advance waiting on the goal evaluation.
+The last ships unwrapped by choice: the evaluation's reads do not take user-write priority, so **check 8 doubles as the stall probe** — a multi-second "Saving…" on a crossing while a scan runs means wrapping the chain in `withUserWritePriority`, a known one-line fix.
+Number 12 (milestone hues, cull-red included) was approved on a screenshot from the S10e.

@@ -246,39 +246,96 @@ The `priorState` helpers and the caller-side `fresh` argument are deleted, and n
 
 ## 10. Human acceptance pass — the m0.8.5 checklist
 
-Run against a **release** build on the S10e.
+Run on the S10e (0.8.5 is installed, versionCode 12).
+Every check names its screen, the steps, and what pass looks like.
+"Machine-checked" means a screen recording on the emulator already showed it working — confirm it by eye and feel, don't re-prove it.
 
-**The deck (L4/F6/F4/F7)**
+Terms used below:
+**the deck** = the review screen you reach from Home's green *Continue reviewing* button;
+**the finish button** = the wide green *Keep remaining (N)* button at the deck's bottom;
+**the Review list** = the card list behind Home's "N to review" breakdown (tap the numbers, not the green button);
+**today's count / the ring** = Home's goal ring, "X of Y today".
+Set the daily goal via Settings (gear, top right of Home) → DAILY GOAL → *Custom* → type a number → *Set goal*.
 
-1. *Keep remaining* on a group: **no blank frame** between units. This is the measured defect, not "less jank".
-2. The button stays on screen and disables. It does not vanish.
-3. Android back from a deck exits through Home, never into a queue tab.
-4. Enter a unit from the Timeline and from DayProgress: both land on the right unit.
-5. A day deck returns to its day page when finished.
-6. A long singles run: the current thumbnail stays visible past the 7th photo, and a manual strip scroll is not fought.
-7. **Pinch check (A7):** zoom a photo deep, then pan with two thumbs while letting fingers land and lift alternately. The zoom must hold. If it drifts, `pinchFrame` is the fix and its tests come back.
+### The deck (L4 / F6 / F7)
 
-**The goal moment (F4/F5)**
+1. **No blank frame between units** *(machine-checked)*.
+   In the deck, press the finish button and watch the transition to the next unit.
+   Pass: the header, photo area, thumbnail strip and buttons all stay on screen; only their contents swap.
+   Fail: any flash of empty dark screen — 0.8.4 showed ~300 ms of it.
+2. **The finish button never vanishes.**
+   While its write runs it stays in place, greys, and reads *Saving…*; the buttons around it must not reflow.
+3. **A cross-kind advance never blanks the stage.**
+   Finish a unit whose successor is the other kind (a group followed by singles, or the reverse — the Review list shows the order).
+   Pass: during the advance the *outgoing* photo may linger under the already-updated header for a beat; the stage is never empty.
+4. **The photo and the position badge agree after an advance.**
+   Finish a unit while NOT standing on its first photo (swipe forward a few, then press the finish button).
+   In the next unit, swipe forward once and back once.
+   Pass: the "x/N" badge (top right of the photo) and the visible photo move together.
+   This guards the review finding where the pager could keep the old unit's page while the buttons targeted the new unit's first photo.
+5. **Android back exits through Home.**
+   From any deck, press the system back button.
+   Pass: you land on Home — never on an Edit/Favourite/Organize/Share tab.
+6. **Opening a specific unit opens THAT unit.**
+   In the Review list, pick a card mid-list and tap it; compare the deck's header line and time badge with the card you tapped.
+   Repeat from a day page: Home → a day row → a group under "Groups this day".
+7. **A day deck returns to its day page.**
+   Home → a day row → the day page's own review CTA → finish the deck.
+   Pass: you are back on the day page, not on the timeline or Home.
+8. **The thumbnail strip follows you (F7).**
+   Open a singles run of 10+ photos (the Review list names sizes) and decide or swipe forward past the 7th photo.
+   Pass: the highlighted thumbnail is always visible, moving before it would slide off-screen.
+   Then hand-scroll the strip somewhere else and swipe the big photo once.
+   Pass: your strip position is left alone unless the current thumbnail had left the view (the F8 histogram trap, not repeated).
+9. **Pinch across finger changes (A7 — the `pinchFrame` decision).**
+   Zoom a photo deep, then pan with both thumbs while letting fingers land and lift alternately.
+   Pass: the zoom level holds.
+   Fail: the photo creeps out of zoom — then `pinchFrame` is the fix, and its five tests come back from git history (`f376d5a`).
 
-8. Set the goal just above today's count, cross it in the deck **while a scan runs**: the moment plays fully, the deck holds until it ends, and "Saving…" does not hang multi-second (the settling barrier's reads sit outside user-write priority — decision of 2026-08-10, probe before wrapping).
-9. Raise the goal above the new count and cross again: it celebrates again.
-10. Lower the goal below today's count: nothing fires.
-11. Cross the goal from a surface with no deck open: a toast appears, and no celebration fires later on the next deck.
+### The goal moment (F4 / F5)
 
-**What the review round added**
+10. **The crossing holds the deck** *(machine-checked; do it on device while the scan runs — this doubles as the stall probe)*.
+    Set the goal to today's count + 1, then decide one more photo in a deck.
+    Pass: vibration, the edge glow, and the ring overlay play out fully (~1.7 s) over the photo you just finished; only then does the deck advance.
+    Also watch the write: *Saving…* must not hang for seconds while the scan runs — if it does, say so; the fix is known and one line (the barrier's reads move under user-write priority).
+11. **A raised goal celebrates again (F5)** *(machine-checked)*.
+    Right after check 10, raise the goal to count + 1 again and cross it.
+    Pass: a second full moment.
+12. **A lowered goal does not.**
+    Set the goal below today's count.
+    Pass: nothing fires — no overlay, no toast, and the ring simply shows itself full.
+13. **A crossing with no deck open becomes a toast.**
+    Set the goal to today's count + 1.
+    Home → the Cull list card → tap any staged photo → change its decision to Keep (this counts as today's work when the cull was staged on an earlier day — all 8 on this device were).
+    Pass: a toast, "Daily goal reached — N today", and NO overlay fires later when you next open a deck.
+14. **A crossing decided in a duel plays on the deck it returns to.**
+    Set the goal to today's count + 1.
+    In a deck, open *Compare with…*, pick a photo, and decide the duel so a verdict is written (the "N is better" dialog's Keep both or Cull).
+    Pass: Compare closes as always, and the moment plays on the deck you land back on — Compare itself never draws it, and no stray toast fires just from opening or closing the duel.
+    This is the one goal path never machine-checked, so it earns a real look.
+15. **Undo does not double-count.**
+    Note the ring. In a deck: Keep a photo, tap Keep again (undo), Keep once more.
+    Pass: back on Home, the ring rose by exactly 1.
 
-12. Advancing to a singles run shows the outgoing photo, never a blank stage, while its rows load.
-13. Finish a unit from a NON-ZERO cursor: the next unit's visible photo must match its position badge. (The pager could keep the old page while the controls pointed at the new unit's first photo.)
-14. Decide a photo, undo it, decide it again: the goal ring must rise by ONE, and the celebration must not fire early.
-15. Open a duel and come back: no goal toast fires on the way, and a crossing decided in the duel plays on the deck it returns to.
+### Copy and colour (F1 / F3 / F17 / accent)
 
-**Copy and colour (F1/F3/F17/F13/accent)**
-
-12. Home during a scan with an empty queue: the button reads `Scanning…` and the card does not claim everything is reviewed.
-13. The deck badge names a day, and reads `Unknown day` on an undated photo.
-14. Compare's chips are greyed on a staged-cull photo.
-15. The two streak sentences on Home are distinguishable at a glance.
-16. Set the accent to **Green** in Settings, then look at the goal ring, the activity bars, the coverage markers and the milestone fills. Completion must still be readable — this is the case the old design could not serve.
+16. **The deck badge names the day (F17).**
+    Any deck: the badge top-left of the photo reads like "06 Jun 2026 · 12:42:28".
+    Open a card the Review list titles *Unknown day* (this corpus has ~2,500 undated photos).
+    Pass: the badge reads "Unknown day · HH:MM:SS" — never a confident date invented from file times.
+17. **The two streak lines read differently (F1).**
+    Home: the goal card says "🔥 N-day streak"; the Keeping up card says "📅 N days with photos fully reviewed in a row" (needs the coverage goal on and a nonzero streak — it may be absent right now, in which case check the wording on Stats → Activity's caption instead: "N of M days with photos fully reviewed").
+    Pass: you can tell at a glance which is effort and which is coverage.
+18. **Home never claims "All reviewed" mid-scan (F3).**
+    Only visible with an EMPTY queue while a scan runs, which this corpus cannot show without a data reset — check it if you happen to reinstall fresh; otherwise skip (the states are: button *Scanning…* / *Scan incomplete* on a failed scan, card line "Nothing to review yet — the scan is still running / did not finish").
+19. **A staged cull's chips grey in the deck (F13).**
+    Cull a photo, swipe back to it.
+    Pass: Edit / Favourite / Organize / Share are greyed; Keep and Cull stay live (the undo).
+    Compare's copy of this rule is deliberately unreachable — the picker refuses culled members (measured 2026-08-10) — so there is nothing to check there.
+20. **The Green accent no longer hides completion (A6).**
+    Settings → ACCENT → *Green*, then look at Home's ring, and Stats → Activity's bars and coverage blocks, and Habits' milestone bars.
+    Pass: everything progress-shaped is keep-green with completion readable from geometry (a closed ring, a full bar, a bar over the grey goal line) — nothing depends on telling two greens apart.
+    Set the accent back to your preference afterwards; check the ring and bars still look right under it too.
 
 ## 11. Autonomous decisions
 

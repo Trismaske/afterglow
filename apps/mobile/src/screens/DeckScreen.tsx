@@ -202,6 +202,32 @@ export function DeckScreen({ navigation, route }: DeckProps) {
   return <ReviewDeck navigation={navigation} unit={unit} advanceTo={advanceTo} />;
 }
 
+/**
+ * Everything one render of the deck's body needs (L4 round 3). Captured
+ * from live data on every loaded render and FROZEN while the next
+ * unit's rows load, so an advance swaps data inside one mounted tree
+ * instead of unmounting the chrome. Per-photo context lookups
+ * (needsEdit, favouriteStatus, queuedFor, actionWeights) stay live —
+ * they are stable id-keyed maps, valid for frozen ids too.
+ */
+interface DeckView {
+  items: MediaItem[];
+  cursor: number;
+  current: MediaItem;
+  stateOf: Map<string, ReviewMemberRow['state']>;
+  dayOf: Map<string, string | null>;
+  needMs: boolean[];
+  bestId: string | null;
+  /** Group-only controls (Best · Not related) render. */
+  isGroup: boolean;
+  headerTitle: string;
+  headerHint: string;
+  browseControls: boolean;
+  keepCount: number;
+  /** What the finish button counts (pending singles / alive members). */
+  finishCount: number;
+}
+
 function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   const singlesMode = unit.kind === 'run';
   const day = unit.kind === 'run' ? unit.day : undefined;
@@ -256,6 +282,11 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
    * the deck settling back out of browse.
    */
   const [finishing, setFinishing] = useState(false);
+  /** The finish write has run long enough to EARN the "Saving…" label
+   * (§10 check 2): a fast write advances before this fires, so the
+   * label never flashes for the normal case; a genuinely slow write —
+   * the scan-stall probe's territory — still says what is happening. */
+  const [finishSlow, setFinishSlow] = useState(false);
   const [pageW, setPageW] = useState(0);
   const [comparePicker, setComparePicker] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
@@ -479,6 +510,17 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   const [browseCursor, setBrowseCursor] = useState(0);
   const cursor = Math.min(browseCursor, Math.max(0, deckItems.length - 1));
   const current: MediaItem | null = deckItems[cursor] ?? null;
+  /**
+   * The unit's rows are not here yet (an in-place advance changes the
+   * unit before its async read lands). The render FREEZES the previous
+   * unit's view instead of unmounting anything (L4 round 3, §10 checks
+   * 1/3/10): the early holding frame used to drop the header, strip and
+   * every control for the gap, which read as the whole deck flickering
+   * on each advance — and as a header-less "fullscreen photo" while the
+   * goal barrier held. Logic below this line must keep reading the LIVE
+   * stamped values; only the render reads the frozen view.
+   */
+  const holding = !current || (!singlesMode && (!groupId || !info));
 
   // Millisecond precision only where adjacent deck photos share a second
   // AND the timestamps carry sub-second data (m0.4).
@@ -673,7 +715,10 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   stageTapRef.current = () => {
     // Reading a shared value from JS is a sync snapshot — fine here: a
     // zoomed stage keeps taps to itself anyway via pointerEvents.
-    if (scale.value === 1 && browse) setViewerOpen(true);
+    // A FROZEN deck (rows loading) opens nothing: `browse` already
+    // belongs to the incoming unit while the stage still shows the
+    // outgoing one.
+    if (scale.value === 1 && browse && !holding) setViewerOpen(true);
   };
   const fireStageTap = useCallback(() => stageTapRef.current(), []);
   const currentId = current?.id ?? null;
@@ -696,6 +741,14 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   useEffect(() => {
     if (finishing && !busy && !browse) setFinishing(false);
   }, [finishing, busy, browse]);
+  useEffect(() => {
+    if (busyOwner !== 'finish') {
+      setFinishSlow(false);
+      return;
+    }
+    const timer = setTimeout(() => setFinishSlow(true), 400);
+    return () => clearTimeout(timer);
+  }, [busyOwner]);
   /** What the CONTROLS render as. Held on the live block through a
    * finish so the advance, not a swap, is what ends the unit. */
   const browseControls = browse && !finishing;
@@ -724,8 +777,26 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
    * content width — and returns null, leaving a half-reviewed unit open
    * with its current thumbnail off-screen (codex r3). */
   const [stripMeasured, setStripMeasured] = useState(0);
+  /**
+   * The page the native pager currently SHOWS (F7 round 2, §10 check
+   * 8): `cursor` settles only at momentum end, so the strip highlight
+   * trailed every swipe by the settle. This index follows the live
+   * scroll offset — the highlight and the follow-scroll move as the
+   * page crossing happens. `cursor` stays the deck's one source of
+   * truth for everything that ACTS (controls, badges, effects); this is
+   * display-only.
+   */
+  const [pagerIndex, setPagerIndex] = useState(0);
   useEffect(() => {
-    const target = stripScrollOffset(cursor, stripOffsetRef.current, {
+    // Programmatic moves (unit reset, jumpTo, clamp after a cull) land
+    // here; live swipes land via onPagerScroll below.
+    setPagerIndex(cursor);
+  }, [cursor]);
+  useEffect(() => {
+    // While holding, the strip shows the FROZEN unit — its own cursor
+    // is the only meaningful focus, and it is already in place.
+    if (holding) return;
+    const target = stripScrollOffset(pagerIndex, stripOffsetRef.current, {
       pitch: THUMB + THUMB_GAP,
       size: THUMB,
       leadingInset: THUMB_INSET,
@@ -737,16 +808,36 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     stripRef.current?.scrollTo({ x: target, animated: true });
     // deckItems is a dependency because a cull or an undo changes the
     // content width under a cursor that did not move.
-  }, [cursor, deckItems, stripMeasured]);
-  /** The photo the stage last showed, for the holding frame below. */
+  }, [pagerIndex, holding, deckItems, stripMeasured]);
+  /** The photo the stage last showed. It backs the pager's underlay:
+   * while a freshly-swapped page's Image still decodes, the previous
+   * photo shows through instead of a blank stage (§10 check 3 — decode
+   * latency was visible on the S10e even with the chrome mounted). */
   const lastPhotoRef = useRef<string | null>(null);
   useEffect(() => {
     if (current) lastPhotoRef.current = current.uri;
   }, [current]);
+  /** The last LOADED render's view — what the body draws while the next
+   * unit's rows load (see `holding`). */
+  const heldViewRef = useRef<DeckView | null>(null);
   // The zoom overlay shows the CURRENT photo — leave zoom when it changes.
   useEffect(() => {
     resetZoom();
   }, [currentId, resetZoom]);
+  /**
+   * Which PAGE Images have painted (their own onLoad — the zoom
+   * overlay's would not do: it is a separate Image instance, and hiding
+   * the underlay on ITS load left dark frames while the page was still
+   * painting, measured on the emulator probe). The underlay shows the
+   * previous photo until the current page's own paint has landed
+   * (§10 check 3). A set, not a single id: neighbor pages preload, and
+   * a page already painted must not re-summon the underlay when swiped
+   * back to. `decodedTick` is only the render trigger for the frame
+   * where the CURRENT page lands.
+   */
+  const loadedPagesRef = useRef<Set<string>>(new Set());
+  const [, setDecodedTick] = useState(0);
+  const currentIdRef = useRef<string | null>(null);
 
   // Linear flow follows the timeline's first unit. Explicitly opening an
   // ALREADY completed group still permits browse/re-decide mode.
@@ -993,16 +1084,30 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   const onMomentumEnd = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       if (!pageW) return;
+      // A swipe on the FROZEN deck (rows still loading) must not write
+      // the new unit's cursor from the old unit's pages.
+      if (holding) return;
       const index = Math.round(event.nativeEvent.contentOffset.x / pageW);
       if (index !== cursor) setBrowseCursor(index);
     },
-    [pageW, cursor],
+    [pageW, cursor, holding],
+  );
+
+  /** Display-only live index for the strip (see `pagerIndex`). */
+  const onPagerScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (!pageW || holding) return;
+      const index = Math.round(event.nativeEvent.contentOffset.x / pageW);
+      setPagerIndex((previous) => (previous === index ? previous : index));
+    },
+    [pageW, holding],
   );
 
   const jumpTo = useCallback(
     (index: number) => {
       if (!pageW) return;
       setBrowseCursor(index);
+      setPagerIndex(index);
       pagerTargetRef.current = index * pageW;
       listRef.current?.scrollToOffset({ offset: index * pageW, animated: true });
     },
@@ -1149,6 +1254,14 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
           contentFit="contain"
           recyclingKey={item.id}
           transition={40}
+          onLoad={() => {
+            // This page has painted — the decode underlay may drop for
+            // it. Re-render only when it is the CURRENT page: that is
+            // the one the underlay is covering.
+            if (loadedPagesRef.current.has(item.id)) return;
+            loadedPagesRef.current.add(item.id);
+            if (item.id === currentIdRef.current) setDecodedTick((t) => t + 1);
+          }}
         />
       </Pressable>
     ),
@@ -1178,16 +1291,58 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     );
   }
 
-  if (!current || (!singlesMode && (!groupId || !info))) {
-    // A HOLDING frame, not a blank one (codex r1/r3). An in-place
-    // advance changes the unit before its rows can load — the singles
-    // read is async — so returning an empty root here would reproduce
-    // the header-only blank that L4 exists to remove, just for fewer
-    // milliseconds. The outgoing photo stays on the stage instead.
-    //
-    // It carries NO controls, badges or gestures: it is the photo you
-    // were looking at, not an actionable one, so nothing can be decided
-    // against a stale target while the next unit arrives.
+  /**
+   * The view the body renders (L4 round 3, §10 checks 1/3/10). Loaded
+   * renders capture it; while the next unit's rows load (`holding`) the
+   * PREVIOUS capture renders instead, with every control inert — so an
+   * advance never unmounts the header, strip or buttons, and the goal
+   * moment can play over the completed unit it belongs to. Only the
+   * navigation title is the incoming unit's (the vetted hand-off
+   * behavior); the body swaps whole when the rows land.
+   */
+  const liveView: DeckView | null =
+    holding || current === null
+      ? null
+      : {
+          items: deckItems,
+          cursor,
+          current,
+          stateOf,
+          dayOf,
+          needMs,
+          bestId: singlesMode ? null : (info?.bestId ?? null),
+          isGroup: !singlesMode && !!groupId,
+          headerTitle: singlesMode
+            ? `${range || !day ? 'Singles' : `${labelForDayKey(day)} · singles`} · ${deckItems.length - singlesPending} of ${deckItems.length} reviewed${
+                range ? ` · ${queueCounts.singles.toLocaleString()} left in library` : ''
+              }`
+            : browse
+              ? `Group · ${deckItems.length} reviewed${unreachableSuffix}`
+              : `Group · ${deckItems.length - aliveItems.length} of ${deckItems.length} reviewed · ${queueCounts.groups.toLocaleString()} groups left${unreachableSuffix}`,
+          headerHint: browse
+            ? singlesMode
+              ? 'Reviewed singles — change any decision until the final delete confirmation.'
+              : 'Reviewed group — change any decision until the final delete confirmation.'
+            : singlesMode
+              ? range
+                ? 'Swipe through the run · decided shots stay badged (tap the same verdict to undo) · Keep remaining finishes.'
+                : "This day's ungrouped shots · decided shots stay badged (tap the same verdict to undo)."
+              : 'Swipe through the group · decided shots stay badged (tap the same verdict to undo) · Keep rest finishes.',
+          browseControls,
+          keepCount: deckItems.length,
+          finishCount: singlesMode ? singlesPending : aliveItems.length,
+        };
+  if (liveView) heldViewRef.current = liveView;
+  const view = liveView ?? heldViewRef.current;
+  /** Frozen view: LOOK normal, DO nothing. */
+  const inert = liveView === null;
+  // What the stage is SHOWING this render — the id whose page paint the
+  // underlay waits for (render-time, so the swap frame reads the new id).
+  currentIdRef.current = view?.current.id ?? null;
+  if (view === null) {
+    // Nothing to freeze — the session's very first deck is still
+    // reading its rows. The outgoing-photo stage (or a blank breath on
+    // a cold open) is all there is to show.
     return (
       <View style={[styles.root, { paddingBottom: insets.bottom + 8 }]}>
         {lastPhotoRef.current !== null && (
@@ -1207,30 +1362,31 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   // Compare eligibility mirrors openCompare exactly: undecided or KEPT
   // candidates (F11), and the CURRENT photo must be one of them.
   const compareStates = ['unreviewed', 'kept'];
-  const compareCandidateCount = deckItems.filter((i) =>
-    compareStates.includes(stateOf.get(i.id) ?? 'unreviewed'),
+  const compareCandidateCount = view.items.filter((i) =>
+    compareStates.includes(view.stateOf.get(i.id) ?? 'unreviewed'),
   ).length;
   const compareEligible =
-    compareCandidateCount >= 2 && compareStates.includes(stateOf.get(current.id) ?? 'unreviewed');
+    compareCandidateCount >= 2 &&
+    compareStates.includes(view.stateOf.get(view.current.id) ?? 'unreviewed');
 
-  const flagged = needsEdit(current.id);
-  const favourite = isFavouriteSelected(favouriteStatus(current.id));
-  const { share: shareQueued, organize: organizeQueued } = queuedFor(current.id);
-  const keepCount = deckItems.length;
-  const currentState = stateOf.get(current.id) ?? 'unreviewed';
+  const flagged = needsEdit(view.current.id);
+  const favourite = isFavouriteSelected(favouriteStatus(view.current.id));
+  const { share: shareQueued, organize: organizeQueued } = queuedFor(view.current.id);
+  const currentState = view.stateOf.get(view.current.id) ?? 'unreviewed';
   const browseState: RedecideTarget =
     currentState === 'culled' ? 'cull' : flagged ? 'to_edit' : 'keep';
+  const viewIsBest = view.isGroup && view.bestId !== null && view.bestId === view.current.id;
   /** Every badge a deck photo wears — the verdict AND all four actions,
    * none hiding another (m0.8.1 round 4), each at its own weight: loud
    * while it waits for you, quiet once the photo carries it (m0.8.2).
    * The verdict rides into actionWeights so a staged cull's retained
    * actions badge quiet — they left the queues with it. */
   const badgesFor = (item: MediaItem): PhotoBadge[] => {
-    const state = stateOf.get(item.id) ?? 'unreviewed';
+    const state = view.stateOf.get(item.id) ?? 'unreviewed';
     return photoBadges({
       state,
       ...actionWeights(item.id, state),
-      best: !singlesMode && info?.bestId === item.id,
+      best: view.bestId !== null && view.bestId === item.id,
     });
   };
 
@@ -1257,8 +1413,10 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
    * every verdict leaves the photo in place badged — membership never
    * changes mid-visit — so a FRESH decision advances the pager past it,
    * while re-deciding an already-decided photo stays put (the user is
-   * looking at that one). */
+   * looking at that one). Unreachable while `inert`: every control
+   * that calls it is disabled on a frozen view. */
   const decideCurrent = async (target: RedecideTarget) => {
+    if (inert || current === null) return;
     const index = cursor;
     // Still read here, but only to decide whether the PAGER advances —
     // the goal credit comes from the write itself (m0.8.5, A3).
@@ -1273,26 +1431,8 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
         {/* Truthful numbers only (m0.8.2, F12): the unit's own progress
             over its FIXED membership, plus the library-wide remainder
             from the DB counts — never a page-position ordinal. */}
-        <Text style={styles.headerTitle}>
-          {singlesMode
-            ? `${range || !day ? 'Singles' : `${labelForDayKey(day)} · singles`} · ${keepCount - singlesPending} of ${keepCount} reviewed${
-                range ? ` · ${queueCounts.singles.toLocaleString()} left in library` : ''
-              }`
-            : browse
-              ? `Group · ${keepCount} reviewed${unreachableSuffix}`
-              : `Group · ${keepCount - aliveItems.length} of ${keepCount} reviewed · ${queueCounts.groups.toLocaleString()} groups left${unreachableSuffix}`}
-        </Text>
-        <Text style={styles.headerHint}>
-          {browse
-            ? singlesMode
-              ? 'Reviewed singles — change any decision until the final delete confirmation.'
-              : 'Reviewed group — change any decision until the final delete confirmation.'
-            : singlesMode
-              ? range
-                ? 'Swipe through the run · decided shots stay badged (tap the same verdict to undo) · Keep remaining finishes.'
-                : "This day's ungrouped shots · decided shots stay badged (tap the same verdict to undo)."
-              : 'Swipe through the group · decided shots stay badged (tap the same verdict to undo) · Keep rest finishes.'}
-        </Text>
+        <Text style={styles.headerTitle}>{view.headerTitle}</Text>
+        <Text style={styles.headerHint}>{view.headerHint}</Text>
       </View>
 
       {/* VIRTUAL detectors under ONE intercepting host (Gesture Handler
@@ -1320,20 +1460,43 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
             {pageW > 0 && (
               <>
                 <View style={styles.pager}>
+                  {/* Decode underlay: the page Image a data swap mounts
+                      starts transparent until its decode lands, and on
+                      the S10e that gap was a visible blank (§10 check
+                      3). The previous photo sits under the pager for
+                      exactly those frames. ALWAYS MOUNTED, visibility by
+                      opacity: mounting it on demand reproduced the blank
+                      (a freshly-mounted Image paints a frame late even
+                      from cache — emulator probe), while left visible it
+                      would ghost through every contained page's
+                      letterbox margins. */}
+                  {lastPhotoRef.current !== null && (
+                    <Image
+                      source={{ uri: lastPhotoRef.current }}
+                      style={[
+                        StyleSheet.absoluteFill,
+                        { opacity: inert || !loadedPagesRef.current.has(view.current.id) ? 1 : 0 },
+                      ]}
+                      contentFit="contain"
+                      transition={0}
+                    />
+                  )}
                   <FlatList
                     ref={listRef}
-                    data={deckItems}
+                    data={view.items}
                     keyExtractor={(i) => i.id}
                     renderItem={renderPage}
                     horizontal
                     pagingEnabled
                     showsHorizontalScrollIndicator={false}
-                    initialScrollIndex={Math.min(cursor, deckItems.length - 1)}
+                    initialScrollIndex={Math.min(view.cursor, view.items.length - 1)}
                     getItemLayout={(_data, index) => ({
                       length: pageW,
                       offset: pageW * index,
                       index,
                     })}
+                    onScroll={onPagerScroll}
+                    scrollEventThrottle={32}
                     onMomentumScrollEnd={onMomentumEnd}
                   />
                 </View>
@@ -1362,10 +1525,10 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
               >
                 <Animated.View style={[StyleSheet.absoluteFill, zoomStyle]}>
                   <Image
-                    source={{ uri: current.uri }}
+                    source={{ uri: view.current.uri }}
                     style={StyleSheet.absoluteFill}
                     contentFit="contain"
-                    recyclingKey={`zoom-${current.id}`}
+                    recyclingKey={`zoom-${view.current.id}`}
                     onLoad={(event) => {
                       const { width, height } = event.source;
                       if (width > 0 && height > 0) imageAspect.value = width / height;
@@ -1376,7 +1539,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
             </VirtualGestureDetector>
             <View style={styles.posBadge} pointerEvents="none">
               <Text style={styles.posBadgeText}>
-                {cursor + 1}/{keepCount}
+                {view.cursor + 1}/{view.keepCount}
               </Text>
             </View>
             <View style={styles.timeBadge} pointerEvents="none">
@@ -1384,14 +1547,14 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                   about WHEN in a library you are reviewing out of order.
                   Rendered from `day`, NEVER from taken_at. */}
               <Text style={styles.timeBadgeText}>
-                {`${labelForDayKey(dayOf.get(current.id) ?? UNDATED_DAY_KEY)} · ${formatClockPrecise(
-                  current.timestamp,
-                  needMs[cursor] ?? false,
+                {`${labelForDayKey(view.dayOf.get(view.current.id) ?? UNDATED_DAY_KEY)} · ${formatClockPrecise(
+                  view.current.timestamp,
+                  view.needMs[view.cursor] ?? false,
                 )}`}
               </Text>
             </View>
             <BadgeCluster
-              badges={badgesFor(current)}
+              badges={badgesFor(view.current)}
               size={24}
               accent={theme.accent}
               style={styles.flagBadge}
@@ -1426,23 +1589,28 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
           setStripMeasured((n) => n + 1);
         }}
       >
-        {deckItems.map((item, index) => (
+        {view.items.map((item, index) => (
           <Pressable
             key={item.id}
-            onPress={() => jumpTo(index)}
+            onPress={() => {
+              if (!inert) jumpTo(index);
+            }}
             onLongPress={() => {
               // Compare via long-press works in browse too (F11): two
               // KEPT members are a legitimate duel — the dialog can
               // re-decide one.
-              if (item.id !== current.id) openCompare(item.id);
+              if (!inert && item.id !== view.current.id) openCompare(item.id);
             }}
           >
             <Image
               source={{ uri: item.uri }}
               style={[
                 styles.thumb,
-                index === cursor && styles.thumbActive,
-                item.id === info?.bestId && { borderColor: theme.accent },
+                // The LIVE pager index (§10 check 8): the highlight moves
+                // with the page crossing, not at momentum end. A frozen
+                // deck keeps its own settled cursor.
+                index === (inert ? view.cursor : pagerIndex) && styles.thumbActive,
+                view.bestId !== null && item.id === view.bestId && { borderColor: theme.accent },
               ]}
               contentFit="cover"
               recyclingKey={item.id}
@@ -1460,7 +1628,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
         ))}
       </ScrollView>
 
-      {browseControls ? (
+      {view.browseControls ? (
         // BROWSE (m0.8.2 unification): a completed group and a completed
         // singles run re-decide identically — Keep/Cull chips, the
         // actions, no Compare (its verdicts reject decided photos; the
@@ -1494,7 +1662,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                     { backgroundColor: dim },
                     active && { borderWidth: 2, borderColor: color },
                   ]}
-                  disabled={busy}
+                  disabled={busy || inert}
                   onPress={() => void run(() => decideCurrent(target))}
                 >
                   <MaterialCommunityIcons name={DECISION_GLYPHS[kind]} size={20} color={color} />
@@ -1514,36 +1682,36 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
             <ActionChip
               kind="edit"
               active={flagged}
-              disabled={busy || currentState === 'culled'}
+              disabled={busy || inert || currentState === 'culled'}
               dimmed={currentState === 'culled'}
               onPress={() => void run(() => decideCurrent('to_edit'))}
             />
             <ActionChip
               kind="favourite"
               active={favourite}
-              disabled={busy || currentState === 'culled'}
+              disabled={busy || inert || currentState === 'culled'}
               dimmed={currentState === 'culled'}
               onPress={() => void run(() => toggleFavourite(current.id))}
             />
             <ActionChip
               kind="organize"
               active={organizeQueued}
-              disabled={busy || currentState === 'culled'}
+              disabled={busy || inert || currentState === 'culled'}
               dimmed={currentState === 'culled'}
               onPress={() => void run(toggleOrganize)}
             />
             <ActionChip
               kind="share"
               active={shareQueued}
-              disabled={busy || currentState === 'culled'}
+              disabled={busy || inert || currentState === 'culled'}
               dimmed={currentState === 'culled'}
               onPress={() => void run(toggleShare)}
             />
-            {!singlesMode && groupId && (
+            {view.isGroup && (
               <Pressable
                 style={[
                   styles.secondaryButton,
-                  isBest && { backgroundColor: theme.accentMuted, borderColor: theme.accent },
+                  viewIsBest && { backgroundColor: theme.accentMuted, borderColor: theme.accent },
                   // Same staged-cull rule as the chips (§10 check 19),
                   // same look; busy stays out of the visual on purpose.
                   currentState === 'culled' && styles.controlDimmed,
@@ -1551,15 +1719,17 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                 // Only a staged cull is barred from Best (cull-star
                 // hygiene) — a completed group's kept members stay
                 // starrable in browse mode.
-                disabled={busy || currentState === 'culled'}
+                disabled={busy || inert || currentState === 'culled'}
                 onPress={toggleBest}
               >
                 <MaterialCommunityIcons
-                  name={isBest ? 'star' : 'star-outline'}
+                  name={viewIsBest ? 'star' : 'star-outline'}
                   size={18}
-                  color={isBest ? theme.accent : colors.textDim}
+                  color={viewIsBest ? theme.accent : colors.textDim}
                 />
-                <Text style={[styles.secondaryText, isBest && { color: theme.accent }]}>Best</Text>
+                <Text style={[styles.secondaryText, viewIsBest && { color: theme.accent }]}>
+                  Best
+                </Text>
               </Pressable>
             )}
           </View>
@@ -1577,7 +1747,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                 { backgroundColor: colors.keepDim },
                 currentState === 'kept' && { borderWidth: 2, borderColor: colors.keep },
               ]}
-              disabled={busy}
+              disabled={busy || inert}
               // `redecide` (inside decideCurrent) carries the whole rule
               // set: the active verdict clears back to unreviewed, a
               // staged cull re-decided to Keep takes the state-aware
@@ -1594,7 +1764,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
               // a loser and star a winner) — and decided photos stay in
               // the deck, so the button must go dead on them too, not
               // just on staged culls.
-              disabled={busy || !compareEligible}
+              disabled={busy || inert || !compareEligible}
               onPress={() => openCompare()}
             >
               <MaterialCommunityIcons name="compare-horizontal" size={21} color={colors.textDim} />
@@ -1608,7 +1778,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                 styles.cullButton,
                 currentState === 'culled' && { borderWidth: 2, borderColor: colors.cull },
               ]}
-              disabled={busy}
+              disabled={busy || inert}
               onPress={() => void run(() => decideCurrent('cull'))}
             >
               <MaterialCommunityIcons name="close" size={21} color={colors.cull} />
@@ -1626,57 +1796,59 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
             <ActionChip
               kind="edit"
               active={flagged}
-              disabled={busy || currentState === 'culled'}
+              disabled={busy || inert || currentState === 'culled'}
               dimmed={currentState === 'culled'}
               onPress={() => void run(() => toggleNeedsEdit(current.id))}
             />
             <ActionChip
               kind="favourite"
               active={favourite}
-              disabled={busy || currentState === 'culled'}
+              disabled={busy || inert || currentState === 'culled'}
               dimmed={currentState === 'culled'}
               onPress={() => void run(() => toggleFavourite(current.id))}
             />
             <ActionChip
               kind="organize"
               active={organizeQueued}
-              disabled={busy || currentState === 'culled'}
+              disabled={busy || inert || currentState === 'culled'}
               dimmed={currentState === 'culled'}
               onPress={() => void run(toggleOrganize)}
             />
             <ActionChip
               kind="share"
               active={shareQueued}
-              disabled={busy || currentState === 'culled'}
+              disabled={busy || inert || currentState === 'culled'}
               dimmed={currentState === 'culled'}
               onPress={() => void run(toggleShare)}
             />
           </View>
 
-          {!singlesMode && groupId && (
+          {view.isGroup && (
             <View style={styles.secondaryRow}>
               <Pressable
                 style={[
                   styles.secondaryButton,
-                  isBest && { backgroundColor: theme.accentMuted, borderColor: theme.accent },
+                  viewIsBest && { backgroundColor: theme.accentMuted, borderColor: theme.accent },
                   // Same staged-cull rule as the chips (§10 check 19),
                   // same look; busy stays out of the visual on purpose.
                   currentState === 'culled' && styles.controlDimmed,
                 ]}
                 // A staged cull is not ALIVE — un-cull it before starring.
-                disabled={busy || currentState === 'culled'}
+                disabled={busy || inert || currentState === 'culled'}
                 onPress={toggleBest}
               >
                 <MaterialCommunityIcons
-                  name={isBest ? 'star' : 'star-outline'}
+                  name={viewIsBest ? 'star' : 'star-outline'}
                   size={18}
-                  color={isBest ? theme.accent : colors.textDim}
+                  color={viewIsBest ? theme.accent : colors.textDim}
                 />
-                <Text style={[styles.secondaryText, isBest && { color: theme.accent }]}>Best</Text>
+                <Text style={[styles.secondaryText, viewIsBest && { color: theme.accent }]}>
+                  Best
+                </Text>
               </Pressable>
               <Pressable
                 style={styles.secondaryButton}
-                disabled={busy}
+                disabled={busy || inert}
                 onPress={() => group && void run(() => makeSingle(current.id, group.groupId))}
               >
                 <MaterialCommunityIcons name="image-move" size={18} color={colors.textDim} />
@@ -1686,16 +1858,17 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
           )}
 
           <BigButton
-            label={
-              busyOwner === 'finish'
-                ? 'Saving…'
-                : `Keep remaining (${singlesMode ? singlesPending : aliveItems.length})`
-            }
+            // "Saving…" only once the write has actually run long (§10
+            // check 2): a fast finish advances before the timer fires,
+            // so the label no longer flashes through two texts on every
+            // normal finish. The button still disables instantly — the
+            // press must land exactly once either way.
+            label={finishSlow ? 'Saving…' : `Keep remaining (${view.finishCount})`}
             color={colors.keep}
             // `busy` included (codex r3): the label already said "Saving…"
             // while the control stayed pressable, so the disabled look and
             // the disabled behaviour disagreed for the whole write.
-            disabled={busy || (singlesMode ? singlesPending === 0 : aliveItems.length === 0)}
+            disabled={busy || inert || view.finishCount === 0}
             onPress={() =>
               singlesMode
                 ? day && void run(() => keepAllSingles(day, range ?? null).then(() => {}), 'finish')
@@ -1707,8 +1880,8 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
 
       {viewerOpen && (
         <PhotoViewer
-          items={deckItems.map((i) => ({ id: i.id, uri: i.uri, takenAt: i.timestamp }))}
-          initialIndex={cursor}
+          items={view.items.map((i) => ({ id: i.id, uri: i.uri, takenAt: i.timestamp }))}
+          initialIndex={view.cursor}
           onClose={() => setViewerOpen(false)}
           onChanged={() => void refresh().catch(() => {})}
         />
@@ -1727,18 +1900,22 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
             onPress={() => {}}
           >
             <Text style={styles.pickerTitle}>Compare with…</Text>
-            <Text style={styles.pickerHint}>Pick the photo to compare against {cursor + 1}.</Text>
+            <Text style={styles.pickerHint}>
+              Pick the photo to compare against {view.cursor + 1}.
+            </Text>
             <View style={styles.pickerGrid}>
               {/* BOTH modes: candidates are the deck's undecided-or-KEPT
                   items (F11), labeled by their DECK position — a
                   filtered-subset index would disagree after a cull. A
                   kept candidate wears its keep badge, so duelling a
                   prior decision is visible before the tap. */}
-              {deckItems
+              {view.items
                 .map((item, deckIndex) => ({ item, deckIndex }))
-                .filter(({ item }) => compareStates.includes(stateOf.get(item.id) ?? 'unreviewed'))
+                .filter(({ item }) =>
+                  compareStates.includes(view.stateOf.get(item.id) ?? 'unreviewed'),
+                )
                 .map(({ item, deckIndex }) =>
-                  item.id === current.id ? null : (
+                  item.id === view.current.id ? null : (
                     <Pressable key={item.id} onPress={() => openCompare(item.id)}>
                       <Image
                         source={{ uri: item.uri }}
@@ -1749,7 +1926,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                       <View style={styles.pickerIndex}>
                         <Text style={styles.pickerIndexText}>{deckIndex + 1}</Text>
                       </View>
-                      {(stateOf.get(item.id) ?? 'unreviewed') === 'kept' && (
+                      {(view.stateOf.get(item.id) ?? 'unreviewed') === 'kept' && (
                         <DecisionBadge kind="keep" size={16} style={styles.pickerKeep} />
                       )}
                     </Pressable>

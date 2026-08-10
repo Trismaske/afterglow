@@ -29,7 +29,7 @@
  * into the report dir, which is cleared of prior screenshots at startup
  * so it always shows exactly one run. Exit code 1 when anything failed.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -806,6 +806,139 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
     await tapText(/^Keep$/, 20000);
     await waitGone(/^Saving…$/, 2500, 'Saving…');
   });
+  // The gate's ONE measured, frame-level check (m0.8.5 §10 checks 1/3):
+  // the deck advances IN PLACE, so no frame of a finish-button advance
+  // may blank the stage or drop the control block. uiautomator cannot
+  // see frames; this records the advance with `screenrecord` (which
+  // emits frames only while pixels change, so the clip IS the
+  // transition) and reads per-frame region statistics from raw RGB via
+  // ffmpeg on the host. The clip lands in the report dir either way.
+  await dependentStep(
+    'finish advance never blanks the stage or drops the controls',
+    null,
+    async () => {
+      try {
+        execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' });
+      } catch {
+        throw new Error(
+          'ffmpeg not found on this host — install it; the transition probe reads frames with it',
+        );
+      }
+      // The tap point is resolved BEFORE recording: a uiautomator dump can
+      // take seconds, and taken mid-recording it would push the tap out of
+      // the clip (observed on the emulator).
+      // Same stance as the deck-flow guard: an unmeasurable probe FAILS
+      // with the fix in its note — a release pass must not silently skip
+      // its one frame-level check.
+      const finish = findNode(dumpUi(), /^Keep remaining \(\d+\)$/);
+      if (!finish)
+        throw new Error(
+          'no finish button on screen — the walk consumed the corpus before the probe; seed the target deeper and re-run',
+        );
+      const clipDevice = '/sdcard/ag-gate-advance.mp4';
+      const clipHost = join(REPORT_DIR, 'finish-advance.mp4');
+      const rec = spawn('adb', [
+        '-s',
+        SERIAL,
+        'shell',
+        `screenrecord --time-limit 6 ${clipDevice}`,
+      ]);
+      await new Promise((r) => setTimeout(r, 1000));
+      shell(`input tap ${Math.round(finish.x)} ${Math.round(finish.y)}`);
+      await new Promise((resolve) => rec.on('close', resolve));
+      adb('pull', clipDevice, clipHost);
+      shell(`rm -f ${clipDevice}`);
+      // Only a deck-to-deck advance is measurable: landing on the cull
+      // list swaps the green finish button for the trash affordance, which
+      // would fail the green-presence read for a legitimate reason.
+      const after = dumpUi();
+      if (!findNode(after, /^\d+\/\d+$/))
+        throw new Error(
+          `the finish left review (corpus consumed) — clip saved to ${clipHost}; seed the target deeper and re-run so the probe measures a deck-to-deck advance`,
+        );
+      // Decode small (216 px wide) raw RGB frames and read two regions:
+      // the stage interior and the bottom control band. Thresholds were
+      // calibrated on emulator probe clips (2026-08-10): the dimmed
+      // (disabled) finish button still reads ~97% of the steady green
+      // count; a vanished control block reads ~0%.
+      const W = 216;
+      const [pw, ph] = execFileSync(
+        'ffprobe',
+        [
+          '-v',
+          'error',
+          '-select_streams',
+          'v:0',
+          '-show_entries',
+          'stream=width,height',
+          '-of',
+          'csv=p=0',
+          clipHost,
+        ],
+        { encoding: 'utf8' },
+      )
+        .trim()
+        .split(',')
+        .map(Number);
+      const H = Math.round((ph / pw) * W) & ~1;
+      const raw = execFileSync(
+        'ffmpeg',
+        [
+          '-v',
+          'error',
+          '-i',
+          clipHost,
+          '-vf',
+          `scale=${W}:${H}`,
+          '-f',
+          'rawvideo',
+          '-pix_fmt',
+          'rgb24',
+          '-',
+        ],
+        { maxBuffer: 1024 * 1024 * 1024 },
+      );
+      const frameBytes = W * H * 3;
+      const frames = Math.floor(raw.length / frameBytes);
+      if (frames < 3) throw new Error(`clip decoded to ${frames} frame(s) — recording failed`);
+      let minStageMax = 255;
+      let minGreen = Infinity;
+      let maxGreen = 0;
+      for (let f = 0; f < frames; f += 1) {
+        const base = f * frameBytes;
+        let stageMax = 0;
+        for (let y = Math.round(H * 0.18); y < Math.round(H * 0.52); y += 1)
+          for (let x = Math.round(W * 0.05); x < Math.round(W * 0.95); x += 1) {
+            const i = base + (y * W + x) * 3;
+            const v = Math.max(raw[i], raw[i + 1], raw[i + 2]);
+            if (v > stageMax) stageMax = v;
+          }
+        let green = 0;
+        for (let y = Math.round(H * 0.78); y < Math.round(H * 0.97); y += 1)
+          for (let x = 0; x < W; x += 1) {
+            const i = base + (y * W + x) * 3;
+            if (raw[i + 1] > 45 && raw[i + 1] > raw[i] * 1.35 && raw[i + 1] > raw[i + 2] * 1.35)
+              green += 1;
+          }
+        if (stageMax < minStageMax) minStageMax = stageMax;
+        if (green < minGreen) minGreen = green;
+        if (green > maxGreen) maxGreen = green;
+      }
+      if (maxGreen < 500)
+        throw new Error(
+          `no green control band found in any frame (max ${maxGreen}px) — inspect ${clipHost}`,
+        );
+      if (minGreen < maxGreen * 0.3)
+        throw new Error(
+          `controls vanished mid-advance: a frame held ${minGreen}px of keep-green vs ${maxGreen}px steady — inspect ${clipHost}`,
+        );
+      if (minStageMax < 60)
+        throw new Error(
+          `stage read as blank in at least one frame (max channel ${minStageMax}) — inspect ${clipHost} before trusting this: an all-black photo (pocket shot) inside the transition can trip this probe`,
+        );
+    },
+  );
+
   await dependentStep('back home: the badges tell both halves of the v18 rule', null, async () => {
     for (let i = 0; i < 4; i += 1) {
       if (findNode(dumpUi(), /^Daily goal/)) break;

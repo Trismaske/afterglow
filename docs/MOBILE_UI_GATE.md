@@ -74,6 +74,12 @@ Responsiveness budgets are wall-clock from the tap to the expected UI state appe
 The budgets are therefore deliberately coarse (1.5–3 s).
 They catch the stuck-busy class of regression (m0.8's multi-second "Saving…" under scan load), not frame-level latency.
 
+One step IS frame-level: the finish-advance transition probe (m0.8.5).
+It records the finish-button advance with `screenrecord`, decodes the clip to raw RGB via ffmpeg on the host (ffmpeg is a hard requirement of this step), and asserts per frame that the stage never reads blank and the control band never loses its keep-green button — the deck advances in place, and no frame may unmount the chrome.
+The clip lands in the report dir as `finish-advance.mp4` either way.
+A corpus too shallow to leave a next deck after the finish fails the step with a re-seed note rather than skipping silently.
+Caveat in a failure: an all-black photo (pocket shot) inside the transition can trip the blank-stage read — inspect the clip before acting on it.
+
 ## Target requirements
 
 - The **release** APK installed (`adb install -r apps/mobile/android/app/build/outputs/apk/release/app-release.apk`), with photo permission granted once by hand.

@@ -14,7 +14,8 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
 import { editorActions, type EditorAction } from '../../lib/progress';
-import { markDoneToEdit, markEditDone, unstageCullDirect } from '../../db/store';
+import { markDoneToEdit, markEditDone } from '../../db/store';
+import { useReview } from '../../review/ReviewContext';
 import { withUserWritePriority } from '../../lib/writePriority';
 import { dayKey, labelForDayKey } from '../../lib/dates';
 import { formatClockSeconds } from '../../lib/format';
@@ -55,6 +56,7 @@ export function StateEditorSheet({
   onChanged: () => void;
 }) {
   const db = useSQLiteContext();
+  const { unstageCull } = useReview();
   const { accent } = useTheme();
   const insets = useSafeAreaInsets();
   const [busy, setBusy] = useState(false);
@@ -64,31 +66,37 @@ export function StateEditorSheet({
       if (!photo || busy) return;
       setBusy(true);
       try {
-        // Every store call is state-guarded (`AND state = '…'`), so a
-        // stale sheet acting on an already-changed row is a no-op. User
-        // write priority: the scan yields instead of queueing this.
-        await withUserWritePriority(async () => {
-          if (action === 'complete_edit') {
-            await markEditDone(db, photo.id);
-          } else if (action === 'queue_edit') {
-            await markDoneToEdit(db, photo.id, Date.now());
-          } else {
-            // An explicit restore decision — it settles the copy prompt.
-            await unstageCullDirect(db, photo.id, Date.now(), true);
-          }
-        });
+        if (action === 'unstage_cull') {
+          // The one VERDICT action here goes through the provider, not
+          // the store: its write credits the goal by construction (A3 —
+          // a direct call was an uncounted culled → kept path, §10
+          // check 13's defect class), carries write priority, and
+          // surfaces failure through the provider's writeError alert.
+          await unstageCull(photo.id);
+        } else {
+          // The two edit-cycle actions are ACTION-layer store calls,
+          // state-guarded (`AND state = '…'`) so a stale sheet is a
+          // no-op. User write priority: the scan yields instead of
+          // queueing them.
+          await withUserWritePriority(async () => {
+            if (action === 'complete_edit') await markEditDone(db, photo.id);
+            else await markDoneToEdit(db, photo.id, Date.now());
+          });
+        }
         onChanged();
         onClose();
       } catch (error) {
-        // This path bypasses ReviewContext.write, so ITS alert is the
-        // only surface — the decision was NOT saved; the sheet stays
-        // open for a retry.
-        Alert.alert('Could not save', error instanceof Error ? error.message : String(error));
+        // The action-layer calls bypass ReviewContext.write, so this
+        // alert is their only surface; the provider already alerted for
+        // the unstage. Either way the decision was NOT saved and the
+        // sheet stays open for a retry.
+        if (action !== 'unstage_cull')
+          Alert.alert('Could not save', error instanceof Error ? error.message : String(error));
       } finally {
         setBusy(false);
       }
     },
-    [photo, busy, db, onChanged, onClose],
+    [photo, busy, db, unstageCull, onChanged, onClose],
   );
 
   if (!photo) return null;

@@ -452,7 +452,10 @@ export function HomeScreen({ navigation }: Props) {
                   // back to the edit queue — a true no-op from the
                   // user's view, so the copy prompt's question stays
                   // open (pending match kept) and the star the staging
-                  // cleared comes back.
+                  // cleared comes back. The returned fresh count is
+                  // deliberately ignored: the staging happened moments
+                  // earlier in this same flow, so the day rule yields 0
+                  // by construction — there is no goal credit to carry.
                   await unstageCullDirect(
                     db,
                     head.originalAssetId,

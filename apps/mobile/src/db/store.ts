@@ -3129,8 +3129,19 @@ export async function unstageCullDirect(
    * them (clearedStars lives only in memory). Best-effort per star: the
    * group must still exist with this photo as a present member. */
   restoreStars: readonly { groupId: number; photoId: string }[] = [],
-): Promise<void> {
+): Promise<ReviewDecisionResult> {
+  // The write moves decided_at into today, so it MUST report fresh work
+  // like every other verdict write (A3): the ring counts the row the
+  // moment it lands, and an uncredited path is a crossing that never
+  // fires (§10 check 13's defect class). The trash-rollback caller
+  // ignores the result deliberately — its staging happened moments
+  // earlier the same day, so the day rule yields 0 by construction.
+  const result: ReviewDecisionResult = { appliedIds: [], freshDecisions: 0 };
   await withWriteTransaction(db, async (txn) => {
+    const prior = await txn.getFirstAsync<{ decided_at: number | null }>(
+      'SELECT decided_at FROM photos WHERE asset_id = ?',
+      assetId,
+    );
     const moved = await txn.runAsync(
       `UPDATE photos
        SET state = 'kept',
@@ -3150,6 +3161,9 @@ export async function unstageCullDirect(
     // resolved copy match or a restored star for a transition that did
     // not happen is the same bug applyRedecision's guard prevents.
     if (Number(moved.changes) === 0) return;
+    result.appliedIds.push(assetId);
+    const stamp = prior?.decided_at ?? null;
+    if (stamp === null || dayKey(stamp) !== dayKey(at)) result.freshDecisions = 1;
     if (resolveCopyMatches) {
       await txn.runAsync(
         "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
@@ -3174,6 +3188,7 @@ export async function unstageCullDirect(
       );
     }
   });
+  return result;
 }
 
 export interface DaySummaryRow {

@@ -1543,13 +1543,13 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   const unstageCull = useCallback(
     (assetId: string) =>
       write(
-        async () => {
-          // Not-a-cull-after-all: the photo was reviewed, so it lands
-          // back on 'kept' and any queued edit rides along untouched (the
-          // layers are independent). An explicit restore decision
-          // resolves a pending copy match (C#12).
-          await unstageCullDirect(db, assetId, Date.now(), true);
-        },
+        // Not-a-cull-after-all: the photo was reviewed, so it lands
+        // back on 'kept' and any queued edit rides along untouched (the
+        // layers are independent). An explicit restore decision
+        // resolves a pending copy match (C#12). The result is RETURNED
+        // so write() credits the goal — a later-day rescue is fresh
+        // work (§10 check 13's defect class).
+        () => unstageCullDirect(db, assetId, Date.now(), true),
         { kind: 'unstage', assetId },
       ),
     [db, write],
@@ -1581,8 +1581,10 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           // State-aware: "keep" rescues a staged cull and says nothing
           // about its pending actions (the same culled -> kept meaning
           // unstageCullDirect has always had), while "to edit" restarts
-          // the edit cycle. Both resolve pending copy matches.
-          await applyRedecision(db, assetId, target, Date.now());
+          // the edit cycle. Both resolve pending copy matches. The
+          // result is RETURNED so write() credits the goal (§10 check
+          // 13: THIS was the cull-list sheet's uncounted path).
+          return applyRedecision(db, assetId, target, Date.now());
         },
         target === 'cull' ? { kind: 'restore', assetId } : { kind: 'redecide', assetId, target },
       ),

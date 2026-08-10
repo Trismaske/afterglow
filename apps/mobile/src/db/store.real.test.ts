@@ -238,6 +238,24 @@ describe("freshDecisions — the write counts the day's own work (m0.8.5, A3)", 
     expect(byDay.get(dayKey(AT))).toBe(1);
   });
 
+  it('counts an un-stage exactly like the redecision it mirrors', async () => {
+    // unstageCullDirect is the same culled → kept transition on another
+    // path (state editor, trash rollback) — it moves decided_at into
+    // today, so it must report the same fresh work or the ring and the
+    // celebration disagree.
+    const d = await fresh();
+    await seed(d, ['1', '2']);
+    const yesterday = AT - 86_400_000;
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], yesterday);
+    await applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 50);
+    const laterDay = await unstageCullDirect(asExpo(d), id('1'), AT, true);
+    expect(laterDay.freshDecisions).toBe(1);
+    expect(laterDay.appliedIds).toEqual([id('1')]);
+    const sameDay = await unstageCullDirect(asExpo(d), id('2'), AT + 100, true);
+    expect(sameDay.freshDecisions).toBe(0);
+    expect(sameDay.appliedIds).toEqual([id('2')]);
+  });
+
   it('does NOT count a same-day redecision, and counts a stale sheet not at all', async () => {
     const d = await fresh();
     await seed(d, ['1', '2']);

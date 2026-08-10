@@ -162,4 +162,33 @@ describe('pinchFrame', () => {
     ]);
     expect(tracking.live).toBe(true);
   });
+
+  it('never zooms on single-finger frames, even at a stable pointer count', () => {
+    // The measured S10e ratchet (§10 check 9, round 2): the platform
+    // detector's quick-scale reads walking fingers as a double tap and
+    // then reports CONTINUOUS scale changes with one finger down — no
+    // pointer-count change for the re-anchor rule to catch. Pointer
+    // counts below two re-anchor every frame instead.
+    const { scale } = play([
+      [1, 2],
+      [1.16, 2],
+      [2.32, 2],
+      [1.4, 1],
+      [2.8, 1],
+      [5.6, 1],
+    ]);
+    expect(scale).toBeCloseTo(8, 10);
+  });
+
+  it('cannot even ENGAGE from single-finger frames', () => {
+    // A gesture that was never a two-finger pinch must not become one
+    // through quick-scale's reported changes.
+    const { scale, tracking } = play([
+      [1, 1],
+      [1.5, 1],
+      [3, 1],
+    ]);
+    expect(scale).toBe(4);
+    expect(tracking.live).toBe(false);
+  });
 });

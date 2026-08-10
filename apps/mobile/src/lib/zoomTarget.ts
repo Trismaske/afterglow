@@ -60,15 +60,26 @@ export function pinchGain(rawScale: number, base: number): number {
 
 /**
  * Per-frame pinch tracking that survives FINGER CHANGES (m0.8.5 §10
- * check 9, S10e). The raw gesture scale is a ratio of finger distances,
- * so a finger landing or lifting mid-gesture swings it wildly with no
- * zoom intended — on device the viewport leapt across the photo. The
- * rule: a frame whose pointer count differs from the last frame's
- * RE-ANCHORS (the zoom holds still and the new finger set's distance
- * becomes the new base); a frame with a stable finger set zooms
- * relative to its anchor. Engagement (PINCH_ENGAGE_DELTA) is proven
- * once per gesture and then persists across finger changes, and the
- * engaging frame also re-anchors, keeping the no-jump rule above.
+ * check 9, S10e). Two rules, each killing a measured drift:
+ *
+ * 1. A frame whose pointer count differs from the last frame's
+ *    RE-ANCHORS (the zoom holds still and the new finger set's distance
+ *    becomes the new base) — finger distances from different finger
+ *    sets are not comparable.
+ * 2. A frame with FEWER THAN TWO pointers never zooms — it re-anchors
+ *    continuously. The platform detector under RNGH's pinch ships with
+ *    quick scale on (no off switch exposed): fingers walking across a
+ *    zoomed photo read as a double tap, and every ONE-finger drag after
+ *    that reports continuous scale changes (anchored mode) with no
+ *    pointer-count change for rule 1 to catch — on device the zoom
+ *    ratcheted with a single finger down. Single-finger zoom is never
+ *    legitimate here: both review surfaces own their double-tap
+ *    semantics outright.
+ *
+ * A frame with a stable two-plus-finger set zooms relative to its
+ * anchor. Engagement (PINCH_ENGAGE_DELTA) is proven once per gesture
+ * and then persists across finger changes, and the engaging frame also
+ * re-anchors, keeping the no-jump rule above.
  *
  * Pure and worklet-safe; the screens carry the tracking in one shared
  * value and reset it to PINCH_TRACKING_START on finalize.
@@ -100,9 +111,11 @@ export function pinchFrame(
   currentScale: number,
 ): { tracking: PinchTracking; scale: number | null } {
   'worklet';
-  if (pointers !== tracking.pointers) {
-    // The finger set changed: this distance is not comparable to the
-    // anchor's. Hold the zoom, measure everything after from here.
+  if (pointers !== tracking.pointers || pointers < 2) {
+    // The finger set changed (distances not comparable), or fewer than
+    // two fingers are down (any reported scale change is the platform
+    // detector's single-finger quick-scale, never a pinch). Hold the
+    // zoom, measure everything after from here.
     return {
       tracking: { pointers, base: raw, anchorScale: currentScale, live: tracking.live },
       scale: null,

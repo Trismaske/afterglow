@@ -755,12 +755,14 @@ export function CompareScreen({ navigation, route }: Props) {
           kind="edit"
           active={needsEdit(visible.id)}
           disabled={actionsDisabled}
+          dimmed={visibleCulled}
           onPress={() => void toggleNeedsEdit(visible.id).catch(() => {})}
         />
         <ActionChip
           kind="favourite"
           active={favourite}
           disabled={actionsDisabled}
+          dimmed={visibleCulled}
           onPress={() => void toggleFavourite(visible.id).catch(() => {})}
         />
         {/* Organize/Share write the queue tables DIRECTLY (no provider
@@ -775,6 +777,7 @@ export function CompareScreen({ navigation, route }: Props) {
           kind="organize"
           active={queuedFor(visible.id).organize}
           disabled={actionsDisabled}
+          dimmed={visibleCulled}
           onPress={() =>
             void (async () => {
               try {
@@ -799,6 +802,7 @@ export function CompareScreen({ navigation, route }: Props) {
           kind="share"
           active={queuedFor(visible.id).share}
           disabled={actionsDisabled}
+          dimmed={visibleCulled}
           onPress={() =>
             void (async () => {
               try {

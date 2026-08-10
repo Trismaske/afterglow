@@ -1111,11 +1111,13 @@ export function HomeScreen({ navigation }: Props) {
             // "🔥 N-day streak", and they count different things — the
             // goal streak counts DECISION days (work you did), this one
             // counts CAPTURE days that ended fully reviewed. Naming the
-            // unit is what tells them apart; "last N days" would not be
-            // true, since a stretch with no photos neither breaks the run
-            // nor extends it.
+            // unit is what tells them apart. "Days with photos" carries
+            // the load: a stretch with no photos neither breaks the run
+            // nor extends it, and a still-in-progress today is not yet a
+            // day with photos fully reviewed (coverageStreak skips it),
+            // so the recency claim stays true (§10 check 17 wording).
             <Text style={styles.streakText}>
-              📅 {coverageState.streak} days with photos fully reviewed in a row
+              📅 Most recent {coverageState.streak} days with photos fully reviewed
             </Text>
           )}
         </View>

@@ -1353,12 +1353,14 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
 
   const redecideDecided = useCallback(
     (assetId: string, target: 'keep' | 'to_edit') =>
-      write(
-        async () => {
-          await applyRedecision(db, assetId, target, Date.now());
-        },
-        { kind: 'redecide', assetId, target },
-      ),
+      // The result is RETURNED so write() credits the goal (§10 check
+      // 13): a staged cull rescued on a later day is fresh work, and
+      // this was the one verdict path that swallowed its result.
+      write(() => applyRedecision(db, assetId, target, Date.now()), {
+        kind: 'redecide',
+        assetId,
+        target,
+      }),
     [db, write],
   );
 

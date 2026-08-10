@@ -1323,14 +1323,28 @@ export async function getPhotoFacts(
  * Both resolve pending edited-copy matches (C#12: an explicit
  * keep/to-edit answers the copy prompt). Only decided states transition;
  * an unreviewed photo takes the normal verdict path instead.
+ *
+ * Returns the same ReviewDecisionResult contract as
+ * applyReviewDecisions, and for the same reason (m0.8.5, A3): both
+ * targets land on the verdict `kept`, so a re-decide made on a later
+ * day than the original decision is fresh goal work — rescuing
+ * yesterday's staged cull counts today (§10 check 13 found this path
+ * returning nothing, so the ring never moved).
  */
 export async function applyRedecision(
   db: SQLiteDatabase,
   assetId: string,
   target: 'keep' | 'to_edit',
   at: number,
-): Promise<void> {
+): Promise<ReviewDecisionResult> {
+  const result: ReviewDecisionResult = { appliedIds: [], freshDecisions: 0 };
   await withWriteTransaction(db, async (txn) => {
+    // The prior stamp is read BEFORE the update writes decided_at = at —
+    // the freshness rule compares the day of the decision being replaced.
+    const prior = await txn.getFirstAsync<{ decided_at: number | null }>(
+      'SELECT decided_at FROM photos WHERE asset_id = ?',
+      assetId,
+    );
     if (target === 'keep') {
       // The detection baseline (mod_time/content_hash) is NOT touched:
       // keep carries a queued edit across (header above), and the
@@ -1384,7 +1398,13 @@ export async function applyRedecision(
       "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
       assetId,
     );
+    result.appliedIds.push(assetId);
+    // Same rule as applyReviewDecisions: a row already stamped today is
+    // already inside the number the goal ring shows.
+    const stamp = prior?.decided_at ?? null;
+    if (stamp === null || dayKey(stamp) !== dayKey(at)) result.freshDecisions = 1;
   });
+  return result;
 }
 
 /** Star/unstar a group's best (NULL clears; FK enforces membership). A

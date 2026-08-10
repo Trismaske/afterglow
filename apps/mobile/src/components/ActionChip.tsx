@@ -58,18 +58,29 @@ export function ActionChip({
   kind,
   active,
   disabled = false,
+  dimmed = false,
   onPress,
 }: {
   kind: ActionChipKind;
   /** The action is WAITING on the current photo — chip lights up. */
   active: boolean;
   disabled?: boolean;
+  /** The offer is WITHDRAWN (staged cull): render the chip visibly
+   * inert. Deliberately separate from `disabled`, which also covers the
+   * transient write lock (`busy`) — tying the look to that would dim
+   * every chip for the length of every write, the "fading for a write
+   * it had nothing to do with" defect (S23 pass 2026-08-04). */
+  dimmed?: boolean;
   onPress: () => void;
 }) {
   const meta = META[kind];
   return (
     <Pressable
-      style={[styles.chip, active && { backgroundColor: meta.dim, borderColor: meta.color }]}
+      style={[
+        styles.chip,
+        active && { backgroundColor: meta.dim, borderColor: meta.color },
+        dimmed && styles.chipDimmed,
+      ]}
       disabled={disabled}
       onPress={onPress}
     >
@@ -98,4 +109,5 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   text: { color: colors.textDim, fontSize: 13, fontWeight: '700' },
+  chipDimmed: { opacity: 0.4 },
 });

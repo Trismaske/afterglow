@@ -222,6 +222,36 @@ describe("freshDecisions — the write counts the day's own work (m0.8.5, A3)", 
     const byDay = await getReviewedCountsByDay(asExpo(d), dayStart);
     expect(first.freshDecisions + second.freshDecisions).toBe(byDay.get(dayKey(AT)) ?? 0);
   });
+
+  it('counts a redecision rescuing an EARLIER day’s staged cull (§10 check 13)', async () => {
+    // The cull-list sheet's keep is a verdict write like any other: the
+    // photo's row moves into today's bucket, so it is fresh goal work.
+    // This path used to return nothing, so the ring never moved.
+    const d = await fresh();
+    await seed(d, ['1']);
+    const yesterday = AT - 86_400_000;
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], yesterday);
+    const rescued = await applyRedecision(asExpo(d), id('1'), 'keep', AT);
+    expect(rescued.freshDecisions).toBe(1);
+    expect(rescued.appliedIds).toEqual([id('1')]);
+    const byDay = await getReviewedCountsByDay(asExpo(d), rangeOfDayKey(dayKey(AT)).startMs);
+    expect(byDay.get(dayKey(AT))).toBe(1);
+  });
+
+  it('does NOT count a same-day redecision, and counts a stale sheet not at all', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 100);
+    const sameDay = await applyRedecision(asExpo(d), id('1'), 'to_edit', AT + 200);
+    expect(sameDay.freshDecisions).toBe(0);
+    expect(sameDay.appliedIds).toEqual([id('1')]);
+    // id('2') is still unreviewed: the guard refuses the verdict, and
+    // the result must say so instead of crediting a write that did not
+    // happen.
+    const stale = await applyRedecision(asExpo(d), id('2'), 'keep', AT + 300);
+    expect(stale.appliedIds).toEqual([]);
+    expect(stale.freshDecisions).toBe(0);
+  });
 });
 
 describe('applyReviewDecisions (decision 2)', () => {

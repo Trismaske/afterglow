@@ -1515,24 +1515,28 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
               kind="edit"
               active={flagged}
               disabled={busy || currentState === 'culled'}
+              dimmed={currentState === 'culled'}
               onPress={() => void run(() => decideCurrent('to_edit'))}
             />
             <ActionChip
               kind="favourite"
               active={favourite}
               disabled={busy || currentState === 'culled'}
+              dimmed={currentState === 'culled'}
               onPress={() => void run(() => toggleFavourite(current.id))}
             />
             <ActionChip
               kind="organize"
               active={organizeQueued}
               disabled={busy || currentState === 'culled'}
+              dimmed={currentState === 'culled'}
               onPress={() => void run(toggleOrganize)}
             />
             <ActionChip
               kind="share"
               active={shareQueued}
               disabled={busy || currentState === 'culled'}
+              dimmed={currentState === 'culled'}
               onPress={() => void run(toggleShare)}
             />
             {!singlesMode && groupId && (
@@ -1540,6 +1544,9 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                 style={[
                   styles.secondaryButton,
                   isBest && { backgroundColor: theme.accentMuted, borderColor: theme.accent },
+                  // Same staged-cull rule as the chips (§10 check 19),
+                  // same look; busy stays out of the visual on purpose.
+                  currentState === 'culled' && styles.controlDimmed,
                 ]}
                 // Only a staged cull is barred from Best (cull-star
                 // hygiene) — a completed group's kept members stay
@@ -1620,24 +1627,28 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
               kind="edit"
               active={flagged}
               disabled={busy || currentState === 'culled'}
+              dimmed={currentState === 'culled'}
               onPress={() => void run(() => toggleNeedsEdit(current.id))}
             />
             <ActionChip
               kind="favourite"
               active={favourite}
               disabled={busy || currentState === 'culled'}
+              dimmed={currentState === 'culled'}
               onPress={() => void run(() => toggleFavourite(current.id))}
             />
             <ActionChip
               kind="organize"
               active={organizeQueued}
               disabled={busy || currentState === 'culled'}
+              dimmed={currentState === 'culled'}
               onPress={() => void run(toggleOrganize)}
             />
             <ActionChip
               kind="share"
               active={shareQueued}
               disabled={busy || currentState === 'culled'}
+              dimmed={currentState === 'culled'}
               onPress={() => void run(toggleShare)}
             />
           </View>
@@ -1648,6 +1659,9 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                 style={[
                   styles.secondaryButton,
                   isBest && { backgroundColor: theme.accentMuted, borderColor: theme.accent },
+                  // Same staged-cull rule as the chips (§10 check 19),
+                  // same look; busy stays out of the visual on purpose.
+                  currentState === 'culled' && styles.controlDimmed,
                 ]}
                 // A staged cull is not ALIVE — un-cull it before starring.
                 disabled={busy || currentState === 'culled'}
@@ -1866,6 +1880,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 6,
   },
+  // ActionChip's chipDimmed, for the deck-owned Best control.
+  controlDimmed: { opacity: 0.4 },
   secondaryText: { color: colors.textDim, fontSize: 13, fontWeight: '700' },
   thumbBadges: {
     position: 'absolute',

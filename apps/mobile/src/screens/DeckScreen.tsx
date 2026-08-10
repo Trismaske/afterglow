@@ -26,6 +26,7 @@ import Animated, {
   useAnimatedProps,
   useAnimatedStyle,
   useSharedValue,
+  withDecay,
   withTiming,
 } from 'react-native-reanimated';
 import { useIsFocused } from '@react-navigation/native';
@@ -657,15 +658,39 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     minPointers: 1,
     maxPointers: 2,
     averageTouches: true,
+    onBegin: () => {
+      // A finger landing mid-decay claims the photo wherever the decay
+      // carried it — without this the next translation would snap back
+      // to the pre-decay position.
+      savedTx.value = tx.value;
+      savedTy.value = ty.value;
+    },
     onUpdate: (event) => {
       if (scale.value <= 1) return;
       const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
       tx.value = clampPan(savedTx.value + event.translationX, bounds.maxX);
       ty.value = clampPan(savedTy.value + event.translationY, bounds.maxY);
     },
-    onDeactivate: () => {
+    onDeactivate: (event) => {
       savedTx.value = tx.value;
       savedTy.value = ty.value;
+      if (scale.value <= 1) return;
+      // The release keeps the flick's momentum (§10 check 9 round 3 —
+      // the standard gallery feel), decaying inside the same pan
+      // bounds the drag was clamped to.
+      const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
+      tx.value = withDecay(
+        { velocity: event.velocityX, clamp: [-bounds.maxX, bounds.maxX] },
+        () => {
+          savedTx.value = tx.value;
+        },
+      );
+      ty.value = withDecay(
+        { velocity: event.velocityY, clamp: [-bounds.maxY, bounds.maxY] },
+        () => {
+          savedTy.value = ty.value;
+        },
+      );
     },
   });
   // m0.7 (#18): double-tap resets zoom. The timing animation carries
@@ -1093,11 +1118,24 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     [pageW, cursor, holding],
   );
 
+  /** A jumpTo's animated scroll is in flight. While set, the live
+   * pager index ignores scroll events: jumpTo already pointed the
+   * highlight at its destination, and the animation's intermediate
+   * offsets would round back to the OLD page first — on device the
+   * highlight visibly flip-flopped on every decide-advance (§10 check
+   * 8, round 2). Cleared on arrival, or the moment a finger interrupts
+   * the animation (the drag is live user intent again). */
+  const pagerAnimatingRef = useRef(false);
   /** Display-only live index for the strip (see `pagerIndex`). */
   const onPagerScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       if (!pageW || holding) return;
-      const index = Math.round(event.nativeEvent.contentOffset.x / pageW);
+      const offset = event.nativeEvent.contentOffset.x;
+      if (pagerAnimatingRef.current) {
+        if (Math.abs(offset - pagerTargetRef.current) >= 1) return; // still travelling
+        pagerAnimatingRef.current = false;
+      }
+      const index = Math.round(offset / pageW);
       setPagerIndex((previous) => (previous === index ? previous : index));
     },
     [pageW, holding],
@@ -1108,6 +1146,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       if (!pageW) return;
       setBrowseCursor(index);
       setPagerIndex(index);
+      pagerAnimatingRef.current = true;
       pagerTargetRef.current = index * pageW;
       listRef.current?.scrollToOffset({ offset: index * pageW, animated: true });
     },
@@ -1497,6 +1536,9 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                     })}
                     onScroll={onPagerScroll}
                     scrollEventThrottle={32}
+                    onScrollBeginDrag={() => {
+                      pagerAnimatingRef.current = false;
+                    }}
                     onMomentumScrollEnd={onMomentumEnd}
                   />
                 </View>

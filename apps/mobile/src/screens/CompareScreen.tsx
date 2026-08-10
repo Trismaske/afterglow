@@ -10,7 +10,12 @@ import {
   useSimultaneousGestures,
   VirtualGestureDetector,
 } from 'react-native-gesture-handler';
-import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withDecay,
+  withTiming,
+} from 'react-native-reanimated';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { useReview } from '../review/ReviewContext';
@@ -387,6 +392,12 @@ export function CompareScreen({ navigation, route }: Props) {
     minPointers: 1,
     maxPointers: 2,
     averageTouches: true,
+    onBegin: () => {
+      // A finger landing mid-decay claims the photo wherever the decay
+      // carried it (DeckScreen carries the same rule).
+      savedTx.value = tx.value;
+      savedTy.value = ty.value;
+    },
     onUpdate: (event) => {
       if (scale.value <= 1) return;
       const maxX = (stageW.value * (scale.value - 1)) / 2;
@@ -394,9 +405,21 @@ export function CompareScreen({ navigation, route }: Props) {
       tx.value = clamp(savedTx.value + event.translationX, maxX);
       ty.value = clamp(savedTy.value + event.translationY, maxY);
     },
-    onDeactivate: () => {
+    onDeactivate: (event) => {
       savedTx.value = tx.value;
       savedTy.value = ty.value;
+      if (scale.value <= 1) return;
+      // The release keeps the flick's momentum — the standard gallery
+      // feel (m0.8.5 §10 check 9 round 3), inside the same bounds the
+      // drag was clamped to.
+      const maxX = (stageW.value * (scale.value - 1)) / 2;
+      const maxY = (stageH.value * (scale.value - 1)) / 2;
+      tx.value = withDecay({ velocity: event.velocityX, clamp: [-maxX, maxX] }, () => {
+        savedTx.value = tx.value;
+      });
+      ty.value = withDecay({ velocity: event.velocityY, clamp: [-maxY, maxY] }, () => {
+        savedTy.value = ty.value;
+      });
     },
   });
 

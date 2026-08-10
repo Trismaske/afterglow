@@ -38,6 +38,7 @@ import Animated, {
   useAnimatedProps,
   useAnimatedStyle,
   useSharedValue,
+  withDecay,
   withTiming,
 } from 'react-native-reanimated';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -231,15 +232,37 @@ export function PhotoViewer({
     minPointers: 1,
     maxPointers: 2,
     averageTouches: true,
+    onBegin: () => {
+      // A finger landing mid-decay claims the photo wherever the decay
+      // carried it (DeckScreen carries the same rule).
+      savedTx.value = tx.value;
+      savedTy.value = ty.value;
+    },
     onUpdate: (event) => {
       if (scale.value <= 1) return;
       const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
       tx.value = clampPan(savedTx.value + event.translationX, bounds.maxX);
       ty.value = clampPan(savedTy.value + event.translationY, bounds.maxY);
     },
-    onDeactivate: () => {
+    onDeactivate: (event) => {
       savedTx.value = tx.value;
       savedTy.value = ty.value;
+      if (scale.value <= 1) return;
+      // The release keeps the flick's momentum — the standard gallery
+      // feel (m0.8.5 §10 check 9 round 3), inside the same pan bounds.
+      const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
+      tx.value = withDecay(
+        { velocity: event.velocityX, clamp: [-bounds.maxX, bounds.maxX] },
+        () => {
+          savedTx.value = tx.value;
+        },
+      );
+      ty.value = withDecay(
+        { velocity: event.velocityY, clamp: [-bounds.maxY, bounds.maxY] },
+        () => {
+          savedTy.value = ty.value;
+        },
+      );
     },
   });
   // Double-tap resets zoom; the timing animation carries scale back to

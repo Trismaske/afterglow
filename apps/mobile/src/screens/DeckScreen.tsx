@@ -1174,13 +1174,32 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     listRef.current?.scrollToOffset({ offset, animated: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deckKey, pageW, cursor, holding, unitKey]);
+  /** The settle's END re-asserts the pager's position and highlight
+   * exactly once — the final snap. Whatever a stale delivery or native
+   * quirk did during the window (scroll was disabled, so nothing
+   * legitimate could), the unit leaves its settle standing on the
+   * cursor with badge, strip and stage in agreement. */
+  const wasSettlingRef = useRef(false);
+  useEffect(() => {
+    const was = wasSettlingRef.current;
+    wasSettlingRef.current = pagerSettling;
+    if (!was || pagerSettling || holding || !pageW) return; // fire on true → false only
+    const offset = cursor * pageW;
+    pagerTargetRef.current = offset;
+    listRef.current?.scrollToOffset({ offset, animated: false });
+    setPagerIndex(cursor);
+  }, [pagerSettling, holding, pageW, cursor]);
 
   const onMomentumEnd = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       if (!pageW) return;
       // A swipe on the FROZEN deck (rows still loading) must not write
-      // the new unit's cursor from the old unit's pages.
-      if (holding) return;
+      // the new unit's cursor from the old unit's pages — and neither
+      // may a SETTLING one: scroll is disabled for the whole settle
+      // window, so any event arriving then is a stale delivery from the
+      // dying list (native → JS latency outlives the unmount; caught on
+      // the S10e as a strip highlight pointing one photo ahead).
+      if (holding || pagerSettling) return;
       const index = Math.round(event.nativeEvent.contentOffset.x / pageW);
       // The ref mirrors where the list PHYSICALLY is, swipes included —
       // it held only COMMANDED offsets, so a manual swipe before a
@@ -1192,7 +1211,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       pagerTargetRef.current = index * pageW;
       if (index !== cursor) setBrowseCursor(index);
     },
-    [pageW, cursor, holding],
+    [pageW, cursor, holding, pagerSettling],
   );
 
   /** A jumpTo's animated scroll is in flight. While set, the live
@@ -1203,10 +1222,13 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
    * 8, round 2). Cleared on arrival, or the moment a finger interrupts
    * the animation (the drag is live user intent again). */
   const pagerAnimatingRef = useRef(false);
-  /** Display-only live index for the strip (see `pagerIndex`). */
+  /** Display-only live index for the strip (see `pagerIndex`). Settling
+   * events are stale deliveries from the dying list (see onMomentumEnd)
+   * — accepted, they parked the strip highlight one photo ahead of the
+   * badge and the stage (Tristan's S10e repro, caught by screenshot). */
   const onPagerScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      if (!pageW || holding) return;
+      if (!pageW || holding || pagerSettling) return;
       const offset = event.nativeEvent.contentOffset.x;
       if (pagerAnimatingRef.current) {
         if (Math.abs(offset - pagerTargetRef.current) >= 1) return; // still travelling
@@ -1215,7 +1237,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       const index = Math.round(offset / pageW);
       setPagerIndex((previous) => (previous === index ? previous : index));
     },
-    [pageW, holding],
+    [pageW, holding, pagerSettling],
   );
 
   const jumpTo = useCallback(

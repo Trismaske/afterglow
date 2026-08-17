@@ -17,7 +17,7 @@ A fix aimed at the wrong cause passes review and fails on the phone.
 | | Release | What it is | Items |
 |---|---|---|---|
 | **m0.8.5** | the review loop | **SHIPPED 2026-08-17** — F1 F3 F4 F5 F6 F7 F13 F17 plus the accent pass; behavior recorded in PLAN.md's shipped entry | — |
-| **m0.8.6** | the browsing surfaces | Going back to look at something: Timeline, Progress, History, and editing a photo's state from any of them | F2 F8 F9 F16 · TODO "rescued-date scope", "tombstone rows", the star/Compare knot · zoom: the two-thumb walking pan stutters on every finger change (m0.8.5 device pass, parked — momentum covers most of its use; the fix is porting react-native-zoom-toolkit's touch-position pinch/pan math into the worklets — it cannot be adopted wholesale: host `GestureDetector` + `runOnJS`, both forbidden here) · deck: a singles finish flashes the browse control row for one frame before the advance (`finishing`'s escape clause fires while the post-write rows are still stale — emulator probe; the human pass reads it as fine, so it rides with the browse-swap unify) |
+| **m0.8.6** | the browsing surfaces | Going back to look at something: Timeline, Progress, History, and editing a photo's state from any of them | F2 F8 F9 F16 · N1 (a changed decision advances) N2 (the finish button dims on every write) · TODO "rescued-date scope", "tombstone rows", the star/Compare knot · zoom: the two-thumb walking pan stutters on every finger change (m0.8.5 device pass, parked — momentum covers most of its use; the fix is porting react-native-zoom-toolkit's touch-position pinch/pan math into the worklets — it cannot be adopted wholesale: host `GestureDetector` + `runOnJS`, both forbidden here) · deck: a singles finish flashes the browse control row for one frame before the advance (`finishing`'s escape clause fires while the post-write rows are still stale — emulator probe; the human pass reads it as fine, so it rides with the browse-swap unify) |
 | **m0.8.7** | sources, badges, and the queues | Where photos come from, what they wear, and the four queue screens behaving alike | F10 F11 F12 F14 F15 F18 F19 F20 · TODO "action-layer coherence", "type-scale and token pass" · [Errors_design.md](Errors_design.md) |
 
 Each release is one subsystem, so each gets one device pass and one review cycle rather than three overlapping ones.
@@ -44,6 +44,21 @@ m0.9 (Videos) is unchanged and follows.
 
 Going back to look at something you already reviewed.
 One query family (Timeline, Progress grids, History), one editing sheet over all three, and the star knot that sits in the middle of them.
+Plus the post-ship deck notes below (Tristan, 2026-08-17, on shipped m0.8.5) — small, deck-scoped, and riding with the browse-swap unify this release already carries.
+
+### N1 · A changed decision advances; an undone one stays
+
+**Reported:** re-deciding a photo the OTHER way (kept → culled, or culled → kept) leaves the pager sitting on it, same as an undo.
+Wanted: an undo (tapping the active verdict, back to unreviewed) stays — current behaviour, keep it — but a CHANGE advances exactly like a fresh unreviewed → decided verdict does.
+**Read:** `decideCurrent` advances only when the photo `wasUnreviewed` ([DeckScreen.tsx](../apps/mobile/src/screens/DeckScreen.tsx), the m0.8.2 F10 rule "re-deciding stays put — the user is looking at that one").
+The rule needs a third case, not a flip: unreviewed → decided advances, decided → cleared stays, decided → the opposite verdict advances.
+
+### N2 · The finish button dims on every write
+
+**Reported:** the big *Keep remaining* button still flickers whenever any decision is made or any action chip is tapped.
+**Read:** its `disabled` includes the screen-wide `busy`, and BigButton's disabled LOOK follows it — so every chip or verdict write dims the finish button for the write's duration.
+This is the same class the action chips were fixed for in m0.8.5 (`dimmed` split from `disabled`): the S23 pass owner-scoped the *label* (`busyOwner`), but the dim was left on the shared lock.
+Fix: the look tracks durable state (its own `finish` writes, an empty remainder); `busy` keeps blocking presses invisibly.
 
 ### F2 · The review overview hides fully reviewed units
 

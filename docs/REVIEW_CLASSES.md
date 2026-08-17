@@ -206,3 +206,12 @@ Spend part of any cycle's budget on device runs, because static review has never
     A consume-once flag armed for a receiver that unmounts or blurs before consuming does not disappear — it fires stale on whatever claims it next, hours later.
     Every producer→consumer flag needs an owner for the abandoned case: the last receiver leaving either consumes it, degrades it (a toast), or clears it.
     Registration scope matters too: scope receivers to MOUNT when a covering screen must not count as departure, and keep consuming scoped to focus.
+51. **Physical native state reconciled by accounting.**
+    A reused native view (a scroll list, a text input, a video surface) carries state React cannot observe: offsets, in-flight momentum, animations, IME composition.
+    Reconciling it against React state through events and imperative commands breeds a patch per timing gap — an event that never fires when a tap cuts momentum short, a corrective command that an in-flight animation outlives, bookkeeping that only tracks commands and goes stale on real gestures.
+    When the identity changes (a new unit in the same screen), do not reconcile: REMOUNT the native view (key it by the identity) so the physical state dies with the old one, and create the replacement already in the safe state (scroll disabled, selection cleared) rather than commanding it safe one frame later.
+    Three consecutive bookkeeping fixes failed on-device before the keyed remount ended the class.
+52. **A guard armed by an effect, one paint late.**
+    Anything that must be true ON the frame a transition commits (a disabled control, a suppressed event handler, an overlay) cannot be armed by an effect — effects run after paint, and the unguarded frame is exactly the one the race hits.
+    Derive the guard from state that already changed in the committing render (compare identities: `settledUnit !== unitKey`), and use effects only to LIFT it later.
+    The same class hides in event handlers: a handler that checks a flag an effect sets accepts every event delivered before the effect ran — including stale deliveries from an unmounted native view, whose events outlive it by a few frames.

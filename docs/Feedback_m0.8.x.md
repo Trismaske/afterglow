@@ -232,6 +232,7 @@ Reproduce, then make the loading state the DEFAULT rather than a state entered o
 
 **Reported:** the source picker says *Use this source* when several are selected ([SourcePickerScreen.tsx:432](../apps/mobile/src/screens/SourcePickerScreen.tsx#L432)) — audit the app for every other place a count makes the copy wrong.
 **Fix.** One pass over user-visible strings for count agreement, sweeping the whole class rather than the one instance.
+Known member (Tristan, 2026-08-17, shipped m0.8.5): Home's Keeping-up streak reads "Most recent 1 days with photos fully reviewed" — "days" stays plural at 1.
 Two known members are fixed in their own releases where the surrounding work already opens the file: F3's scanning state (m0.8.5) and F16's *Sheet opened* chip (m0.8.6).
 This audit must re-check both rather than assume them.
 Empty-state grammar has three phrasings today (the type-scale promotion below).

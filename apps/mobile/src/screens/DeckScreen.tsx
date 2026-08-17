@@ -1111,6 +1111,15 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
    * without this it would re-issue the same scroll unanimated and snap
    * the motion jumpTo had just started. */
   const pagerTargetRef = useRef(-1);
+  /** The unit the pager was last aligned FOR (grilling Q3, S10e). A new
+   * unit's first alignment is UNCONDITIONAL: the offset dedup below
+   * cannot be trusted across a unit boundary, because a swipe whose
+   * momentum a quick finish tap cut short moves the native list without
+   * any event ever updating the bookkeeping — the successor then opened
+   * showing the swiped-to page while every control pointed at its first
+   * pending photo. Within a unit the dedup stays (it is what keeps this
+   * effect from snapping jumpTo's animation). */
+  const alignedUnitRef = useRef<string | null>(null);
   // Keep the pager aligned with the cursor whenever the deck's membership
   // changes (cull/undo/make-single/re-decide) or a new unit starts.
   //
@@ -1121,19 +1130,21 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   // the new unit's first photo — a tap would then decide a photo other
   // than the one on screen. A swipe also lands here now, where the
   // scroll target is the offset the list already settled on, so it is a
-  // no-op rather than a fight.
+  // no-op rather than a fight. `holding` is one too: while the view is
+  // frozen the list still shows the PREVIOUS unit, so aligning it to the
+  // successor's cursor would visibly scroll the frozen photo — the
+  // unhold render re-runs this with the swapped data.
   const deckKey = `${singlesMode ? 'singles' : (groupId ?? '')}:${browse ? 'b' : 'r'}:${deckItems.map((i) => i.id).join(',')}`;
   useEffect(() => {
-    if (!pageW || deckItems.length === 0) return;
+    if (!pageW || deckItems.length === 0 || holding) return;
     const offset = cursor * pageW;
-    // The ref holds a physical OFFSET, so an equal one means the list is
-    // already where this unit wants it — including across a unit change,
-    // where the new first-pending index can land on the same page.
-    if (pagerTargetRef.current === offset) return;
+    const unitChanged = alignedUnitRef.current !== unitKey;
+    if (!unitChanged && pagerTargetRef.current === offset) return;
+    alignedUnitRef.current = unitKey;
     pagerTargetRef.current = offset;
     listRef.current?.scrollToOffset({ offset, animated: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deckKey, pageW, cursor]);
+  }, [deckKey, pageW, cursor, holding, unitKey]);
 
   const onMomentumEnd = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {

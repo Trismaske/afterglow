@@ -539,6 +539,27 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
    * stamped values; only the render reads the frozen view.
    */
   const holding = !current || (!singlesMode && (!groupId || !info)) || cursorAppliedFor !== unitKey;
+  /**
+   * A fresh unit's pager ignores swipes for its first moments (grilling
+   * Q3, Tristan's rule): a newly loaded unit opens on its first pending
+   * photo REGARDLESS of last-minute swipes. The keyed remount already
+   * discards everything aimed at the outgoing list; this covers the one
+   * remaining path — a finish-adjacent swipe landing AFTER the new list
+   * is live and paging it. DERIVED, not effect-armed: an effect arms one
+   * paint too late, and the emulator probe caught an in-flight gesture
+   * grabbing the new list in exactly that frame. As a comparison this is
+   * true on the swap render itself, so the fresh native list is CREATED
+   * with its scroll disabled; the timer below only lifts it. 400 ms sits
+   * under human see-then-react time, so a deliberate swipe on the new
+   * unit still feels instant.
+   */
+  const [settledUnit, setSettledUnit] = useState<string | null>(null);
+  useEffect(() => {
+    if (holding || settledUnit === unitKey) return;
+    const timer = setTimeout(() => setSettledUnit(unitKey), 400);
+    return () => clearTimeout(timer);
+  }, [holding, settledUnit, unitKey]);
+  const pagerSettling = !holding && settledUnit !== unitKey;
 
   // Millisecond precision only where adjacent deck photos share a second
   // AND the timestamps carry sub-second data (m0.4).
@@ -1592,11 +1613,10 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                     pagingEnabled
                     // A FROZEN deck is fully inert (codex device-pass
                     // round): a swipe would move the native offset while
-                    // every guard ignores it, and the alignment effect
-                    // can then skip its correcting scroll (equal cached
-                    // target) — controls acting on a photo that is not
-                    // the one on screen.
-                    scrollEnabled={!inert}
+                    // every guard ignores it. A JUST-SWAPPED deck also
+                    // ignores swipes for its settle window — see
+                    // `pagerSettling`.
+                    scrollEnabled={!inert && !pagerSettling}
                     showsHorizontalScrollIndicator={false}
                     initialScrollIndex={Math.min(view.cursor, view.items.length - 1)}
                     getItemLayout={(_data, index) => ({

@@ -510,6 +510,14 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   // DB has no cursor; a decision shrinks the alive deck and the cursor
   // clamps to the next photo).
   const [browseCursor, setBrowseCursor] = useState(0);
+  /** The unit whose first-pending cursor has been applied (the effect
+   * below the strip refs). STATE, not a ref (codex round 2): `holding`
+   * reads it — rows landing do not end the hold until the successor's
+   * OWN cursor is in place, or one committed render would show the
+   * successor at the OUTGOING unit's cursor before snapping to
+   * first-pending. State also guarantees the unhold render even when
+   * the cursor value itself does not change. */
+  const [cursorAppliedFor, setCursorAppliedFor] = useState<string | null>(null);
   const cursor = Math.min(browseCursor, Math.max(0, deckItems.length - 1));
   const current: MediaItem | null = deckItems[cursor] ?? null;
   /**
@@ -522,7 +530,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
    * goal barrier held. Logic below this line must keep reading the LIVE
    * stamped values; only the render reads the frozen view.
    */
-  const holding = !current || (!singlesMode && (!groupId || !info));
+  const holding = !current || (!singlesMode && (!groupId || !info)) || cursorAppliedFor !== unitKey;
 
   // Millisecond precision only where adjacent deck photos share a second
   // AND the timestamps carry sub-second data (m0.4).
@@ -799,16 +807,15 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   // half-finished run or group re-entered from the overview lands on the
   // work, not on a decided photo at index 0. Applied once per unit, when
   // its rows are actually there (the singles fetch is async).
-  const cursorAppliedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (cursorAppliedRef.current === unitKey) return;
+    if (cursorAppliedFor === unitKey) return;
     if (singlesMode ? !singlesReady : !group) return;
-    cursorAppliedRef.current = unitKey;
     const firstPending = deckItems.findIndex(
       (i) => (stateOf.get(i.id) ?? 'unreviewed') === 'unreviewed',
     );
     setBrowseCursor(firstPending > 0 ? firstPending : 0);
-  }, [unitKey, singlesMode, singlesReady, group, deckItems, stateOf]);
+    setCursorAppliedFor(unitKey);
+  }, [unitKey, cursorAppliedFor, singlesMode, singlesReady, group, deckItems, stateOf]);
   // The thumbnail strip's live geometry. Refs, not state: these change
   // on every scroll frame and nothing renders from them.
   const stripRef = useRef<ScrollView>(null);

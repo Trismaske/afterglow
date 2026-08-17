@@ -839,11 +839,23 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
         throw new Error(
           'no pressable finish button on screen — the walk consumed the corpus before the probe; seed the target deeper and re-run',
         );
+      // Fail closed on a DISABLED finish (a write in flight): the tap
+      // would no-op and the clip would show steady chrome.
+      if (!finish.enabled)
+        throw new Error('the finish button is disabled (a write is in flight) — probe aborted');
       // The unit's header line names the advance: it MUST read differently
-      // once the finish lands (fewer groups/singles left, or another kind).
+      // once the finish lands (fewer groups/singles left, or another
+      // kind). MANDATORY (codex round 2): without this anchor the probe
+      // cannot prove a transition happened, so its absence is a failure,
+      // not a skipped assertion.
       const headerBefore = findNode(before, /^(Group|Singles) · /);
+      if (!headerBefore)
+        throw new Error('no deck header line in the pre-tap dump — probe cannot prove an advance');
       const clipDevice = '/sdcard/ag-gate-advance.mp4';
       const clipHost = join(REPORT_DIR, 'finish-advance.mp4');
+      // A clip left by an interrupted earlier run must never be analyzed
+      // as this run's (codex round 2): clear the device path first.
+      shell(`rm -f ${clipDevice}`);
       const rec = spawn('adb', [
         '-s',
         SERIAL,
@@ -871,7 +883,11 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
       });
       await new Promise((r) => setTimeout(r, 1000));
       shell(`input tap ${Math.round(finish.x)} ${Math.round(finish.y)}`);
-      await recDone;
+      const recCode = await recDone;
+      // A recorder that died produced no clip for THIS run — pulling
+      // would analyze nothing (or fail confusingly at the pull).
+      if (recCode !== 0)
+        throw new Error(`screenrecord exited with code ${recCode} — no clip for this run`);
       adb('pull', clipDevice, clipHost);
       shell(`rm -f ${clipDevice}`);
       // Only a deck-to-deck advance is measurable: landing on the cull
@@ -884,9 +900,14 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
         );
       // Prove the advance actually happened: a missed or refused tap
       // leaves the same unit on screen, and the pixel checks below would
-      // inspect steady chrome and pass vacuously.
+      // inspect steady chrome and pass vacuously. Both anchors are
+      // MANDATORY — an unreadable header proves nothing (codex round 2).
       const headerAfter = findNode(after, /^(Group|Singles) · /);
-      if (headerBefore && headerAfter && headerAfter.text === headerBefore.text)
+      if (!headerAfter)
+        throw new Error(
+          `no deck header line in the post-tap dump — probe cannot prove an advance; clip saved to ${clipHost}`,
+        );
+      if (headerAfter.text === headerBefore.text)
         throw new Error(
           `the deck header still reads "${headerBefore.text}" — the finish tap did not advance the unit; clip saved to ${clipHost}`,
         );

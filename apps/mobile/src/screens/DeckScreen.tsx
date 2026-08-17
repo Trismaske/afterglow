@@ -1142,6 +1142,14 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       // the new unit's cursor from the old unit's pages.
       if (holding) return;
       const index = Math.round(event.nativeEvent.contentOffset.x / pageW);
+      // The ref mirrors where the list PHYSICALLY is, swipes included —
+      // it held only COMMANDED offsets, so a manual swipe before a
+      // finish left it stale, the alignment effect then skipped its
+      // correcting scroll for a successor whose cursor offset matched
+      // the stale value, and the new unit opened showing its second
+      // photo while every control pointed at its first (Tristan, S10e
+      // 2026-08-11 — the frozen-swipe desync's live-swipe twin).
+      pagerTargetRef.current = index * pageW;
       if (index !== cursor) setBrowseCursor(index);
     },
     [pageW, cursor, holding],

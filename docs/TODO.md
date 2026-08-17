@@ -96,7 +96,13 @@ Numbers change whenever an item closes, so **cross-references from code or other
    - where the original zone surfaces (viewer decision panel vs deck header)
    - what an offset-less photo shows: the honest answer may be "no claim" rather than a guess
 
-8. **One timestamp per decision write, carried into the goal note** (codex, m0.8.5 device-pass review).
+8. **Goal notes do not survive process death** (codex, m0.8.5 device-pass review round 3).
+   Every `noteDecisions` call is in-memory and post-commit: a process killed between a verdict's commit and its note evaluating loses the note, on every verdict path.
+   The sharpest instance is the edited-copy trash flow, where Android's consent dialog sits between the staging commit and Home's note — a kill there leaves the row in today's ring while the celebration baseline later initializes at-or-past the goal, so that day's crossing never fires.
+   Damage is bounded: the ring (durable) stays correct, and the miss self-heals at the next day boundary.
+   A durable fix means persisting un-noted credits and replaying them from startup recovery — its own design pass.
+
+9. **One timestamp per decision write, carried into the goal note** (codex, m0.8.5 device-pass review).
    Every verdict path samples `Date.now()` twice: once for the write's `decided_at` (freshness judged against that day) and again inside `noteDecisions` (the note's day, captured synchronously at the call).
    A transaction that spans local midnight can therefore compute freshness against the old day while the note evaluates against the new one.
    The damage is bounded: the window is one sub-second transaction at exactly midnight, `noteDecisions` already drops notes whose chain runs on a later day than their call, and the per-day cache re-reads on the next note.

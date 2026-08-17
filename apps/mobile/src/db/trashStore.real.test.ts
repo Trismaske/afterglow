@@ -412,6 +412,48 @@ describe('prepareTrashBatch stageToEditMembers (edited-copy cull)', () => {
     expect(actionsOf(d, 'e1')).toEqual({ edit: 'applied' });
   });
 
+  it('reports fresh goal work under the once-per-day rule (codex round 3)', async () => {
+    // The staging is a verdict write that moves decided_at into the
+    // day of `at` — it must report fresh work exactly like
+    // applyReviewDecisions, or the ring moves without the celebration
+    // counter (the m0.8.5 uncredited-path defect class). Unreviewed and
+    // earlier-day rows count; a row already stamped in `at`'s day does
+    // not.
+    const d = await fresh();
+    insertPhoto(d, 'never', 'unreviewed');
+    attach(d, 'never', 'edit', 'queued');
+    insertPhoto(d, 'earlier', 'kept');
+    attach(d, 'earlier', 'edit', 'queued');
+    d.raw
+      .prepare('UPDATE photos SET decided_at = ? WHERE asset_id = ?')
+      .run(AT - 86_400_000, 'earlier');
+    insertPhoto(d, 'sameDay', 'kept');
+    attach(d, 'sameDay', 'edit', 'queued');
+    d.raw.prepare('UPDATE photos SET decided_at = ? WHERE asset_id = ?').run(AT - 1000, 'sameDay');
+    const batch = await prepareTrashBatch(
+      asExpo(d),
+      [
+        { photoId: 'never', measuredBytes: 1 },
+        { photoId: 'earlier', measuredBytes: 1 },
+        { photoId: 'sameDay', measuredBytes: 1 },
+      ],
+      AT,
+      { stageToEditMembers: true },
+    );
+    expect(batch!.members).toHaveLength(3);
+    expect(batch!.freshDecisions).toBe(2);
+  });
+
+  it('reserving already-staged culls reports no fresh work', async () => {
+    // Without stageToEditMembers nothing decides — the reservation must
+    // never count toward the goal.
+    const d = await fresh();
+    insertCull(d, 'c1');
+    const batch = await prepareTrashBatch(asExpo(d), [{ photoId: 'c1', measuredBytes: 1 }], AT);
+    expect(batch!.members).toHaveLength(1);
+    expect(batch!.freshDecisions).toBe(0);
+  });
+
   it('a stale prompt whose original left the edit queue stages nothing', async () => {
     const d = await fresh();
     insertPhoto(d, 'e1', 'kept'); // the edit was completed and unqueued

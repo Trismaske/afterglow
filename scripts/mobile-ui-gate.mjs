@@ -956,17 +956,24 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
       const frameBytes = W * H * 3;
       const frames = Math.floor(raw.length / frameBytes);
       if (frames < 3) throw new Error(`clip decoded to ${frames} frame(s) — recording failed`);
-      let minStageMax = 255;
+      // Blank = too FEW lit pixels, not a dark maximum (codex round 3):
+      // a single bright badge pixel or compression artifact must not
+      // pass an otherwise-empty stage. 0.5% clears a thin moon crescent
+      // (~2% lit on the emulator corpus) while any real photo clears it
+      // by orders of magnitude.
+      let stagePixels = 0;
+      let minStageLitFrac = 1;
       let minGreen = Infinity;
       let maxGreen = 0;
       for (let f = 0; f < frames; f += 1) {
         const base = f * frameBytes;
-        let stageMax = 0;
+        let stageLit = 0;
+        stagePixels = 0;
         for (let y = Math.round(H * 0.18); y < Math.round(H * 0.52); y += 1)
           for (let x = Math.round(W * 0.05); x < Math.round(W * 0.95); x += 1) {
             const i = base + (y * W + x) * 3;
-            const v = Math.max(raw[i], raw[i + 1], raw[i + 2]);
-            if (v > stageMax) stageMax = v;
+            stagePixels += 1;
+            if (Math.max(raw[i], raw[i + 1], raw[i + 2]) >= 60) stageLit += 1;
           }
         let green = 0;
         for (let y = Math.round(H * 0.78); y < Math.round(H * 0.97); y += 1)
@@ -975,7 +982,8 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
             if (raw[i + 1] > 45 && raw[i + 1] > raw[i] * 1.35 && raw[i + 1] > raw[i + 2] * 1.35)
               green += 1;
           }
-        if (stageMax < minStageMax) minStageMax = stageMax;
+        const litFrac = stageLit / stagePixels;
+        if (litFrac < minStageLitFrac) minStageLitFrac = litFrac;
         if (green < minGreen) minGreen = green;
         if (green > maxGreen) maxGreen = green;
       }
@@ -987,9 +995,9 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
         throw new Error(
           `controls vanished mid-advance: a frame held ${minGreen}px of keep-green vs ${maxGreen}px steady — inspect ${clipHost}`,
         );
-      if (minStageMax < 60)
+      if (minStageLitFrac < 0.005)
         throw new Error(
-          `stage read as blank in at least one frame (max channel ${minStageMax}) — inspect ${clipHost} before trusting this: an all-black photo (pocket shot) inside the transition can trip this probe`,
+          `stage read as blank in at least one frame (${(minStageLitFrac * 100).toFixed(2)}% lit) — inspect ${clipHost} before trusting this: an all-black photo (pocket shot) inside the transition can trip this probe`,
         );
     },
   );

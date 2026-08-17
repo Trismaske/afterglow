@@ -546,6 +546,11 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   // lib/zoomTarget PINCH_ENGAGE_DELTA): these carry that decision, and
   // the raw scale it was made at, across the gesture's frames.
   const pinchTracking = useSharedValue(PINCH_TRACKING_START);
+  /** This touch stream actually CHANGED the zoom — its release is a
+   * pinch ending, not a flick, so the pan decay stays out of it (round
+   * 5: a pinch release inherited the pan's velocity and flung the
+   * photo). Cleared when the next touch stream begins. */
+  const pinchZoomed = useSharedValue(false);
 
   const resetZoom = useCallback(() => {
     scale.value = 1;
@@ -613,6 +618,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       );
       pinchTracking.value = step.tracking;
       if (step.scale === null) return;
+      pinchZoomed.value = true;
       scale.value = Math.min(MAX_SCALE, Math.max(1, step.scale));
       const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
       tx.value = clampPan(tx.value, bounds.maxX);
@@ -664,6 +670,9 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       // to the pre-decay position.
       savedTx.value = tx.value;
       savedTy.value = ty.value;
+      // A fresh touch stream: whether it turns into a pinch is decided
+      // by the frames ahead of it.
+      pinchZoomed.value = false;
     },
     onUpdate: (event) => {
       if (scale.value <= 1) return;
@@ -675,6 +684,9 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       savedTx.value = tx.value;
       savedTy.value = ty.value;
       if (scale.value <= 1) return;
+      // A stream that ZOOMED ends as a pinch, not a flick — momentum
+      // out of it flung the photo on every two-finger zoom (round 5).
+      if (pinchZoomed.value) return;
       // The release keeps the flick's momentum (§10 check 9 round 3 —
       // the standard gallery feel), decaying inside the same pan
       // bounds the drag was clamped to.

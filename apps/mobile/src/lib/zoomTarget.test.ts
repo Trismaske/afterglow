@@ -140,27 +140,37 @@ describe('pinchFrame', () => {
   });
 
   it('resumes zooming from where a finger change left the photo', () => {
-    // Zoom to 8×, lose a finger, regain it, then open to double again:
-    // the second stretch must build on 8×, not on the original 4×, and
-    // needs no re-engagement — the pinch already proved itself.
+    // Zoom to 8×, lose a finger, regain it, re-prove the pinch (each
+    // stretch engages on its own), then open to double: the resumed
+    // pinch builds on 8×, not on the original 4×.
     const { scale } = play([
       [1, 2],
       [1.16, 2],
       [2.32, 2],
       [1.4, 1],
       [0.9, 2],
-      [1.8, 2],
+      [1.8, 2], // 2× past the new anchor — re-engages, no jump
+      [3.6, 2], // 2× past the ENGAGED anchor — now it zooms
     ]);
     expect(scale).toBeCloseTo(16, 10);
   });
 
-  it('keeps a proven pinch live across finger changes', () => {
-    const { tracking } = play([
+  it('a finger change ENDS the engagement — the next stretch re-proves it', () => {
+    // The round-3 drift: with engagement persisting, a finger-walk's
+    // two-finger overlap windows still zoomed (their span genuinely
+    // changes while the hand travels). Every stretch starts as pan
+    // noise now.
+    const { scale, tracking } = play([
       [1, 2],
-      [2, 2],
-      [1.1, 1],
+      [1.16, 2],
+      [2.32, 2], // proven pinch, 8×
+      [1.4, 1], // finger lifts — engagement ends
+      [0.9, 2], // finger relands: an overlap window opens
+      [0.95, 2], // the hand travels; span wobbles under the threshold
+      [0.85, 2],
     ]);
-    expect(tracking.live).toBe(true);
+    expect(tracking.live).toBe(false);
+    expect(scale).toBeCloseTo(8, 10);
   });
 
   it('never zooms on single-finger frames, even at a stable pointer count', () => {

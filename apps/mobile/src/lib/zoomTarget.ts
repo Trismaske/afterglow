@@ -77,9 +77,14 @@ export function pinchGain(rawScale: number, base: number): number {
  *    semantics outright.
  *
  * A frame with a stable two-plus-finger set zooms relative to its
- * anchor. Engagement (PINCH_ENGAGE_DELTA) is proven once per gesture
- * and then persists across finger changes, and the engaging frame also
- * re-anchors, keeping the no-jump rule above.
+ * anchor. Engagement (PINCH_ENGAGE_DELTA) belongs to ONE CONTIGUOUS
+ * two-finger stretch: a finger change ends it, and the next stretch
+ * must re-prove the threshold from its own anchor (S10e round 3 — with
+ * engagement persisting, the two-finger overlap windows of a
+ * finger-walk still zoomed, because their span genuinely changes while
+ * the hand travels; span alone cannot tell that overlap from a pinch,
+ * so every stretch is treated as pan noise until it proves itself).
+ * The engaging frame also re-anchors, keeping the no-jump rule above.
  *
  * Pure and worklet-safe; the screens carry the tracking in one shared
  * value and reset it to PINCH_TRACKING_START on finalize.
@@ -115,9 +120,11 @@ export function pinchFrame(
     // The finger set changed (distances not comparable), or fewer than
     // two fingers are down (any reported scale change is the platform
     // detector's single-finger quick-scale, never a pinch). Hold the
-    // zoom, measure everything after from here.
+    // zoom, measure everything after from here — and END the
+    // engagement: the new finger set is pan noise until it proves
+    // itself (header, contiguous-stretch rule).
     return {
-      tracking: { pointers, base: raw, anchorScale: currentScale, live: tracking.live },
+      tracking: { pointers, base: raw, anchorScale: currentScale, live: false },
       scale: null,
     };
   }

@@ -213,6 +213,14 @@ export function DeckScreen({ navigation, route }: DeckProps) {
  * they are stable id-keyed maps, valid for frozen ids too.
  */
 interface DeckView {
+  /** The unit this view belongs to — it KEYS the pager, so a unit
+   * change remounts the native list. That is the structural fix for
+   * every cross-unit scroll desync (grilling Q3): a reused native
+   * scroll view carries offsets, momentum and in-flight animations that
+   * no event reliably reports, and reconciling them bred patch after
+   * patch. A fresh list is born directly on its unit's first pending
+   * photo and stale physical state dies with the old list. */
+  unitKey: string;
   items: MediaItem[];
   cursor: number;
   current: MediaItem;
@@ -1391,6 +1399,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     holding || current === null
       ? null
       : {
+          unitKey,
           items: deckItems,
           cursor,
           current,
@@ -1569,6 +1578,12 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                     />
                   )}
                   <FlatList
+                    // Keyed by the DISPLAYED unit: a unit change swaps in
+                    // a fresh native list at its own first pending photo
+                    // (initialScrollIndex), and the outgoing list's
+                    // offsets, momentum and in-flight animations are
+                    // discarded with it — see DeckView.unitKey.
+                    key={view.unitKey}
                     ref={listRef}
                     data={view.items}
                     keyExtractor={(i) => i.id}

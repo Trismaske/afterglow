@@ -91,7 +91,7 @@ The screen file's header is the contract.
 
 - **Home**: goal ring + streaks, the forecast-headline Progress row, day sections, scan status, unreachable-volume banners.
 - **Groups**: the review overview, the merged timeline of unit cards.
-- **Deck** (`DeckScreen.tsx`): ONE unified deck over groups and day-scoped singles runs, on ONE route. The unit is state and advances in place (m0.8.5, L4) — never remount it per unit.
+- **Deck** (`DeckScreen.tsx`): ONE unified deck over groups and day-scoped singles runs, on ONE route. The unit is state and advances in place (m0.8.5, L4) — the SCREEN and its chrome never remount per unit, while the pager FlatList is deliberately keyed per unit: a reused native scroll view carries offsets and momentum no event reliably reports, and discarding it with the unit is what keeps the stage, badge and controls in agreement.
 - **Compare**: A/B flip with synchronized zoom. Whole-table duels decide, all others triage.
 - **CullList**: the durable global cull queue. Confirm loops the trash-attempt lifecycle.
 - **EditQueue / FavouritesQueue / ShareQueue / OrganizeQueue**: the four action queues (the M5 rule governs bulk writes).

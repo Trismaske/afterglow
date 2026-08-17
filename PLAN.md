@@ -246,8 +246,8 @@ afterglow/
 ## Release roadmap
 
 Two trains.
-v0.1–v0.5 and m0.1–m0.8.4 have shipped.
-Next up: the desktop RAW pipeline (v0.6) and mobile m0.8.5.
+v0.1–v0.5 and m0.1–m0.8.5 have shipped.
+Next up: the desktop RAW pipeline (v0.6) and mobile m0.8.6.
 
 ### Desktop train
 
@@ -409,20 +409,23 @@ Auto-update (electron-updater) lands here too.
   And the acceptance round deleted the app-side organize allow-list (`ORGANIZE_ROOTS`): Android is the only authority on move targets, while the album picker filters to DCIM/Pictures so it stops offering albums Android will refuse.
   727 tests in 47 files.
   Device matrix: S23 (API 36), S10e (API 31), and an API 30 emulator, plus a proven install refusal on API 29.
+- **m0.8.5** — the review loop.
+  **One deck.** Groups and day-scoped singles runs review on one route; the unit is state and advances in place.
+  The chrome (header, strip, controls) never remounts; while the next unit's rows load, the deck renders a frozen view of the previous unit with every control inert, and a decode underlay covers image latency — no blank frame, no control flicker, and the goal moment can play over the unit that earned it.
+  The pager FlatList is deliberately keyed per unit: a fresh native list is born scroll-disabled on its unit's first pending photo, and the old list's offsets, momentum and in-flight animations die with it, so the stage, position badge and strip highlight can never disagree.
+  A newly loaded unit opens on its first pending photo regardless of last-minute swipes (a 400 ms settle window swallows finish-adjacent gestures and stale scroll events).
+  **The goal moment.** Every verdict write credits the day's goal itself (`ReviewDecisionResult.freshDecisions`, the once-per-day rule: a photo counts once per `decided_at` day, matching the ring exactly) — the deck, Compare, re-decides, un-stagings, and the edited-copy cull prompt alike.
+  The celebration marker stores day AND goal, so raising the goal past today's count re-arms the moment; lowering never does.
+  Review surfaces host the moment while mounted, the focused one draws it, a crossing with no host says so in a toast, and the deck holds a completed unit until the moment finishes.
+  **Feel.** The thumbnail strip follows the photo live; a pan flick keeps its momentum (decayed within pan bounds; a stream that zoomed never flings); a pinch is one contiguous two-finger stretch (finger changes re-anchor and re-prove, single-finger quick-scale can never zoom); "Saving…" appears only when a write actually runs long.
+  **Truthful surfaces.** Progress displays are keep-green throughout with completeness carried by geometry (the accent means interaction only — STATE_MODEL rule 3 now has one deliberate exception, the best star); milestone bars take the hue of what they count; a running scan never claims "All reviewed"; the deck's time badge names its capture day from `photos.day` (undated photos say "Unknown day"); the coverage streak reads "Most recent N days with photos fully reviewed"; action chips and the Best control visibly dim on a staged cull on every surface.
+  Built through six device-pass rounds and two closing grillings (28 vetted decisions), a three-round three-reviewer codex cycle (14 findings fixed, 2 parked in docs/TODO.md with evidence), and a UI gate that gained its first frame-level measured step: the finish advance is screenrecorded and pixel-checked for blank stages and vanished controls.
+  783 tests.
 
 **The m0.8.x feedback line (next).**
-Twenty tester items from the 2026-07-31 round, organised into three subsystem-aligned releases so each gets one device pass and one review cycle.
-Items, evidence, and the eight settled decisions: [docs/Feedback_m0.8.x.md](docs/Feedback_m0.8.x.md).
+The remaining tester items from the 2026-07-31 round, organised into subsystem-aligned releases so each gets one device pass and one review cycle.
+Items, evidence, and the settled decisions: [docs/Feedback_m0.8.x.md](docs/Feedback_m0.8.x.md).
 
-- **m0.8.5 — the review loop.**
-  The deck stops remounting per unit (one screen, unit as state).
-  So "Keep remaining" no longer flickers, the strip follows the photo you are on, and the goal moment holds long enough to see.
-  Raising the goal past today re-arms the celebration.
-  A running scan stops claiming "All reviewed".
-  The clear streak stops reading like the goal streak.
-  The deck's time badge names its day (from `photos.day`, so an undated photo says so).
-  Compare greys the action chips on a staged cull.
-  Carries the accent pass: six measured sites where a user-chosen colour holds a fixed meaning.
 - **m0.8.6 — the browsing surfaces.**
   The review overview becomes the full **Timeline**: every group and singles run, newest-first and paged, with filters that peel back to today's pending view.
   A photo's whole state becomes editable from Progress and History (one verdict, every action, refusing only what genuinely cannot be undone).

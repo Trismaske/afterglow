@@ -35,6 +35,7 @@ import {
   VirtualGestureDetector,
 } from 'react-native-gesture-handler';
 import Animated, {
+  cancelAnimation,
   useAnimatedProps,
   useAnimatedStyle,
   useSharedValue,
@@ -240,6 +241,11 @@ export function PhotoViewer({
     onBegin: () => {
       // A finger landing mid-decay claims the photo wherever the decay
       // carried it (DeckScreen carries the same rule).
+      // The decay itself must STOP here (codex device-pass round):
+      // left running it keeps moving the photo under the finger, and
+      // the first pan update then snaps back to this snapshot.
+      cancelAnimation(tx);
+      cancelAnimation(ty);
       savedTx.value = tx.value;
       savedTy.value = ty.value;
       // A fresh touch stream: whether it turns into a pinch is decided

@@ -3085,7 +3085,12 @@ export async function restoreCarriedCull(
   assetId: string,
   at: number,
   resolvePendingMatches = true,
-): Promise<void> {
+): Promise<boolean> {
+  // True when the restore actually landed — callers gate their
+  // optimistic patches on it (a guarded no-op must stay a no-op in the
+  // cached snapshot too, codex device-pass round). No fresh-work count:
+  // unreviewed carries no decided_at, so the ring cannot move.
+  let applied = false;
   await withWriteTransaction(db, async (txn) => {
     const moved = await txn.runAsync(
       // Same rule as the verdict path: a LIVE edit cycle keeps its
@@ -3103,6 +3108,7 @@ export async function restoreCarriedCull(
     // not happen would silently consume the edited-copy prompt (the
     // same rule applyRedecision pins).
     if (Number(moved.changes) === 0) return;
+    applied = true;
     if (resolvePendingMatches) {
       await txn.runAsync(
         "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
@@ -3110,6 +3116,7 @@ export async function restoreCarriedCull(
       );
     }
   });
+  return applied;
 }
 
 export async function unstageCullDirect(

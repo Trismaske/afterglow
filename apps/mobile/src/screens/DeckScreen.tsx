@@ -23,6 +23,7 @@ import {
   VirtualGestureDetector,
 } from 'react-native-gesture-handler';
 import Animated, {
+  cancelAnimation,
   useAnimatedProps,
   useAnimatedStyle,
   useSharedValue,
@@ -668,6 +669,11 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       // A finger landing mid-decay claims the photo wherever the decay
       // carried it — without this the next translation would snap back
       // to the pre-decay position.
+      // The decay itself must STOP here (codex device-pass round):
+      // left running it keeps moving the photo under the finger, and
+      // the first pan update then snaps back to this snapshot.
+      cancelAnimation(tx);
+      cancelAnimation(ty);
       savedTx.value = tx.value;
       savedTy.value = ty.value;
       // A fresh touch stream: whether it turns into a pinch is decided
@@ -846,21 +852,6 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     // deckItems is a dependency because a cull or an undo changes the
     // content width under a cursor that did not move.
   }, [pagerIndex, holding, deckItems, stripMeasured]);
-  /** The photo the stage last showed. It backs the pager's underlay:
-   * while a freshly-swapped page's Image still decodes, the previous
-   * photo shows through instead of a blank stage (§10 check 3 — decode
-   * latency was visible on the S10e even with the chrome mounted). */
-  const lastPhotoRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (current) lastPhotoRef.current = current.uri;
-  }, [current]);
-  /** The last LOADED render's view — what the body draws while the next
-   * unit's rows load (see `holding`). */
-  const heldViewRef = useRef<DeckView | null>(null);
-  // The zoom overlay shows the CURRENT photo — leave zoom when it changes.
-  useEffect(() => {
-    resetZoom();
-  }, [currentId, resetZoom]);
   /**
    * Which PAGE Images have painted (their own onLoad — the zoom
    * overlay's would not do: it is a separate Image instance, and hiding
@@ -869,12 +860,31 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
    * previous photo until the current page's own paint has landed
    * (§10 check 3). A set, not a single id: neighbor pages preload, and
    * a page already painted must not re-summon the underlay when swiped
-   * back to. `decodedTick` is only the render trigger for the frame
-   * where the CURRENT page lands.
+   * back to. `decodedTick` re-renders the frame where the CURRENT page
+   * lands, and re-runs the lastPhotoRef capture below.
    */
   const loadedPagesRef = useRef<Set<string>>(new Set());
-  const [, setDecodedTick] = useState(0);
+  const [decodedTick, setDecodedTick] = useState(0);
   const currentIdRef = useRef<string | null>(null);
+  /** The photo the stage last actually PAINTED. It backs the pager's
+   * underlay: while a freshly-swapped page's Image still decodes, the
+   * previous photo shows through instead of a blank stage (§10 check 3
+   * — decode latency was visible on the S10e even with the chrome
+   * mounted). Only PAINTED uris are captured (codex device-pass round):
+   * capturing live `current` advanced the underlay to the incoming,
+   * still-decoding uri whenever an unrelated render landed mid-decode,
+   * reopening the blank window this exists to close. */
+  const lastPhotoRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (current && loadedPagesRef.current.has(current.id)) lastPhotoRef.current = current.uri;
+  }, [current, decodedTick]);
+  /** The last LOADED render's view — what the body draws while the next
+   * unit's rows load (see `holding`). */
+  const heldViewRef = useRef<DeckView | null>(null);
+  // The zoom overlay shows the CURRENT photo — leave zoom when it changes.
+  useEffect(() => {
+    resetZoom();
+  }, [currentId, resetZoom]);
 
   // Linear flow follows the timeline's first unit. Explicitly opening an
   // ALREADY completed group still permits browse/re-decide mode.
@@ -1539,6 +1549,13 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                     renderItem={renderPage}
                     horizontal
                     pagingEnabled
+                    // A FROZEN deck is fully inert (codex device-pass
+                    // round): a swipe would move the native offset while
+                    // every guard ignores it, and the alignment effect
+                    // can then skip its correcting scroll (equal cached
+                    // target) — controls acting on a photo that is not
+                    // the one on screen.
+                    scrollEnabled={!inert}
                     showsHorizontalScrollIndicator={false}
                     initialScrollIndex={Math.min(view.cursor, view.items.length - 1)}
                     getItemLayout={(_data, index) => ({

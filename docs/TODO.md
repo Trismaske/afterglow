@@ -96,6 +96,12 @@ Numbers change whenever an item closes, so **cross-references from code or other
    - where the original zone surfaces (viewer decision panel vs deck header)
    - what an offset-less photo shows: the honest answer may be "no claim" rather than a guess
 
+8. **One timestamp per decision write, carried into the goal note** (codex, m0.8.5 device-pass review).
+   Every verdict path samples `Date.now()` twice: once for the write's `decided_at` (freshness judged against that day) and again inside `noteDecisions` (the note's day, captured synchronously at the call).
+   A transaction that spans local midnight can therefore compute freshness against the old day while the note evaluates against the new one.
+   The damage is bounded: the window is one sub-second transaction at exactly midnight, `noteDecisions` already drops notes whose chain runs on a later day than their call, and the per-day cache re-reads on the next note.
+   The fix is systemic, not local — `ReviewDecisionResult` carrying its `at`, and `noteDecisions` taking it — and touches every verdict wrapper, so it wants its own small pass rather than a release-tail patch.
+
    **ARW is dated by file mtime, not EXIF** (measured 2026-07-30, S23 / API 36, controlled push experiment).
    The same value reproduces on an API 30 emulator and the S10e / API 31, so it is not version-specific.
    MediaStore never reads a Sony ARW's `DateTimeOriginal`:

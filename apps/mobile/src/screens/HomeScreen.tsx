@@ -112,6 +112,7 @@ export function HomeScreen({ navigation }: Props) {
   // recreate (and cancel mid-run) every time a scan-driven refresh mints
   // a new context object.
   const reviewRefresh = review.refresh;
+  const noteDecisions = review.noteDecisions;
   const [permission, requestPermission] = MediaLibrary.usePermissions({
     granularPermissions: ['photo'],
   });
@@ -429,6 +430,13 @@ export function HomeScreen({ navigation }: Props) {
                   [{ photoId: head.originalAssetId, measuredBytes: fileSize(photo?.uri ?? '') }],
                   { stageToEditMembers: true },
                 );
+                // The staging is a VERDICT written outside the provider,
+                // and the ring counts it the moment it lands (codex
+                // device-pass round) — credit the goal here whatever the
+                // dialog then decides. Ring-consistent through every
+                // outcome: a cancel restores kept (the row stays in
+                // today's bucket) and a trashed row keeps its decided_at.
+                noteDecisions(attempt.freshDecisions);
                 if (attempt.trashedIds.includes(head.originalAssetId)) {
                   // The verified removal already resolved the durable
                   // match (applyRemovalCleanup, C#12); durable rows are
@@ -452,11 +460,12 @@ export function HomeScreen({ navigation }: Props) {
                   // back to the edit queue — a true no-op from the
                   // user's view, so the copy prompt's question stays
                   // open (pending match kept) and the star the staging
-                  // cleared comes back. The returned fresh count is
-                  // deliberately ignored: the staging happened moments
-                  // earlier in this same flow, so the day rule yields 0
-                  // by construction — there is no goal credit to carry.
-                  await unstageCullDirect(
+                  // cleared comes back. The rollback's fresh count is 0
+                  // in the same-day case (the staging just stamped
+                  // today), but a consent dialog left open across local
+                  // midnight re-stamps the row into the NEW day — route
+                  // whatever the write reports (codex device-pass round).
+                  const rollback = await unstageCullDirect(
                     db,
                     head.originalAssetId,
                     Date.now(),
@@ -466,6 +475,7 @@ export function HomeScreen({ navigation }: Props) {
                     // (clearedStars lives only in memory).
                     attempt.clearedStars.filter((star) => star.photoId === head.originalAssetId),
                   );
+                  noteDecisions(rollback.freshDecisions);
                   await reviewRefresh().catch(() => {});
                   if (attempt.status === 'unsupported') {
                     Alert.alert(
@@ -519,7 +529,7 @@ export function HomeScreen({ navigation }: Props) {
         ],
       );
     },
-    [db, reviewRefresh],
+    [db, reviewRefresh, noteDecisions],
   );
 
   // m0.3 edit detection — app open / return to Home, throttled.

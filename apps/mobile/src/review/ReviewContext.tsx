@@ -286,10 +286,13 @@ interface ReviewContextValue {
    */
   confirmStagedCulls: () => Promise<ConfirmResult>;
   /** F14 (amended by Tristan): fresh decisions landed — bump today's
-   * counter and arm the once-per-day goal moment at the CROSSING. Every
-   * review surface that writes verdicts calls this (deck AND Compare)
-   * with the count of photos that just left `unreviewed`, so the moment
-   * fires wherever the crossing actually happens. */
+   * counter and arm the once-per-day goal moment at the CROSSING.
+   * Exported ONLY for the one surface that writes verdicts outside the
+   * provider (Home's edited-copy trash lifecycle stages culls in the
+   * trash batch's own transaction — codex device-pass round). Every
+   * provider write credits itself from its returned result (A3); a new
+   * surface goes through write(), never through this. */
+  noteDecisions: (freshDecisions: number) => void;
   /** Register as a surface that can DRAW the goal moment; call the
    * returned function on unfocus. With no host registered a crossing
    * says so with a toast instead of arming an overlay nothing will
@@ -1352,15 +1355,22 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   );
 
   const redecideDecided = useCallback(
-    (assetId: string, target: 'keep' | 'to_edit') =>
+    (assetId: string, target: 'keep' | 'to_edit') => {
       // The result is RETURNED so write() credits the goal (§10 check
       // 13): a staged cull rescued on a later day is fresh work, and
-      // this was the one verdict path that swallowed its result.
-      write(() => applyRedecision(db, assetId, target, Date.now()), {
-        kind: 'redecide',
-        assetId,
-        target,
-      }),
+      // this was the one verdict path that swallowed its result. The
+      // patch is result-gated for the same reason keepRest's is: a
+      // stale sheet's guarded no-op must stay a no-op in the cached
+      // snapshot too (codex device-pass round).
+      const outcome: { result: ReviewDecisionResult | null } = { result: null };
+      return write(
+        async () => (outcome.result = await applyRedecision(db, assetId, target, Date.now())),
+        () =>
+          outcome.result && outcome.result.appliedIds.length > 0
+            ? { kind: 'redecide', assetId, target }
+            : null,
+      );
+    },
     [db, write],
   );
 
@@ -1541,41 +1551,53 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   }, [refresh]);
 
   const unstageCull = useCallback(
-    (assetId: string) =>
-      write(
-        // Not-a-cull-after-all: the photo was reviewed, so it lands
-        // back on 'kept' and any queued edit rides along untouched (the
-        // layers are independent). An explicit restore decision
-        // resolves a pending copy match (C#12). The result is RETURNED
-        // so write() credits the goal — a later-day rescue is fresh
-        // work (§10 check 13's defect class).
-        () => unstageCullDirect(db, assetId, Date.now(), true),
-        { kind: 'unstage', assetId },
-      ),
+    (assetId: string) => {
+      // Not-a-cull-after-all: the photo was reviewed, so it lands
+      // back on 'kept' and any queued edit rides along untouched (the
+      // layers are independent). An explicit restore decision
+      // resolves a pending copy match (C#12). The result is RETURNED
+      // so write() credits the goal — a later-day rescue is fresh
+      // work (§10 check 13's defect class) — and gates the patch (a
+      // guarded no-op must stay a no-op in the cached snapshot).
+      const outcome: { result: ReviewDecisionResult | null } = { result: null };
+      return write(
+        async () => (outcome.result = await unstageCullDirect(db, assetId, Date.now(), true)),
+        () =>
+          outcome.result && outcome.result.appliedIds.length > 0
+            ? { kind: 'unstage', assetId }
+            : null,
+      );
+    },
     [db, write],
   );
 
   const restoreCull = useCallback(
-    (assetId: string) =>
-      write(
+    (assetId: string) => {
+      const outcome = { applied: false };
+      return write(
         async () => {
-          await restoreCarriedCull(db, assetId, Date.now());
+          outcome.applied = await restoreCarriedCull(db, assetId, Date.now());
         },
-        { kind: 'restore', assetId },
-      ),
+        () => (outcome.applied ? { kind: 'restore', assetId } : null),
+      );
+    },
     [db, write],
   );
 
   const redecideStaged = useCallback(
-    (assetId: string, target: RedecideTarget) =>
-      write(
+    (assetId: string, target: RedecideTarget) => {
+      const outcome: { result: ReviewDecisionResult | null; restored: boolean } = {
+        result: null,
+        restored: false,
+      };
+      return write(
         async () => {
           if (target === 'cull') {
             // The active-verdict tap: the sheet promises "tap the current
             // decision to return to unreviewed" — restore, PRESERVING any
             // pending copy match (going back to unreviewed answers nothing;
             // the prompt must survive for the next edit cycle).
-            await restoreCarriedCull(db, assetId, Date.now(), false);
+            outcome.restored = await restoreCarriedCull(db, assetId, Date.now(), false);
             return;
           }
           // State-aware: "keep" rescues a staged cull and says nothing
@@ -1583,11 +1605,20 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           // unstageCullDirect has always had), while "to edit" restarts
           // the edit cycle. Both resolve pending copy matches. The
           // result is RETURNED so write() credits the goal (§10 check
-          // 13: THIS was the cull-list sheet's uncounted path).
-          return applyRedecision(db, assetId, target, Date.now());
+          // 13: THIS was the cull-list sheet's uncounted path), and it
+          // gates the patch below like every guarded write.
+          return (outcome.result = await applyRedecision(db, assetId, target, Date.now()));
         },
-        target === 'cull' ? { kind: 'restore', assetId } : { kind: 'redecide', assetId, target },
-      ),
+        () =>
+          target === 'cull'
+            ? outcome.restored
+              ? { kind: 'restore', assetId }
+              : null
+            : outcome.result && outcome.result.appliedIds.length > 0
+              ? { kind: 'redecide', assetId, target }
+              : null,
+      );
+    },
     [db, write],
   );
 
@@ -1735,6 +1766,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       keepAllSingles,
       redecideStaged,
       confirmStagedCulls,
+      noteDecisions,
       registerCelebrationHost,
       celebrationSettling: celebrationSettling > 0,
       celebrationPending,
@@ -1778,6 +1810,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       keepAllSingles,
       redecideStaged,
       confirmStagedCulls,
+      noteDecisions,
       registerCelebrationHost,
       celebrationSettling,
       celebrationPending,

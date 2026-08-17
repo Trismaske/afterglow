@@ -830,11 +830,18 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
       // Same stance as the deck-flow guard: an unmeasurable probe FAILS
       // with the fix in its note — a release pass must not silently skip
       // its one frame-level check.
-      const finish = findNode(dumpUi(), /^Keep remaining \(\d+\)$/);
+      // (1) or more: a browse deck's disabled "Keep remaining (0)" would
+      // accept the tap coordinates and record steady chrome — the pixel
+      // checks would then pass without any transition in the clip.
+      const before = dumpUi();
+      const finish = findNode(before, /^Keep remaining \([1-9]\d*\)$/);
       if (!finish)
         throw new Error(
-          'no finish button on screen — the walk consumed the corpus before the probe; seed the target deeper and re-run',
+          'no pressable finish button on screen — the walk consumed the corpus before the probe; seed the target deeper and re-run',
         );
+      // The unit's header line names the advance: it MUST read differently
+      // once the finish lands (fewer groups/singles left, or another kind).
+      const headerBefore = findNode(before, /^(Group|Singles) · /);
       const clipDevice = '/sdcard/ag-gate-advance.mp4';
       const clipHost = join(REPORT_DIR, 'finish-advance.mp4');
       const rec = spawn('adb', [
@@ -843,9 +850,28 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
         'shell',
         `screenrecord --time-limit 6 ${clipDevice}`,
       ]);
+      // Subscribe BEFORE any waiting: screenrecord can exit immediately
+      // (no storage, device drop), and a listener attached after the
+      // one-shot close event would leave the gate hanging with no
+      // timeout. The bound is comfortably past the 6 s recording limit.
+      const recDone = new Promise((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error('screenrecord did not finish within 20 s — device unresponsive?')),
+          20000,
+        );
+        const settle = (code) => {
+          clearTimeout(timer);
+          resolve(code);
+        };
+        rec.on('close', settle);
+        rec.on('error', (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+      });
       await new Promise((r) => setTimeout(r, 1000));
       shell(`input tap ${Math.round(finish.x)} ${Math.round(finish.y)}`);
-      await new Promise((resolve) => rec.on('close', resolve));
+      await recDone;
       adb('pull', clipDevice, clipHost);
       shell(`rm -f ${clipDevice}`);
       // Only a deck-to-deck advance is measurable: landing on the cull
@@ -855,6 +881,14 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
       if (!findNode(after, /^\d+\/\d+$/))
         throw new Error(
           `the finish left review (corpus consumed) — clip saved to ${clipHost}; seed the target deeper and re-run so the probe measures a deck-to-deck advance`,
+        );
+      // Prove the advance actually happened: a missed or refused tap
+      // leaves the same unit on screen, and the pixel checks below would
+      // inspect steady chrome and pass vacuously.
+      const headerAfter = findNode(after, /^(Group|Singles) · /);
+      if (headerBefore && headerAfter && headerAfter.text === headerBefore.text)
+        throw new Error(
+          `the deck header still reads "${headerBefore.text}" — the finish tap did not advance the unit; clip saved to ${clipHost}`,
         );
       // Decode small (216 px wide) raw RGB frames and read two regions:
       // the stage interior and the bottom control band. Thresholds were

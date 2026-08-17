@@ -27,6 +27,7 @@
  * re-trash legitimately counts the next generation (P8#4).
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
+import { dayKey } from '../lib/dates';
 import { withWriteTransaction } from './database';
 import { closeShareCycleIfQueueEmpty } from './shareStore';
 // Runtime-only circular edge (store also imports a trashStore helper):
@@ -47,6 +48,14 @@ export interface PreparedTrashBatch {
    * culls) — a DEFINITIVE non-application restores them with the
    * un-staging (a cancelled sheet must be a true no-op). */
   clearedStars: { groupId: number; photoId: string }[];
+  /** Fresh goal work the stage-to-culled transition produced (same rule
+   * as applyReviewDecisions: the row moved into today's decided bucket
+   * from no decision or an earlier day's). Always 0 without
+   * `stageToEditMembers` — reserving an already-staged cull decides
+   * nothing. The caller must route a non-zero count into the goal
+   * counter (codex device-pass round: this path moved the ring without
+   * ever crediting the celebration). */
+  freshDecisions: number;
 }
 
 export interface TrashMemberInput {
@@ -88,8 +97,16 @@ export async function prepareTrashBatch(
     const eligible = members.filter((m) => !taken.has(m.photoId)).slice(0, TRASH_BATCH_LIMIT);
     if (eligible.length === 0) return;
     const clearedStars: { groupId: number; photoId: string }[] = [];
+    let freshDecisions = 0;
     if (options.stageToEditMembers) {
       for (const member of eligible) {
+        // The prior stamp is read BEFORE the update writes decided_at —
+        // the freshness rule compares the day of the decision being
+        // replaced (same as applyReviewDecisions).
+        const prior = await txn.getFirstAsync<{ decided_at: number | null }>(
+          'SELECT decided_at FROM photos WHERE asset_id = ?',
+          member.photoId,
+        );
         const staged = await txn.runAsync(
           `UPDATE photos SET state = 'culled', culled_at = COALESCE(culled_at, ?),
              -- A staged cull is a VERDICT, and this path can reach an
@@ -129,6 +146,10 @@ export async function prepareTrashBatch(
         // clearing its star anyway would lose it silently (the empty
         // batch returns null and Home never sees clearedStars).
         if (Number(staged.changes) === 0) continue;
+        // Fresh work only (the once-per-day rule): a row already
+        // stamped today is already inside the number the ring shows.
+        const stamp = prior?.decided_at ?? null;
+        if (stamp === null || dayKey(stamp) !== dayKey(at)) freshDecisions += 1;
         // Every transition to 'culled' clears a star pointing at the
         // photo (same hygiene as applyReviewDecisions): if the attempt
         // stays ambiguous the photo remains staged, and a culled best
@@ -152,7 +173,7 @@ export async function prepareTrashBatch(
       at,
     );
     const batchId = Number(batch.lastInsertRowId);
-    const out: PreparedTrashBatch = { batchId, members: [], clearedStars };
+    const out: PreparedTrashBatch = { batchId, members: [], clearedStars, freshDecisions };
     for (const member of eligible) {
       const row = await txn.getFirstAsync<{
         trash_generation: number;

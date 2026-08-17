@@ -33,6 +33,10 @@ export interface TrashAttemptResult {
   /** Best stars the stage-and-reserve transition cleared (edited-copy
    * culls) — a DEFINITIVE non-application restores them. */
   clearedStars: { groupId: number; photoId: string }[];
+  /** Fresh goal work the stage-to-culled transition produced (see
+   * PreparedTrashBatch.freshDecisions) — the CALLER must route a
+   * non-zero count into the goal counter. */
+  freshDecisions: number;
 }
 
 export async function runTrashAttempt(
@@ -55,6 +59,7 @@ export async function runTrashAttempt(
       unknownIds: [],
       creditedBytes: 0,
       clearedStars: [],
+      freshDecisions: 0,
     };
   }
   if (!batch) {
@@ -65,6 +70,7 @@ export async function runTrashAttempt(
       unknownIds: [],
       creditedBytes: 0,
       clearedStars: [],
+      freshDecisions: 0,
     };
   }
   const ids = batch.members.map((m) => m.photoId);
@@ -118,6 +124,7 @@ export async function runTrashAttempt(
       unknownIds: ids.filter((id) => resolved.outcomes[id] === 'unknown'),
       creditedBytes: resolved.creditedBytes,
       clearedStars: batch.clearedStars,
+      freshDecisions: batch.freshDecisions,
     };
   } catch (error) {
     // The batch was durably prepared but a later step rejected (transient
@@ -151,6 +158,7 @@ export async function runTrashAttempt(
         unknownIds: ids.filter((id) => recovered.outcomes[id] === 'unknown'),
         creditedBytes: recovered.creditedBytes,
         clearedStars: batch.clearedStars,
+        freshDecisions: batch.freshDecisions,
       };
     } catch {
       // Release failed too — next launch's recovery handles the batch;
@@ -163,6 +171,7 @@ export async function runTrashAttempt(
         unknownIds: ids,
         creditedBytes: 0,
         clearedStars: batch.clearedStars,
+        freshDecisions: batch.freshDecisions,
       };
     }
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dayKey, exifDateTimeToMs, labelForDayKey, UNDATED_DAY_KEY } from './dates';
+import { dayKey, exifDateTimeToMs, labelForDayKey, monthDayBounds, UNDATED_DAY_KEY } from './dates';
 
 describe('dayKey', () => {
   it('is lexicographically sortable (zero-padded)', () => {
@@ -82,5 +82,28 @@ describe('exifDateTimeToMs (D15 date rescue)', () => {
     expect(exifDateTimeToMs('2024:02:30 12:00:00')).toBeNull();
     // A real leap day stays valid.
     expect(exifDateTimeToMs('2024:02:29 12:00:00')).not.toBeNull();
+  });
+});
+
+describe('monthDayBounds', () => {
+  it('produces a half-open day-key range for a mid-year month', () => {
+    expect(monthDayBounds('2026-07')).toEqual({
+      fromDay: '2026-07-01',
+      toDayExclusive: '2026-08-01',
+    });
+  });
+
+  it('rolls December into the next year', () => {
+    expect(monthDayBounds('2022-12')).toEqual({
+      fromDay: '2022-12-01',
+      toDayExclusive: '2023-01-01',
+    });
+  });
+
+  it('zero-pads the next month so the bound stays lexicographically sortable', () => {
+    expect(monthDayBounds('2026-09').toDayExclusive).toBe('2026-10-01');
+    // Every day key of the month sorts inside the bounds.
+    expect('2026-09-30' < monthDayBounds('2026-09').toDayExclusive).toBe(true);
+    expect('2026-09-01' >= monthDayBounds('2026-09').fromDay).toBe(true);
   });
 });

@@ -61,6 +61,22 @@ export function rangeOfDayKey(key: string): DateRange {
  */
 export const UNDATED_DAY_KEY = 'undated';
 
+/**
+ * The `day`-column bounds of a "YYYY-MM" month key (m0.8.6 change 6):
+ * a month scope must key on the indexed `day` column, never on
+ * `taken_at` — the mtime fallback would sweep undated photos into
+ * whichever month their file times land in. Half-open on purpose
+ * (`day >= from AND day < toExclusive`): day keys sort
+ * lexicographically, and the next month's first key needs no
+ * days-in-month arithmetic. A NULL day matches no month; the
+ * Unknown-day pseudo-day is its home.
+ */
+export function monthDayBounds(month: string): { fromDay: string; toDayExclusive: string } {
+  const [y, m] = month.split('-').map(Number);
+  const next = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+  return { fromDay: `${month}-01`, toDayExclusive: `${next}-01` };
+}
+
 /** "Today" / "Yesterday" / "12 Jul 2025" for a day key, relative to now.
  *
  * The chokepoint for every day label in the app — Home's day rows, the

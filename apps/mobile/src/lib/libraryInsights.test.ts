@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildHistogram,
   frontierLine,
+  histogramScrollX,
   keepsPerGroup,
   monthRange,
   rangeOfMonth,
@@ -210,5 +211,46 @@ describe('the burst tax', () => {
     // A user who culled one whole group must not be told they keep 1 of ∞.
     expect(keepsPerGroup({ decidedMembers: 0, decidedKept: 0 })).toBeNull();
     expect(keepsPerGroup({ decidedMembers: 5, decidedKept: 0 })).toBeNull();
+  });
+});
+
+describe('histogramScrollX (F8)', () => {
+  // Geometry: pad 2, column 14, undated gap 16 after bar 0.
+  // With no undated bar: bar i's left edge = 2 + 14*i.
+  it('returns null when the selected bar is already fully visible', () => {
+    // Bar 10 at x=142..156; viewport [100, 300) covers it with margin.
+    expect(histogramScrollX(10, 100, 200, 1000, false)).toBeNull();
+  });
+
+  it('scrolls right-shifted content back to a bar stranded off-screen left', () => {
+    // The reported defect inverted: bar 3 at x=44 while offset sits at 500.
+    // Minimal scroll lands the bar (with margin) at the viewport's left.
+    expect(histogramScrollX(3, 500, 200, 1000, false)).toBe(44 - 8);
+  });
+
+  it('scrolls to a bar off-screen right the minimum needed', () => {
+    // Bar 60 at x=842..856 + 8 margin; viewport of 200 from offset 0.
+    expect(histogramScrollX(60, 0, 200, 1000, false)).toBe(856 + 8 - 200);
+  });
+
+  it('accounts for the undated gap after bar 0', () => {
+    // Bar 1 sits 16dp further right when an undated bar leads.
+    const without = histogramScrollX(1, 500, 200, 1000, false);
+    const withGap = histogramScrollX(1, 500, 200, 1000, true);
+    expect(withGap).toBe((without as number) + 16);
+  });
+
+  it('clamps to the scrollable range at both ends', () => {
+    // Bar 0 wants negative x — clamps to 0.
+    expect(histogramScrollX(0, 500, 200, 1000, false)).toBe(0);
+    // Last bar in short content — clamps to contentW - viewportW
+    // (unclamped target would be 664, past the 650 scroll ceiling).
+    expect(histogramScrollX(60, 0, 200, 850, false)).toBe(850 - 200);
+  });
+
+  it('never returns a target when content fits the viewport whole', () => {
+    // Content narrower than the viewport: clamp floor is 0 and every
+    // bar is visible from offset 0.
+    expect(histogramScrollX(2, 0, 500, 300, false)).toBeNull();
   });
 });

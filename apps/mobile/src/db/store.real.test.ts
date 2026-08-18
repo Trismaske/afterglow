@@ -22,6 +22,8 @@ import {
   getDaySummariesForDays,
   getGridPhotosByFilter,
   getPhotoFacts,
+  getRescuedPhotoPage,
+  getStateRowsForAssets,
   getReviewedCountsByDay,
   getReviewGroup,
   getStagedCullBytes,
@@ -2257,5 +2259,123 @@ describe('getCoverageByDay (m0.8.1 coverage goal)', () => {
     const rows = await getCoverageByDay(asExpo(d), null);
     expect(rows.reduce((sum, r) => sum + r.total, 0)).toBe(1);
     expect(rows.reduce((sum, r) => sum + r.pending, 0)).toBe(1);
+  });
+});
+
+describe('month scopes and the rescued-date pins (m0.8.6)', () => {
+  /** The three populations of the defect: a dated photo, a D15-rescued
+   * photo (real taken_at + day, exif marker set — MediaStore would call
+   * it undated), and an honestly-undated photo whose mtime falls INSIDE
+   * the month (day null, exif checked, nothing found). */
+  const JULY_AT = new Date(2026, 6, 15, 12, 0, 0).getTime();
+  async function seedMonth(d: TestDb): Promise<void> {
+    const photos = [
+      { ...upsert('dated', JULY_AT), day: '2026-07-15' },
+      {
+        ...upsert('rescued', JULY_AT + 3_600_000),
+        day: '2026-07-15',
+        exifCheckedModTime: JULY_AT,
+      },
+      { ...upsert('undated-gif', JULY_AT + 7_200_000), day: null, exifCheckedModTime: JULY_AT },
+    ];
+    await writeContinuousGroups(
+      asExpo(d),
+      { photos, groups: [], singles: photos.map((p) => p.assetId) },
+      AT,
+    );
+  }
+
+  it('pin 1: a month scope prints ONE population — chips exclude undated, include rescued', async () => {
+    const d = await fresh();
+    await seedMonth(d);
+    const counts = await getStateCountsInScope(asExpo(d), { month: '2026-07' }, null);
+    // The dated and the rescued photo; NEVER the undated one, whatever
+    // month its mtime lands in (the S10e "delta of exactly five GIFs").
+    expect(counts.tracked).toBe(2);
+    expect(counts.unreviewed).toBe(2);
+    expect(counts.rescued).toBe(1);
+    // The grid pages the SAME predicate, so its population matches the
+    // chips by construction.
+    const grid = await getGridPhotosByFilter(
+      asExpo(d),
+      { month: '2026-07' },
+      null,
+      'unreviewed',
+      10,
+      0,
+    );
+    expect(grid.map((r) => r.asset_id).sort()).toEqual([id('dated'), id('rescued')]);
+  });
+
+  it('pin 2: the same photo renders under Unreviewed as under Kept — the engine cannot hide it', async () => {
+    const d = await fresh();
+    await seedMonth(d);
+    const before = await getGridPhotosByFilter(
+      asExpo(d),
+      { month: '2026-07' },
+      null,
+      'unreviewed',
+      10,
+      0,
+    );
+    expect(before.some((r) => r.asset_id === id('rescued'))).toBe(true);
+    await applyReviewDecisions(asExpo(d), [[id('rescued'), 'kept']], AT);
+    const kept = await getGridPhotosByFilter(asExpo(d), { month: '2026-07' }, null, 'kept', 10, 0);
+    expect(kept.map((r) => r.asset_id)).toEqual([id('rescued')]);
+    const after = await getGridPhotosByFilter(
+      asExpo(d),
+      { month: '2026-07' },
+      null,
+      'unreviewed',
+      10,
+      0,
+    );
+    expect(after.some((r) => r.asset_id === id('rescued'))).toBe(false);
+  });
+
+  it('an undated photo lives in the Unknown-day pseudo-day and in NO month', async () => {
+    const d = await fresh();
+    await seedMonth(d);
+    const undatedCounts = await getStateCountsInScope(asExpo(d), { day: UNDATED_DAY_KEY }, null);
+    expect(undatedCounts.tracked).toBe(1);
+    for (const month of ['2026-07', '2026-08']) {
+      const grid = await getGridPhotosByFilter(asExpo(d), { month }, null, 'all', 10, 0);
+      expect(grid.some((r) => r.asset_id === id('undated-gif'))).toBe(false);
+    }
+  });
+
+  it('getRescuedPhotoPage streams only rescued rows, newest first, keyset-stable', async () => {
+    const d = await fresh();
+    await seedMonth(d);
+    const page1 = await getRescuedPhotoPage(asExpo(d), null, null, undefined, 10);
+    expect(page1.map((r) => r.asset_id)).toEqual([id('rescued')]);
+    expect(page1[0].day).toBe('2026-07-15');
+    // The keyset past the only row is empty, not a repeat.
+    const page2 = await getRescuedPhotoPage(
+      asExpo(d),
+      null,
+      null,
+      { takenAt: page1[0].taken_at, assetId: page1[0].asset_id },
+      10,
+    );
+    expect(page2).toEqual([]);
+  });
+
+  it('getStateRowsForAssets carries the DB date truth and the rescued marker', async () => {
+    const d = await fresh();
+    await seedMonth(d);
+    const rows = await getStateRowsForAssets(asExpo(d), [
+      id('dated'),
+      id('rescued'),
+      id('undated-gif'),
+    ]);
+    expect(rows.get(id('rescued'))).toMatchObject({
+      day: '2026-07-15',
+      rescued: true,
+    });
+    // Checked-but-nothing-found is NOT rescued: its day stays null and
+    // the MediaStore copy must keep rendering (no rescued-stream twin).
+    expect(rows.get(id('undated-gif'))).toMatchObject({ day: null, rescued: false });
+    expect(rows.get(id('dated'))).toMatchObject({ day: '2026-07-15', rescued: false });
   });
 });

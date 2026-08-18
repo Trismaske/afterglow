@@ -40,6 +40,10 @@ import {
 import {
   buildHistogram,
   frontierLine,
+  HISTOGRAM_COLUMN_W,
+  HISTOGRAM_PAD,
+  HISTOGRAM_UNDATED_GAP,
+  histogramScrollX,
   keepsPerGroup,
   rangeOfMonth,
   redundantFrames,
@@ -159,15 +163,32 @@ function CaptureHistogram({
   onSelect: (key: string) => void;
 }) {
   const scroller = useRef<ScrollView>(null);
-  // Open at the RECENT end: newest photos are where review actually
-  // happens, and a library spanning years would otherwise open on a
-  // decade-old month. Only on first layout — re-scrolling on every
-  // render would fight the user's own scrolling — and NEVER while a
-  // month is selected: selecting one reloads the grid, and jumping the
-  // chart back to today would strand the selected bar off-screen where
-  // it cannot be tapped again to clear (device-observed).
-  const settled = useRef(false);
-  if (selected !== null) settled.current = true;
+  // The auto-scroll rule (F8, m0.8.6): with no selection, open at the
+  // RECENT end once — newest photos are where review happens, and
+  // re-scrolling later would fight the user's own scrolling. With a
+  // selection, scroll the MINIMUM keeping the selected bar visible —
+  // a tap on an on-screen bar moves nothing (the bar was under the
+  // finger), while a remount that reset the ScrollView to offset 0
+  // brings the selection back into view instead of stranding it
+  // off-screen right (the reported defect: the old guard suppressed
+  // every scroll while a month was selected, reload included).
+  const openedAtRecent = useRef(false);
+  const offsetX = useRef(0);
+  const viewportW = useRef(0);
+  const [contentW, setContentW] = useState(0);
+  useEffect(() => {
+    if (selected === null || contentW === 0 || viewportW.current === 0) return;
+    const index = histogram.bars.findIndex((bar) => bar.key === selected);
+    if (index < 0) return;
+    const x = histogramScrollX(
+      index,
+      offsetX.current,
+      viewportW.current,
+      contentW,
+      histogram.bars[0]?.undated === true,
+    );
+    if (x !== null) scroller.current?.scrollTo({ x, animated: false });
+  }, [selected, contentW, histogram]);
   return (
     <View style={styles.histogramBlock}>
       <ScrollView
@@ -175,10 +196,18 @@ function CaptureHistogram({
         horizontal
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.histogramContent}
-        onContentSizeChange={() => {
-          if (settled.current) return;
-          settled.current = true;
-          scroller.current?.scrollToEnd({ animated: false });
+        onLayout={(e) => {
+          viewportW.current = e.nativeEvent.layout.width;
+        }}
+        onScroll={(e) => {
+          offsetX.current = e.nativeEvent.contentOffset.x;
+        }}
+        scrollEventThrottle={16}
+        onContentSizeChange={(w) => {
+          setContentW(w);
+          if (openedAtRecent.current) return;
+          openedAtRecent.current = true;
+          if (selected === null) scroller.current?.scrollToEnd({ animated: false });
         }}
       >
         {histogram.bars.map((bar) => {
@@ -302,12 +331,16 @@ export function ProgressView({
     const range = rangeOfMonth(month);
     return {
       heading: base.heading,
-      scope: { startMs: range.startMs, endMs: range.endMs } as PhotoScope,
-      // INCLUSIVE bounds → EXCLUSIVE MediaStore query: the DB side takes
-      // the scope's BETWEEN inclusively, but countPhotosInRange renders
-      // `DATE_TAKEN > start AND DATE_TAKEN < end` — a photo at exactly
-      // midnight on the month boundary would vanish from the denominator
-      // only. Widen by 1 ms, exactly as the scan's range pager does.
+      // The DB side keys on the indexed `day` column (m0.8.6 change 6):
+      // a taken_at range would sweep undated photos into whichever month
+      // their mtimes land in — the S10e over-count of exactly its five
+      // undated GIFs. The ms range below feeds only the MediaStore count.
+      scope: { month } as PhotoScope,
+      // INCLUSIVE bounds → EXCLUSIVE MediaStore query: countPhotosInRange
+      // renders `DATE_TAKEN > start AND DATE_TAKEN < end` — a photo at
+      // exactly midnight on the month boundary would vanish from the
+      // denominator only. Widen by 1 ms, exactly as the scan's range
+      // pager does.
       startMs: range.startMs > 0 ? range.startMs - 1 : 0,
       endMs: range.endMs + 1,
     };
@@ -390,6 +423,7 @@ export function ProgressView({
         // exactly the alive DB day population. Library RANGE scopes keep
         // the MediaStore total (untracked photos have no DB row yet).
         const dayScope = 'day' in scope;
+        const monthScope = 'month' in scope;
         // FAIL CLOSED (m0.8.2): a failed MediaStore count used to become
         // 0, and `computeBreakdown` would then happily report "10 of 0
         // reviewed" at some impossible percentage. A count we could not
@@ -411,7 +445,19 @@ export function ProgressView({
           getStateCountsInScope(db, scope, roots, mounted),
         ]);
         const dbAlive = counts.tracked - counts.trashed;
-        const total = dayScope ? dbAlive : msTotal;
+        // Month scopes take Home's DISJOINT UNION (m0.8.6 change 3): the
+        // bounded MediaStore count cannot see a rescued photo (NULL
+        // DATE_TAKEN matches no month), so the two terms never overlap;
+        // dbAlive floors the failed-count edge exactly as on Home. The
+        // library range needs no union — its MediaStore count is
+        // unbounded, so undated and rescued rows are already inside it.
+        const total = dayScope
+          ? dbAlive
+          : monthScope
+            ? msTotal === null
+              ? null
+              : Math.max(msTotal + counts.rescued, dbAlive)
+            : msTotal;
         if (cancelled || total === null) return;
         // MediaStore sees dated photos (ingested or not) but never
         // rescued ones; the DB's dated-ingested population is therefore
@@ -651,7 +697,7 @@ export function ProgressView({
         bottomInset={insets.bottom}
         onPhotoPress={(_photo, siblings, index) =>
           setViewer({
-            items: siblings.map((g) => ({ id: g.id, uri: g.uri, takenAt: g.takenAt })),
+            items: siblings.map((g) => ({ id: g.id, uri: g.uri, takenAt: g.takenAt, day: g.day })),
             index,
           })
         }
@@ -702,18 +748,20 @@ const styles = StyleSheet.create({
   chipCount: { color: colors.text, fontSize: 17, fontWeight: '800' },
   chipLabel: { color: colors.textDim, fontSize: 10, textAlign: 'center', lineHeight: 13 },
   histogramBlock: { marginHorizontal: -2 },
-  histogramContent: { alignItems: 'flex-end', paddingHorizontal: 2 },
+  histogramContent: { alignItems: 'flex-end', paddingHorizontal: HISTOGRAM_PAD },
   // FIXED width per month, not flex: the chart scrolls instead of
   // compressing, so a 20-year library stays as readable as a 1-year one
   // and every bar is a reliable tap target (at flex width they were
-  // ~4 dp wide and genuinely hard to hit).
-  histogramColumn: { width: 14, height: 112, alignItems: 'center' },
-  histogramUndated: { marginRight: 16 },
+  // ~4 dp wide and genuinely hard to hit). The widths live in
+  // libraryInsights.ts because histogramScrollX derives bar positions
+  // from them (F8) — style and math must move together.
+  histogramColumn: { width: HISTOGRAM_COLUMN_W, height: 112, alignItems: 'center' },
+  histogramUndated: { marginRight: HISTOGRAM_UNDATED_GAP },
   // The plot area is also the selection outline (rule 4). The border is
   // always present but transparent, so selecting a month cannot shift
   // the bar's width or the column's alignment.
   histogramPlot: {
-    width: 14,
+    width: HISTOGRAM_COLUMN_W,
     height: 74,
     justifyContent: 'flex-end',
     paddingHorizontal: 1,

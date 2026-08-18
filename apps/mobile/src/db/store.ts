@@ -28,7 +28,7 @@ import type { LoadedPhoto } from '../lib/media';
 import { frozenPhotos, reconcileWindowGroups } from '../lib/regroupBoundary';
 import { sourceLikePattern, type SourceRoot } from '../lib/sources';
 import { rawIdOf, volumeOf } from '../lib/mediaIdentity';
-import { dayKey, rangeOfDayKey, UNDATED_DAY_KEY } from '../lib/dates';
+import { dayKey, monthDayBounds, rangeOfDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import type { StateCounts } from '../lib/progress';
 
 /** Max ids per IN (...) chunk — stays under SQLite's bind-parameter limit. */
@@ -79,36 +79,46 @@ export interface PersistDecisionExtras {
 
 /**
  * DB-side photo scope (m0.4 stage 3). Day-keyed queries use the `day`
- * column (matching the Recent-days rollups exactly); everything else
- * scopes by `taken_at` range. Both progress pages share the same store
- * functions through this union. An open-ended range (`startMs: 0`,
- * `endMs: Infinity`) is the whole tracked corpus — undated photos
- * included, since `taken_at` is NOT NULL (the mtime fallback) even when
- * their `day` is.
+ * column (matching the Recent-days rollups exactly); month scopes key on
+ * the same column (m0.8.6 change 6 — `taken_at` is the mtime fallback
+ * for undated photos, so a month keyed on it sweeps them into whichever
+ * month their file times land in, the S10e "chip over-counts by exactly
+ * the undated GIFs" defect); everything else scopes by `taken_at` range.
+ * All progress surfaces share the same store functions through this
+ * union. An open-ended range (`startMs: 0`, `endMs: Infinity`) is the
+ * whole tracked corpus — undated photos included, since `taken_at` is
+ * NOT NULL (the mtime fallback) even when their `day` is.
  */
-export type PhotoScope = { day: string } | { startMs: number; endMs: number };
+export type PhotoScope = { day: string } | { month: string } | { startMs: number; endMs: number };
 
 /** Stable identity string for a scope — the effect-dependency stand-in
  * for the scope object in the progress screens. */
 export function scopeKeyOf(scope: PhotoScope): string {
-  return 'day' in scope ? `d:${scope.day}` : `r:${scope.startMs}:${scope.endMs}`;
+  if ('day' in scope) return `d:${scope.day}`;
+  if ('month' in scope) return `m:${scope.month}`;
+  return `r:${scope.startMs}:${scope.endMs}`;
 }
 
 function scopeClause(scope: PhotoScope): { sql: string; params: (string | number)[] } {
-  return 'day' in scope
-    ? scope.day === UNDATED_DAY_KEY
+  if ('day' in scope) {
+    return scope.day === UNDATED_DAY_KEY
       ? // The Unknown-day pseudo-day: photos without a capture date.
         { sql: 'day IS NULL', params: [] }
-      : { sql: 'day = ?', params: [scope.day] }
-    : {
-        sql: 'taken_at BETWEEN ? AND ?',
-        // An open-ended range arrives as Infinity (undated-photo
-        // contract in lib/media.ts) — clamp for the SQL binding.
-        params: [
-          scope.startMs,
-          Number.isFinite(scope.endMs) ? scope.endMs : Number.MAX_SAFE_INTEGER,
-        ],
-      };
+      : { sql: 'day = ?', params: [scope.day] };
+  }
+  if ('month' in scope) {
+    // Half-open range on the indexed `day` column (idx_photos_day):
+    // NULL day matches no month by construction — undated photos live
+    // only in the Unknown-day pseudo-day, never in a calendar month.
+    const bounds = monthDayBounds(scope.month);
+    return { sql: 'day >= ? AND day < ?', params: [bounds.fromDay, bounds.toDayExclusive] };
+  }
+  return {
+    sql: 'taken_at BETWEEN ? AND ?',
+    // An open-ended range arrives as Infinity (undated-photo
+    // contract in lib/media.ts) — clamp for the SQL binding.
+    params: [scope.startMs, Number.isFinite(scope.endMs) ? scope.endMs : Number.MAX_SAFE_INTEGER],
+  };
 }
 
 /**
@@ -1224,6 +1234,9 @@ export interface PhotoFacts {
   asset_id: string;
   uri: string;
   taken_at: number;
+  /** Capture day; NULL = honestly undated (m0.8.6 change 5) — the
+   * viewer and editor render "Unknown day", never the mtime fallback. */
+  day: string | null;
   state: PhotoState;
   needs_edit: number;
   /** Favourite direction currently queued: 1 apply, 0 remove, null none. */
@@ -1269,7 +1282,7 @@ export async function getPhotoFacts(
   assetId: string,
 ): Promise<PhotoFacts | null> {
   return db.getFirstAsync<PhotoFacts>(
-    `SELECT p.asset_id, p.uri, p.taken_at, p.state, p.reviewed_at,
+    `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, p.reviewed_at,
             (EXISTS (SELECT 1 FROM photo_actions e WHERE e.photo_id = p.asset_id
                       AND e.kind = 'edit' AND e.state IN ('queued', 'error'))) AS needs_edit,
             (SELECT CAST(f.target AS INTEGER) FROM photo_actions f
@@ -2287,17 +2300,22 @@ export async function getPhotoUris(
 export async function getPhotoQueueFacts(
   db: SQLiteDatabase,
   assetIds: readonly string[],
-): Promise<Map<string, { uri: string; takenAt: number }>> {
-  const facts = new Map<string, { uri: string; takenAt: number }>();
+): Promise<Map<string, { uri: string; takenAt: number; day: string | null }>> {
+  const facts = new Map<string, { uri: string; takenAt: number; day: string | null }>();
   for (const ids of chunk(assetIds, IN_CHUNK)) {
     if (ids.length === 0) continue;
     const placeholders = ids.map(() => '?').join(',');
-    const rows = await db.getAllAsync<{ asset_id: string; uri: string; taken_at: number }>(
-      `SELECT asset_id, uri, taken_at FROM photos WHERE asset_id IN (${placeholders})`,
+    const rows = await db.getAllAsync<{
+      asset_id: string;
+      uri: string;
+      taken_at: number;
+      day: string | null;
+    }>(
+      `SELECT asset_id, uri, taken_at, day FROM photos WHERE asset_id IN (${placeholders})`,
       ...ids,
     );
     for (const row of rows) {
-      facts.set(row.asset_id, { uri: row.uri, takenAt: Number(row.taken_at) });
+      facts.set(row.asset_id, { uri: row.uri, takenAt: Number(row.taken_at), day: row.day });
     }
   }
   return facts;
@@ -2848,15 +2866,22 @@ export async function getStateCountsInScope(
   const reach = reachClause(mounted);
   const [rows, actionRows] = await Promise.all([
     db.getAllAsync<{ state: PhotoState; grouped: number; n: number; rescued: number }>(
+      // LEFT JOIN, not a correlated EXISTS per row (m0.8.6 — the parked
+      // m0.8.1 cost, taken now because change 6 opens this query's WHERE
+      // head anyway; 22 ms whole-corpus measured on the EXISTS shape).
+      // Safe against row multiplication: photo_id is the assignments PK,
+      // so at most one join row exists per photo.
       `SELECT state,
-              EXISTS (SELECT 1 FROM photo_group_assignments a
-                      WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped,
+              (a.photo_id IS NOT NULL) AS grouped,
               COUNT(*) AS n,
               -- Alive rescue-dated rows (same rule as DAY_SUMMARY's
               -- rescued): the day page's analyzing line needs them.
               SUM(CASE WHEN photos.exif_checked_mod_time IS NOT NULL
                         AND photos.state <> 'trashed' THEN 1 ELSE 0 END) AS rescued
-       FROM photos WHERE ${where.sql}${src.sql}
+       FROM photos
+       LEFT JOIN photo_group_assignments a
+         ON a.photo_id = photos.asset_id AND a.group_id IS NOT NULL
+       WHERE ${where.sql}${src.sql}
          -- Keep-history tombstones (m0.8.3 §7) are ABSENT rows with
          -- ordinary verdicts — a browse surface must not revive them.
          -- Trashed rows stay countable (the chips' trashed figure)
@@ -2922,24 +2947,97 @@ export async function getStateCountsInScope(
   return counts;
 }
 
-/** State + group membership per asset (missing rows simply absent). */
+/** What the MediaStore-engine grid learns about a tracked photo, per
+ * page (missing rows simply absent = untracked). `taken_at`/`day` are
+ * the DB's date truth (m0.8.6 changes 2+5): the MediaStore item's
+ * timestamp is the mtime fallback for undated photos, and a tracked
+ * row's dates must come from here. `rescued` marks a D15-rescued photo
+ * (checked AND dated): the MediaStore stream's copy of such a photo is
+ * skipped — the rescued-rows fetcher supplies it at its true position
+ * (change 4). */
+export interface AssetStateRow {
+  state: PhotoState;
+  grouped: boolean;
+  taken_at: number;
+  day: string | null;
+  rescued: boolean;
+}
+
 export async function getStateRowsForAssets(
   db: SQLiteDatabase,
   assetIds: readonly string[],
-): Promise<Map<string, { state: PhotoState; grouped: boolean }>> {
-  const out = new Map<string, { state: PhotoState; grouped: boolean }>();
+): Promise<Map<string, AssetStateRow>> {
+  const out = new Map<string, AssetStateRow>();
   for (const ids of chunk(assetIds, IN_CHUNK)) {
     const placeholders = ids.map(() => '?').join(',');
-    const rows = await db.getAllAsync<{ asset_id: string; state: PhotoState; grouped: number }>(
-      `SELECT asset_id, state,
+    const rows = await db.getAllAsync<{
+      asset_id: string;
+      state: PhotoState;
+      grouped: number;
+      taken_at: number;
+      day: string | null;
+      rescued: number;
+    }>(
+      `SELECT asset_id, state, taken_at, day,
+              (exif_checked_mod_time IS NOT NULL AND day IS NOT NULL) AS rescued,
               EXISTS (SELECT 1 FROM photo_group_assignments a
                       WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped
        FROM photos WHERE asset_id IN (${placeholders})`,
       ...ids,
     );
-    for (const row of rows) out.set(row.asset_id, { state: row.state, grouped: !!row.grouped });
+    for (const row of rows)
+      out.set(row.asset_id, {
+        state: row.state,
+        grouped: !!row.grouped,
+        taken_at: row.taken_at,
+        day: row.day,
+        rescued: !!row.rescued,
+      });
   }
   return out;
+}
+
+/** One rescued row for the library grid's DB-sourced merge stream
+ * (m0.8.6 change 4): a D15-rescued photo sits in MediaStore's undated
+ * tail wearing its mtime, so its newest-first slot must come from a
+ * stream that knows its real `taken_at`. */
+export interface RescuedPhotoRow {
+  asset_id: string;
+  uri: string;
+  taken_at: number;
+  day: string;
+}
+
+/**
+ * One newest-first keyset page of alive rescued photos (checked AND
+ * dated), for `progressPager` to merge beside the MediaStore bucket
+ * streams. Keyset on (taken_at, asset_id) — the same tiebreak order
+ * every newest-first read here uses. `before` = the previous page's last
+ * row; undefined starts from the top.
+ */
+export async function getRescuedPhotoPage(
+  db: SQLiteDatabase,
+  roots: readonly SourceRoot[] | null,
+  mounted: readonly string[] | null,
+  before: { takenAt: number; assetId: string } | undefined,
+  limit: number,
+): Promise<RescuedPhotoRow[]> {
+  const src = sourceClause(roots);
+  const reach = reachClause(mounted);
+  const keyset =
+    before === undefined ? '' : ' AND (taken_at < ? OR (taken_at = ? AND asset_id < ?))';
+  const keysetParams = before === undefined ? [] : [before.takenAt, before.takenAt, before.assetId];
+  return db.getAllAsync<RescuedPhotoRow>(
+    `SELECT asset_id, uri, taken_at, day
+       FROM photos
+      WHERE exif_checked_mod_time IS NOT NULL AND day IS NOT NULL
+        AND state <> 'trashed' AND is_present = 1${src.sql}${reach.sql}${keyset}
+      ORDER BY taken_at DESC, asset_id DESC LIMIT ?`,
+    ...src.params,
+    ...reach.params,
+    ...keysetParams,
+    limit,
+  );
 }
 
 /** One photo row for the progress grids' DB-backed filters. */
@@ -2956,6 +3054,9 @@ export interface GridPhotoRow {
   asset_id: string;
   uri: string;
   taken_at: number;
+  /** Capture day; NULL = honestly undated (taken_at is the mtime
+   * fallback then — surfaces must say "Unknown day", m0.8.6 change 5). */
+  day: string | null;
   state: PhotoState;
   grouped: number;
 }
@@ -3010,7 +3111,7 @@ export async function getGridPhotosByFilter(
   const filterSql = GRID_FILTER_SQL[filter];
   if (filterSql === undefined) throw new Error(`unknown grid filter: ${filter}`);
   return db.getAllAsync<GridPhotoRow>(
-    `SELECT asset_id, uri, taken_at, state,
+    `SELECT asset_id, uri, taken_at, day, state,
             EXISTS (SELECT 1 FROM photo_group_assignments a
                     WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped,
             EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = photos.asset_id

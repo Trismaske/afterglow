@@ -27,11 +27,16 @@ import {
   type EffectiveState,
   type ProgressFilter,
 } from '../../lib/progress';
-import { createMergedDescendingPager, type MergedPager } from '../../lib/progressPager';
+import {
+  createMergedDescendingPager,
+  type MergedPager,
+  type PageFetcher,
+} from '../../lib/progressPager';
 import { fetchPhotoPageDesc, type LoadedPhoto } from '../../lib/media';
 import { rootKey, type SourceRoot } from '../../lib/sources';
 import {
   getGridPhotosByFilter,
+  getRescuedPhotoPage,
   getStateRowsForAssets,
   scopeKeyOf,
   type PhotoScope,
@@ -45,6 +50,11 @@ export interface GridPhoto {
   id: string;
   uri: string;
   takenAt: number;
+  /** Capture day (m0.8.6 change 5): a string day from the DB; null =
+   * TRACKED and honestly undated (takenAt is the mtime fallback —
+   * surfaces say "Unknown day"); undefined = untracked, no DB claim
+   * (takenAt is MediaStore's own date). */
+  day: string | null | undefined;
   /** The display/filter bucket. */
   effective: EffectiveState;
   /** The actual photos.state row value; null = never tracked. */
@@ -70,17 +80,40 @@ function isDbFilter(filter: ProgressFilter): boolean {
   return (DB_FILTERS as readonly string[]).includes(filter) || isActionFilter(filter);
 }
 
-/** EVERY day scope pages EVERY filter from SQLite (m0.8.3, D16 —
- * decided with Tristan): a D15-rescued photo is DB-dated but
- * MediaStore-undated, so a DATE_TAKEN-range page would omit it from its
- * real day forever while the day's counts include it. The DB day column
- * is the app's truth of day membership; only library-wide RANGE scopes
- * keep the MediaStore engine (instant visibility for photos the scan
- * has not ingested yet). The Unknown-day pseudo-day was already here —
- * its photos cannot be paged from MediaStore at all. */
+/** EVERY day scope — and since m0.8.6 every MONTH scope (change 1) —
+ * pages EVERY filter from SQLite (m0.8.3, D16 — decided with Tristan):
+ * a D15-rescued photo is DB-dated but MediaStore-undated, so a
+ * DATE_TAKEN-range page would omit it from its real month forever while
+ * the month's counts include it. The DB day column is the app's truth
+ * of day/month membership; only the open-ended library scope keeps the
+ * MediaStore engine (instant visibility for photos the scan has not
+ * ingested yet). The Unknown-day pseudo-day was already here — its
+ * photos cannot be paged from MediaStore at all. */
 function isDbScope(scope: PhotoScope): boolean {
-  return 'day' in scope;
+  return 'day' in scope || 'month' in scope;
 }
+
+/** What the library grid's merged pager streams: MediaStore photos and
+ * DB rescued rows in ONE shape, keyed by their honest newest-first
+ * timestamp (m0.8.6 change 4). A rescued photo appears in BOTH streams
+ * — in MediaStore's undated tail wearing its mtime, and in the rescued
+ * stream at its true `taken_at` — so the per-page state join marks the
+ * MediaStore copy (rescued && !fromDb) and the collect loop drops it. */
+interface GridPagedItem {
+  id: string;
+  uri: string;
+  timestamp: number;
+  /** MediaStore reported no capture date (untracked rows only — tracked
+   * rows take their date truth from the state join instead). */
+  undated: boolean;
+  /** Came from the DB rescued stream, not MediaStore. */
+  fromDb: boolean;
+}
+
+/** Each bucket's private cursor: a MediaStore endCursor string, or the
+ * rescued stream's keyset. The merged pager hands each fetcher only its
+ * own cursor back, so the union is safe by construction. */
+type GridCursor = string | { takenAt: number; assetId: string };
 
 export function PhotoStateGrid({
   scope,
@@ -129,7 +162,7 @@ export function PhotoStateGrid({
   const genRef = useRef(0);
   const loadingGenRef = useRef<number | null>(null);
   const offsetRef = useRef(0);
-  const pagerRef = useRef<MergedPager<LoadedPhoto> | null>(null);
+  const pagerRef = useRef<MergedPager<GridPagedItem> | null>(null);
   const rootsKey = roots ? roots.map(rootKey).join('\0') : '';
   const albumsKey = albumIds ? albumIds.join('\0') : '';
   const scopeKey = scopeKeyOf(scope);
@@ -173,6 +206,7 @@ export function PhotoStateGrid({
             id: r.asset_id,
             uri: r.uri,
             takenAt: r.taken_at,
+            day: r.day,
             dbState: r.state,
             editPending: !!r.needs_edit,
             favPending: !!r.fav_pending,
@@ -199,7 +233,7 @@ export function PhotoStateGrid({
             // failure state renders the footer/empty copy (codex r4).
             const states = await getStateRowsForAssets(
               db,
-              raw.map((p) => p.item.id),
+              raw.map((p) => p.id),
             ).catch((error: unknown) => {
               console.warn('[progress] grid state join failed:', String(error));
               failedRef.current = true;
@@ -208,13 +242,23 @@ export function PhotoStateGrid({
             if (states === null) break;
             if (!fresh()) return;
             for (const p of raw) {
-              const row = states.get(p.item.id);
+              const row = states.get(p.id);
+              // A rescued photo streams twice (change 4): drop the
+              // MediaStore copy sitting at its mtime slot — the rescued
+              // stream carries it at its true taken_at.
+              if (row?.rescued && !p.fromDb) continue;
               const effective = classifyPhotoState(row);
               if (filter === 'all' || effective === filter) {
                 collected.push({
-                  id: p.item.id,
-                  uri: p.item.uri,
-                  takenAt: p.item.timestamp,
+                  id: p.id,
+                  uri: p.uri,
+                  // A tracked row's dates are the DB's truth (changes
+                  // 2+5); an untracked one has only MediaStore's, and
+                  // its `day` claim is undefined — unless MediaStore
+                  // itself reported it undated, which IS a null-day
+                  // claim (the timestamp is the mtime fallback).
+                  takenAt: row?.taken_at ?? p.timestamp,
+                  day: row !== undefined ? row.day : p.undated ? null : undefined,
                   dbState: row?.state ?? null,
                   effective,
                 });
@@ -253,25 +297,71 @@ export function PhotoStateGrid({
       pagerRef.current = null;
     } else {
       const buckets: (string | undefined)[] = albumIds ? [...albumIds] : [undefined];
-      pagerRef.current = createMergedDescendingPager<LoadedPhoto, string>(
-        buckets.map((album) => async (cursor, count) => {
+      const fetchers: PageFetcher<GridPagedItem, GridCursor>[] = buckets.map(
+        (album) => async (cursor: GridCursor | undefined, count: number) => {
           // FAIL CLOSED (m0.8.2): an errored page used to become an
           // empty exhausted one, so a MediaStore hiccup rendered "No
           // photos in this state" — a confident, wrong answer about the
           // user's library. Record the failure and say so instead.
-          const page = await fetchPhotoPageDesc(startMs, endMs, album, cursor, count).catch(
-            (error: unknown) => {
-              console.warn('[progress] photo page failed:', String(error));
-              failedRef.current = true;
-              return { photos: [], endCursor: undefined, hasNext: false };
-            },
-          );
+          const page = await fetchPhotoPageDesc(
+            startMs,
+            endMs,
+            album,
+            cursor as string | undefined,
+            count,
+          ).catch((error: unknown) => {
+            console.warn('[progress] photo page failed:', String(error));
+            failedRef.current = true;
+            return { photos: [], endCursor: undefined, hasNext: false };
+          });
+          const items: GridPagedItem[] = page.photos.map((p: LoadedPhoto) => ({
+            id: p.item.id,
+            uri: p.item.uri,
+            timestamp: p.item.timestamp,
+            undated: p.undated,
+            fromDb: false,
+          }));
           return {
-            items: page.photos,
+            items,
             nextCursor: page.hasNext && page.endCursor !== undefined ? page.endCursor : null,
           };
-        }),
-        (p) => p.item.timestamp,
+        },
+      );
+      // One more merge source (m0.8.6 change 4): the DB's rescued rows
+      // at their TRUE taken_at. Change 2 alone fixes a rescued photo's
+      // printed date but not its slot — the merge position is decided
+      // before any state join runs. Same fail-closed rule as above.
+      fetchers.push(async (cursor: GridCursor | undefined, count: number) => {
+        const rows = await getRescuedPhotoPage(
+          db,
+          roots,
+          mounted ?? null,
+          cursor as { takenAt: number; assetId: string } | undefined,
+          count,
+        ).catch((error: unknown) => {
+          console.warn('[progress] rescued page failed:', String(error));
+          failedRef.current = true;
+          return [];
+        });
+        const items: GridPagedItem[] = rows.map((r) => ({
+          id: r.asset_id,
+          uri: r.uri,
+          timestamp: r.taken_at,
+          undated: false,
+          fromDb: true,
+        }));
+        const last = rows.length > 0 ? rows[rows.length - 1] : undefined;
+        return {
+          items,
+          nextCursor:
+            rows.length < count || last === undefined
+              ? null
+              : { takenAt: last.taken_at, assetId: last.asset_id },
+        };
+      });
+      pagerRef.current = createMergedDescendingPager<GridPagedItem, GridCursor>(
+        fetchers,
+        (p) => p.timestamp,
       );
     }
     // The DB engine pages the parent's world — before the first counts

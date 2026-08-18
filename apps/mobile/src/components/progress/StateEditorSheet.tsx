@@ -17,7 +17,7 @@ import { editorActions, type EditorAction } from '../../lib/progress';
 import { markDoneToEdit, markEditDone } from '../../db/store';
 import { useReview } from '../../review/ReviewContext';
 import { withUserWritePriority } from '../../lib/writePriority';
-import { dayKey, labelForDayKey } from '../../lib/dates';
+import { dayKey, labelForDayKey, UNDATED_DAY_KEY } from '../../lib/dates';
 import { formatClockSeconds } from '../../lib/format';
 import { colors, touch, useTheme } from '../../theme';
 import { VERDICT_META } from './stateMeta';
@@ -123,7 +123,13 @@ export function StateEditorSheet({
                 <Text style={styles.stateLabel}>{meta.label}</Text>
               </View>
               <Text style={styles.when}>
-                {labelForDayKey(dayKey(photo.takenAt))} · {formatClockSeconds(photo.takenAt)}
+                {/* Date honesty (m0.8.6 change 5): a NULL day is a
+                    tracked, honestly-undated photo — takenAt is the
+                    mtime fallback, so name the unknown and print no
+                    clock instead of "Today · <mtime>". */}
+                {photo.day === null
+                  ? labelForDayKey(UNDATED_DAY_KEY)
+                  : `${labelForDayKey(photo.day ?? dayKey(photo.takenAt))} · ${formatClockSeconds(photo.takenAt)}`}
               </Text>
             </View>
           </View>

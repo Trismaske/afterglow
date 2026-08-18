@@ -2034,7 +2034,12 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
 
       {viewerOpen && (
         <PhotoViewer
-          items={view.items.map((i) => ({ id: i.id, uri: i.uri, takenAt: i.timestamp }))}
+          items={view.items.map((i) => ({
+            id: i.id,
+            uri: i.uri,
+            takenAt: i.timestamp,
+            day: dayOf.get(i.id),
+          }))}
           initialIndex={view.cursor}
           onClose={() => setViewerOpen(false)}
           onChanged={() => void refresh().catch(() => {})}

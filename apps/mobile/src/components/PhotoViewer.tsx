@@ -49,7 +49,7 @@ import { getPhotoFacts, type PhotoFacts } from '../db/store';
 import { decodeOrganizeTarget } from '../db/actions';
 import { isInShareQueue } from '../db/shareStore';
 import { classifyPhotoState } from '../lib/progress';
-import { dayKey, labelForDayKey } from '../lib/dates';
+import { dayKey, labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { formatClockSeconds } from '../lib/format';
 import { colors, useTheme } from '../theme';
 import { VERDICT_META } from './progress/stateMeta';
@@ -63,6 +63,13 @@ export interface ViewerItem {
   id: string;
   uri: string;
   takenAt: number;
+  /** Capture day (m0.8.6 change 5): null = tracked and honestly undated
+   * — the top bar says "Unknown day" and shows no clock, because
+   * `takenAt` is then the mtime fallback and rendering it would turn a
+   * soft claim into a confident lie. undefined = the host has no DB
+   * claim (untracked photo); the bar falls back to `takenAt`, refined by
+   * the facts row once it loads. */
+  day?: string | null;
 }
 
 // 16× (Tristan, 2026-08-04). Past 1:1 pixels by design: a 50 MP frame
@@ -571,7 +578,21 @@ export function PhotoViewer({
             <MaterialCommunityIcons name="close" size={24} color={colors.text} />
           </Pressable>
           <Text style={styles.topTitle}>
-            {labelForDayKey(dayKey(current.takenAt))} · {formatClockSeconds(current.takenAt)}
+            {(() => {
+              // Date honesty (m0.8.6 change 5): the facts row is the
+              // authority once loaded (it self-heals a rescued photo the
+              // host mislabeled); while loading — or when no row exists
+              // (untracked) — the host's own day claim. A NULL day =
+              // honestly undated — name the unknown and print NO clock
+              // (takenAt is the mtime fallback there).
+              const day = facts != null ? facts.day : current.day;
+              if (day === null) return labelForDayKey(UNDATED_DAY_KEY);
+              // taken_at self-heals from the facts row too: a host that
+              // mislabeled a rescued photo with its mtime is corrected
+              // the moment the row loads.
+              const at = facts != null ? facts.taken_at : current.takenAt;
+              return `${labelForDayKey(day ?? dayKey(at))} · ${formatClockSeconds(at)}`;
+            })()}
           </Text>
           <Text style={styles.topIndex}>
             {cursor + 1}/{items.length}
@@ -601,6 +622,7 @@ export function PhotoViewer({
                     id: facts.asset_id,
                     uri: facts.uri,
                     takenAt: facts.taken_at,
+                    day: facts.day,
                     effective: classifyPhotoState({ state: facts.state }),
                     dbState: facts.state,
                     // Layer 2 has to travel with layer 1: without it the

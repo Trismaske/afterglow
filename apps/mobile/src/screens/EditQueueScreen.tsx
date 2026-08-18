@@ -207,7 +207,7 @@ export function EditQueueScreen(_props: Props) {
       <QueueViewer
         rows={rows}
         viewerId={viewerId}
-        toItem={(r) => ({ id: r.asset_id, uri: r.uri, takenAt: r.taken_at })}
+        toItem={(r) => ({ id: r.asset_id, uri: r.uri, takenAt: r.taken_at, day: r.day })}
         onClose={() => setViewerId(null)}
         onChanged={() =>
           void reload()

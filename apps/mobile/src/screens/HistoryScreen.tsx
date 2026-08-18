@@ -296,7 +296,12 @@ export function HistoryScreen(_props: Props) {
           if (index < 0) return null;
           return (
             <PhotoViewer
-              items={photoRows.map((r) => ({ id: r.asset_id, uri: r.uri, takenAt: r.taken_at }))}
+              items={photoRows.map((r) => ({
+                id: r.asset_id,
+                uri: r.uri,
+                takenAt: r.taken_at,
+                day: r.day,
+              }))}
               initialIndex={index}
               onClose={() => setViewerId(null)}
               onChanged={() => void reload(filter).catch(() => {})}

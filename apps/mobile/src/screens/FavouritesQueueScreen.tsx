@@ -33,6 +33,8 @@ interface FavouriteQueueRow {
   asset_id: string;
   uri: string;
   taken_at: number;
+  /** Capture day; null = honestly undated (m0.8.6 change 5). */
+  day: string | null;
   /** 1 = queued to favourite, 0 = queued to un-favourite. */
   favourite_target: number;
   /** 'error' = Android refused this one; still queued, but it needs a
@@ -60,6 +62,7 @@ export function FavouritesQueueScreen() {
         // The photo's CAPTURE time, not when it was queued: the standard
         // viewer renders this as the day and clock the shot was taken.
         taken_at: byId.get(action.photoId)?.takenAt ?? action.queuedAt,
+        day: byId.get(action.photoId)?.day ?? null,
         favourite_target: decodeFavouriteTarget(action.target) === false ? 0 : 1,
         state: action.state,
       }));
@@ -192,7 +195,7 @@ export function FavouritesQueueScreen() {
       <QueueViewer
         rows={rows}
         viewerId={viewerId}
-        toItem={(r) => ({ id: r.asset_id, uri: r.uri, takenAt: r.taken_at })}
+        toItem={(r) => ({ id: r.asset_id, uri: r.uri, takenAt: r.taken_at, day: r.day })}
         onClose={() => setViewerId(null)}
         onChanged={() => void reload().catch(() => {})}
       />

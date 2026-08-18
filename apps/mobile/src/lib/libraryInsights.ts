@@ -166,6 +166,40 @@ export function buildHistogram(buckets: readonly MonthInput[]): Histogram {
   };
 }
 
+/** Histogram layout constants, shared by the styles and the scroll
+ * math below — fixed-width columns are what make bar positions pure
+ * arithmetic (no native measuring). */
+export const HISTOGRAM_COLUMN_W = 14;
+export const HISTOGRAM_UNDATED_GAP = 16;
+export const HISTOGRAM_PAD = 2;
+/** Breathing room the visibility check demands around a bar. */
+const HISTOGRAM_MARGIN = 8;
+
+/**
+ * Minimal scroll keeping the selected histogram bar fully visible (F8,
+ * m0.8.6): null = already visible, no scroll — so a tap on an on-screen
+ * bar never moves the chart under the finger; only a remount that
+ * stranded the ScrollView at offset 0 (the reported defect) or a bar
+ * scrolled out of view produces a target. Clamped to the scrollable
+ * range.
+ */
+export function histogramScrollX(
+  barIndex: number,
+  offsetX: number,
+  viewportW: number,
+  contentW: number,
+  undatedPresent: boolean,
+): number | null {
+  const left =
+    HISTOGRAM_PAD +
+    HISTOGRAM_COLUMN_W * barIndex +
+    (undatedPresent && barIndex >= 1 ? HISTOGRAM_UNDATED_GAP : 0);
+  const want = { from: left - HISTOGRAM_MARGIN, to: left + HISTOGRAM_COLUMN_W + HISTOGRAM_MARGIN };
+  if (want.from >= offsetX && want.to <= offsetX + viewportW) return null;
+  const target = want.from < offsetX ? want.from : want.to - viewportW;
+  return Math.min(Math.max(target, 0), Math.max(0, contentW - viewportW));
+}
+
 /** Local ms range covering a whole "YYYY-MM" month. */
 export function rangeOfMonth(key: string): { startMs: number; endMs: number } {
   const [year, month] = key.split('-').map(Number);

@@ -160,7 +160,10 @@ UNTARGETED bulk writes (keep-rest, share-all, queue clears, move/remove-all) bin
 A re-read may SHRINK the write. It may never widen the write into photos the user never saw.
 Physical operations (share dispatch, album moves, trash) always bind to reachable, because they need the bytes.
 Groups frozen by an unreachable member still GROW: a new photo the engine clusters with their reachable members joins the group, and existing member rows stay byte-for-byte.
-Review-frozen groups never grow.
+Review-frozen groups (finished groups, groups carrying Compare history) never grow.
+
+Since m0.8.6 (D4) the freeze follows CURRENT state with no member contagion: a group holding any unreviewed member is rebuildable whole — decided members included — while a FINISHED group (every member decided), a group carrying Compare history, and a user-ejected single stay frozen.
+Un-reviewing a member from the state editor is what returns a finished group to the scan's reach; the same act deletes the group's Compare history after its confirm names that cost (D5).
 
 The state is **named, never silent** (D5).
 Home carries "SD card not mounted — N photos waiting on it".

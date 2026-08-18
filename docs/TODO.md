@@ -30,21 +30,16 @@ Numbers change whenever an item closes, so **cross-references from code or other
    A workaround is in place: the embedder module decodes natively instead.
    File a minimal-repro issue upstream so the workaround can eventually be dropped.
 
-3. **Group a detected edited copy with its original** (Tristan, 2026-07-28).
+3. **Group a detected edited copy with its original** (Tristan, 2026-07-28; blocker restated after m0.8.6 D4).
    The de-dupe case is obvious: an editor that saves a copy leaves you holding two near-identical photos.
    But the scan cannot pair them today, and the blocker is specific.
-   The regroup boundary (`lib/regroupBoundary.ts`, m0.8 decision 5) freezes any photo whose state has left `unreviewed`, and freezes a whole group if ANY member has.
-   By the time the scan detects a copy, the original is either kept-with-an-edit or staged to cull.
-   Both ends are frozen, so no group can form.
-   The copy itself is now written `unreviewed` (m0.8.2).
-   So the one case that DOES pair is flagging an edit while the original is still undecided.
-   In that case both stay unfrozen, and the scan groups them normally.
-   Deciding this means reopening decision 5.
-   Option one: an explicit "detected copy joins its original's group" write that bypasses the freeze.
-   Option two: a narrower freeze that permits ADDING a member to a reviewed group without rewriting it.
-   **Re-read this once m0.8.6 lands** (docs/Feedback_m0.8.x.md, L2).
-   That release reopens decision 5 in a different narrow direction: the freeze follows a photo's CURRENT state rather than its history.
-   That change reshapes this blocker without answering it, because a detected copy's original is still kept-with-an-edit or staged at detection time.
+   Under the m0.8.6 freeze (`lib/regroupBoundary.ts`, D4): a DECIDED UNGROUPED photo is frozen, and only a group holding an unreviewed member is rebuildable.
+   By the time the scan detects a copy, the original is kept-with-an-edit or staged to cull — an ungrouped decided photo, frozen — so a computed {original, copy} pair sheds the original and degrades to nothing.
+   The copy itself is written `unreviewed` (m0.8.2).
+   The one case that DOES pair is flagging an edit while the original is still undecided.
+   NEW under D4: if the original already sits in a group with any undecided member, that group is rebuildable, so a detected copy CAN join it — the blocker is now only the ungrouped-decided original, the common case.
+   Option one: an explicit "detected copy joins its original" write that bypasses the freeze.
+   Option two: treat a detected copy as the group-forming event (the pair forms with the original's freeze waived once, at detection time).
    Decide this alongside the question of what the copy prompt should offer.
    Tristan notes the use case for copy-saving editors is unclear in the first place, and a substantially cropped copy may genuinely be a different photo.
 

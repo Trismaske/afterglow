@@ -32,24 +32,84 @@ describe('frozenPhotos', () => {
     expect([...frozen].sort()).toEqual(['a', 'b']);
   });
 
-  it('freezes unreviewed photos sitting in a group with a reviewed member', () => {
+  it('a group with ANY unreviewed member is rebuildable whole — decided members included (D4)', () => {
+    // Group 7 = [a, z]: z decided, a unreviewed. The old contagion froze
+    // a (and z); m0.8.6 D4 reverses it — one undecided member makes the
+    // whole group the scan's to reshape. b is a scan-made single, free.
     const frozen = frozenPhotos(
-      ['a', 'b'],
+      ['a', 'b', 'z'],
       maps({
         states: new Map([
           ['a', 'unreviewed'],
           ['b', 'unreviewed'],
-          ['z', 'done'], // outside the window, inside a's group
+          ['z', 'done'],
         ]),
         assignments: new Map([
           ['a', { groupId: 7, userSingle: false }],
-          // assigned single (scan-made) — nothing to freeze over
           ['b', { groupId: null, userSingle: false }],
+          ['z', { groupId: 7, userSingle: false }],
         ]),
         groupMembers: new Map([[7, ['a', 'z']]]),
       }),
     );
-    expect([...frozen]).toEqual(['a']);
+    expect(frozen.size).toBe(0);
+  });
+
+  it('a FINISHED group (every member decided) is settled and frozen whole', () => {
+    const frozen = frozenPhotos(
+      ['a', 'z'],
+      maps({
+        states: new Map([
+          ['a', 'kept'],
+          ['z', 'culled'],
+        ]),
+        assignments: new Map([
+          ['a', { groupId: 7, userSingle: false }],
+          ['z', { groupId: 7, userSingle: false }],
+        ]),
+        groupMembers: new Map([[7, ['a', 'z']]]),
+      }),
+    );
+    expect([...frozen].sort()).toEqual(['a', 'z']);
+  });
+
+  it('un-reviewing one member of a finished group frees it whole (the F9 regroup use case)', () => {
+    // Same group as above after the state editor set z back to
+    // unreviewed: both members return to the scan's reach.
+    const frozen = frozenPhotos(
+      ['a', 'z'],
+      maps({
+        states: new Map([
+          ['a', 'kept'],
+          ['z', 'unreviewed'],
+        ]),
+        assignments: new Map([
+          ['a', { groupId: 7, userSingle: false }],
+          ['z', { groupId: 7, userSingle: false }],
+        ]),
+        groupMembers: new Map([[7, ['a', 'z']]]),
+      }),
+    );
+    expect(frozen.size).toBe(0);
+  });
+
+  it('a metadata group with an unreviewed member STAYS frozen — a deck undo cannot dissolve Compare work (D5)', () => {
+    const frozen = frozenPhotos(
+      ['a', 'z'],
+      maps({
+        states: new Map([
+          ['a', 'kept'],
+          ['z', 'unreviewed'],
+        ]),
+        assignments: new Map([
+          ['a', { groupId: 7, userSingle: false }],
+          ['z', { groupId: 7, userSingle: false }],
+        ]),
+        groupMembers: new Map([[7, ['a', 'z']]]),
+        metadataGroups: new Set([7]),
+      }),
+    );
+    expect([...frozen].sort()).toEqual(['a', 'z']);
   });
 
   it('freezes user-ejected singles even though their state is unreviewed', () => {
@@ -263,5 +323,26 @@ describe('grow-only (m0.8.3 grilling): unreachable-frozen groups accept new memb
       ]),
     );
     expect(tie.appends).toEqual([{ groupId: 3, members: ['new'], timeAttached: [] }]);
+  });
+});
+
+describe('D4: an unfinished mixed group with an unreachable member', () => {
+  it('freezes (half-seen groups never rebuild) and stays growable (its composition is unsettled)', () => {
+    const freeze = windowFreeze(['a', 'b'], {
+      states: new Map([
+        ['a', 'kept'],
+        ['b', 'unreviewed'],
+      ]),
+      assignments: new Map([
+        ['a', { groupId: 7, userSingle: false }],
+        ['b', { groupId: 7, userSingle: false }],
+      ]),
+      groupMembers: new Map([[7, ['a', 'b', 'sd1']]]),
+      metadataGroups: new Set<number>(),
+      reachable: (id) => id !== 'sd1',
+    });
+    expect([...freeze.frozen].sort()).toEqual(['a', 'b']);
+    expect(freeze.growable.get('a')).toBe(7);
+    expect(freeze.growable.get('b')).toBe(7);
   });
 });

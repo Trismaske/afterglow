@@ -1,6 +1,6 @@
 {
   "name": "afterglow-companion",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "main": "index.ts",
   "dependencies": {
     "@afterglow/core": "*",

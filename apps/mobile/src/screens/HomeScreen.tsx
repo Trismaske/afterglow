@@ -950,7 +950,7 @@ export function HomeScreen({ navigation }: Props) {
                     // information scent is the numbers themselves.
                     <Pressable
                       style={styles.queueLink}
-                      onPress={() => navigation.navigate('Groups')}
+                      onPress={() => navigation.navigate('Timeline')}
                     >
                       <View style={styles.queueLinkBody}>
                         <Text style={styles.cardText}>{`${queueTotal} to review`}</Text>
@@ -1016,7 +1016,7 @@ export function HomeScreen({ navigation }: Props) {
               // browseable card, not review work (lib/timeline.ts).
               const first = firstPendingUnit(review.timeline);
               if (!first) {
-                navigation.navigate('Groups');
+                navigation.navigate('Timeline');
                 return;
               }
               const destination = unitDestination(first);

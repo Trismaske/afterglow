@@ -952,6 +952,137 @@ export async function listReviewGroups(
   return out;
 }
 
+/** Keyset cursor for the browse-timeline group stream (m0.8.6 D1):
+ * anchor = the group's newest visible member's taken_at, id-tiebroken
+ * like every newest-first read here. */
+export interface BrowseGroupCursor {
+  anchor: number;
+  groupId: number;
+}
+
+/**
+ * One newest-first keyset page of ALL groups — reviewed included — for
+ * the Timeline's Everything filter (m0.8.6, F2/D1). A separate read
+ * path by design: the pending feed's predicates, optimistic patches and
+ * horizon tails stay untouched behind the Unfinished filter, while this
+ * read is plain refetch-on-version browse data. Members are visible
+ * rows only (present, not trashed, reachable); a group whose every
+ * member is trashed or unreachable simply has no anchor and drops out.
+ * Hidden reachable-vs-not members are named exactly like the pending
+ * read (unreachableCount).
+ */
+export async function fetchBrowseGroupsPage(
+  db: SQLiteDatabase,
+  roots: readonly SourceRoot[] | null,
+  mounted: readonly string[] | null,
+  before: BrowseGroupCursor | undefined,
+  limit: number,
+): Promise<ReviewGroupRow[]> {
+  const src = sourceClause(roots, 'p.uri');
+  const reach = reachClause(mounted, 'p.volume_name');
+  const keyset = before === undefined ? '' : ' HAVING anchor < ? OR (anchor = ? AND g.id < ?)';
+  const keysetParams = before === undefined ? [] : [before.anchor, before.anchor, before.groupId];
+  let out: ReviewGroupRow[] = [];
+  await withReadTransaction(db, async (txn) => {
+    const heads = await txn.getAllAsync<{ id: number; anchor: number }>(
+      `SELECT g.id AS id, MAX(p.taken_at) AS anchor
+         FROM photo_groups g
+         JOIN photo_group_assignments a ON a.group_id = g.id
+         JOIN photos p ON p.asset_id = a.photo_id
+        WHERE p.is_present = 1 AND p.state <> 'trashed'${src.sql}${reach.sql}
+        GROUP BY g.id${keyset}
+        ORDER BY anchor DESC, g.id DESC
+        LIMIT ?`,
+      ...src.params,
+      ...reach.params,
+      ...keysetParams,
+      limit,
+    );
+    if (heads.length === 0) return;
+    const ids = heads.map((h) => Number(h.id));
+    const placeholders = ids.map(() => '?').join(',');
+    const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
+      `SELECT a.group_id, p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+         FROM photo_group_assignments a
+         JOIN photos p ON p.asset_id = a.photo_id
+        WHERE a.group_id IN (${placeholders}) AND p.is_present = 1 AND p.state <> 'trashed'${reach.sql}
+        ORDER BY p.taken_at DESC, p.asset_id DESC`,
+      ...ids,
+      ...reach.params,
+    );
+    const hiddenByGroup = new Map<number, number>();
+    if (reach.sql !== '') {
+      const totals = await txn.getAllAsync<{ group_id: number; n: number }>(
+        `SELECT a.group_id, COUNT(*) AS n
+           FROM photo_group_assignments a
+           JOIN photos p ON p.asset_id = a.photo_id
+          WHERE a.group_id IN (${placeholders}) AND p.is_present = 1
+          GROUP BY a.group_id`,
+        ...ids,
+      );
+      for (const row of totals) hiddenByGroup.set(Number(row.group_id), Number(row.n));
+    }
+    const byGroup = new Map<number, ReviewMemberRow[]>();
+    for (const m of members) {
+      const row: ReviewMemberRow = {
+        asset_id: m.asset_id,
+        uri: m.uri,
+        taken_at: m.taken_at,
+        day: m.day,
+        state: m.state,
+        needs_edit: m.needs_edit,
+        time_attached: m.time_attached,
+      };
+      const bucket = byGroup.get(Number(m.group_id));
+      if (bucket) bucket.push(row);
+      else byGroup.set(Number(m.group_id), [row]);
+    }
+    out = heads
+      .map((h) => {
+        const groupMembers = byGroup.get(Number(h.id)) ?? [];
+        const present = hiddenByGroup.get(Number(h.id));
+        return {
+          groupId: Number(h.id),
+          members: groupMembers,
+          unreachableCount: present === undefined ? 0 : Math.max(0, present - groupMembers.length),
+        };
+      })
+      .filter((g) => g.members.length > 0);
+  });
+  return out;
+}
+
+/**
+ * One newest-first keyset page of ALL ungrouped singles — reviewed
+ * included, trashed excluded — for the Timeline's Everything filter
+ * (m0.8.6, F2/D1). Same visibility rules as the browse groups read.
+ */
+export async function fetchBrowseSinglesPage(
+  db: SQLiteDatabase,
+  roots: readonly SourceRoot[] | null,
+  mounted: readonly string[] | null,
+  before: { takenAt: number; assetId: string } | undefined,
+  limit: number,
+): Promise<ReviewMemberRow[]> {
+  const src = sourceClause(roots, 'p.uri');
+  const reach = reachClause(mounted, 'p.volume_name');
+  const keyset =
+    before === undefined ? '' : ' AND (p.taken_at < ? OR (p.taken_at = ? AND p.asset_id < ?))';
+  const keysetParams = before === undefined ? [] : [before.takenAt, before.takenAt, before.assetId];
+  return db.getAllAsync<ReviewMemberRow>(
+    `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+       FROM photo_group_assignments a
+       JOIN photos p ON p.asset_id = a.photo_id
+      WHERE a.group_id IS NULL AND p.is_present = 1 AND p.state <> 'trashed'${src.sql}${reach.sql}${keyset}
+      ORDER BY p.taken_at DESC, p.asset_id DESC
+      LIMIT ?`,
+    ...src.params,
+    ...reach.params,
+    ...keysetParams,
+    limit,
+  );
+}
+
 /**
  * One group by id regardless of completion (browse/re-decide of a
  * finished group — gate 5); null when the group no longer exists or has

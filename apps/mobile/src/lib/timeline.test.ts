@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 import type { PhotoState } from '@afterglow/core';
 import type { ReviewGroupRow, ReviewMemberRow } from '../db/store';
 import {
+  appendBrowseItems,
+  browseItemTime,
   buildTimeline,
+  EMPTY_BROWSE_ASSEMBLY,
+  flushBrowseTail,
+  unreviewedOnly,
+  type BrowseItem,
   completedDuringVisit,
   destinationAfterUnit,
   findUnitIndex,
@@ -301,5 +307,100 @@ describe('completedDuringVisit', () => {
 
   it('defers the transition while another screen is focused', () => {
     expect(completedDuringVisit({ ref, complete: false }, ref, true, false)).toBe(false);
+  });
+});
+
+describe('the browse assembler (m0.8.6 F2: the Everything filter)', () => {
+  const day = '2026-07-12';
+  const other = '2026-07-11';
+
+  /** The merged stream the pager emits: globally descending by
+   * browseItemTime. */
+  const stream = (items: BrowseItem[]) =>
+    [...items].sort((a, b) => browseItemTime(b) - browseItemTime(a));
+
+  it('assembles the SAME units buildTimeline would from one whole stream (D2: consistency)', () => {
+    const groups = [
+      group(1, [member('a2', 50, day, 'kept'), member('a1', 40, day, 'kept')]),
+      group(2, [member('b2', 20, day), member('b1', 10, day)]),
+    ];
+    const singles = [
+      member('s6', 60, day, 'kept'),
+      member('s3', 30, day),
+      member('s2', 25, other, 'culled'),
+    ];
+    const expected = buildTimeline(groups, singles, NOT_FULL);
+    const items = stream([
+      ...groups.map((g) => ({ kind: 'group' as const, group: g })),
+      ...singles.map((m) => ({ kind: 'single' as const, member: m })),
+    ]);
+    const assembled = flushBrowseTail(appendBrowseItems(EMPTY_BROWSE_ASSEMBLY, items));
+    expect(assembled.map(ids)).toEqual(expected.map(ids));
+    expect(assembled.map((u) => u.kind)).toEqual(expected.map((u) => u.kind));
+  });
+
+  it('keeps the tail run OPEN across batches — the next page may extend it', () => {
+    const first = appendBrowseItems(EMPTY_BROWSE_ASSEMBLY, [
+      { kind: 'single', member: member('s3', 30, day, 'kept') },
+      { kind: 'single', member: member('s2', 25, day, 'kept') },
+    ]);
+    // Nothing finished yet: the run could still grow.
+    expect(first.units).toEqual([]);
+    expect(first.openRun.map((m) => m.asset_id)).toEqual(['s3', 's2']);
+    // The next batch extends the same day, then a group closes it.
+    const second = appendBrowseItems(first, [
+      { kind: 'single', member: member('s1', 20, day) },
+      { kind: 'group', group: group(7, [member('g1', 10, day)]) },
+    ]);
+    expect(second.units.map(ids)).toEqual([['s3', 's2', 's1'], ['g1']]);
+    expect(second.openRun).toEqual([]);
+  });
+
+  it('a day boundary inside a batch closes the run exactly like buildTimeline', () => {
+    const a = appendBrowseItems(EMPTY_BROWSE_ASSEMBLY, [
+      { kind: 'single', member: member('s2', 25, day) },
+      { kind: 'single', member: member('s1', 20, other) },
+    ]);
+    expect(a.units.map(ids)).toEqual([['s2']]);
+    expect(flushBrowseTail(a).map(ids)).toEqual([['s2'], ['s1']]);
+  });
+
+  it('flushBrowseTail closes the run only at exhaustion; empty groups are dropped', () => {
+    const a = appendBrowseItems(EMPTY_BROWSE_ASSEMBLY, [
+      { kind: 'group', group: group(9, []) },
+      { kind: 'single', member: member('s1', 20, day) },
+    ]);
+    expect(a.units).toEqual([]);
+    const flushed = flushBrowseTail(a);
+    expect(flushed.map(ids)).toEqual([['s1']]);
+    // Flushing does not mutate: the assembly can flush again.
+    expect(flushBrowseTail(a).map(ids)).toEqual([['s1']]);
+  });
+});
+
+describe('unreviewedOnly (m0.8.6 D3)', () => {
+  const day = '2026-07-12';
+
+  it('keeps units with pending work, hides staged-cull singles inside runs', () => {
+    const units = buildTimeline(
+      [group(1, [member('a2', 50, day, 'kept'), member('a1', 40, day)])],
+      [member('s3', 30, day), member('s2', 25, day, 'culled')],
+      NOT_FULL,
+    );
+    const filtered = unreviewedOnly(units);
+    // The mixed group renders WHOLE (cards never hide members)…
+    expect(filtered.map(ids)).toEqual([
+      ['a2', 'a1'],
+      ['s3'], // …but the run's staged single is hidden.
+    ]);
+  });
+
+  it('an all-staged run and a finished group vanish — no undecided work', () => {
+    const units = buildTimeline(
+      [group(1, [member('a1', 40, day, 'kept')])],
+      [member('s2', 25, day, 'culled')],
+      NOT_FULL,
+    );
+    expect(unreviewedOnly(units)).toEqual([]);
   });
 });

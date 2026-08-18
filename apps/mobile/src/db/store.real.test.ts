@@ -20,6 +20,8 @@ import {
   getLifetimeStats,
   getRecentDecisionStamps,
   getDaySummariesForDays,
+  fetchBrowseGroupsPage,
+  fetchBrowseSinglesPage,
   getGridPhotosByFilter,
   getMetadataGroupIds,
   getPhotoFacts,
@@ -2406,5 +2408,74 @@ describe("D5: the editor's un-review deletes its group's Compare history", () =>
     await seedDuelGroup(d);
     const facts = await getPhotoFacts(asExpo(d), id('3'));
     expect(facts?.group_has_duels).toBe(1);
+  });
+});
+
+describe('the browse timeline reads (m0.8.6 F2/D1: Everything)', () => {
+  const T = AT - 3_600_000;
+  async function seedBrowse(d: TestDb): Promise<void> {
+    const photos = [
+      upsert('g1a', T + 500),
+      upsert('g1b', T + 490),
+      upsert('s-kept', T + 400),
+      upsert('s-culled', T + 300),
+      upsert('s-open', T + 200),
+      upsert('s-trashed', T + 100),
+    ];
+    await writeContinuousGroups(
+      asExpo(d),
+      {
+        photos,
+        groups: [{ members: [id('g1a'), id('g1b')], timeAttached: [] }],
+        singles: [id('s-kept'), id('s-culled'), id('s-open'), id('s-trashed')],
+      },
+      AT,
+    );
+    await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('g1a'), 'kept'],
+        [id('g1b'), 'kept'],
+        [id('s-kept'), 'kept'],
+        [id('s-culled'), 'culled'],
+      ],
+      AT + 10,
+    );
+    // A trashed row leaves the browse streams entirely.
+    await asExpo(d).runAsync(
+      "UPDATE photos SET state = 'trashed' WHERE asset_id = ?",
+      id('s-trashed'),
+    );
+  }
+
+  it('groups page includes fully-reviewed groups, newest-anchor first', async () => {
+    const d = await fresh();
+    await seedBrowse(d);
+    const page = await fetchBrowseGroupsPage(asExpo(d), null, null, undefined, 10);
+    expect(page.map((g) => g.members.map((m) => m.asset_id))).toEqual([[id('g1a'), id('g1b')]]);
+    // The keyset past the only group is empty.
+    const next = await fetchBrowseGroupsPage(
+      asExpo(d),
+      null,
+      null,
+      { anchor: page[0].members[0].taken_at, groupId: page[0].groupId },
+      10,
+    );
+    expect(next).toEqual([]);
+  });
+
+  it('singles page includes every verdict except trashed, keyset-stable', async () => {
+    const d = await fresh();
+    await seedBrowse(d);
+    const page = await fetchBrowseSinglesPage(asExpo(d), null, null, undefined, 2);
+    expect(page.map((r) => r.asset_id)).toEqual([id('s-kept'), id('s-culled')]);
+    const rest = await fetchBrowseSinglesPage(
+      asExpo(d),
+      null,
+      null,
+      { takenAt: page[1].taken_at, assetId: page[1].asset_id },
+      10,
+    );
+    expect(rest.map((r) => r.asset_id)).toEqual([id('s-open')]);
   });
 });

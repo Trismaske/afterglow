@@ -198,6 +198,102 @@ export function buildTimeline(
   return kept;
 }
 
+/**
+ * The Everything filter's INCREMENTAL unit assembly (m0.8.6, F2/D1).
+ * The browse read arrives as one globally-descending item stream (the
+ * merged pager handles the two-source horizon buffering), so the
+ * assembler only has to apply buildTimeline's own unit rules — a group
+ * closes the open run; a day change closes it — while keeping the tail
+ * run OPEN across pages: the next page's singles may still belong to
+ * it. `flushBrowseTail` closes it when the stream is exhausted.
+ * Everything renders exactly as the pending view would (D2): same
+ * rules, same unit shapes, no collapse.
+ */
+export type BrowseItem =
+  { kind: 'group'; group: ReviewGroupRow } | { kind: 'single'; member: ReviewMemberRow };
+
+/** The merged pager's ordering key — identical to buildTimeline's merge
+ * anchors, so the assembled units come out in the same order. */
+export const browseItemTime = (item: BrowseItem): number =>
+  item.kind === 'group' ? groupAnchor(item.group) : item.member.taken_at;
+
+export interface BrowseAssembly {
+  /** Finished units, newest-first. */
+  units: TimelineUnit[];
+  /** The still-open tail run (newest-first) — NOT yet a unit. */
+  openRun: ReviewMemberRow[];
+}
+
+export const EMPTY_BROWSE_ASSEMBLY: BrowseAssembly = { units: [], openRun: [] };
+
+function closeRunInto(units: TimelineUnit[], run: readonly ReviewMemberRow[]): void {
+  if (run.length === 0) return;
+  const members = [...run];
+  units.push({
+    kind: 'run',
+    day: dayOf(members[0]),
+    members,
+    newestAt: members[0].taken_at,
+    from: members[members.length - 1].taken_at,
+    to: members[0].taken_at,
+  });
+}
+
+/** Consume one merged batch; returns the extended assembly (inputs
+ * untouched — the screen holds the previous value in state). */
+export function appendBrowseItems(
+  assembly: BrowseAssembly,
+  items: readonly BrowseItem[],
+): BrowseAssembly {
+  const units = [...assembly.units];
+  let run = [...assembly.openRun];
+  for (const item of items) {
+    if (item.kind === 'group') {
+      if (item.group.members.length === 0) continue;
+      closeRunInto(units, run);
+      run = [];
+      units.push({ kind: 'group', group: item.group, newestAt: groupAnchor(item.group) });
+      continue;
+    }
+    if (run.length > 0 && dayOf(run[run.length - 1]) !== dayOf(item.member)) {
+      closeRunInto(units, run);
+      run = [];
+    }
+    run.push(item.member);
+  }
+  return { units, openRun: run };
+}
+
+/** The stream is exhausted — the tail run can no longer grow. */
+export function flushBrowseTail(assembly: BrowseAssembly): TimelineUnit[] {
+  const units = [...assembly.units];
+  closeRunInto(units, assembly.openRun);
+  return units;
+}
+
+/**
+ * The Unreviewed-only filter (m0.8.6 D3): units with at least one
+ * unreviewed member; within runs, staged-cull singles are hidden (an
+ * all-staged run vanishes — it holds no undecided work). Group cards
+ * render whole, as everywhere else. A pure subset of the Unfinished
+ * data — no separate read. Run ranges are kept as loaded so the deck
+ * opens the same rows it would from Unfinished.
+ */
+export function unreviewedOnly(units: readonly TimelineUnit[]): TimelineUnit[] {
+  const out: TimelineUnit[] = [];
+  for (const unit of units) {
+    if (!unitHasPending(unit)) continue;
+    if (unit.kind === 'group') {
+      out.push(unit);
+      continue;
+    }
+    const members = unit.members.filter((m) => m.state === 'unreviewed');
+    if (members.length === 0) continue;
+    out.push({ ...unit, members });
+  }
+  return out;
+}
+
 export interface UnitVisitState {
   ref: UnitRef | null;
   complete: boolean | null;

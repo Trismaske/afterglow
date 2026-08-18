@@ -7,7 +7,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
  * Bottom tabs (m0.8.1): Edit · Favourite · Home · Organize · Share,
  * count-badged, with Home as the raised center circle (MainTabBar). The
  * bar exists only on these five surfaces — full-screen review
- * (Groups/Deck/Compare/…) lives in the parent stack above it.
+ * (Timeline/Deck/Compare/…) lives in the parent stack above it.
  */
 export type MainTabParamList = {
   Home: undefined;
@@ -23,7 +23,7 @@ export type MainTabParamList = {
 
 export type RootStackParamList = {
   Main: NavigatorScreenParams<MainTabParamList> | undefined;
-  Groups: undefined;
+  Timeline: undefined;
   /**
    * Swipe-deck review (m0.4): page through a unit, cull as you go.
    *

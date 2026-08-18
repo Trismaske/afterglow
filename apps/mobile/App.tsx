@@ -14,7 +14,7 @@ import { mountedVolumeSet, onVolumesChanged } from './src/lib/mountedVolumes';
 import { DATABASE_NAME, migrateDatabase } from './src/db/database';
 import { ReviewProvider, useReview } from './src/review/ReviewContext';
 import { HomeScreen } from './src/screens/HomeScreen';
-import { GroupsScreen } from './src/screens/GroupsScreen';
+import { TimelineScreen } from './src/screens/TimelineScreen';
 import { DeckScreen } from './src/screens/DeckScreen';
 import { CompareScreen } from './src/screens/CompareScreen';
 import { CullListScreen } from './src/screens/CullListScreen';
@@ -190,7 +190,7 @@ function ThemedNavigator() {
         }}
       >
         <Stack.Screen name="Main" component={MainTabs} options={{ headerShown: false }} />
-        <Stack.Screen name="Groups" component={GroupsScreen} options={{ title: 'Review' }} />
+        <Stack.Screen name="Timeline" component={TimelineScreen} options={{ title: 'Timeline' }} />
         {/* ONE deck route for both unit kinds (m0.8.5, L4). The title is
             per-unit, so the screen sets it itself as it advances. */}
         <Stack.Screen name="Deck" component={DeckScreen} options={{ title: 'Review' }} />

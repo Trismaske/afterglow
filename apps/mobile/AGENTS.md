@@ -90,7 +90,7 @@ One line each.
 The screen file's header is the contract.
 
 - **Home**: goal ring + streaks, the forecast-headline Progress row, day sections, scan status, unreachable-volume banners.
-- **Groups**: the review overview, the merged timeline of unit cards.
+- **Timeline** (`TimelineScreen.tsx`): the merged timeline of unit cards, three filters (m0.8.6, F2) — Unfinished (the pending feed), Everything (a separate DB-paged browse read), Unreviewed only (a display subset). The last filter choice is remembered.
 - **Deck** (`DeckScreen.tsx`): ONE unified deck over groups and day-scoped singles runs, on ONE route. The unit is state and advances in place (m0.8.5, L4) — the SCREEN and its chrome never remount per unit, while the pager FlatList is deliberately keyed per unit: a reused native scroll view carries offsets and momentum no event reliably reports, and discarding it with the unit is what keeps the stage, badge and controls in agreement.
 - **Compare**: A/B flip with synchronized zoom. Whole-table duels decide, all others triage.
 - **CullList**: the durable global cull queue. Confirm loops the trash-attempt lifecycle.

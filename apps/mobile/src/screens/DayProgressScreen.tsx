@@ -82,7 +82,7 @@ export function DayProgressScreen({ route, navigation }: Props) {
     }, [db, day, version, hydrateBadges, foregroundTick]),
   );
 
-  /** Same badge set as the review overview (GroupsScreen): the verdict
+  /** Same badge set as the review overview (TimelineScreen): the verdict
    * plus every action at its own weight, none replacing another — the
    * previous `kept && needs_edit ? edit : keep` hid the verdict behind
    * an action (the HistoryScreen fix, this release; docs/STATE_MODEL.md).
@@ -214,7 +214,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   groupsFailed: { color: colors.textDim, fontSize: 13 },
-  // Wrapping cluster inside the thumbnail (GroupsScreen's rule) — every
+  // Wrapping cluster inside the thumbnail (TimelineScreen's rule) — every
   // badge stays visible.
   badges: { position: 'absolute', right: 2, bottom: 2, left: 2 },
 });

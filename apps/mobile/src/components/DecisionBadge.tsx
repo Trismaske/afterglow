@@ -40,7 +40,8 @@ import type { BadgeWeight, PhotoBadge } from '../lib/photoBadges';
  * their single state glyph, where a pencil means "in the edit queue"
  * rather than a flag beside a verdict.
  */
-export type DecisionKind = 'cull' | 'keep' | 'edit' | 'fav' | 'fav_off' | 'share' | 'organize';
+export type DecisionKind =
+  'cull' | 'keep' | 'trashed' | 'edit' | 'fav' | 'fav_off' | 'share' | 'organize';
 
 export const DECISION_GLYPHS: Record<
   DecisionKind,
@@ -48,6 +49,7 @@ export const DECISION_GLYPHS: Record<
 > = {
   cull: 'close',
   keep: 'check',
+  trashed: 'trash-can-outline',
   edit: 'pencil',
   fav: 'heart',
   // Queued REMOVAL (Tristan, grilling Q5): the slash says the direction
@@ -61,6 +63,10 @@ export const DECISION_GLYPHS: Record<
 const BADGE_COLORS: Record<DecisionKind, { fg: string; bg: string }> = {
   cull: { fg: colors.cull, bg: colors.cullDim },
   keep: { fg: colors.keep, bg: colors.keepDim },
+  // The executed cull (m0.8.6 D9, History tombstones): cull-red — the
+  // state model's one double-duty hue — with the trash-can glyph telling
+  // 'done' apart from 'staged'.
+  trashed: { fg: colors.cull, bg: colors.cullDim },
   edit: { fg: colors.edit, bg: colors.editDim },
   fav: { fg: colors.fav, bg: colors.favDim },
   fav_off: { fg: colors.fav, bg: colors.favDim },

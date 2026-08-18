@@ -51,3 +51,14 @@ describe('photoBadges', () => {
     expect(photoBadges({ ...NONE, state: 'culled' })).toEqual([{ kind: 'cull', weight: 'live' }]);
   });
 });
+
+it("a trashed photo badges the trash-can verdict (D9's tombstone promise)", () => {
+  const badges = photoBadges({
+    state: 'trashed',
+    edit: null,
+    favourite: null,
+    organize: null,
+    share: null,
+  });
+  expect(badges).toEqual([{ kind: 'trashed', weight: 'live' }]);
+});

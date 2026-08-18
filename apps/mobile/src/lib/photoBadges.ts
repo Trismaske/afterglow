@@ -53,10 +53,13 @@ export interface PhotoBadgeInput {
 
 export function photoBadges(input: PhotoBadgeInput): PhotoBadge[] {
   const badges: PhotoBadge[] = [];
-  // Layer 1, the verdict. 'trashed' photos never render in a review
-  // surface, so only the two live verdicts badge.
+  // Layer 1, the verdict. 'trashed' badges too since m0.8.6 (D9):
+  // History's tombstone rows render executed culls, and D9 promises the
+  // placeholder a verdict badge — the trash-can in cull-red, read apart
+  // from a merely staged cull.
   if (input.state === 'culled') badges.push({ kind: 'cull', weight: 'live' });
   else if (input.state === 'kept') badges.push({ kind: 'keep', weight: 'live' });
+  else if (input.state === 'trashed') badges.push({ kind: 'trashed', weight: 'live' });
   if (input.edit) badges.push({ kind: 'edit', weight: input.edit });
   if (input.favourite === 'removing') badges.push({ kind: 'fav_off', weight: 'live' });
   else if (input.favourite) badges.push({ kind: 'fav', weight: input.favourite });

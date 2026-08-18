@@ -264,7 +264,7 @@ Terms used below:
 10. **The refusals are the honest three.**
     Open the state editor on: a trashed photo (History → a trashed row), a photo with an applied organize move, a photo already shared.
     Pass: each shows its explanation and no control that would claim the impossible; everything else on those photos stays editable.
-11. **An undated photo never claims Today (change 5).**
+11. **An undated photo never claims Today (change 5)** *(the pin is test-locked at the store layer; the S23 eyes-on walk stayed manual — the fixture card sits deep in the timeline)*.
     On the S23: open `NOEXIF_undated.jpg` (DCIM/SpikeRAW) in the Progress grid's viewer and its state editor.
     Pass: both read *Unknown day* — no date, no confident clock derived from file times.
 
@@ -290,7 +290,7 @@ Terms used below:
 16. **A forgotten card's work stays too** *(only if a disposable SD card is at hand — test data only)*.
     Settings → the card's source row → *Forget this card* (keep stats).
     Pass: its decided photos appear in History as placeholder tiles with their verdicts and dates; lifetime stats are unchanged.
-17. **"Shared" means an app was chosen** *(machine-checked on the S10e's Samsung sheet: a Drive pick fired the chosen broadcast and made the one Shared row; a dismissed sheet was swept — "1 abandoned share sheet(s) discarded" — with the photo still queued; repeat by hand on the S23)*.
+17. **"Shared" means an app was chosen** *(machine-checked on BOTH Samsung sheets: a Drive pick fired the chosen broadcast and made the one Shared row on each phone; the S10e's dismissed sheet was swept — "1 abandoned share sheet(s) discarded" — with the photo still queued)*.
     Share queue → share a photo → pick any app in the sheet (e.g. Gmail; sending can be cancelled inside the app).
     Pass: History's *Shared* chip shows the batch.
     Then share another photo and dismiss the share sheet with Back instead of choosing.

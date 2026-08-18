@@ -163,12 +163,13 @@ Two implementation guards: the per-page MediaStore reconcile (which drops extern
 - **The browse-swap unify**: the two control-row branches merge into one block whose per-control state (visible, dimmed, disabled, label) derives from the unit's view state.
   The `finishing` escape-clause flash dies with the swap: there is no longer a whole-row swap to flash.
 
-## 10. The zoom port (D12 — LIFTED OUT, 2026-08-18)
+## 10. The zoom port (D12 — built; the lift was reversed in the closing grilling)
 
-Lifted per this section's own rule: the release ran long, and gesture feel-tuning at a session's tail (m0.8.5's pinch took five device rounds) risks shipping half-tuned code on the three most delicate surfaces.
-The design survives for the next release that claims it: port react-native-zoom-toolkit's touch-position math — translation derived from the fingers' absolute focal position each frame, continuous across finger-set changes — into the existing inline worklets on all three zoom surfaces (deck, PhotoViewer, Compare).
+A provisional lift was reversed by Tristan in the closing grilling (2026-08-18): the port ships in m0.8.6.
+The design: port react-native-zoom-toolkit's touch-position math — translation derived from the fingers' absolute focal position each frame, continuous across finger-set changes — into the existing inline worklets on all three zoom surfaces (deck, PhotoViewer, Compare).
 Hard constraints stand: no host `GestureDetector`, no `runOnJS`, callbacks inline in the gesture configs, state in shared values.
 The engagement rule (one contiguous two-finger stretch) and momentum decay are kept; only the pan's translation source changes.
+Feel acceptance is §13 check 22, on human thumbs.
 
 ## 11. Implementation phases
 
@@ -184,7 +185,7 @@ Each phase lands with its tests and its doc edits, and is committed on `initial`
 | 6 | History tombstones | §8: feed predicates, placeholder tiles, the Trashed chip. |
 | 7 | Share resolution | §6: the native callback, the schema, discard semantics, the Shared chip. |
 | 8 | The deck notes | §9: N1, N2, the browse-swap unify. |
-| 9 | The zoom port (stretch) | §10. LIFTED OUT (2026-08-18) — rides to a later release. |
+| 9 | The zoom port | §10. Built — the provisional lift was reversed in the closing grilling. |
 
 ## 12. Testing strategy
 
@@ -329,4 +330,7 @@ Each becomes a numbered entry here as it is implemented, alongside any new judgm
 
 | # | Call | Tier |
 |---|---|---|
-| — | *(filled during the build)* | |
+| 1 | §10: the pan focal reads the touches' ABSOLUTE (window) coordinates, not view-local x/y — the gesture's view is carried by the very translation the pan drives, so local coordinates move under a motionless finger (a feedback loop). Deltas are frame-independent, so the window frame serves. | Assumed (from RNGH's TouchData shape; not device-measured) |
+| 2 | §10: touch-set changes are detected by `onTouchesDown`/`onTouchesUp` forcing a re-anchor (tracking reset to `PAN_TRACKING_START`), with `panFrame`'s per-move-frame touch-count comparison as the safety net for a lift-and-land swap between two move frames. Mirrors `pinchFrame`'s count rule. | Assumed |
+| 3 | §10: translation only applies while the pan handler is ACTIVE (`event.state` on the touch event) AND the photo is zoomed; every other move frame re-anchors continuously, so the activation threshold and a mid-stream zoom engage without a jump. | Assumed |
+| 4 | §10: `averageTouches: true` stays on all three pans — it no longer feeds translation, but the release `velocityX/Y` the decay keeps (per the design) is still computed over the averaged pointer. | Assumed |

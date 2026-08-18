@@ -8,9 +8,17 @@
  * A double tap zooms to DOUBLE_TAP_ZOOM_SCALE about the tapped point
  * (tx = -(x - W/2) · (s - 1)), clamped to those same bounds.
  *
- * The impure partners live in the screens: DeckScreen / PhotoViewer wire
- * this into their gesture worklets and page Pressables (the double-tap
- * Pressable arbitration is the shared hook
+ * The zoomed pan itself is TOUCH-POSITION anchored (m0.8.6 §10, the
+ * react-native-zoom-toolkit port): `panFrame` derives the translation
+ * from the fingers' absolute focal position each frame and re-anchors on
+ * every touch-set change, so translation stays continuous while two
+ * thumbs walk across the photo — the gesture-start-relative
+ * translationX/Y jumped at every finger land or lift, because the
+ * averaged point it measures from moved with the touch set.
+ *
+ * The impure partners live in the screens: DeckScreen / PhotoViewer /
+ * CompareScreen wire this into their gesture worklets and page
+ * Pressables (the double-tap Pressable arbitration is the shared hook
  * components/useDoubleTapZoom.ts) — taps stay off
  * Gesture.Tap because a gesture worklet may not cross the worklets→JS
  * bridge (see DeckScreen's bridge comment), while writing shared values
@@ -138,6 +146,111 @@ export function pinchFrame(
     };
   }
   return { tracking, scale: tracking.anchorScale * pinchGain(raw, tracking.base) };
+}
+
+/** The slice of RNGH's TouchData the pan math reads. ABSOLUTE (window)
+ * coordinates deliberately: the gesture's view is itself carried by the
+ * translation it drives, so view-local x/y move under a motionless
+ * finger — a feedback loop. The math only needs deltas, so any frame
+ * that does not move with the photo works; the window is that frame. */
+export type PanTouch = { absoluteX: number; absoluteY: number };
+
+/** The mean touch position — the pan's focal point. One touch is its
+ * own focal. An empty list returns the origin; callers never translate
+ * from it (`panFrame` re-anchors on a zero-touch frame). */
+export function touchFocal(touches: readonly PanTouch[]): { x: number; y: number } {
+  'worklet';
+  if (touches.length === 0) return { x: 0, y: 0 };
+  let x = 0;
+  let y = 0;
+  for (const touch of touches) {
+    x += touch.absoluteX;
+    y += touch.absoluteY;
+  }
+  return { x: x / touches.length, y: y / touches.length };
+}
+
+/**
+ * Per-frame pan tracking for the TOUCH-POSITION pan (m0.8.6 §10 — the
+ * react-native-zoom-toolkit port). The walking-pan defect: driving the
+ * zoomed pan from the gesture's start-relative translationX/Y
+ * (`averageTouches`) hiccuped at every finger land or lift, because the
+ * averaged point the translation measures from jumps with the touch
+ * set. Instead the translation is derived from the fingers' absolute
+ * focal position each frame against an anchor:
+ *
+ *   tx = base + (focal − anchor), clamped to the pan bounds
+ *
+ * and ANY touch-set change re-anchors — anchor := the current focal,
+ * base := the current translation — which by construction changes
+ * nothing at the re-anchor instant, so the translation stays continuous
+ * across finger changes. A frame that is not `panning` (the gesture not
+ * yet active, or the photo not zoomed) re-anchors continuously, so the
+ * moment panning starts is just as jump-free.
+ *
+ * Pure and worklet-safe; the screens carry the tracking in one shared
+ * value, force a re-anchor from onTouchesDown/onTouchesUp (the frame
+ * where the set actually changed — the count comparison here is the
+ * safety net for a same-count swap between move frames), and reset it
+ * to PAN_TRACKING_START as each touch stream begins.
+ */
+export type PanTracking = {
+  /** Touch count at the anchor frame; 0 = no anchor yet, the next move
+   * frame re-anchors (what onTouchesDown/onTouchesUp force). */
+  pointers: number;
+  /** The focal position (window coordinates) at the anchor frame. */
+  anchorX: number;
+  anchorY: number;
+  /** The translation when the anchor was set. */
+  baseX: number;
+  baseY: number;
+};
+
+export const PAN_TRACKING_START: PanTracking = {
+  pointers: 0,
+  anchorX: 0,
+  anchorY: 0,
+  baseX: 0,
+  baseY: 0,
+};
+
+/** One touch frame in, the tracking to carry and the translation to
+ * show out. `translation: null` = leave the photo exactly where it is
+ * (a re-anchor frame, or not panning). `maxX`/`maxY` are the caller's
+ * pan bounds for the current scale. */
+export function panFrame(
+  tracking: PanTracking,
+  touches: readonly PanTouch[],
+  panning: boolean,
+  currentTx: number,
+  currentTy: number,
+  maxX: number,
+  maxY: number,
+): { tracking: PanTracking; translation: { x: number; y: number } | null } {
+  'worklet';
+  const focal = touchFocal(touches);
+  const pointers = touches.length;
+  if (!panning || pointers === 0 || pointers !== tracking.pointers) {
+    // Re-anchor: measure everything after from HERE, moving nothing now.
+    return {
+      tracking: {
+        pointers,
+        anchorX: focal.x,
+        anchorY: focal.y,
+        baseX: currentTx,
+        baseY: currentTy,
+      },
+      translation: null,
+    };
+  }
+  const clamp = (value: number, max: number) => Math.min(max, Math.max(-max, value));
+  return {
+    tracking,
+    translation: {
+      x: clamp(tracking.baseX + (focal.x - tracking.anchorX), maxX),
+      y: clamp(tracking.baseY + (focal.y - tracking.anchorY), maxY),
+    },
+  };
 }
 
 /** Pan bounds at `scale` for a contain-fit photo of aspect `aspect`

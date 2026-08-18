@@ -16,6 +16,7 @@ import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   InterceptingGestureDetector,
+  State,
   usePanGesture,
   usePinchGesture,
   useSimultaneousGestures,
@@ -63,7 +64,13 @@ import { useSQLiteContext } from 'expo-sqlite';
 import { addToShareQueue, removeFromShareQueue } from '../db/shareStore';
 import { queueOrganize, unqueueOrganize } from '../db/organizeStore';
 import { useDoubleTapZoom } from '../components/useDoubleTapZoom';
-import { PINCH_TRACKING_START, panBounds, pinchFrame } from '../lib/zoomTarget';
+import {
+  PAN_TRACKING_START,
+  PINCH_TRACKING_START,
+  panBounds,
+  panFrame,
+  pinchFrame,
+} from '../lib/zoomTarget';
 import { stripScrollOffset } from '../lib/stripScroll';
 import {
   deckUnitKey,
@@ -588,6 +595,11 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
    * 5: a pinch release inherited the pan's velocity and flung the
    * photo). Cleared when the next touch stream begins. */
   const pinchZoomed = useSharedValue(false);
+  // The touch-position pan's anchor + base (m0.8.6 §10, lib/zoomTarget
+  // panFrame): translation is derived from the fingers' absolute focal
+  // position against these, re-anchored on every touch-set change, so
+  // panning stays continuous while two thumbs walk across the photo.
+  const panTracking = useSharedValue(PAN_TRACKING_START);
 
   const resetZoom = useCallback(() => {
     scale.value = 1;
@@ -700,6 +712,9 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     simultaneousWith: stageGesture,
     minPointers: 1,
     maxPointers: 2,
+    // Only the release VELOCITY still reads the averaged pointer (the
+    // decay below); the translation itself is touch-position anchored
+    // (onTouchesMove).
     averageTouches: true,
     onBegin: () => {
       // A finger landing mid-decay claims the photo wherever the decay
@@ -716,11 +731,38 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       // by the frames ahead of it.
       pinchZoomed.value = false;
     },
-    onUpdate: (event) => {
-      if (scale.value <= 1) return;
+    // The zoomed pan is TOUCH-POSITION anchored (m0.8.6 §10, the
+    // react-native-zoom-toolkit port): translation comes from the
+    // fingers' absolute focal position each frame (panFrame), NOT from
+    // the gesture's start-relative translationX/Y — the averaged point
+    // that translation measures from jumps whenever a finger lands or
+    // lifts, which hiccuped every two-thumb walking pan. A touch-set
+    // change re-anchors instead (down/up force it; panFrame's count
+    // check catches a same-count swap between move frames), so the
+    // translation stays continuous across finger changes.
+    onTouchesDown: () => {
+      panTracking.value = PAN_TRACKING_START;
+    },
+    onTouchesUp: () => {
+      panTracking.value = PAN_TRACKING_START;
+    },
+    onTouchesMove: (event) => {
       const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
-      tx.value = clampPan(savedTx.value + event.translationX, bounds.maxX);
-      ty.value = clampPan(savedTy.value + event.translationY, bounds.maxY);
+      const step = panFrame(
+        panTracking.value,
+        event.allTouches,
+        // Not yet active (or not zoomed) re-anchors continuously, so
+        // the pan's activation threshold cannot jump the photo either.
+        event.state === State.ACTIVE && scale.value > 1,
+        tx.value,
+        ty.value,
+        bounds.maxX,
+        bounds.maxY,
+      );
+      panTracking.value = step.tracking;
+      if (step.translation === null) return;
+      tx.value = step.translation.x;
+      ty.value = step.translation.y;
     },
     onDeactivate: (event) => {
       savedTx.value = tx.value;

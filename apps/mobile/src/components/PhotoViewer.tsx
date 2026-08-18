@@ -27,6 +27,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   GestureHandlerRootView,
   InterceptingGestureDetector,
+  State,
   useNativeGesture,
   usePanGesture,
   usePinchGesture,
@@ -56,7 +57,13 @@ import { VERDICT_META } from './progress/stateMeta';
 import { StateEditorSheet } from './progress/StateEditorSheet';
 import type { GridPhoto } from './progress/PhotoStateGrid';
 import { useDoubleTapZoom } from './useDoubleTapZoom';
-import { PINCH_TRACKING_START, panBounds, pinchFrame } from '../lib/zoomTarget';
+import {
+  PAN_TRACKING_START,
+  PINCH_TRACKING_START,
+  panBounds,
+  panFrame,
+  pinchFrame,
+} from '../lib/zoomTarget';
 
 /** What a host must know about each photo it shows. */
 export interface ViewerItem {
@@ -165,6 +172,11 @@ export function PhotoViewer({
    * pinch ending, not a flick, so the pan decay stays out of it
    * (DeckScreen carries the same rule). */
   const pinchZoomed = useSharedValue(false);
+  // The touch-position pan's anchor + base (m0.8.6 §10, lib/zoomTarget
+  // panFrame): translation is derived from the fingers' absolute focal
+  // position against these, re-anchored on every touch-set change, so
+  // panning stays continuous while two thumbs walk across the photo.
+  const panTracking = useSharedValue(PAN_TRACKING_START);
   const pagerGesture = useNativeGesture();
 
   const resetZoom = useCallback(() => {
@@ -244,6 +256,9 @@ export function PhotoViewer({
     simultaneousWith: zoomGesture,
     minPointers: 1,
     maxPointers: 2,
+    // Only the release VELOCITY still reads the averaged pointer (the
+    // decay below); the translation itself is touch-position anchored
+    // (onTouchesMove).
     averageTouches: true,
     onBegin: () => {
       // A finger landing mid-decay claims the photo wherever the decay
@@ -259,11 +274,37 @@ export function PhotoViewer({
       // by the frames ahead of it.
       pinchZoomed.value = false;
     },
-    onUpdate: (event) => {
-      if (scale.value <= 1) return;
+    // The zoomed pan is TOUCH-POSITION anchored (m0.8.6 §10, the
+    // react-native-zoom-toolkit port — DeckScreen carries the full
+    // rationale): translation comes from the fingers' absolute focal
+    // position each frame (panFrame), not from the start-relative
+    // translationX/Y whose averaged origin jumps at every finger land
+    // or lift. A touch-set change re-anchors instead (down/up force
+    // it; panFrame's count check catches a same-count swap between
+    // move frames), keeping the translation continuous.
+    onTouchesDown: () => {
+      panTracking.value = PAN_TRACKING_START;
+    },
+    onTouchesUp: () => {
+      panTracking.value = PAN_TRACKING_START;
+    },
+    onTouchesMove: (event) => {
       const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
-      tx.value = clampPan(savedTx.value + event.translationX, bounds.maxX);
-      ty.value = clampPan(savedTy.value + event.translationY, bounds.maxY);
+      const step = panFrame(
+        panTracking.value,
+        event.allTouches,
+        // Not yet active (or not zoomed) re-anchors continuously, so
+        // the pan's activation threshold cannot jump the photo either.
+        event.state === State.ACTIVE && scale.value > 1,
+        tx.value,
+        ty.value,
+        bounds.maxX,
+        bounds.maxY,
+      );
+      panTracking.value = step.tracking;
+      if (step.translation === null) return;
+      tx.value = step.translation.x;
+      ty.value = step.translation.y;
     },
     onDeactivate: (event) => {
       savedTx.value = tx.value;

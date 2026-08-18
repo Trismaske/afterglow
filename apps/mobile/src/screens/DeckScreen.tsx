@@ -279,11 +279,13 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   /**
    * A finish is under way and this unit is on its way out (F6).
    *
-   * Completing a unit flips `browse`, which swaps the whole live control
-   * block for the browse one. Before L4 nobody saw it — the
-   * `navigation.replace` had already blanked the screen. Now the advance
-   * is a state change, so that swap would paint for a frame and read as
-   * the layout "reflowing" under your thumb.
+   * Completing a unit flips `browse`. Since the m0.8.6 §9 unify the
+   * control block is ONE stable layout for both modes — a mode change
+   * moves only per-control state, so nothing can visibly swap — but
+   * `finishing` still holds the LIVE control semantics through the
+   * finish gap: the singles refetch is async, and browse deriving from
+   * stale pre-write rows must not re-route the Edit chip (the block's
+   * one per-mode behaviour fork) mid-advance.
    *
    * Cleared by the unit change the finish causes, or — if the write left
    * the unit incomplete after all, e.g. a scan added rows mid-write — by
@@ -1488,8 +1490,6 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   const favourite = isFavouriteSelected(favouriteStatus(view.current.id));
   const { share: shareQueued, organize: organizeQueued } = queuedFor(view.current.id);
   const currentState = view.stateOf.get(view.current.id) ?? 'unreviewed';
-  const browseState: RedecideTarget =
-    currentState === 'culled' ? 'cull' : flagged ? 'to_edit' : 'keep';
   /** Every badge a deck photo wears — the verdict AND all four actions,
    * none hiding another (m0.8.1 round 4), each at its own weight: loud
    * while it waits for you, quiet once the photo carries it (m0.8.2).
@@ -1531,11 +1531,19 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   const decideCurrent = async (target: RedecideTarget) => {
     if (inert || current === null) return;
     const index = cursor;
-    // Still read here, but only to decide whether the PAGER advances —
-    // the goal credit comes from the write itself (m0.8.5, A3).
-    const wasUnreviewed = (stateOf.get(current.id) ?? 'unreviewed') === 'unreviewed';
+    // Advance iff the VERDICT changed to a different decided verdict, or
+    // was fresh (m0.8.6 N1, one predicate): unreviewed → decided and
+    // kept ↔ culled advance; an undo (tapping the active verdict —
+    // exactly `redecide`'s clear case) stays, and kept → to_edit stays
+    // too — queuing work on the photo you are looking at must not yank
+    // the pager off it. The state is read only to route the pager; the
+    // goal credit comes from the write itself (m0.8.5, A3).
+    const prior = stateOf.get(current.id) ?? 'unreviewed';
+    const activeTarget = prior === 'culled' ? 'cull' : prior === 'kept' ? 'keep' : null;
+    const targetVerdict = target === 'cull' ? 'culled' : 'kept';
+    const advances = activeTarget !== target && (prior === 'unreviewed' || targetVerdict !== prior);
     await redecide(current.id, target);
-    if (wasUnreviewed && index + 1 < deckItems.length) jumpTo(index + 1);
+    if (advances && index + 1 < deckItems.length) jumpTo(index + 1);
   };
 
   return (
@@ -1745,208 +1753,140 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
         ))}
       </ScrollView>
 
-      {view.browseControls ? (
-        // BROWSE (m0.8.2 unification): a completed group and a completed
-        // singles run re-decide identically — Keep/Cull chips, the
-        // actions, no Compare (its verdicts reject decided photos; the
-        // chips are the re-decide path).
-        <>
-          <View style={styles.actionRow}>
-            {(
-              [
-                {
-                  target: 'keep',
-                  label: 'Keep',
-                  kind: 'keep',
-                  dim: colors.keepDim,
-                  color: colors.keep,
-                },
-                {
-                  target: 'cull',
-                  label: 'Cull',
-                  kind: 'cull',
-                  dim: colors.cullDim,
-                  color: colors.cull,
-                },
-              ] as const
-            ).map(({ target, label, kind, dim, color }) => {
-              const active = currentState !== 'unreviewed' && browseState === target;
-              return (
-                <Pressable
-                  key={target}
-                  style={[
-                    styles.actionButton,
-                    { backgroundColor: dim },
-                    active && { borderWidth: 2, borderColor: color },
-                  ]}
-                  disabled={busy || inert}
-                  onPress={() => void run(() => decideCurrent(target))}
-                >
-                  <MaterialCommunityIcons name={DECISION_GLYPHS[kind]} size={20} color={color} />
-                  <Text style={styles.actionText}>{label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-          <View style={styles.secondaryRow}>
-            {/* Browse Edit re-decides (kept + fresh edit cycle) — the
-                state-aware path, unlike the live flag toggle below.
-                All four chips DISABLE on a staged cull: its retained
-                action rows are what un-staging restores, and a toggle
-                here would silently destroy them — a photo you are about
-                to delete is not actionable work (codex r3). */}
-            <ActionChip
-              kind="edit"
-              active={flagged}
-              disabled={busy || inert || currentState === 'culled'}
-              dimmed={currentState === 'culled'}
-              onPress={() => void run(() => decideCurrent('to_edit'))}
-            />
-            <ActionChip
-              kind="favourite"
-              active={favourite}
-              disabled={busy || inert || currentState === 'culled'}
-              dimmed={currentState === 'culled'}
-              onPress={() => void run(() => toggleFavourite(current.id))}
-            />
-            <ActionChip
-              kind="organize"
-              active={organizeQueued}
-              disabled={busy || inert || currentState === 'culled'}
-              dimmed={currentState === 'culled'}
-              onPress={() => void run(toggleOrganize)}
-            />
-            <ActionChip
-              kind="share"
-              active={shareQueued}
-              disabled={busy || inert || currentState === 'culled'}
-              dimmed={currentState === 'culled'}
-              onPress={() => void run(toggleShare)}
-            />
-          </View>
-        </>
-      ) : (
-        // LIVE (m0.8.2 unification): groups and singles runs review
-        // through ONE surface — big three, the four actions, and the
-        // finish button; only Not related stays group-only, because it
-        // is a statement about group membership.
-        <>
-          <View style={styles.actionRow}>
-            <Pressable
-              style={[
-                styles.actionButton,
-                { backgroundColor: colors.keepDim },
-                currentState === 'kept' && { borderWidth: 2, borderColor: colors.keep },
-              ]}
-              disabled={busy || inert}
-              // `redecide` (inside decideCurrent) carries the whole rule
-              // set: the active verdict clears back to unreviewed, a
-              // staged cull re-decided to Keep takes the state-aware
-              // path (copy matches resolved), and an unreviewed card
-              // takes the initial-decision verdict.
-              onPress={() => void run(() => decideCurrent('keep'))}
-            >
-              <MaterialCommunityIcons name={DECISION_GLYPHS.keep} size={21} color={colors.keep} />
-              <Text style={styles.actionText}>Keep</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.actionButton, styles.compareButton]}
-              // Compare works on UNDECIDED photos only (its verdicts can
-              // cull a loser) — and decided photos stay in the deck, so
-              // the button must go dead on them too, not just on staged
-              // culls.
-              disabled={busy || inert || !compareEligible}
-              onPress={() => openCompare()}
-            >
-              <MaterialCommunityIcons name="compare-horizontal" size={21} color={colors.textDim} />
-              <Text style={[styles.actionText, !compareEligible && styles.actionTextDisabled]}>
-                Compare{compareCandidateCount > 2 ? ' with…' : ''}
-              </Text>
-            </Pressable>
-            <Pressable
-              style={[
-                styles.actionButton,
-                styles.cullButton,
-                currentState === 'culled' && { borderWidth: 2, borderColor: colors.cull },
-              ]}
-              disabled={busy || inert}
-              onPress={() => void run(() => decideCurrent('cull'))}
-            >
-              <MaterialCommunityIcons name="close" size={21} color={colors.cull} />
-              <Text style={styles.actionText}>Cull</Text>
-            </Pressable>
-          </View>
+      {/* ONE control block for BOTH modes (m0.8.6 §9, the browse-swap
+          unify): the browse/live swap used to replace this whole region,
+          so `finishing`'s escape clause could flash the browse row for a
+          frame on a singles finish (the stale pre-write rows). With
+          every slot always mounted, a mode change moves only per-control
+          state — there is no swap left to flash. Browse mode (a fully
+          decided unit): Compare and the finish button go dead (their
+          work is done); the verdict buttons and chips ARE the re-decide
+          path, exactly as the old browse branch offered. */}
+      <View style={styles.actionRow}>
+        <Pressable
+          style={[
+            styles.actionButton,
+            { backgroundColor: colors.keepDim },
+            currentState === 'kept' && { borderWidth: 2, borderColor: colors.keep },
+          ]}
+          disabled={busy || inert}
+          // `redecide` (inside decideCurrent) carries the whole rule
+          // set: the active verdict clears back to unreviewed, a
+          // staged cull re-decided to Keep takes the state-aware
+          // path (copy matches resolved), and an unreviewed card
+          // takes the initial-decision verdict.
+          onPress={() => void run(() => decideCurrent('keep'))}
+        >
+          <MaterialCommunityIcons name={DECISION_GLYPHS.keep} size={21} color={colors.keep} />
+          <Text style={styles.actionText}>Keep</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.actionButton, styles.compareButton]}
+          // Compare works on UNDECIDED photos only (its verdicts can
+          // cull a loser) — decided photos stay in the deck, so the
+          // button goes dead on them, and in browse mode (all decided)
+          // it is dead throughout; the strip long-press stays the F11
+          // kept-duel door.
+          disabled={busy || inert || !compareEligible}
+          onPress={() => openCompare()}
+        >
+          <MaterialCommunityIcons name="compare-horizontal" size={21} color={colors.textDim} />
+          <Text style={[styles.actionText, !compareEligible && styles.actionTextDisabled]}>
+            Compare{compareCandidateCount > 2 ? ' with…' : ''}
+          </Text>
+        </Pressable>
+        <Pressable
+          style={[
+            styles.actionButton,
+            styles.cullButton,
+            currentState === 'culled' && { borderWidth: 2, borderColor: colors.cull },
+          ]}
+          disabled={busy || inert}
+          onPress={() => void run(() => decideCurrent('cull'))}
+        >
+          <MaterialCommunityIcons name="close" size={21} color={colors.cull} />
+          <Text style={styles.actionText}>Cull</Text>
+        </Pressable>
+      </View>
 
-          <View style={styles.secondaryRow}>
-            {/* Live Edit is a FLAG toggle (both deck kinds, m0.8.2
-                unification) — the verdict layer is untouched. The live
-                deck keeps decided photos in place, so a staged cull can
-                be the current photo here too: all four chips disable on
-                it — its retained rows are what un-staging restores
-                (codex r3). */}
-            <ActionChip
-              kind="edit"
-              active={flagged}
-              disabled={busy || inert || currentState === 'culled'}
-              dimmed={currentState === 'culled'}
-              onPress={() => void run(() => toggleNeedsEdit(current.id))}
-            />
-            <ActionChip
-              kind="favourite"
-              active={favourite}
-              disabled={busy || inert || currentState === 'culled'}
-              dimmed={currentState === 'culled'}
-              onPress={() => void run(() => toggleFavourite(current.id))}
-            />
-            <ActionChip
-              kind="organize"
-              active={organizeQueued}
-              disabled={busy || inert || currentState === 'culled'}
-              dimmed={currentState === 'culled'}
-              onPress={() => void run(toggleOrganize)}
-            />
-            <ActionChip
-              kind="share"
-              active={shareQueued}
-              disabled={busy || inert || currentState === 'culled'}
-              dimmed={currentState === 'culled'}
-              onPress={() => void run(toggleShare)}
-            />
-          </View>
+      <View style={styles.secondaryRow}>
+        {/* The Edit chip is the block's ONE per-mode behaviour fork:
+            live is a FLAG toggle (the verdict layer untouched); browse
+            RE-DECIDES (kept + fresh edit cycle, the state-aware path).
+            All four chips disable on a staged cull: its retained action
+            rows are what un-staging restores, and a toggle here would
+            silently destroy them — a photo you are about to delete is
+            not actionable work (codex r3). */}
+        <ActionChip
+          kind="edit"
+          active={flagged}
+          disabled={busy || inert || currentState === 'culled'}
+          dimmed={currentState === 'culled'}
+          onPress={() =>
+            void run(() =>
+              view.browseControls ? decideCurrent('to_edit') : toggleNeedsEdit(current.id),
+            )
+          }
+        />
+        <ActionChip
+          kind="favourite"
+          active={favourite}
+          disabled={busy || inert || currentState === 'culled'}
+          dimmed={currentState === 'culled'}
+          onPress={() => void run(() => toggleFavourite(current.id))}
+        />
+        <ActionChip
+          kind="organize"
+          active={organizeQueued}
+          disabled={busy || inert || currentState === 'culled'}
+          dimmed={currentState === 'culled'}
+          onPress={() => void run(toggleOrganize)}
+        />
+        <ActionChip
+          kind="share"
+          active={shareQueued}
+          disabled={busy || inert || currentState === 'culled'}
+          dimmed={currentState === 'culled'}
+          onPress={() => void run(toggleShare)}
+        />
+      </View>
 
-          {view.isGroup && (
-            <View style={styles.secondaryRow}>
-              <Pressable
-                style={styles.secondaryButton}
-                disabled={busy || inert}
-                onPress={() => group && void run(() => makeSingle(current.id, group.groupId))}
-              >
-                <MaterialCommunityIcons name="image-move" size={18} color={colors.textDim} />
-                <Text style={styles.secondaryText}>Not related</Text>
-              </Pressable>
-            </View>
-          )}
-
-          <BigButton
-            // "Saving…" only once the write has actually run long (§10
-            // check 2): a fast finish advances before the timer fires,
-            // so the label no longer flashes through two texts on every
-            // normal finish. The button still disables instantly — the
-            // press must land exactly once either way.
-            label={finishSlow ? 'Saving…' : `Keep remaining (${view.finishCount})`}
-            color={colors.keep}
-            // `busy` included (codex r3): the label already said "Saving…"
-            // while the control stayed pressable, so the disabled look and
-            // the disabled behaviour disagreed for the whole write.
-            disabled={busy || inert || view.finishCount === 0}
-            onPress={() =>
-              singlesMode
-                ? day && void run(() => keepAllSingles(day, range ?? null).then(() => {}), 'finish')
-                : finishGroup()
-            }
-          />
-        </>
+      {view.isGroup && (
+        <View style={styles.secondaryRow}>
+          <Pressable
+            style={styles.secondaryButton}
+            // Mounted in browse too (stable slots) but dead there: a
+            // finished group's membership is settled work (D4).
+            disabled={busy || inert || view.browseControls}
+            onPress={() => group && void run(() => makeSingle(current.id, group.groupId))}
+          >
+            <MaterialCommunityIcons name="image-move" size={18} color={colors.textDim} />
+            <Text style={styles.secondaryText}>Not related</Text>
+          </Pressable>
+        </View>
       )}
+
+      <BigButton
+        // "Saving…" only once the write has actually run long (§10
+        // check 2): a fast finish advances before the timer fires,
+        // so the label no longer flashes through two texts on every
+        // normal finish. The button still disables instantly — the
+        // press must land exactly once either way.
+        label={finishSlow ? 'Saving…' : `Keep remaining (${view.finishCount})`}
+        color={colors.keep}
+        // The LOCK includes the transient `busy`; the LOOK does not
+        // (m0.8.6 N2, ActionChip's dimmed split): the dim tracks durable
+        // state — an empty remainder, an inert frozen deck — and the
+        // button's OWN write (`finishing`), so a chip or verdict write
+        // elsewhere no longer flickers it.
+        disabled={busy || inert || view.finishCount === 0}
+        dimmed={inert || view.finishCount === 0 || finishing}
+        onPress={() =>
+          singlesMode
+            ? day && void run(() => keepAllSingles(day, range ?? null).then(() => {}), 'finish')
+            : finishGroup()
+        }
+      />
 
       {viewerOpen && (
         <PhotoViewer

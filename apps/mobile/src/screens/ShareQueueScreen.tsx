@@ -6,7 +6,8 @@
  * - Nothing selected → "Share all N" (single-recipient stays one tap).
  * - Tapping a thumbnail enters selection mode (gallery convention);
  *   header chips: Select all / none / unshared.
- * - ✓ pass-count badges count only same-cycle sheet_opened passes — the
+ * - ✓ pass-count badges count only same-cycle SHARED passes (m0.8.6
+ *   D10: a chosen target app, never a merely-opened sheet) — the
  *   "who still needs this?" navigation for overlapping subsets.
  * - After a confirmed dispatch: optional, fully skippable label prompt
  *   (recent-label chips) — the only honest recipient record.
@@ -147,7 +148,10 @@ export function ShareQueueScreen(_props: Props) {
           // different set would send removed photos and record members
           // that never went out.
           const uris = await Promise.all(ids.map(getEditableContentUri));
-          dispatch = await shareMediaUris(uris);
+          // The batch id rides the chooser as the chosen-event token
+          // (D10): app-root wiring resolves the batch to 'shared' when
+          // the user picks a target app.
+          dispatch = await shareMediaUris(uris, batchId);
         } catch (error) {
           dispatch = {
             result: 'error',

@@ -51,7 +51,9 @@ const FILTERS: { key: HistoryFilter; label: string }[] = [
   { key: 'to_edit', label: 'To edit' },
   { key: 'favourite', label: 'Favourite' },
   { key: 'organized', label: 'Organized' },
-  { key: 'shared', label: 'Sheet opened' },
+  // "Shared" and it MEANS it (m0.8.6 D10 / F16): every row behind this
+  // chip had a chosen target app — an abandoned sheet leaves no record.
+  { key: 'shared', label: 'Shared' },
 ];
 
 /** Every badge the row wears, through the shared weighted vocabulary
@@ -215,7 +217,7 @@ export function HistoryScreen(_props: Props) {
           </View>
           <View style={styles.rowBody}>
             <Text style={styles.rowTitle}>
-              Share sheet opened · {item.member_count} photo{item.member_count === 1 ? '' : 's'}
+              Shared · {item.member_count} photo{item.member_count === 1 ? '' : 's'}
               {item.label ? ` · “${item.label}”` : ''}
             </Text>
             <Text style={styles.rowTime}>{formatDayClock(item.opened_at)}</Text>

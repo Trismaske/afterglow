@@ -1029,13 +1029,19 @@ describe('gate 5: getPhotoFacts', () => {
     // reads this — mirroring edit_completed_at for the edit pair.
     const d = await fresh();
     await seedDays(d, [P0('1')]);
-    const { addToShareQueue, createShareBatch, promoteShareBatch, removeFromShareQueue } =
-      await import('./shareStore');
+    const {
+      addToShareQueue,
+      createShareBatch,
+      markShareBatchShared,
+      promoteShareBatch,
+      removeFromShareQueue,
+    } = await import('./shareStore');
     expect(await addToShareQueue(asExpo(d), id('1'), AT + 10)).toBe(true);
     let facts = await getPhotoFacts(asExpo(d), id('1'));
     expect(facts?.share_carried).toBe(0); // queued but never sent
     const batchId = await createShareBatch(asExpo(d), [id('1')], AT + 20);
     await promoteShareBatch(asExpo(d), batchId, AT + 20);
+    await markShareBatchShared(asExpo(d), batchId, 'com.test/app', AT + 20);
     facts = await getPhotoFacts(asExpo(d), id('1'));
     expect(facts?.share_carried).toBe(1); // resolved while still queued
     await removeFromShareQueue(asExpo(d), id('1'), AT + 30);

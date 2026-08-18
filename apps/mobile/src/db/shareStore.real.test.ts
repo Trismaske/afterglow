@@ -14,6 +14,8 @@ import {
   failShareBatch,
   getShareQueue,
   labelShareBatch,
+  discardAbandonedShareBatches,
+  markShareBatchShared,
   promoteShareBatch,
   recentShareLabels,
   recoverShareBatches,
@@ -75,6 +77,7 @@ describe('share queue + cycles', () => {
     // Pass 1: p1 only — dispatch confirmed.
     const b1 = await createShareBatch(asExpo(d), ['p1'], AT + 10);
     await promoteShareBatch(asExpo(d), b1, AT + 11);
+    await markShareBatchShared(asExpo(d), b1, 'com.test/app', AT + 11);
     // Pass 2: both — dispatch FAILED (never badges).
     const b2 = await createShareBatch(asExpo(d), ['p1', 'p2'], AT + 20);
     await failShareBatch(asExpo(d), b2);
@@ -101,6 +104,7 @@ describe('share queue + cycles', () => {
     // opened batch is a no-op — the guard is the batch's own state, so
     // no stamp moves for a send that did not happen twice.
     await promoteShareBatch(asExpo(d), b1, AT + 999);
+    await markShareBatchShared(asExpo(d), b1, 'com.test/app', AT + 999);
     expect(
       (
         d.raw
@@ -116,6 +120,7 @@ describe('share queue + cycles', () => {
     await addToShareQueue(asExpo(d), 'p1', AT);
     const b1 = await createShareBatch(asExpo(d), ['p1'], AT + 10);
     await promoteShareBatch(asExpo(d), b1, AT + 11);
+    await markShareBatchShared(asExpo(d), b1, 'com.test/app', AT + 11);
     await labelShareBatch(asExpo(d), b1, 'Mum');
     const result = await clearShareQueue(asExpo(d), AT + 20);
     expect(result).toEqual({ cleared: 1, neverShared: 0 });
@@ -141,6 +146,7 @@ describe('share queue + cycles', () => {
     await addToShareQueue(asExpo(d), 'p1', AT);
     const b1 = await createShareBatch(asExpo(d), ['p1'], AT + 10);
     await promoteShareBatch(asExpo(d), b1, AT + 11);
+    await markShareBatchShared(asExpo(d), b1, 'com.test/app', AT + 11);
     d.raw.prepare("UPDATE photos SET state = 'culled' WHERE asset_id = 'p1'").run();
     await addToShareQueue(asExpo(d), 'p2', AT + 20);
     const cycles = d.raw.prepare('SELECT COUNT(*) AS n FROM share_cycles').get() as { n: number };
@@ -277,6 +283,7 @@ describe('share queue + cycles', () => {
     // One completed pass in this cycle.
     const batchId = await createShareBatch(asExpo(d), ['p1'], AT + 1);
     await promoteShareBatch(asExpo(d), batchId, AT + 2);
+    await markShareBatchShared(asExpo(d), batchId, 'com.test/app', AT + 2);
     expect((await getShareQueue(asExpo(d)))[0].pass_count).toBe(1);
     // Emptying the queue by removal (not explicit clear) ends the cycle.
     await removeFromShareQueue(asExpo(d), 'p1', AT + 3);
@@ -289,5 +296,86 @@ describe('share queue + cycles', () => {
     const queue = await getShareQueue(asExpo(d));
     expect(queue[0].pass_count).toBe(0);
     expect(await countNeverShared(asExpo(d))).toBe(1);
+  });
+});
+
+describe('D10: share resolves on a chosen target; abandoned sheets evaporate', () => {
+  it('an abandoned sheet leaves NO record and the photos stay queued', async () => {
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    insertPhoto(d, 'p2');
+    await addToShareQueue(asExpo(d), 'p1', AT);
+    await addToShareQueue(asExpo(d), 'p2', AT + 1);
+    const batchId = await createShareBatch(asExpo(d), ['p1', 'p2'], AT + 10);
+    await promoteShareBatch(asExpo(d), batchId, AT + 11);
+    // No chosen target ever arrives — the sweep discards the batch whole.
+    const discarded = await discardAbandonedShareBatches(asExpo(d), AT + 60_000);
+    expect(discarded).toBe(1);
+    const batch = await asExpo(d).getFirstAsync<{ id: number }>(
+      'SELECT id FROM share_batches WHERE id = ?',
+      batchId,
+    );
+    expect(batch).toBeNull();
+    // The queued intent stands: both photos still in the queue, no
+    // resolved_at fabricated.
+    const queue = await getShareQueue(asExpo(d), AT + 70_000);
+    expect(queue.map((r) => r.photo_id).sort()).toEqual(['p1', 'p2']);
+    expect(queue.every((r) => r.pass_count === 0)).toBe(true);
+  });
+
+  it('the grace window protects a just-opened sheet from the sweep', async () => {
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    await addToShareQueue(asExpo(d), 'p1', AT);
+    const batchId = await createShareBatch(asExpo(d), ['p1'], AT + 10);
+    await promoteShareBatch(asExpo(d), batchId, AT + 11);
+    // A sweep whose bound predates the open leaves the batch alone.
+    expect(await discardAbandonedShareBatches(asExpo(d), AT + 5)).toBe(0);
+    // The late chosen event still resolves it.
+    await markShareBatchShared(asExpo(d), batchId, 'com.whatsapp/.ContactPicker', AT + 30);
+    const row = await asExpo(d).getFirstAsync<{
+      state: string;
+      chosen_component: string | null;
+    }>('SELECT state, chosen_component FROM share_batches WHERE id = ?', batchId);
+    expect(row).toEqual({ state: 'shared', chosen_component: 'com.whatsapp/.ContactPicker' });
+  });
+
+  it('a duplicate chosen event and a mark-after-discard both no-op', async () => {
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    await addToShareQueue(asExpo(d), 'p1', AT);
+    const batchId = await createShareBatch(asExpo(d), ['p1'], AT + 10);
+    await promoteShareBatch(asExpo(d), batchId, AT + 11);
+    await markShareBatchShared(asExpo(d), batchId, 'com.a/x', AT + 20);
+    // Duplicate: the recorded component must not move.
+    await markShareBatchShared(asExpo(d), batchId, 'com.b/y', AT + 30);
+    const row = await asExpo(d).getFirstAsync<{ chosen_component: string | null }>(
+      'SELECT chosen_component FROM share_batches WHERE id = ?',
+      batchId,
+    );
+    expect(row?.chosen_component).toBe('com.a/x');
+    // Mark against a discarded batch: the accepted crash-window
+    // undercount — a clean no-op, never a throw.
+    const ghost = await createShareBatch(asExpo(d), ['p1'], AT + 40);
+    await promoteShareBatch(asExpo(d), ghost, AT + 41);
+    await discardAbandonedShareBatches(asExpo(d), AT + 60_000);
+    await expect(
+      markShareBatchShared(asExpo(d), ghost, 'com.c/z', AT + 70_000),
+    ).resolves.toBeUndefined();
+  });
+
+  it('startup recovery discards stranded sheet_opened batches beside failing launching ones', async () => {
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    await addToShareQueue(asExpo(d), 'p1', AT);
+    const opened = await createShareBatch(asExpo(d), ['p1'], AT + 10);
+    await promoteShareBatch(asExpo(d), opened, AT + 11);
+    const launching = await createShareBatch(asExpo(d), ['p1'], AT + 20);
+    expect(await recoverShareBatches(asExpo(d))).toBe(2);
+    const states = await asExpo(d).getAllAsync<{ id: number; state: string }>(
+      'SELECT id, state FROM share_batches ORDER BY id',
+    );
+    // The opened batch is GONE; the launching one reconciled to error.
+    expect(states).toEqual([{ id: launching, state: 'error' }]);
   });
 });

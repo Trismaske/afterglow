@@ -20,6 +20,15 @@ import expo.modules.kotlin.modules.ModuleDefinition
 class MediaStoreActionsModule : Module() {
   private lateinit var launcher: AppContextActivityResultLauncher<MediaStoreActionInput, Boolean>
   private var volumeReceiver: BroadcastReceiver? = null
+  private var shareChosenReceiver: BroadcastReceiver? = null
+
+  companion object {
+    /** Same-app broadcast carrying the chooser's chosen-component
+     * callback (m0.8.6 D10). Explicit action + setPackage + NOT_EXPORTED:
+     * only the system-filled PendingIntent below ever sends it. */
+    private const val ACTION_SHARE_CHOSEN = "expo.modules.mediastoreactions.SHARE_CHOSEN"
+    private const val EXTRA_SHARE_TOKEN = "shareToken"
+  }
 
   override fun definition() = ModuleDefinition {
     Name("MediaStoreActions")
@@ -28,7 +37,10 @@ class MediaStoreActionsModule : Module() {
     // FOREGROUNDED have no navigation or AppState signal — the OS
     // broadcast is the only push. MEDIA_* are protected system
     // broadcasts (system-only senders), so no export flag concerns.
-    Events("volumesChanged")
+    // m0.8.6 D10: shareTargetChosen relays the chooser's
+    // EXTRA_CHOSEN_COMPONENT — the fact "the user handed this batch to
+    // an app", which is what promotes a share pass to 'shared'.
+    Events("volumesChanged", "shareTargetChosen")
 
     OnCreate {
       val filter = IntentFilter().apply {
@@ -46,11 +58,42 @@ class MediaStoreActionsModule : Module() {
       }
       volumeReceiver = receiver
       appContext.reactContext?.registerReceiver(receiver, filter)
+
+      val chosen = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+          @Suppress("DEPRECATION")
+          val component = intent.getParcelableExtra<android.content.ComponentName>(
+            Intent.EXTRA_CHOSEN_COMPONENT,
+          )
+          sendEvent(
+            "shareTargetChosen",
+            mapOf(
+              "token" to intent.getIntExtra(EXTRA_SHARE_TOKEN, -1),
+              "component" to (component?.flattenToShortString() ?: ""),
+            ),
+          )
+        }
+      }
+      shareChosenReceiver = chosen
+      // A custom action needs the export flag on API 33+ (targetSdk 36);
+      // NOT_EXPORTED still receives same-app broadcasts, and the
+      // PendingIntent's send carries our own identity.
+      if (Build.VERSION.SDK_INT >= 33) {
+        appContext.reactContext?.registerReceiver(
+          chosen,
+          IntentFilter(ACTION_SHARE_CHOSEN),
+          Context.RECEIVER_NOT_EXPORTED,
+        )
+      } else {
+        appContext.reactContext?.registerReceiver(chosen, IntentFilter(ACTION_SHARE_CHOSEN))
+      }
     }
 
     OnDestroy {
       volumeReceiver?.let { appContext.reactContext?.unregisterReceiver(it) }
       volumeReceiver = null
+      shareChosenReceiver?.let { appContext.reactContext?.unregisterReceiver(it) }
+      shareChosenReceiver = null
     }
 
     RegisterActivityContracts {
@@ -555,7 +598,14 @@ class MediaStoreActionsModule : Module() {
     // chooser. Resolves at DISPATCH (never waits for the sheet) so the JS
     // side can durably promote `launching` → `sheet_opened` immediately —
     // the at-most-once accounting boundary.
-    AsyncFunction("shareUris") { uris: List<Uri> ->
+    //
+    // m0.8.6 D10: the chooser carries an IntentSender (API 22+), so the
+    // system reports WHICH app the user picked — the shareTargetChosen
+    // event, keyed by `token` (the JS side passes its batch id). The
+    // PendingIntent must be MUTABLE: the system fills
+    // EXTRA_CHOSEN_COMPONENT into it. A dismissed sheet fires nothing —
+    // absence of the event by foreground return IS the abandonment fact.
+    AsyncFunction("shareUris") { uris: List<Uri>, token: Int ->
       val activity = appContext.currentActivity
         ?: return@AsyncFunction mapOf("result" to "error", "message" to "No current activity")
       val send = if (uris.size == 1) {
@@ -570,7 +620,19 @@ class MediaStoreActionsModule : Module() {
         }
       }
       send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-      val chooser = Intent.createChooser(send, null).apply {
+      val context = appContext.reactContext
+        ?: return@AsyncFunction mapOf("result" to "error", "message" to "No context")
+      val chosenIntent = Intent(ACTION_SHARE_CHOSEN).apply {
+        setPackage(context.packageName)
+        putExtra(EXTRA_SHARE_TOKEN, token)
+      }
+      val pending = android.app.PendingIntent.getBroadcast(
+        context,
+        token,
+        chosenIntent,
+        android.app.PendingIntent.FLAG_MUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+      )
+      val chooser = Intent.createChooser(send, null, pending.intentSender).apply {
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
       }
       try {

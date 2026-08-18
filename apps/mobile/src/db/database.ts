@@ -246,7 +246,16 @@ export const BASELINE_DDL = `
     attempted_at INTEGER NOT NULL,
     opened_at    INTEGER,
     label        TEXT,
-    state        TEXT NOT NULL CHECK (state IN ('launching', 'sheet_opened', 'error'))
+    -- m0.8.6 D10: 'shared' = the chooser reported a chosen target app —
+    -- the strongest fact Android offers (never delivery). A batch left
+    -- at 'sheet_opened' (dismissed without a choice) is DISCARDED by the
+    -- foreground sweep / startup recovery: an abandoned attempt leaves
+    -- no record, and the photos stay queued.
+    state        TEXT NOT NULL CHECK (state IN ('launching', 'sheet_opened', 'shared', 'error')),
+    -- The chosen target (ComponentName flattened) and when — facts from
+    -- the chooser callback, recorded verbatim.
+    chosen_component TEXT,
+    chosen_at        INTEGER
   );
   CREATE TABLE share_batch_members (
     batch_id INTEGER NOT NULL REFERENCES share_batches(id) ON DELETE CASCADE,

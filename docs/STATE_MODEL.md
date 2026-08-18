@@ -118,6 +118,8 @@ Badges answer it at **two weights**: `live` for waiting, `carried` for done.
 This is not an exception to the uniform model. The action row behaves exactly like the other three.
 The batch tables are an **event log**, because "these six photos went to Mum together" is a fact about a *batch*, not about a photo.
 Three shipped behaviours depend on it: per-cycle pass badges, next-pass auto-selection of the not-yet-sent, and History's share stream.
+A pass RESOLVES on the chooser's chosen-target callback (m0.8.6 D10): "Shared" means the user handed the batch to an app — the strongest fact Android offers, never a delivery claim.
+A sheet opened and dismissed leaves no record: the abandoned batch is discarded whole and the photos stay queued.
 
 ### 3. Annotations: facts, never decisions
 

@@ -12,6 +12,7 @@ import type { MainTabParamList, RootStackParamList } from './src/navigation';
 import { countQueues } from './src/db/actions';
 import { mountedVolumeSet, onVolumesChanged } from './src/lib/mountedVolumes';
 import { DATABASE_NAME, migrateDatabase } from './src/db/database';
+import { installShareResolution } from './src/lib/shareResolution';
 import { ReviewProvider, useReview } from './src/review/ReviewContext';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { TimelineScreen } from './src/screens/TimelineScreen';
@@ -153,7 +154,13 @@ function Loading() {
 
 function ThemedNavigator() {
   const { accent } = useTheme();
+  const db = useSQLiteContext();
   const { writeError, clearWriteError } = useReview();
+  // Share resolution is APP-GLOBAL (m0.8.6 D10): the chooser's
+  // chosen-target event and the abandonment sweep must outlive the
+  // Share screen — a choice can land after it unmounted, and
+  // abandonment is only visible on foreground return.
+  useEffect(() => installShareResolution(db), [db]);
   useEffect(() => {
     if (!writeError) return;
     Alert.alert(

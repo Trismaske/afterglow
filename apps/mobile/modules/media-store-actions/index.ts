@@ -40,7 +40,10 @@ interface NativeApi {
   editDiagnostics(uri: string): Promise<EditDiagnosticsReport>;
   probeLaunch(uri: string, action: string, withWrite: boolean): Promise<ProbeLaunchResult>;
   requestWriteAccess(uris: string[]): Promise<{ status: MediaStoreActionStatus }>;
-  shareUris(uris: string[]): Promise<{ result: 'dispatched' | 'error'; message: string }>;
+  shareUris(
+    uris: string[],
+    token: number,
+  ): Promise<{ result: 'dispatched' | 'error'; message: string }>;
   listImageAlbums(): Promise<VolumeAlbum[]>;
   mediaGenerations(): Promise<Record<string, number>>;
   mediaChangedSince(volume: string, since: number): Promise<NativeChangedRow[]>;
@@ -51,6 +54,10 @@ interface NativeApi {
   countImagesByVolume(volumes: string[]): Promise<Record<string, number>>;
   listMountedVolumes(): Promise<string[]>;
   addListener(event: 'volumesChanged', listener: () => void): { remove(): void };
+  addListener(
+    event: 'shareTargetChosen',
+    listener: (payload: { token: number; component: string }) => void,
+  ): { remove(): void };
 }
 
 /** One row MediaStore reports as added or modified since a generation.
@@ -317,10 +324,25 @@ export async function getImageCountsByVolume(volumes: string[]): Promise<Record<
 }
 
 /** Fire the share sheet (SEND / SEND_MULTIPLE with read grants). Resolves
- * at dispatch — the C#10 at-most-once accounting boundary. */
+ * at dispatch — the C#10 at-most-once accounting boundary. `token`
+ * (the batch id) rides the chooser's IntentSender and comes back in the
+ * shareTargetChosen event when the user picks a target app (m0.8.6
+ * D10); a dismissed sheet fires nothing. */
 export async function shareMediaUris(
   uris: string[],
+  token: number,
 ): Promise<{ result: 'dispatched' | 'error' | 'unsupported'; message: string }> {
   if (!available()) return { result: 'unsupported', message: 'Not on Android' };
-  return native!.shareUris(contentUris(uris));
+  return native!.shareUris(contentUris(uris), token);
+}
+
+/** The chooser's chosen-target callback (m0.8.6 D10): the user handed
+ * `token`'s batch to `component`. The strongest share fact Android
+ * offers — never a delivery claim. No-op unsubscribe off Android. */
+export function subscribeShareTargetChosen(
+  listener: (payload: { token: number; component: string }) => void,
+): () => void {
+  if (Platform.OS !== 'android' || native == null) return () => {};
+  const subscription = native.addListener('shareTargetChosen', listener);
+  return () => subscription.remove();
 }

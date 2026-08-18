@@ -214,7 +214,7 @@ describe('getHistoryPage', () => {
     insertPhoto(d, 'p1', 'kept', AT);
     d.raw.prepare('INSERT INTO share_cycles (started_at) VALUES (?)').run(AT);
     const stmt = d.raw.prepare(
-      "INSERT INTO share_batches (cycle_id, attempted_at, opened_at, label, state) VALUES (1, ?, ?, ?, 'sheet_opened')",
+      "INSERT INTO share_batches (cycle_id, attempted_at, opened_at, label, state) VALUES (1, ?, ?, ?, 'shared')",
     );
     for (let i = 0; i < 55; i++) stmt.run(AT + i, AT + i, `pass ${i}`);
     d.raw.prepare("INSERT INTO share_batch_members VALUES (1, 'p1')").run();
@@ -241,7 +241,7 @@ describe('getHistoryPage', () => {
       insertPhoto(d, `p${String(i).padStart(2, '0')}`, 'kept', AT + i * 2);
     d.raw.prepare('INSERT INTO share_cycles (started_at) VALUES (?)').run(AT);
     const stmt = d.raw.prepare(
-      "INSERT INTO share_batches (cycle_id, attempted_at, opened_at, label, state) VALUES (1, ?, ?, ?, 'sheet_opened')",
+      "INSERT INTO share_batches (cycle_id, attempted_at, opened_at, label, state) VALUES (1, ?, ?, ?, 'shared')",
     );
     for (let i = 0; i < 50; i++) stmt.run(AT + i * 2 + 1, AT + i * 2 + 1, `s${i}`);
     const pages = [];
@@ -260,13 +260,13 @@ describe('getHistoryPage', () => {
     expect(pages.slice(40).some((r) => r.kind === 'share')).toBe(true);
   });
 
-  it('interleaves sheet_opened share events with labels; errors never appear', async () => {
+  it('interleaves SHARED events with labels; errors and abandoned sheets never appear', async () => {
     const d = await fresh();
     insertPhoto(d, 'p1', 'kept', AT + 10);
     d.raw.prepare('INSERT INTO share_cycles (started_at) VALUES (?)').run(AT);
     d.raw
       .prepare(
-        "INSERT INTO share_batches (cycle_id, attempted_at, opened_at, label, state) VALUES (1, ?, ?, 'Mum', 'sheet_opened')",
+        "INSERT INTO share_batches (cycle_id, attempted_at, opened_at, label, state) VALUES (1, ?, ?, 'Mum', 'shared')",
       )
       .run(AT + 20, AT + 20);
     d.raw

@@ -363,7 +363,7 @@ export function seedReviewHistory(
   raw.prepare('INSERT INTO share_cycles (id, started_at) VALUES (1, ?)').run(at);
   raw
     .prepare(
-      "INSERT INTO share_batches (id, cycle_id, attempted_at, opened_at, state) VALUES (1, 1, ?, ?, 'sheet_opened')",
+      "INSERT INTO share_batches (id, cycle_id, attempted_at, opened_at, state) VALUES (1, 1, ?, ?, 'shared')",
     )
     .run(at, at);
   const member = raw.prepare('INSERT INTO share_batch_members (batch_id, photo_id) VALUES (1, ?)');

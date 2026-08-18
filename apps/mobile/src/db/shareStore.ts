@@ -1,24 +1,34 @@
 /**
- * Multi-pass share queue (m0.7 item E: R#7, N#5, C#10). The queue is a
- * persistent working set; each share is a recorded PASS over a chosen
- * subset. Nothing claims delivery — Android reports only that a sheet was
- * dispatched — so states are `launching → sheet_opened | error` and copy
- * says "share sheet opened", never "shared".
+ * Multi-pass share queue (m0.7 item E: R#7, N#5, C#10; resolution
+ * rebound by m0.8.6 D10). The queue is a persistent working set; each
+ * share is a recorded PASS over a chosen subset.
+ *
+ * States: `launching → sheet_opened → shared | error`. A pass RESOLVES
+ * — earns its badge, its History row, and the members' `resolved_at` —
+ * only at `shared`: the chooser's chosen-component callback reported
+ * that the user actually handed the batch to an app (the strongest fact
+ * Android offers; still never a delivery claim). A sheet opened and
+ * DISMISSED leaves no record: the abandoned `sheet_opened` batch is
+ * DISCARDED whole (rows deleted) by the foreground sweep or startup
+ * recovery, and the photos simply stay queued — the queued intent
+ * stands, only the attempt evaporates ("an action queued and then
+ * abandoned leaves no row at all", the model's own rule).
  *
  * Cycle identity is explicit (N#5): a monotonic cycle row is minted when
  * the queue goes empty → non-empty, and ANY transition back to empty ends
  * it — explicit clear, removing the last row, or missing-media/trash
  * cleanup — so a requeued photo always starts a fresh cycle with zero
- * passes. A ✓ pass-count badge counts only same-cycle `sheet_opened`
- * batches containing the photo, so failed launches never badge (C#10) and
- * History keeps batches attached to their original cycle after a clear.
+ * passes. A ✓ pass-count badge counts only same-cycle `shared` batches
+ * containing the photo, so failed launches and abandoned sheets never
+ * badge, and History keeps batches attached to their original cycle
+ * after a clear.
  *
  * At-most-once accounting (C#10): the batch row is inserted as `launching`
- * BEFORE dispatch; the native module reports successful dispatch
- * separately from the sheet's lifetime, and the row is promoted
- * immediately after. A `launching` row found at startup reconciles to
- * `error` — deliberately undercounting a pass lost in the crash window
- * rather than ever fabricating one.
+ * BEFORE dispatch and promoted to `sheet_opened` immediately after the
+ * dispatch report. A `launching` row found at startup reconciles to
+ * `error`; a `sheet_opened` one is discarded — either way deliberately
+ * undercounting a pass lost in the crash window rather than ever
+ * fabricating one.
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { withWriteTransaction } from './database';
@@ -34,7 +44,7 @@ export interface ShareQueueRow {
   taken_at: number;
   day: string | null;
   queued_at: number;
-  /** Same-cycle sheet_opened passes that included this photo. */
+  /** Same-cycle SHARED passes (D10) that included this photo. */
   pass_count: number;
 }
 
@@ -174,7 +184,7 @@ export async function getShareQueue(
           JOIN share_batches b ON b.id = m.batch_id
         WHERE m.photo_id = q.photo_id
           AND b.cycle_id = (SELECT id FROM share_cycles WHERE ended_at IS NULL ORDER BY id DESC LIMIT 1)
-          AND b.state = 'sheet_opened') AS pass_count
+          AND b.state = 'shared') AS pass_count
      FROM photo_actions q JOIN photos p ON p.asset_id = q.photo_id
      -- v18: the queue is an action row, so the cycle comes from the ONE
      -- open cycle rather than a column repeated on every queued photo.
@@ -226,34 +236,56 @@ export async function createShareBatch(
 }
 
 /**
- * Dispatch confirmed: promote to sheet_opened durably (C#10), and stamp
- * the members' share ACTIONS as having happened.
- *
- * Share is the one action whose completion is an event about a BATCH
- * rather than about a photo, so without this its `resolved_at` would
- * stay null forever and every "ever shared" reader — the Habits
- * turnaround row above all — would report that no share has ever
- * finished, on a photo that visibly went out to the sheet.
- *
- * The rows stay QUEUED on purpose: multi-pass sharing is the feature, so
- * a photo that has been sent once is still in the working set for the
- * next pass. `resolved_at` set with `state = 'queued'` is exactly the
- * "applied once, pending again" shape the action model already defines,
- * and COALESCE keeps the FIRST send as the turnaround's start.
+ * Dispatch confirmed: promote to `sheet_opened` durably (C#10). The
+ * pass has NOT resolved yet (m0.8.6 D10) — the sheet is merely on
+ * screen; `markShareBatchShared` resolves it when a target is chosen,
+ * and `discardAbandonedShareBatches` erases it when none ever is.
  */
 export async function promoteShareBatch(
   db: SQLiteDatabase,
   batchId: number,
   at: number,
 ): Promise<void> {
+  await db.runAsync(
+    "UPDATE share_batches SET state = 'sheet_opened', opened_at = ? WHERE id = ? AND state = 'launching'",
+    at,
+    batchId,
+  );
+}
+
+/**
+ * The chooser reported a chosen target app (m0.8.6 D10): the pass
+ * RESOLVES — batch to `shared` with the component recorded verbatim,
+ * and the members' share ACTIONS stamped as having happened.
+ *
+ * Share is the one action whose completion is an event about a BATCH
+ * rather than about a photo, so without the stamp its `resolved_at`
+ * would stay null forever and every "ever shared" reader — the Habits
+ * turnaround row above all — would report that no share has ever
+ * finished, on a photo the user visibly handed to an app.
+ *
+ * The rows stay QUEUED on purpose: multi-pass sharing is the feature, so
+ * a photo that has been sent once is still in the working set for the
+ * next pass. `resolved_at` set with `state = 'queued'` is exactly the
+ * "applied once, pending again" shape the action model already defines.
+ */
+export async function markShareBatchShared(
+  db: SQLiteDatabase,
+  batchId: number,
+  component: string,
+  at: number,
+): Promise<void> {
   await withWriteTransaction(db, async (txn) => {
     const promoted = await txn.runAsync(
-      "UPDATE share_batches SET state = 'sheet_opened', opened_at = ? WHERE id = ? AND state = 'launching'",
+      `UPDATE share_batches SET state = 'shared', chosen_component = ?, chosen_at = ?
+        WHERE id = ? AND state = 'sheet_opened'`,
+      component,
       at,
       batchId,
     );
-    // Only a batch this call actually promoted may stamp its members: a
-    // re-run against an already-opened batch must not move the record.
+    // Only a batch this call actually resolved may stamp its members: a
+    // duplicate event against an already-shared batch must not move the
+    // record.
     if (Number(promoted.changes) === 0) return;
     // The LATEST send, not the first: a photo re-queued into a new cycle
     // moves queued_at forward, and keeping an older resolved_at would
@@ -269,6 +301,37 @@ export async function promoteShareBatch(
       batchId,
     );
   });
+}
+
+/**
+ * A sheet that opened but never reported a chosen target was DISMISSED
+ * (m0.8.6 D10): the attempt leaves no record — the batch and its member
+ * rows are deleted (the members' action rows were never resolved, so
+ * the photos simply stay queued). Called by the foreground sweep (the
+ * callback fires at choice time, so by the time Afterglow is
+ * foregrounded again its absence IS the abandonment fact) and by
+ * startup recovery. Returns how many were discarded, for the log.
+ */
+export async function discardAbandonedShareBatches(
+  db: SQLiteDatabase,
+  /** Only batches OPENED before this instant are abandoned: the sweep
+   * passes now − a grace window, so a sheet that just opened (resume
+   * racing dispatch) can never be swept out from under the user. */
+  openedBefore: number,
+): Promise<number> {
+  let discarded = 0;
+  await withWriteTransaction(db, async (txn) => {
+    const stale = await txn.getAllAsync<{ id: number }>(
+      "SELECT id FROM share_batches WHERE state = 'sheet_opened' AND opened_at < ?",
+      openedBefore,
+    );
+    discarded = stale.length;
+    for (const batch of stale) {
+      await txn.runAsync('DELETE FROM share_batch_members WHERE batch_id = ?', batch.id);
+      await txn.runAsync('DELETE FROM share_batches WHERE id = ?', batch.id);
+    }
+  });
+  return discarded;
 }
 
 /** Dispatch failed: the attempt earns no badge and no History event. */
@@ -318,7 +381,7 @@ export async function countNeverShared(
        SELECT 1 FROM share_batch_members m
          JOIN share_batches b ON b.id = m.batch_id
        WHERE m.photo_id = q.photo_id AND b.cycle_id = (SELECT id FROM share_cycles WHERE ended_at IS NULL ORDER BY id DESC LIMIT 1)
-         AND b.state = 'sheet_opened'
+         AND b.state = 'shared'
      )`,
     ...reach.params,
   );
@@ -411,14 +474,20 @@ export async function clearShareQueue(
   return { cleared, neverShared };
 }
 
-/** Startup recovery (C#10): a `launching` row from a dead process becomes
- * `error` — no badge, no event; the photos can simply be shared again. */
+/** Startup recovery (C#10 + D10): a `launching` row from a dead process
+ * becomes `error`; a stranded `sheet_opened` one — no chosen target
+ * ever arrived — is discarded whole. Either way the photos can simply
+ * be shared again. */
 export async function recoverShareBatches(db: SQLiteDatabase): Promise<number> {
   const stale = await db.getAllAsync<{ id: number }>(
     "SELECT id FROM share_batches WHERE state = 'launching'",
   );
   for (const batch of stale) await failShareBatch(db, batch.id);
-  return stale.length;
+  // Unbounded on purpose: the chooser callback died with the process,
+  // so EVERY stranded sheet_opened batch is abandoned — no grace window
+  // can save it.
+  const discarded = await discardAbandonedShareBatches(db, Number.MAX_SAFE_INTEGER);
+  return stale.length + discarded;
 }
 
 export async function countShareQueue(db: SQLiteDatabase): Promise<number> {

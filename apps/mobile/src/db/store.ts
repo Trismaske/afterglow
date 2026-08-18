@@ -2888,7 +2888,7 @@ export async function getHistoryPage(
           `SELECT b.id AS batch_id, b.opened_at, b.label,
              (SELECT COUNT(*) FROM share_batch_members m WHERE m.batch_id = b.id) AS member_count
            FROM share_batches b
-           WHERE b.state = 'sheet_opened' ${shareKeyset}
+           WHERE b.state = 'shared' ${shareKeyset}
            ORDER BY b.opened_at DESC, b.id DESC
            LIMIT ${HISTORY_PAGE}`,
           ...shareParams,
@@ -3785,7 +3785,7 @@ export async function getForecastBaseRates(
             SUM(CASE WHEN EXISTS (
                   SELECT 1 FROM share_batch_members m
                     JOIN share_batches b ON b.id = m.batch_id
-                  WHERE m.photo_id = decided.asset_id AND b.state = 'sheet_opened'
+                  WHERE m.photo_id = decided.asset_id AND b.state = 'shared'
                 ) THEN 1 ELSE 0 END) AS shared,
             SUM(CASE WHEN EXISTS (SELECT 1 FROM photo_actions pa_organize WHERE pa_organize.photo_id = decided.asset_id AND pa_organize.kind = 'organize' AND pa_organize.state IN ('queued', 'error')) OR EXISTS (SELECT 1 FROM photo_actions pv_organize WHERE pv_organize.photo_id = decided.asset_id AND pv_organize.kind = 'organize' AND pv_organize.resolved_at IS NOT NULL) THEN 1 ELSE 0 END) AS organized
      FROM decided

@@ -138,24 +138,39 @@ export function TimelineScreen({ navigation }: Props) {
   const genRef = useRef(0);
   const loadingRef = useRef(false);
   const failedRef = useRef(false);
+  /** The loop's working copy — state is only a render mirror of this. */
+  const assemblyRef = useRef<BrowseAssembly>(EMPTY_BROWSE_ASSEMBLY);
 
   const loadMoreBrowse = useCallback(async (gen: number) => {
     const pager = pagerRef.current;
     if (!pager || loadingRef.current) return;
     loadingRef.current = true;
     try {
-      // Field tripwire (the plan's named perf gate): the browse group
-      // anchors are a per-page aggregate with no stored column — this
-      // line is what proves or refutes that trade on real corpora.
-      const started = Date.now();
-      const items = await pager.next(BROWSE_BATCH);
-      perfLog(() => `timeline browse page: ${items.length} items in ${Date.now() - started}ms`);
-      if (gen !== genRef.current) return;
-      setBrowse((prev) => ({
-        assembly: appendBrowseItems(prev.assembly, items),
+      // Progress is measured in RENDERED UNITS, not fetched items
+      // (self-review finding 1): the list shows closed units only, so a
+      // batch that closes none — a long same-day singles stretch —
+      // changes nothing on screen, and VirtualizedList then never
+      // re-fires onEndReached (its content length is unchanged). Loop
+      // until at least one unit closes or the stream exhausts; each
+      // round is one bounded fetch, so exhaustion bounds the loop.
+      let assembly = assemblyRef.current;
+      const before = assembly.units.length;
+      do {
+        // Field tripwire (the plan's named perf gate): the browse group
+        // anchors are a per-page aggregate with no stored column — this
+        // line is what proves or refutes that trade on real corpora.
+        const started = Date.now();
+        const items = await pager.next(BROWSE_BATCH);
+        perfLog(() => `timeline browse page: ${items.length} items in ${Date.now() - started}ms`);
+        if (gen !== genRef.current) return;
+        assembly = appendBrowseItems(assembly, items);
+      } while (assembly.units.length === before && !pager.exhausted() && !failedRef.current);
+      assemblyRef.current = assembly;
+      setBrowse({
+        assembly,
         exhausted: pager.exhausted(),
         failed: failedRef.current,
-      }));
+      });
     } finally {
       loadingRef.current = false;
     }
@@ -164,6 +179,7 @@ export function TimelineScreen({ navigation }: Props) {
   const resetBrowse = useCallback(async () => {
     const gen = ++genRef.current;
     failedRef.current = false;
+    assemblyRef.current = EMPTY_BROWSE_ASSEMBLY;
     setBrowse({ assembly: EMPTY_BROWSE_ASSEMBLY, exhausted: false, failed: false });
     // The browse read scopes like every review read: the selected
     // sources and the mounted-volume set, resolved at reset. FAIL
@@ -218,10 +234,14 @@ export function TimelineScreen({ navigation }: Props) {
       const last = rows.length > 0 ? rows[rows.length - 1] : undefined;
       return {
         items: rows.map((group) => ({ kind: 'group' as const, group })),
+        // The cursor's anchor is MINTED BY THE QUERY that owns the
+        // ordering key (self-review finding 2): the members projection
+        // applies no source filter, so members[0].taken_at can exceed
+        // the SQL anchor and re-match the same group on the next page.
         nextCursor:
           rows.length < Math.max(count, BROWSE_GROUPS_PAGE) || last === undefined
             ? null
-            : { anchor: last.members[0]?.taken_at ?? 0, groupId: last.groupId },
+            : { anchor: last.anchor ?? last.members[0]?.taken_at ?? 0, groupId: last.groupId },
       };
     };
     // Singles at bucket 0: merged-pager ties go to the LOWER index,

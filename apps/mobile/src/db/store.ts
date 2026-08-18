@@ -826,6 +826,13 @@ export interface ReviewMemberRow {
 /** One reviewable cull group from the continuous grouping run. */
 export interface ReviewGroupRow {
   groupId: number;
+  /** The browse read's SQL ordering key (MAX taken_at over src+reach
+   * filtered, non-trashed members) — the ONLY legal source for the next
+   * page's keyset cursor (m0.8.6 self-review finding 2): the members
+   * projection applies no source filter, so re-deriving the cursor from
+   * members[0] can inflate past the SQL anchor and re-match the same
+   * group. Minted by fetchBrowseGroupsPage; absent on pending reads. */
+  anchor?: number;
   /** NEWEST-first members, all states (the deck badges non-unreviewed).
    * Every deck reads most-recently-taken first (Tristan, m0.8.2). */
   members: ReviewMemberRow[];
@@ -1013,10 +1020,14 @@ export async function fetchBrowseGroupsPage(
     const hiddenByGroup = new Map<number, number>();
     if (reach.sql !== '') {
       const totals = await txn.getAllAsync<{ group_id: number; n: number }>(
+        // The SAME visibility rules as the members query beside it
+        // (self-review finding 3): without the trashed exclusion, a
+        // present-but-trashed member counted as "on unmounted SD card".
         `SELECT a.group_id, COUNT(*) AS n
            FROM photo_group_assignments a
            JOIN photos p ON p.asset_id = a.photo_id
           WHERE a.group_id IN (${placeholders}) AND p.is_present = 1
+            AND p.state <> 'trashed'
           GROUP BY a.group_id`,
         ...ids,
       );
@@ -1037,12 +1048,14 @@ export async function fetchBrowseGroupsPage(
       if (bucket) bucket.push(row);
       else byGroup.set(Number(m.group_id), [row]);
     }
+    const anchorOf = new Map(heads.map((h) => [Number(h.id), Number(h.anchor)]));
     out = heads
       .map((h) => {
         const groupMembers = byGroup.get(Number(h.id)) ?? [];
         const present = hiddenByGroup.get(Number(h.id));
         return {
           groupId: Number(h.id),
+          anchor: anchorOf.get(Number(h.id)),
           members: groupMembers,
           unreachableCount: present === undefined ? 0 : Math.max(0, present - groupMembers.length),
         };

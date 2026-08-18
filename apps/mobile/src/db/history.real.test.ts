@@ -74,18 +74,42 @@ function action(
 }
 
 describe('getHistoryPage', () => {
-  it('orders by activity_at desc, drops absent photos, excludes unreviewed', async () => {
+  it('orders by activity_at desc; DECIDED tombstones stay on the record (D9); absent undecided drop', async () => {
     const d = await fresh();
     insertPhoto(d, 'newest', 'kept', AT + 300);
     insertPhoto(d, 'older', 'culled', AT + 100);
+    // A forgotten card's keep: absent bytes, standing verdict — a
+    // placeholder tile, not a vanished row (m0.8.6 D9).
     insertPhoto(d, 'gone', 'kept', AT + 200, { is_present: 0 });
     insertPhoto(d, 'fresh', 'unreviewed', AT + 400);
+    // An absent UNDECIDED row carries no completed work — it stays out.
+    insertPhoto(d, 'gone-undecided', 'unreviewed', AT + 350, { is_present: 0 });
     const page = await getHistoryPage(asExpo(d), 'all', null);
+    const photoRows = page.rows.filter((r) => r.kind === 'photo');
+    expect(photoRows.map((r) => (r.kind === 'photo' ? r.asset_id : ''))).toEqual([
+      'newest',
+      'gone',
+      'older',
+    ]);
+    expect(photoRows.map((r) => (r.kind === 'photo' ? r.is_present : -1))).toEqual([1, 0, 1]);
+  });
+
+  it('the Trashed chip filters to executed culls (D9)', async () => {
+    const d = await fresh();
+    insertPhoto(d, 'kept', 'kept', AT + 300);
+    insertPhoto(d, 'trashed-one', 'trashed', AT + 200, { is_present: 0 });
+    insertPhoto(d, 'staged', 'culled', AT + 100);
+    const page = await getHistoryPage(asExpo(d), 'trashed', null);
     expect(
       page.rows
         .filter((r) => r.kind === 'photo')
         .map((r) => (r.kind === 'photo' ? r.asset_id : '')),
-    ).toEqual(['newest', 'older']);
+    ).toEqual(['trashed-one']);
+    // …and All keeps every verdict, tombstones included.
+    const all = await getHistoryPage(asExpo(d), 'all', null);
+    expect(
+      all.rows.filter((r) => r.kind === 'photo').map((r) => (r.kind === 'photo' ? r.asset_id : '')),
+    ).toEqual(['kept', 'trashed-one', 'staged']);
   });
 
   it('keyset-paginates without skipping or duplicating', async () => {

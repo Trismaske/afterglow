@@ -2713,6 +2713,11 @@ export interface HistoryPhotoRow {
   share_applied: number;
   day: string | null;
   activity_at: number;
+  /** 0 = a TOMBSTONE (m0.8.6 D9): the bytes are gone — a forgotten
+   * card's decided photo, or an executed cull once the scan concluded
+   * the deletion. The feed keeps the row as a placeholder tile; the
+   * screen's MediaStore reconcile must skip it (it is expected-gone). */
+  is_present: number;
 }
 
 export interface HistoryShareRow {
@@ -2727,7 +2732,7 @@ export interface HistoryShareRow {
 export type HistoryRow = HistoryPhotoRow | HistoryShareRow;
 
 export type HistoryFilter =
-  'all' | 'kept' | 'culled' | 'to_edit' | 'favourite' | 'organized' | 'shared';
+  'all' | 'kept' | 'culled' | 'trashed' | 'to_edit' | 'favourite' | 'organized' | 'shared';
 
 /** Per-stream keyset position: 'top' = not yet consumed, 'end' = exhausted. */
 type StreamPos<K> = K | 'top' | 'end';
@@ -2800,22 +2805,27 @@ export async function getHistoryPage(
         "AND state = 'kept'"
       : filter === 'culled'
         ? "AND state = 'culled'"
-        : filter === 'to_edit'
-          ? `AND ${EDIT_QUEUED}`
-          : filter === 'favourite'
-            ? `AND ${FAVOURITE_HELD}`
-            : filter === 'organized'
-              ? // The retained applied marker, NOT the live queue state:
-                // re-queueing another move must not erase the photo's
-                // organized history (possibly forever, on error).
-                `AND ${ORGANIZE_APPLIED}`
-              : // All is the UNION of the specific filters, and has to be
-                // kept one: v18 lets an UNREVIEWED photo carry a queued
-                // edit, so leaving the edit term out here hid photos that
-                // the To-edit filter beside it happily listed. A
-                // merely-drawn photo (activity_at stamped at insert) still
-                // matches none of these.
-                `AND (state <> 'unreviewed'
+        : filter === 'trashed'
+          ? // The verdict-chip family's third member (m0.8.6 D9):
+            // executed culls are completed review work, and the feed is
+            // the record of completed work.
+            "AND state = 'trashed'"
+          : filter === 'to_edit'
+            ? `AND ${EDIT_QUEUED}`
+            : filter === 'favourite'
+              ? `AND ${FAVOURITE_HELD}`
+              : filter === 'organized'
+                ? // The retained applied marker, NOT the live queue state:
+                  // re-queueing another move must not erase the photo's
+                  // organized history (possibly forever, on error).
+                  `AND ${ORGANIZE_APPLIED}`
+                : // All is the UNION of the specific filters, and has to be
+                  // kept one: v18 lets an UNREVIEWED photo carry a queued
+                  // edit, so leaving the edit term out here hid photos that
+                  // the To-edit filter beside it happily listed. A
+                  // merely-drawn photo (activity_at stamped at insert) still
+                  // matches none of these.
+                  `AND (state <> 'unreviewed'
                    OR ${ORGANIZE_APPLIED}
                    OR ${EDIT_QUEUED}
                    OR ${FAVOURITE_HELD})`;
@@ -2835,7 +2845,7 @@ export async function getHistoryPage(
     photoPos === 'end'
       ? []
       : await db.getAllAsync<Omit<HistoryPhotoRow, 'kind'>>(
-          `SELECT asset_id, uri, taken_at, state, day, activity_at,
+          `SELECT asset_id, uri, taken_at, state, day, activity_at, is_present,
                   EXISTS (SELECT 1 FROM photo_actions pa_edit WHERE pa_edit.photo_id = photos.asset_id AND pa_edit.kind = 'edit' AND pa_edit.state IN ('queued', 'error')) AS needs_edit,
                   EXISTS (SELECT 1 FROM photo_actions pc_edit WHERE pc_edit.photo_id = photos.asset_id AND pc_edit.kind = 'edit' AND pc_edit.resolved_at IS NOT NULL) AS edit_applied,
                   EXISTS (SELECT 1 FROM photo_actions pl_fav WHERE pl_fav.photo_id = photos.asset_id AND pl_fav.kind = 'favourite' AND pl_fav.state IN ('queued', 'error') AND pl_fav.target = '1') AS favourite_live,
@@ -2847,7 +2857,12 @@ export async function getHistoryPage(
                   EXISTS (SELECT 1 FROM photo_actions pl_share WHERE pl_share.photo_id = photos.asset_id AND pl_share.kind = 'share' AND pl_share.state IN ('queued', 'error')) AS share_live,
                   EXISTS (SELECT 1 FROM photo_actions pc_share WHERE pc_share.photo_id = photos.asset_id AND pc_share.kind = 'share' AND pc_share.resolved_at IS NOT NULL) AS share_applied
            FROM photos
-           WHERE is_present = 1 AND activity_at IS NOT NULL ${filterSql} ${photoKeyset}
+           -- TOMBSTONES stay on the record (m0.8.6 D9): a DECIDED row
+           -- whose bytes left (forget-keep, executed culls) renders as
+           -- a placeholder tile — History's charter is completed work
+           -- as fact. Absent UNDECIDED rows stay out: they carry none.
+           WHERE (is_present = 1 OR state <> 'unreviewed')
+             AND activity_at IS NOT NULL ${filterSql} ${photoKeyset}
            ORDER BY activity_at DESC, asset_id DESC
            LIMIT ${HISTORY_PAGE}`,
           ...photoParams,

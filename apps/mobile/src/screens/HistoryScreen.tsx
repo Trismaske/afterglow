@@ -1,11 +1,19 @@
 /**
  * History (m0.7 item G, #4): a reverse-chronological, filterable
- * current-state feed of decisions on photos still present, with
- * share-sheet events interleaved. Ordered by activity_at with two-stream
- * keyset pagination (C#15); trashed/deleted photos drop out (restore
- * brings them back via reconciliation); tapping a photo row opens the
- * standard full-screen viewer (PhotoViewer — gate 5), whose detail panel
- * hosts the state editor.
+ * current-state feed of decisions, with share-sheet events interleaved.
+ * Ordered by activity_at with two-stream keyset pagination (C#15);
+ * tapping a photo row opens the standard full-screen viewer
+ * (PhotoViewer — gate 5), whose detail panel hosts the state editor.
+ *
+ * TOMBSTONES (m0.8.6 D9): decided photos whose bytes are gone — a
+ * forgotten card's keeps, executed culls — stay on the record as
+ * placeholder tiles (grey cell, verdict badge, original date): the feed
+ * is the complete record of review work. A Trashed chip completes the
+ * verdict-chip family. Placeholders are expected-gone, so the per-page
+ * MediaStore reconcile skips them (running it would "discover" their
+ * absence and re-conclude it); they open no viewer — there is nothing
+ * to show. Photos deleted outside Afterglow while UNDECIDED still drop
+ * out through the reconcile, exactly as before.
  */
 import React, { useCallback, useRef, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -39,6 +47,7 @@ const FILTERS: { key: HistoryFilter; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'kept', label: 'Kept' },
   { key: 'culled', label: 'Staged' },
+  { key: 'trashed', label: 'Trashed' },
   { key: 'to_edit', label: 'To edit' },
   { key: 'favourite', label: 'Favourite' },
   { key: 'organized', label: 'Organized' },
@@ -105,7 +114,15 @@ export function HistoryScreen(_props: Props) {
       // BOUNDED CONCURRENCY (m0.8.1): checkMediaPresence is two native
       // calls, and a 40-row page ran them 80× in series — the page's
       // dominant cost on every focus and every "load more".
-      const photoIds = pageRows.filter((row) => row.kind === 'photo').map((row) => row.asset_id);
+      // TOMBSTONES are skipped (D9): they are expected-gone, and running
+      // the check would report exactly that and drop the placeholder the
+      // feed exists to keep.
+      const photoIds = pageRows
+        .filter(
+          (row): row is Extract<HistoryRow, { kind: 'photo' }> =>
+            row.kind === 'photo' && row.is_present === 1 && row.state !== 'trashed',
+        )
+        .map((row) => row.asset_id);
       const presences = await mapWithConcurrency(photoIds, 6, (id) => checkMediaPresence(id));
       const gone = new Set<string>(
         photoIds.filter((_, i) => presences[i] === 'trashed' || presences[i] === 'absent'),
@@ -208,9 +225,19 @@ export function HistoryScreen(_props: Props) {
       );
     }
     const badges = badgesOf(item);
+    // A TOMBSTONE (D9): the bytes are gone, so a grey cell stands in for
+    // the thumbnail and the row opens nothing — the verdict badge and
+    // the original date are the record.
+    const tombstone = item.is_present === 0 || item.state === 'trashed';
     return (
-      <Pressable style={styles.row} onPress={() => setViewerId(item.asset_id)}>
-        <Image source={{ uri: item.uri }} style={styles.thumb} contentFit="cover" />
+      <Pressable style={styles.row} disabled={tombstone} onPress={() => setViewerId(item.asset_id)}>
+        {tombstone ? (
+          <View style={[styles.thumb, styles.tombstone]}>
+            <MaterialCommunityIcons name="image-off-outline" size={22} color={colors.textDim} />
+          </View>
+        ) : (
+          <Image source={{ uri: item.uri }} style={styles.thumb} contentFit="cover" />
+        )}
         <View style={styles.rowBody}>
           <Text style={styles.rowTime}>{formatDayClock(item.activity_at)}</Text>
           <View style={styles.badges}>
@@ -289,8 +316,11 @@ export function HistoryScreen(_props: Props) {
       />
       {viewerId !== null &&
         (() => {
+          // Tombstones open no viewer (D9) and must not sit in its
+          // item list either — a swipe would land on a gone photo.
           const photoRows = (rows ?? []).filter(
-            (r): r is Extract<HistoryRow, { kind: 'photo' }> => r.kind === 'photo',
+            (r): r is Extract<HistoryRow, { kind: 'photo' }> =>
+              r.kind === 'photo' && r.is_present === 1 && r.state !== 'trashed',
           );
           const index = photoRows.findIndex((r) => r.asset_id === viewerId);
           if (index < 0) return null;
@@ -360,6 +390,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   thumb: { width: 56, height: 56, borderRadius: 10, backgroundColor: colors.surfaceRaised },
+  tombstone: { alignItems: 'center', justifyContent: 'center' },
   rowBody: { flex: 1, gap: 4 },
   rowTitle: { color: colors.text, fontSize: 14, fontWeight: '600' },
   rowTime: { color: colors.textDim, fontSize: 13 },

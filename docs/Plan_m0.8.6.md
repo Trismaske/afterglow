@@ -163,12 +163,12 @@ Two implementation guards: the per-page MediaStore reconcile (which drops extern
 - **The browse-swap unify**: the two control-row branches merge into one block whose per-control state (visible, dimmed, disabled, label) derives from the unit's view state.
   The `finishing` escape-clause flash dies with the swap: there is no longer a whole-row swap to flash.
 
-## 10. The zoom port (D12 — liftable)
+## 10. The zoom port (D12 — LIFTED OUT, 2026-08-18)
 
-Port react-native-zoom-toolkit's touch-position math — translation derived from the fingers' absolute focal position each frame, continuous across finger-set changes — into the existing inline worklets on all three zoom surfaces (deck, PhotoViewer, Compare).
+Lifted per this section's own rule: the release ran long, and gesture feel-tuning at a session's tail (m0.8.5's pinch took five device rounds) risks shipping half-tuned code on the three most delicate surfaces.
+The design survives for the next release that claims it: port react-native-zoom-toolkit's touch-position math — translation derived from the fingers' absolute focal position each frame, continuous across finger-set changes — into the existing inline worklets on all three zoom surfaces (deck, PhotoViewer, Compare).
 Hard constraints stand: no host `GestureDetector`, no `runOnJS`, callbacks inline in the gesture configs, state in shared values.
 The engagement rule (one contiguous two-finger stretch) and momentum decay are kept; only the pan's translation source changes.
-**If the release runs long, this phase lifts out whole** — nothing else here depends on it.
 
 ## 11. Implementation phases
 
@@ -184,7 +184,7 @@ Each phase lands with its tests and its doc edits, and is committed on `initial`
 | 6 | History tombstones | §8: feed predicates, placeholder tiles, the Trashed chip. |
 | 7 | Share resolution | §6: the native callback, the schema, discard semantics, the Shared chip. |
 | 8 | The deck notes | §9: N1, N2, the browse-swap unify. |
-| 9 | The zoom port (stretch) | §10. Liftable whole. |
+| 9 | The zoom port (stretch) | §10. LIFTED OUT (2026-08-18) — rides to a later release. |
 
 ## 12. Testing strategy
 
@@ -227,17 +227,17 @@ Terms used below:
 
 ### The Timeline (F2)
 
-1. **A finished group can be found again.**
+1. **A finished group can be found again** *(machine-checked: reviewed units render under Everything on the S10e; confirm by eye)*.
    Timeline → review any group to fully kept → Home → reopen the Timeline → switch the filter to *Everything*.
    Pass: the group you just finished is in the list, rendered like any other card.
    Fail: the group is gone (0.8.5's behaviour — the original F2 report).
-2. **The filter is remembered.**
+2. **The filter is remembered** *(machine-checked: the browse pager re-fired under a fresh process after a force-stop)*.
    Set the filter to *Everything*, force-close the app (Recents → swipe away), reopen, return to the Timeline.
    Pass: *Everything* is still selected.
 3. **Unreviewed only hides queued work.**
    Stage a cull on a single (deck: Cull), then set the filter to *Unreviewed only*.
    Pass: that photo's row is absent; units that are nothing but staged culls are absent; every visible unit contains at least one undecided photo.
-4. **Deep scroll under Everything.**
+4. **Deep scroll under Everything** *(machine-checked: pages load on scroll, 40 items in 60 ms each on the S10e)*.
    With *Everything* selected, scroll down through at least three screens of history.
    Pass: cards keep loading, dates run strictly newest-first, no card appears twice, no visible jump or reshuffle as pages arrive.
 5. **Continue reviewing ignores the filter.**
@@ -255,7 +255,7 @@ Terms used below:
    Pick a group that went through Compare (its members were decided via a duel).
    State editor → set one member to *Unreviewed*.
    Pass: the confirm names the Compare-history deletion before writing; after confirming and a rescan, the group is rebuildable (check 6's behaviour).
-8. **Every action is addable and removable.**
+8. **Every action is addable and removable** *(machine-checked on the S10e: favourite add/cancel round-trip, all four rows render with honest statuses; walk the rest by hand)*.
    On a kept photo, in the state editor: add an edit, remove it; add a favourite, remove it; add it to the share queue, remove it; add an organize move (the album picker opens), remove it.
    Pass: each add shows its badge/queue effect immediately; each remove returns to the prior state; the four queue tabs' counts follow.
 9. **An applied favourite is removable.**
@@ -284,13 +284,13 @@ Terms used below:
 
 ### History (D9, D10)
 
-15. **Trashed work stays on the record.**
+15. **Trashed work stays on the record** *(machine-checked: two executed culls appear under the Trashed chip; confirm the tile look by eye)*.
     Cull a photo, confirm the trash. History → *Trashed* chip.
     Pass: the photo appears as a placeholder tile — grey cell, its verdict badge, its original date.
 16. **A forgotten card's work stays too** *(only if a disposable SD card is at hand — test data only)*.
     Settings → the card's source row → *Forget this card* (keep stats).
     Pass: its decided photos appear in History as placeholder tiles with their verdicts and dates; lifetime stats are unchanged.
-17. **"Shared" means an app was chosen.**
+17. **"Shared" means an app was chosen** *(machine-checked on the S10e's Samsung sheet: a Drive pick fired the chosen broadcast and made the one Shared row; a dismissed sheet was swept — "1 abandoned share sheet(s) discarded" — with the photo still queued; repeat by hand on the S23)*.
     Share queue → share a photo → pick any app in the sheet (e.g. Gmail; sending can be cancelled inside the app).
     Pass: History's *Shared* chip shows the batch.
     Then share another photo and dismiss the share sheet with Back instead of choosing.
@@ -299,7 +299,7 @@ Terms used below:
 
 ### The deck (N1, N2, the unify) and Compare (D7)
 
-18. **A changed decision advances; an undone one stays (N1).**
+18. **A changed decision advances; an undone one stays (N1)** *(machine-checked: fresh keep 1/13→2/13, undo stays at 1/13, kept→cull advances 1/13→2/13)*.
     In a deck: Keep a photo, swipe back to it, tap Cull.
     Pass: the pager advances to the next photo.
     Then on another photo: Keep, then tap Keep again (undo).
@@ -307,7 +307,7 @@ Terms used below:
 19. **The finish button minds its own business (N2).**
     In a group deck, watch *Keep remaining (N)* while tapping an action chip (e.g. Favourite) and while deciding another photo.
     Pass: the big button never dims or flickers for work that is not its own; it still dims when the remainder is empty and greys during its own write.
-20. **A singles finish never flashes the browse row.**
+20. **A singles finish never flashes the browse row** *(machine-checked: the gate's frame-level finish-advance probe passed against the unified block)*.
     In a singles deck, press the finish button and watch the control area during the advance.
     Pass: the controls swap once, cleanly, to the next unit's; no one-frame appearance of the browse Keep/Cull row.
 21. **Triage keeps, without a star.**

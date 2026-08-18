@@ -31,7 +31,7 @@ import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
-import { editorOffer, type EditorOffer } from '../../lib/progress';
+import { classifyPhotoState, editorOffer, type EditorOffer } from '../../lib/progress';
 import { applyReviewDecisions, getPhotoFacts, markEditDone, type PhotoFacts } from '../../db/store';
 import { decodeOrganizeTarget } from '../../db/actions';
 import { addToShareQueue, isInShareQueue, removeFromShareQueue } from '../../db/shareStore';
@@ -192,7 +192,12 @@ export function StateEditorSheet({
           shareQueued,
           organizeQueued: facts?.organize_queued === 1,
         });
-  const meta = VERDICT_META[photo.effective];
+  // The header's verdict swatch follows the sheet's OWN facts once
+  // loaded (S10e probe, 2026-08-18): the host prop is a snapshot from
+  // before the sheet's writes, and a Keep landing while the header
+  // still said Unreviewed read as a failed write.
+  const meta =
+    VERDICT_META[facts != null ? classifyPhotoState({ state: facts.state }) : photo.effective];
   const now = () => Date.now();
 
   const rows: RowSpec[] = [];

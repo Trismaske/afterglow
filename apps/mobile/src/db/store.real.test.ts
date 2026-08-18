@@ -21,6 +21,7 @@ import {
   getRecentDecisionStamps,
   getDaySummariesForDays,
   getGridPhotosByFilter,
+  getMetadataGroupIds,
   getPhotoFacts,
   getRescuedPhotoPage,
   getStateRowsForAssets,
@@ -2325,5 +2326,85 @@ describe('month scopes and the rescued-date pins (m0.8.6)', () => {
     // the MediaStore copy must keep rendering (no rescued-stream twin).
     expect(rows.get(id('undated-gif'))).toMatchObject({ day: null, rescued: false });
     expect(rows.get(id('dated'))).toMatchObject({ day: '2026-07-15', rescued: false });
+  });
+});
+
+describe("D5: the editor's un-review deletes its group's Compare history", () => {
+  async function seedDuelGroup(d: TestDb): Promise<number> {
+    await writeContinuousGroups(
+      asExpo(d),
+      {
+        photos: ['1', '2', '3'].map((r) => upsert(r)),
+        groups: [{ members: [id('1'), id('2'), id('3')], timeAttached: [] }],
+        singles: [],
+      },
+      AT,
+    );
+    const groups = await listReviewGroups(asExpo(d), 10);
+    const groupId = groups[0].groupId;
+    // A triage keep leaves a duel row (the narrow claim, D7).
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 10, {
+      duel: {
+        groupId: String(groupId),
+        winnerId: id('1'),
+        loserId: id('2'),
+        keptBoth: null,
+        at: AT + 10,
+      },
+      duelClaimsWholeTable: false,
+    });
+    return groupId;
+  }
+
+  async function duelCount(d: TestDb, groupId: number): Promise<number> {
+    const row = await asExpo(d).getFirstAsync<{ n: number }>(
+      'SELECT COUNT(*) AS n FROM duels WHERE group_id = ?',
+      String(groupId),
+    );
+    return Number(row?.n ?? 0);
+  }
+
+  it('the un-review write clears the duels in the same transaction, and the freeze releases', async () => {
+    const d = await fresh();
+    const groupId = await seedDuelGroup(d);
+    expect(await duelCount(d, groupId)).toBe(1);
+    expect(await getMetadataGroupIds(asExpo(d), [groupId])).toEqual(new Set([groupId]));
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'unreviewed']], AT + 20, {
+      deleteDuelsForGroup: groupId,
+    });
+    expect(await duelCount(d, groupId)).toBe(0);
+    // Duels-only metadata: nothing left to freeze on.
+    expect(await getMetadataGroupIds(asExpo(d), [groupId])).toEqual(new Set());
+    const facts = await getPhotoFacts(asExpo(d), id('1'));
+    expect(facts?.state).toBe('unreviewed');
+    expect(facts?.group_has_duels).toBe(0);
+  });
+
+  it("restoreCarriedCull's editor path clears them too; CullList's plain restore never does", async () => {
+    const d = await fresh();
+    const groupId = await seedDuelGroup(d);
+    await applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 20);
+    // CullList's Restore: no duel deletion.
+    expect(await restoreCarriedCull(asExpo(d), id('2'), AT + 30)).toBe(true);
+    expect(await duelCount(d, groupId)).toBe(1);
+    // The editor's culled → unreviewed passes the group.
+    await applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 40);
+    expect(await restoreCarriedCull(asExpo(d), id('2'), AT + 50, true, groupId)).toBe(true);
+    expect(await duelCount(d, groupId)).toBe(0);
+  });
+
+  it('a guarded no-op restore deletes nothing (the stale-sheet rule)', async () => {
+    const d = await fresh();
+    const groupId = await seedDuelGroup(d);
+    // Photo 2 is NOT culled — the restore must no-op whole, duels intact.
+    expect(await restoreCarriedCull(asExpo(d), id('2'), AT + 30, true, groupId)).toBe(false);
+    expect(await duelCount(d, groupId)).toBe(1);
+  });
+
+  it('group_has_duels reaches the facts row (the confirm copy gates on it)', async () => {
+    const d = await fresh();
+    await seedDuelGroup(d);
+    const facts = await getPhotoFacts(asExpo(d), id('3'));
+    expect(facts?.group_has_duels).toBe(1);
   });
 });

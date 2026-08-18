@@ -173,25 +173,66 @@ export function classifyPhotoState(row: { state: PhotoState } | undefined): Effe
   }
 }
 
-/** What the state editor sheet may do to a photo (see module docs). */
-export type EditorAction = 'complete_edit' | 'queue_edit' | 'unstage_cull';
+/** The state editor's full offer for one photo (m0.8.6, F9): the state
+ * model made touchable — one verdict, every action independently
+ * addable and removable, refusing only what genuinely cannot be undone.
+ * Pure; the sheet supplies the facts row. */
+export interface EditorOffer {
+  /** The whole sheet is read-only, with this explanation. Exactly two
+   * cases: trashed (the OS owns it) and untracked (the scan owns it). */
+  readOnly: 'trashed' | 'untracked' | null;
+  /** The verdict control's current position. */
+  verdict: 'unreviewed' | 'kept' | 'culled' | null;
+  /** Edit row: add a cycle, or (queued) remove / complete it. */
+  edit: 'add' | 'queued' | null;
+  /** Favourite row, tri-state honest (docs/STATE_MODEL.md): what one
+   * tap does next. `remove_applied` queues the un-favourite — an
+   * APPLIED favourite is removable (the heart-off badge models it). */
+  favourite: 'add' | 'cancel_add' | 'remove_applied' | 'cancel_remove' | null;
+  /** Share row: a queued pass is removable; a resolved one is fact —
+   * only a NEW pass can be added (nothing recalls a sent share). */
+  share: 'add' | 'remove' | null;
+  /** Organize row: a queued move is removable; an APPLIED move is fact
+   * (the album line names it) — a new move stays addable. */
+  organize: 'add' | 'remove' | null;
+}
 
-/**
- * Allowed transitions for the state editor.
- *
- * v18: this now takes the VERDICT and the edit ACTION separately,
- * because they are separate layers. Previously a single `to_edit` value
- * meant both "kept" and "edit pending", so the two could never disagree
- * — and could never be changed independently either.
- */
-export function editorActions(verdict: PhotoState | null, editPending: boolean): EditorAction[] {
-  switch (verdict) {
-    case 'culled':
-      return ['unstage_cull'];
-    case 'kept':
-      return editPending ? ['complete_edit'] : ['queue_edit'];
-    default:
-      // null / unreviewed / trashed → read-only.
-      return [];
+/** The facts slice the offer derives from (a projection of PhotoFacts +
+ * the share-queue membership read). */
+export interface EditorFacts {
+  state: PhotoState | null;
+  editPending: boolean;
+  /** 1 = queued apply, 0 = queued removal, null = nothing queued. */
+  favouriteQueued: number | null;
+  favouriteApplied: boolean;
+  shareQueued: boolean;
+  organizeQueued: boolean;
+}
+
+export function editorOffer(facts: EditorFacts): EditorOffer {
+  if (facts.state === 'trashed' || facts.state === null) {
+    return {
+      readOnly: facts.state === 'trashed' ? 'trashed' : 'untracked',
+      verdict: null,
+      edit: null,
+      favourite: null,
+      share: null,
+      organize: null,
+    };
   }
+  return {
+    readOnly: null,
+    verdict: facts.state,
+    edit: facts.editPending ? 'queued' : 'add',
+    favourite:
+      facts.favouriteQueued === 1
+        ? 'cancel_add'
+        : facts.favouriteQueued === 0
+          ? 'cancel_remove'
+          : facts.favouriteApplied
+            ? 'remove_applied'
+            : 'add',
+    share: facts.shareQueued ? 'remove' : 'add',
+    organize: facts.organizeQueued ? 'remove' : 'add',
+  };
 }

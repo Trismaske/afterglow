@@ -9,7 +9,7 @@ import {
   computeBreakdown,
   reviewedOf,
   reviewedPct,
-  editorActions,
+  editorOffer,
   isActionFilter,
   remainingReviewable,
   progressRemainder,
@@ -176,23 +176,55 @@ describe('isActionFilter', () => {
   });
 });
 
-describe('editorActions', () => {
-  it('offers completing the edit when one is pending', () => {
-    expect(editorActions('kept', true)).toEqual(['complete_edit']);
+describe('editorOffer (F9: the state model made touchable)', () => {
+  const base = {
+    state: 'kept' as const,
+    editPending: false,
+    favouriteQueued: null,
+    favouriteApplied: false,
+    shareQueued: false,
+    organizeQueued: false,
+  };
+
+  it('every verdict state gets the full offer — verdict control plus all four action rows', () => {
+    for (const state of ['unreviewed', 'kept', 'culled'] as const) {
+      const offer = editorOffer({ ...base, state });
+      expect(offer.readOnly).toBeNull();
+      expect(offer.verdict).toBe(state);
+      expect(offer.edit).toBe('add');
+      expect(offer.favourite).toBe('add');
+      expect(offer.share).toBe('add');
+      expect(offer.organize).toBe('add');
+    }
   });
 
-  it('offers queuing an edit on a keeper that has none', () => {
-    expect(editorActions('kept', false)).toEqual(['queue_edit']);
+  it('queued work flips each row to its removal', () => {
+    const offer = editorOffer({
+      ...base,
+      editPending: true,
+      favouriteQueued: 1,
+      shareQueued: true,
+      organizeQueued: true,
+    });
+    expect(offer.edit).toBe('queued');
+    expect(offer.favourite).toBe('cancel_add');
+    expect(offer.share).toBe('remove');
+    expect(offer.organize).toBe('remove');
   });
 
-  it('a staged cull can be un-culled, edit pending or not', () => {
-    expect(editorActions('culled', false)).toEqual(['unstage_cull']);
-    expect(editorActions('culled', true)).toEqual(['unstage_cull']);
+  it('an APPLIED favourite is removable; a queued removal is cancellable', () => {
+    expect(editorOffer({ ...base, favouriteApplied: true }).favourite).toBe('remove_applied');
+    expect(editorOffer({ ...base, favouriteQueued: 0, favouriteApplied: true }).favourite).toBe(
+      'cancel_remove',
+    );
   });
 
-  it('unreviewed, untracked and trashed are read-only', () => {
-    expect(editorActions('unreviewed', false)).toEqual([]);
-    expect(editorActions(null, false)).toEqual([]);
-    expect(editorActions('trashed', false)).toEqual([]);
+  it("the honest refusals: trashed is the OS's, untracked is the scan's", () => {
+    const trashed = editorOffer({ ...base, state: 'trashed' });
+    expect(trashed.readOnly).toBe('trashed');
+    expect(trashed.verdict).toBeNull();
+    expect(trashed.edit).toBeNull();
+    const untracked = editorOffer({ ...base, state: null });
+    expect(untracked.readOnly).toBe('untracked');
   });
 });

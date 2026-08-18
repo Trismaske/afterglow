@@ -78,6 +78,12 @@ export interface PersistDecisionExtras {
    * about the rest of the table, so the outsider check must not run for
    * it. Defaulting to the stricter claim keeps the guard fail-closed. */
   duelClaimsWholeTable?: boolean;
+  /** D5 (m0.8.6): the state editor's DELIBERATE un-review clears its
+   * group's entire Compare history in the same transaction, so the
+   * metadata freeze releases and the group returns to the scan's reach.
+   * Editor-only by design — the deck's undo and CullList's Restore never
+   * pass this, so a transient unreviewed state cannot dissolve duels. */
+  deleteDuelsForGroup?: number;
 }
 
 /**
@@ -535,6 +541,14 @@ export async function applyReviewDecisions(
         // null = verdict-free triage — excluded from the kept-both stat.
         extras.duel.keptBoth === null ? null : extras.duel.keptBoth ? 1 : 0,
         extras.duel.at,
+      );
+    }
+    if (extras.deleteDuelsForGroup !== undefined) {
+      // D5: group-wide, or the metadata freeze survives on the pairs not
+      // deleted (any remaining duel keeps EXISTS true).
+      await txn.runAsync(
+        `DELETE FROM duels WHERE group_id = ?`,
+        String(extras.deleteDuelsForGroup),
       );
     }
     for (const change of extras.favouriteChanges ?? []) {
@@ -1244,6 +1258,9 @@ export interface PhotoFacts {
   time_attached: number;
   /** User ejected it from a group ("Not related"). */
   user_single: number;
+  /** Its group carries Compare history (m0.8.6 D5) — the state editor's
+   * un-review confirm names the deletion this implies. */
+  group_has_duels: number;
 }
 
 export async function getPhotoFacts(
@@ -1275,7 +1292,9 @@ export async function getPhotoFacts(
             (SELECT e2.resolved_at FROM photo_actions e2 WHERE e2.photo_id = p.asset_id
               AND e2.kind = 'edit') AS edit_completed_at,
             a.group_id, COALESCE(a.time_attached, 0) AS time_attached,
-            COALESCE(a.user_single, 0) AS user_single
+            COALESCE(a.user_single, 0) AS user_single,
+            (a.group_id IS NOT NULL AND EXISTS (SELECT 1 FROM duels d
+              WHERE d.group_id = CAST(a.group_id AS TEXT))) AS group_has_duels
      FROM photos p
      LEFT JOIN photo_group_assignments a ON a.photo_id = p.asset_id
      WHERE p.asset_id = ?`,
@@ -3065,43 +3084,6 @@ export async function getGridPhotosByFilter(
 }
 
 /**
- * State editor: send a converged 'kept' photo back to the edit queue.
- * A re-queue starts a FRESH edit cycle: the detection baseline
- * (mod_time + content hash) resets — the previous cycle's edit was
- * already consumed, and a stale baseline would auto-complete the photo
- * before any new edit — and the action's `queued_at` re-stamps, so copy
- * detection scans only from THIS cycle (an old untracked copy in the
- * previous window must not be claimed as the new cycle's result).
- */
-export async function markDoneToEdit(
-  db: SQLiteDatabase,
-  assetId: string,
-  at: number,
-): Promise<void> {
-  await withWriteTransaction(db, async (txn) => {
-    const moved = await txn.runAsync(
-      `UPDATE photos
-       SET mod_time = NULL, content_hash = NULL, activity_at = ?
-       WHERE asset_id = ? AND state = 'kept'`,
-      at,
-      assetId,
-    );
-    // Only a kept photo re-enters the edit queue; anything else (staged,
-    // trashed, never reviewed) is not a "converged keeper" and the sheet
-    // does not offer this.
-    if (Number(moved.changes) === 0) return;
-    await txn.runAsync(
-      `INSERT INTO photo_actions (photo_id, kind, state, queued_at)
-       VALUES (?, 'edit', 'queued', ?)
-       ON CONFLICT(photo_id, kind) DO UPDATE SET
-         state = 'queued', queued_at = excluded.queued_at`,
-      assetId,
-      at,
-    );
-  });
-}
-
-/**
  * "Restore to unreviewed" for a staged cull: back to the review pool,
  * resetting the edit-cycle baseline like every other return to
  * 'unreviewed'. CullList's explicit Restore resolves any pending
@@ -3114,6 +3096,10 @@ export async function restoreCarriedCull(
   assetId: string,
   at: number,
   resolvePendingMatches = true,
+  /** D5 (m0.8.6): the STATE EDITOR's culled → unreviewed also clears its
+   * group's Compare history, in this transaction, so the metadata freeze
+   * releases with the verdict. CullList's Restore never passes this. */
+  deleteDuelsForGroup?: number,
 ): Promise<boolean> {
   // True when the restore actually landed — callers gate their
   // optimistic patches on it (a guarded no-op must stay a no-op in the
@@ -3143,6 +3129,11 @@ export async function restoreCarriedCull(
         "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
         assetId,
       );
+    }
+    if (deleteDuelsForGroup !== undefined) {
+      // Group-wide, like the extras path: any surviving duel would keep
+      // the metadata freeze standing (D5).
+      await txn.runAsync(`DELETE FROM duels WHERE group_id = ?`, String(deleteDuelsForGroup));
     }
   });
   return applied;

@@ -220,7 +220,7 @@ interface ReviewContextValue {
     expectedGroupId?: number | null,
   ) => Promise<void>;
   /** Clear a photo's verdict back to unreviewed (active-chip tap). */
-  clearDecision: (assetId: string) => Promise<void>;
+  clearDecision: (assetId: string, clearDuelsForGroup?: number) => Promise<void>;
   /** State-aware change of mind on a DECIDED photo (gate 5 browse):
    * keep leaves pending actions alone; to_edit starts a fresh cycle; both
    * resolve pending copy matches. */
@@ -263,7 +263,7 @@ interface ReviewContextValue {
   /** Re-decide from the cull list: not-a-cull-after-all lands on kept. */
   unstageCull: (assetId: string) => Promise<void>;
   /** CullList "Restore to unreviewed": back to the review pool. */
-  restoreCull: (assetId: string) => Promise<void>;
+  restoreCull: (assetId: string, clearDuelsForGroup?: number) => Promise<void>;
   /** Keep every still-unreviewed single in one write. `day` (and a run's
    * taken_at range) narrows it to the deck's own scope — and, like
    * keepRest's off-page fetch, that scope is re-read from the DB at
@@ -1288,12 +1288,25 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   );
 
   const clearDecision = useCallback(
-    (assetId: string) =>
-      write(() => applyReviewDecisions(db, [[assetId, 'unreviewed']], Date.now()), {
-        kind: 'verdict',
-        assetId,
-        verdict: 'unreviewed',
-      }),
+    // `clearDuelsForGroup` is D5's editor-only lever (m0.8.6): ONLY the
+    // state editor's deliberate un-review passes it, after its confirm
+    // names the Compare-history deletion. The deck's undo never does —
+    // a transient unreviewed state must not dissolve duels.
+    (assetId: string, clearDuelsForGroup?: number) =>
+      write(
+        () =>
+          applyReviewDecisions(
+            db,
+            [[assetId, 'unreviewed']],
+            Date.now(),
+            clearDuelsForGroup !== undefined ? { deleteDuelsForGroup: clearDuelsForGroup } : {},
+          ),
+        {
+          kind: 'verdict',
+          assetId,
+          verdict: 'unreviewed',
+        },
+      ),
     [db, write],
   );
 
@@ -1567,11 +1580,19 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   );
 
   const restoreCull = useCallback(
-    (assetId: string) => {
+    // Same D5 lever as clearDecision: only the state editor's deliberate
+    // culled → unreviewed passes `clearDuelsForGroup`.
+    (assetId: string, clearDuelsForGroup?: number) => {
       const outcome = { applied: false };
       return write(
         async () => {
-          outcome.applied = await restoreCarriedCull(db, assetId, Date.now());
+          outcome.applied = await restoreCarriedCull(
+            db,
+            assetId,
+            Date.now(),
+            true,
+            clearDuelsForGroup,
+          );
         },
         () => (outcome.applied ? { kind: 'restore', assetId } : null),
       );

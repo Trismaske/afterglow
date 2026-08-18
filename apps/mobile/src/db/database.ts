@@ -29,7 +29,7 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 export const DATABASE_NAME = 'afterglow.db';
 
 /** Bump on ANY schema change before v1 — the open path resets mismatches. */
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 export const BASELINE_DDL = `
   CREATE TABLE photos (
@@ -124,8 +124,8 @@ export const BASELINE_DDL = `
     group_id   TEXT NOT NULL,
     winner_id  TEXT NOT NULL,
     loser_id   TEXT NOT NULL,
-    -- NULL = a verdict-free TRIAGE duel (3+ alive): star + history
-    -- only, excluded from the kept-both statistic (v19).
+    -- NULL = a verdict-free TRIAGE duel (3+ alive): history only,
+    -- excluded from the kept-both statistic (v19).
     kept_both  INTEGER,
     at         INTEGER NOT NULL
   );
@@ -177,17 +177,8 @@ export const BASELINE_DDL = `
   CREATE TABLE photo_groups (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id        INTEGER NOT NULL REFERENCES grouping_runs(id) ON DELETE CASCADE,
-    best_photo_id TEXT,
-    UNIQUE (run_id, id),
-    FOREIGN KEY (id, best_photo_id)
-      REFERENCES photo_group_assignments(group_id, photo_id)
-      DEFERRABLE INITIALLY DEFERRED
+    UNIQUE (run_id, id)
   );
-
-  -- Star lookups/clears (per culled photo, per trash member, and the
-  -- orphan-star repair) scanned every group without this.
-  CREATE INDEX idx_groups_best ON photo_groups(best_photo_id)
-    WHERE best_photo_id IS NOT NULL;
 
   CREATE TABLE photo_group_assignments (
     photo_id TEXT PRIMARY KEY REFERENCES photos(asset_id) ON DELETE CASCADE,

@@ -20,7 +20,6 @@ import {
   makePhotoSingles,
   readReviewQueue,
   restoreCarriedCull,
-  setGroupBest,
   unstageCullDirect,
   writeContinuousGroups,
   type ContinuousPhotoUpsert,
@@ -147,16 +146,10 @@ describe('reviewPatch parity with db/store.ts', () => {
     );
   });
 
-  it('cull clears a star pointing at the culled photo and keeps it badged', async () => {
+  it('cull on a group member: culled, it stays in place badged', async () => {
     const d = await fresh();
     await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
-    let before = await snapshot(d);
-    before = await expectParity(
-      d,
-      before,
-      { kind: 'best', groupId: before.groups[0]!.groupId, assetId: id('2') },
-      () => setGroupBest(asExpo(d), before.groups[0]!.groupId, id('2')),
-    );
+    const before = await snapshot(d);
     await expectParity(d, before, { kind: 'verdict', assetId: id('2'), verdict: 'culled' }, () =>
       applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 200),
     );
@@ -346,7 +339,7 @@ describe('reviewPatch parity with db/store.ts', () => {
     );
   });
 
-  it('compare-cull: loser culled and winner starred in one transaction', async () => {
+  it('compare-cull: loser culled and the duel recorded in one transaction', async () => {
     const d = await fresh();
     await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
     // Member 3 is kept first: a verdict-writing duel claims the whole
@@ -357,7 +350,7 @@ describe('reviewPatch parity with db/store.ts', () => {
     await expectParity(
       d,
       before,
-      { kind: 'duel', groupId, winnerId: id('1'), loserId: id('2'), keptBoth: false },
+      { kind: 'duel', groupId, winnerId: id('1'), loserId: id('2'), mode: 'cull' },
       () =>
         applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 100, {
           duel: {
@@ -367,12 +360,11 @@ describe('reviewPatch parity with db/store.ts', () => {
             keptBoth: false,
             at: AT + 100,
           },
-          setBest: { groupId, assetId: id('1') },
         }),
     );
   });
 
-  it('compare keep-both (F15): BOTH kept + star in one transaction; the group leaves the queue', async () => {
+  it('compare keep-both (F15): BOTH kept in one transaction; the group leaves the queue', async () => {
     const d = await fresh();
     await seed(d, ['1', '2', '3'], [['1', '2']]);
     const before = await snapshot(d);
@@ -380,14 +372,7 @@ describe('reviewPatch parity with db/store.ts', () => {
     const after = await expectParity(
       d,
       before,
-      {
-        kind: 'duel',
-        groupId,
-        winnerId: id('1'),
-        loserId: id('2'),
-        keptBoth: true,
-        keptVerdicts: true,
-      },
+      { kind: 'duel', groupId, winnerId: id('1'), loserId: id('2'), mode: 'keepBoth' },
       () =>
         applyReviewDecisions(
           asExpo(d),
@@ -404,7 +389,6 @@ describe('reviewPatch parity with db/store.ts', () => {
               keptBoth: true,
               at: AT + 100,
             },
-            setBest: { groupId, assetId: id('1') },
           },
         ),
     );
@@ -412,34 +396,56 @@ describe('reviewPatch parity with db/store.ts', () => {
     expect(after.groups.some((g) => g.groupId === groupId)).toBe(false);
   });
 
-  it('a triage duel (keptBoth without verdicts) moves only the star', async () => {
+  it("triage 'Keep this one' (D7): a targeted keep on the winner, no whole-table claim", async () => {
     const d = await fresh();
+    // Member 3 stays undecided — the duel is NOT the whole table, and the
+    // narrow claim must let the keep through where the whole-table guard
+    // would have thrown.
     await seed(d, ['1', '2', '3', '4'], [['1', '2', '3']]);
     const before = await snapshot(d);
     const groupId = before.groups[0]!.groupId;
     const after = await expectParity(
       d,
       before,
-      { kind: 'duel', groupId, winnerId: id('1'), loserId: id('2'), keptBoth: true },
+      { kind: 'duel', groupId, winnerId: id('1'), loserId: id('2'), mode: 'keepWinner' },
       () =>
-        applyReviewDecisions(asExpo(d), [], AT + 100, {
+        applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100, {
           duel: {
             groupId: String(groupId),
             winnerId: id('1'),
             loserId: id('2'),
-            keptBoth: true,
+            keptBoth: null,
             at: AT + 100,
           },
-          setBest: { groupId, assetId: id('1') },
+          duelClaimsWholeTable: false,
         }),
     );
-    // Verdict-free: everyone still unreviewed, the group stays queued.
-    expect(after.groups.find((g) => g.groupId === groupId)?.bestPhotoId).toBe(id('1'));
-    expect(
-      after.groups
-        .find((g) => g.groupId === groupId)!
-        .members.every((m) => m.state === 'unreviewed'),
-    ).toBe(true);
+    // The winner alone is kept; the loser and the outsider stay open,
+    // so the group stays queued.
+    const group = after.groups.find((g) => g.groupId === groupId)!;
+    expect(group.members.find((m) => m.asset_id === id('1'))!.state).toBe('kept');
+    expect(group.members.find((m) => m.asset_id === id('2'))!.state).toBe('unreviewed');
+    expect(group.members.find((m) => m.asset_id === id('3'))!.state).toBe('unreviewed');
+  });
+
+  it('a verdict-carrying duel WITHOUT the narrow opt-out still claims the whole table', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3', '4'], [['1', '2', '3']]);
+    const before = await snapshot(d);
+    const groupId = before.groups[0]!.groupId;
+    // Member 3 is an undecided outsider: the whole-table revalidation
+    // must reject the claim (fail-closed default).
+    await expect(
+      applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100, {
+        duel: {
+          groupId: String(groupId),
+          winnerId: id('1'),
+          loserId: id('2'),
+          keptBoth: null,
+          at: AT + 100,
+        },
+      }),
+    ).rejects.toThrow(/group changed while comparing/);
   });
 
   it('make-single ejects into feed order; a 2-member group dissolves whole', async () => {

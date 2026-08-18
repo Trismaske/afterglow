@@ -56,7 +56,7 @@ import { ActionChip } from '../components/ActionChip';
 import { GoalCelebration } from '../components/GoalCelebration';
 import { BadgeCluster, DecisionBadge, DECISION_GLYPHS } from '../components/DecisionBadge';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { isFavouriteSelected, shouldOfferFavouriteHandoff } from '../lib/favouriteState';
+import { isFavouriteSelected } from '../lib/favouriteState';
 import { photoBadges, type PhotoBadge } from '../lib/photoBadges';
 import { PhotoViewer } from '../components/PhotoViewer';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -119,9 +119,9 @@ function clampPan(value: number, max: number): number {
  * Swipe-deck group review (m0.4, replacing the duel bracket): the group is
  * a horizontally swipeable deck of ALL its photos — a decided photo stays
  * in place wearing its badges, and re-tapping the active verdict clears
- * it (the badge is the undo). Cull any photo as you meet it, star one as
- * best, flag needs-edit, eject a mis-grouped photo to the singles flow,
- * or open the Compare tool.
+ * it (the badge is the undo). Cull any photo as you meet it, flag
+ * needs-edit, eject a mis-grouped photo to the singles flow, or open the
+ * Compare tool.
  *
  * m0.5:
  * - `route.params.groupId` opens a SPECIFIC group (Groups screen, any
@@ -227,8 +227,7 @@ interface DeckView {
   stateOf: Map<string, ReviewMemberRow['state']>;
   dayOf: Map<string, string | null>;
   needMs: boolean[];
-  bestId: string | null;
-  /** Group-only controls (Best · Not related) render. */
+  /** Group-only controls (Not related) render. */
   isGroup: boolean;
   headerTitle: string;
   headerHint: string;
@@ -255,7 +254,6 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     decide,
     clearDecision,
     keepRest,
-    markBest,
     makeSingle,
     needsEdit,
     toggleNeedsEdit,
@@ -466,7 +464,6 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       memberIds: group.members.map((m) => m.asset_id),
       aliveIds,
       complete: aliveIds.length === 0,
-      bestId: group.bestPhotoId,
       cursor: 0,
     };
   }, [group]);
@@ -1276,8 +1273,6 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     [busy],
   );
 
-  const isBest = !!current && !singlesMode && info?.bestId === current.id;
-
   // m0.7 item E queue row, m0.8.2 F5/F6: Share AND Organize are both
   // pure toggles now — organize queues with NO target ("move this
   // somewhere"; the album is assigned in the queue screen, batch-wise).
@@ -1330,29 +1325,11 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     void run(() => keepRest(group.groupId).then(() => {}), 'finish');
   }, [group, run, keepRest]);
 
-  const toggleBest = useCallback(() => {
-    if (!group || !current) return;
-    void run(async () => {
-      await markBest(group.groupId, isBest ? null : current.id);
-      // m0.7 item F (#10): the hand-off is WRITE-ONLY — never offered for
-      // an already-favourited photo (toggleFavourite would UN-favourite
-      // it), and "Not now" stays a strict no-op.
-      const offer = shouldOfferFavouriteHandoff(favouriteStatus(current.id));
-      if (!isBest && offer) {
-        Alert.alert('Best of this group', 'Would you also like to favourite it in your gallery?', [
-          { text: 'Not now', style: 'cancel' },
-          { text: 'Favourite', onPress: () => void toggleFavourite(current.id).catch(() => {}) },
-        ]);
-      }
-    });
-  }, [current, favouriteStatus, group, isBest, markBest, run, toggleFavourite]);
-
   const openCompare = useCallback(
     (againstId?: string) => {
       // Compare eligibility (m0.8.2, F11): undecided OR KEPT — "compare
       // with the photo I just kept" is the point. Staged culls stay out
-      // on BOTH endpoints (a compare verdict could star one — a culled
-      // best); resurrecting one is the re-decide chips' job.
+      // on BOTH endpoints; resurrecting one is the re-decide chips' job.
       const candidates = deckItems.filter((i) => {
         const state = stateOf.get(i.id) ?? 'unreviewed';
         return state === 'unreviewed' || state === 'kept';
@@ -1449,7 +1426,6 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
           stateOf,
           dayOf,
           needMs,
-          bestId: singlesMode ? null : (info?.bestId ?? null),
           isGroup: !singlesMode && !!groupId,
           headerTitle: singlesMode
             ? `${range || !day ? 'Singles' : `${labelForDayKey(day)} · singles`} · ${deckItems.length - singlesPending} of ${deckItems.length} reviewed${
@@ -1514,7 +1490,6 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   const currentState = view.stateOf.get(view.current.id) ?? 'unreviewed';
   const browseState: RedecideTarget =
     currentState === 'culled' ? 'cull' : flagged ? 'to_edit' : 'keep';
-  const viewIsBest = view.isGroup && view.bestId !== null && view.bestId === view.current.id;
   /** Every badge a deck photo wears — the verdict AND all four actions,
    * none hiding another (m0.8.1 round 4), each at its own weight: loud
    * while it waits for you, quiet once the photo carries it (m0.8.2).
@@ -1525,7 +1500,6 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     return photoBadges({
       state,
       ...actionWeights(item.id, state),
-      best: view.bestId !== null && view.bestId === item.id,
     });
   };
 
@@ -1707,12 +1681,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                 )}`}
               </Text>
             </View>
-            <BadgeCluster
-              badges={badgesFor(view.current)}
-              size={24}
-              accent={theme.accent}
-              style={styles.flagBadge}
-            />
+            <BadgeCluster badges={badgesFor(view.current)} size={24} style={styles.flagBadge} />
           </View>
         </VirtualGestureDetector>
       </InterceptingGestureDetector>
@@ -1764,7 +1733,6 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                 // with the page crossing, not at momentum end. A frozen
                 // deck keeps its own settled cursor.
                 index === (inert ? view.cursor : pagerIndex) && styles.thumbActive,
-                view.bestId !== null && item.id === view.bestId && { borderColor: theme.accent },
               ]}
               contentFit="cover"
               recyclingKey={item.id}
@@ -1772,12 +1740,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
             {/* Small badges wrapping into rows: a 52 px thumbnail fits
                 three per row, so a fully-flagged photo shows all of
                 them stacked instead of hiding any. */}
-            <BadgeCluster
-              badges={badgesFor(item)}
-              size={14}
-              accent={theme.accent}
-              style={styles.thumbBadges}
-            />
+            <BadgeCluster badges={badgesFor(item)} size={14} style={styles.thumbBadges} />
           </Pressable>
         ))}
       </ScrollView>
@@ -1828,11 +1791,10 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
           <View style={styles.secondaryRow}>
             {/* Browse Edit re-decides (kept + fresh edit cycle) — the
                 state-aware path, unlike the live flag toggle below.
-                All four chips DISABLE on a staged cull (same rule as
-                Best below): its retained action rows are what un-staging
-                restores, and a toggle here would silently destroy them —
-                a photo you are about to delete is not actionable work
-                (codex r3). */}
+                All four chips DISABLE on a staged cull: its retained
+                action rows are what un-staging restores, and a toggle
+                here would silently destroy them — a photo you are about
+                to delete is not actionable work (codex r3). */}
             <ActionChip
               kind="edit"
               active={flagged}
@@ -1861,38 +1823,13 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
               dimmed={currentState === 'culled'}
               onPress={() => void run(toggleShare)}
             />
-            {view.isGroup && (
-              <Pressable
-                style={[
-                  styles.secondaryButton,
-                  viewIsBest && { backgroundColor: theme.accentMuted, borderColor: theme.accent },
-                  // Same staged-cull rule as the chips (§10 check 19),
-                  // same look; busy stays out of the visual on purpose.
-                  currentState === 'culled' && styles.controlDimmed,
-                ]}
-                // Only a staged cull is barred from Best (cull-star
-                // hygiene) — a completed group's kept members stay
-                // starrable in browse mode.
-                disabled={busy || inert || currentState === 'culled'}
-                onPress={toggleBest}
-              >
-                <MaterialCommunityIcons
-                  name={viewIsBest ? 'star' : 'star-outline'}
-                  size={18}
-                  color={viewIsBest ? theme.accent : colors.textDim}
-                />
-                <Text style={[styles.secondaryText, viewIsBest && { color: theme.accent }]}>
-                  Best
-                </Text>
-              </Pressable>
-            )}
           </View>
         </>
       ) : (
         // LIVE (m0.8.2 unification): groups and singles runs review
         // through ONE surface — big three, the four actions, and the
-        // finish button; only Best/Not related stay group-only, because
-        // they are statements about group membership.
+        // finish button; only Not related stays group-only, because it
+        // is a statement about group membership.
         <>
           <View style={styles.actionRow}>
             <Pressable
@@ -1914,10 +1851,10 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
             </Pressable>
             <Pressable
               style={[styles.actionButton, styles.compareButton]}
-              // Compare works on UNDECIDED photos only (its verdicts cull
-              // a loser and star a winner) — and decided photos stay in
-              // the deck, so the button must go dead on them too, not
-              // just on staged culls.
+              // Compare works on UNDECIDED photos only (its verdicts can
+              // cull a loser) — and decided photos stay in the deck, so
+              // the button must go dead on them too, not just on staged
+              // culls.
               disabled={busy || inert || !compareEligible}
               onPress={() => openCompare()}
             >
@@ -1945,8 +1882,8 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                 unification) — the verdict layer is untouched. The live
                 deck keeps decided photos in place, so a staged cull can
                 be the current photo here too: all four chips disable on
-                it (same rule as Best) — its retained rows are what
-                un-staging restores (codex r3). */}
+                it — its retained rows are what un-staging restores
+                (codex r3). */}
             <ActionChip
               kind="edit"
               active={flagged}
@@ -1979,27 +1916,6 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
 
           {view.isGroup && (
             <View style={styles.secondaryRow}>
-              <Pressable
-                style={[
-                  styles.secondaryButton,
-                  viewIsBest && { backgroundColor: theme.accentMuted, borderColor: theme.accent },
-                  // Same staged-cull rule as the chips (§10 check 19),
-                  // same look; busy stays out of the visual on purpose.
-                  currentState === 'culled' && styles.controlDimmed,
-                ]}
-                // A staged cull is not ALIVE — un-cull it before starring.
-                disabled={busy || inert || currentState === 'culled'}
-                onPress={toggleBest}
-              >
-                <MaterialCommunityIcons
-                  name={viewIsBest ? 'star' : 'star-outline'}
-                  size={18}
-                  color={viewIsBest ? theme.accent : colors.textDim}
-                />
-                <Text style={[styles.secondaryText, viewIsBest && { color: theme.accent }]}>
-                  Best
-                </Text>
-              </Pressable>
               <Pressable
                 style={styles.secondaryButton}
                 disabled={busy || inert}
@@ -2216,8 +2132,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 6,
   },
-  // ActionChip's chipDimmed, for the deck-owned Best control.
-  controlDimmed: { opacity: 0.4 },
   secondaryText: { color: colors.textDim, fontSize: 13, fontWeight: '700' },
   thumbBadges: {
     position: 'absolute',

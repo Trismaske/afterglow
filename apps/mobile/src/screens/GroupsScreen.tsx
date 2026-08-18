@@ -43,12 +43,11 @@ export function GroupsScreen({ navigation }: Props) {
    * verdict rides into actionWeights so a staged cull's retained actions
    * badge quiet — they left the queues with it. */
   const badgesFor = useCallback(
-    (assetId: string, bestPhotoId: string | null): PhotoBadge[] => {
+    (assetId: string): PhotoBadge[] => {
       const state = stateOf.get(assetId) ?? 'unreviewed';
       return photoBadges({
         state,
         ...actionWeights(assetId, state),
-        best: assetId === bestPhotoId,
       });
     },
     [actionWeights, stateOf],
@@ -76,27 +75,15 @@ export function GroupsScreen({ navigation }: Props) {
             ? ` · ${group.unreachableCount} on unmounted SD card`
             : '';
         const newest = group.members[0];
-        const displayMembers = group.bestPhotoId
-          ? [
-              ...group.members.filter((m) => m.asset_id === group.bestPhotoId),
-              ...group.members.filter((m) => m.asset_id !== group.bestPhotoId),
-            ]
-          : group.members;
         return (
           <UnitCard
             title={`Group · ${group.members.length} shots · ${labelForDayKey(newest?.day ?? UNDATED_DAY_KEY)}${newest ? ` ${formatClock(newest.taken_at)}` : ''}`}
             status={(pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`) + away}
             statusDone={pending === 0}
-            members={displayMembers}
+            members={group.members}
             onPress={() => openUnit(unit)}
-            borderColorOf={(id) => (id === group.bestPhotoId ? theme.accent : undefined)}
             renderOverlay={(id) => (
-              <BadgeCluster
-                badges={badgesFor(id, group.bestPhotoId)}
-                size={14}
-                accent={theme.accent}
-                style={styles.badges}
-              />
+              <BadgeCluster badges={badgesFor(id)} size={14} style={styles.badges} />
             )}
           />
         );
@@ -110,17 +97,12 @@ export function GroupsScreen({ navigation }: Props) {
           members={unit.members}
           onPress={() => openUnit(unit)}
           renderOverlay={(id) => (
-            <BadgeCluster
-              badges={badgesFor(id, null)}
-              size={14}
-              accent={theme.accent}
-              style={styles.badges}
-            />
+            <BadgeCluster badges={badgesFor(id)} size={14} style={styles.badges} />
           )}
         />
       );
     },
-    [badgesFor, openUnit, theme.accent],
+    [badgesFor, openUnit],
   );
 
   // First PENDING unit: a cull-only run stays a browseable card, but

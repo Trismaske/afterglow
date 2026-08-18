@@ -114,7 +114,6 @@ import {
   applyRedecision,
   makePhotoSingles,
   restoreCarriedCull,
-  setGroupBest,
   unstageCullDirect,
   type QueueCounts,
   type QueuedForAssets,
@@ -229,22 +228,22 @@ interface ReviewContextValue {
   /** Finish a group: every remaining unreviewed member keeps (kept). */
   /** Resolves to the number actually kept (codex r10 — see keepAllSingles). */
   keepRest: (groupId: number) => Promise<number>;
-  markBest: (groupId: number, assetId: string | null) => Promise<void>;
   /** "Not related — review as single" (durable user ejection). The
    * displayed group id is validated in the transaction — a background
    * rescan may have rebuilt the group since render. */
   makeSingle: (assetId: string, expectedGroupId: number) => Promise<void>;
-  /** Compare TRIAGE (3+ alive): winner is better, both stay UNDECIDED —
-   * stars the best and records the duel, writes no verdict (F15: a
-   * repeated burst duel picks best/worst, it does not keep). */
-  recordCompare: (groupId: number, winnerId: string, loserId: string) => Promise<void>;
+  /** Compare TRIAGE (3+ alive), m0.8.6 D7: "Keep this one" — a
+   * targeted keep on the winner plus the duel row, in one transaction.
+   * The narrow endpoint guard applies; no whole-table claim is made, so
+   * the loser and the rest of the table stay untouched. */
+  compareKeepWinner: (groupId: number, winnerId: string, loserId: string) => Promise<void>;
   /** Compare: cull the loser (records history + stages the cull). The
    * winner stays untouched — a cull judgment says nothing about keeping. */
   compareCull: (groupId: number, loserId: string, winnerId: string) => Promise<void>;
   /** The two-photo dialog's explicit "Keep both" (m0.8.2, F15): BOTH
-   * participants land on kept, atomically. With a group: plus the
-   * winner's star and the duel row in the same transaction. Without
-   * (singles): a plain two-photo keep, each validated still-single. */
+   * participants land on kept, atomically. With a group: plus the duel
+   * row in the same transaction. Without (singles): a plain two-photo
+   * keep, each validated still-single. */
   compareKeepBoth: (winnerId: string, loserId: string, groupId?: number) => Promise<void>;
   needsEdit: (assetId: string) => boolean;
   toggleNeedsEdit: (assetId: string) => Promise<void>;
@@ -1374,17 +1373,6 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     [db, write],
   );
 
-  const markBest = useCallback(
-    (groupId: number, assetId: string | null) =>
-      write(
-        async () => {
-          await setGroupBest(db, groupId, assetId);
-        },
-        { kind: 'best', groupId, assetId },
-      ),
-    [db, write],
-  );
-
   const makeSingle = useCallback(
     (assetId: string, expectedGroupId: number) =>
       write(
@@ -1403,34 +1391,38 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       groupId: number,
       winnerId: string,
       loserId: string,
-      keptBoth: boolean,
-      keptVerdicts = false,
+      mode: 'keepBoth' | 'cull' | 'keepWinner',
     ) => {
       const duel: DuelRecord = {
         groupId: String(groupId),
         winnerId,
         loserId,
-        // A verdict-free TRIAGE duel records NULL (v19): it is neither a
-        // keep-both nor a cull decision, and Stats' kept-both percentage
-        // reads over dialog outcomes only.
-        keptBoth: keptBoth ? (keptVerdicts ? true : null) : false,
+        // keptBoth records the whole-table DIALOG's outcome (v19): true
+        // = Keep both, false = Cull. The triage keep records NULL — it
+        // answers "which is better", not the dialog's question, and
+        // Stats' kept-both percentage reads over dialog outcomes only.
+        keptBoth: mode === 'keepBoth' ? true : mode === 'cull' ? false : null,
         at: Date.now(),
       };
-      // Verdicts (F15): the dialog's "Keep both" keeps BOTH; "Cull"
-      // stages the loser; a triage duel writes none. Duel, verdicts and
-      // the winner's star land in ONE transaction — a partial compare
-      // verdict must be impossible.
-      const verdicts: [string, ReviewVerdict][] = keptBoth
-        ? keptVerdicts
+      // Verdicts (F15 + m0.8.6 D7): the dialog's "Keep both" keeps BOTH;
+      // its "Cull" stages the loser; the triage "Keep this one" keeps
+      // the winner alone. Duel and verdicts land in ONE transaction — a
+      // partial compare verdict must be impossible.
+      const verdicts: [string, ReviewVerdict][] =
+        mode === 'keepBoth'
           ? [
               [winnerId, 'kept'],
               [loserId, 'kept'],
             ]
-          : []
-        : [[loserId, 'culled']];
+          : mode === 'cull'
+            ? [[loserId, 'culled']]
+            : [[winnerId, 'kept']];
       return applyReviewDecisions(db, verdicts, duel.at, {
         duel,
-        setBest: { groupId, assetId: winnerId },
+        // The triage keep is a NARROW, explicitly-targeted verdict: it
+        // claims nothing about the rest of the table (D7), so only the
+        // dialog modes carry the whole-table claim.
+        duelClaimsWholeTable: mode !== 'keepWinner',
         // The whole-table revalidation judges outsiders over the SAME
         // mounted population Compare RENDERED (m0.8.3 §5, final cycle
         // S5/T4) — a queue-backed group pairs with the queue snapshot's
@@ -1445,14 +1437,18 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     [db],
   );
 
-  const recordCompare = useCallback(
+  /** Triage's positive act (m0.8.6 D7): a targeted keep on the duel's
+   * winner plus the duel row, in one transaction. The narrow guard is
+   * the store's endpoint check — no whole-table claim is made, so the
+   * loser and the rest of the table stay exactly as they were. */
+  const compareKeepWinner = useCallback(
     (groupId: number, winnerId: string, loserId: string) =>
-      write(() => recordDuel(groupId, winnerId, loserId, true), {
+      write(() => recordDuel(groupId, winnerId, loserId, 'keepWinner'), {
         kind: 'duel',
         groupId,
         winnerId,
         loserId,
-        keptBoth: true,
+        mode: 'keepWinner',
       }),
     [recordDuel, write],
   );
@@ -1460,16 +1456,15 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   const compareKeepBoth = useCallback(
     (winnerId: string, loserId: string, groupId?: number) => {
       if (groupId !== undefined) {
-        return write(() => recordDuel(groupId, winnerId, loserId, true, true), {
+        return write(() => recordDuel(groupId, winnerId, loserId, 'keepBoth'), {
           kind: 'duel',
           groupId,
           winnerId,
           loserId,
-          keptBoth: true,
-          keptVerdicts: true,
+          mode: 'keepBoth',
         });
       }
-      // Singles: no group, no star, no duel row — just both kept, each
+      // Singles: no group, no duel row — just both kept, each
       // validated STILL single (a scan may have grouped one mid-compare,
       // and keeping it would silently freeze the newly formed group).
       return write(
@@ -1496,12 +1491,12 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
 
   const compareCull = useCallback(
     (groupId: number, loserId: string, winnerId: string) =>
-      write(() => recordDuel(groupId, winnerId, loserId, false), {
+      write(() => recordDuel(groupId, winnerId, loserId, 'cull'), {
         kind: 'duel',
         groupId,
         winnerId,
         loserId,
-        keptBoth: false,
+        mode: 'cull',
       }),
     [recordDuel, write],
   );
@@ -1750,9 +1745,8 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       clearDecision,
       redecideDecided,
       keepRest,
-      markBest,
       makeSingle,
-      recordCompare,
+      compareKeepWinner,
       compareCull,
       compareKeepBoth,
       needsEdit,
@@ -1794,9 +1788,8 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       clearDecision,
       redecideDecided,
       keepRest,
-      markBest,
       makeSingle,
-      recordCompare,
+      compareKeepWinner,
       compareCull,
       compareKeepBoth,
       needsEdit,

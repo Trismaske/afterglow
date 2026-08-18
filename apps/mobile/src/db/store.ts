@@ -58,9 +58,6 @@ export interface PersistDecisionExtras {
    * un-culling answers the copy prompt's question, so its stale re-emit
    * must not return, nor block a future cycle's fresh match (C#12). */
   resolveCopyMatchesFor?: readonly string[];
-  /** Star a group best in the SAME transaction (compare verdicts: duel,
-   * loser state, and the star must land or fail together). */
-  setBest?: { groupId: number; assetId: string | null };
   /** Validate — inside the transaction — that every listed photo still
    * belongs to the given group (Keep remaining: a warm scan can rebuild
    * an all-unreviewed group between render and tap; writing the stale
@@ -75,6 +72,12 @@ export interface PersistDecisionExtras {
    * whole-table revalidation judges outsiders over the SAME population
    * Compare showed — an unreachable member is outside the table. */
   mounted?: readonly string[] | null;
+  /** A duel carrying verdicts claims to be the whole table UNLESS this
+   * is explicitly false (m0.8.6 D7): the triage "Keep this one" writes a
+   * NARROW, explicitly-targeted keep on the winner and says nothing
+   * about the rest of the table, so the outsider check must not run for
+   * it. Defaulting to the stricter claim keeps the guard fail-closed. */
+  duelClaimsWholeTable?: boolean;
 }
 
 /**
@@ -336,9 +339,9 @@ export async function applyReviewDecisions(
     }
     // Compare verdicts validate IN the transaction: a warm scan can
     // replace an all-unreviewed group between Compare's load and this
-    // write — starring/culling against the wrong group must abort whole
+    // write — recording/culling against the wrong group must abort whole
     // (the provider surfaces the error; nothing commits).
-    if (extras.duel && extras.setBest) {
+    if (extras.duel) {
       const members = await txn.getAllAsync<{ photo_id: string }>(
         `SELECT a.photo_id FROM photo_group_assignments a
          JOIN photos p ON p.asset_id = a.photo_id
@@ -346,10 +349,10 @@ export async function applyReviewDecisions(
            -- Both endpoints must still be DUELABLE — undecided or kept
            -- (F11 lets kept members rejoin a duel; staged culls stay
            -- out on both endpoints): an externally removed, trashed or
-           -- staged endpoint would record a duel and could star an
-           -- unavailable photo, metadata-freezing the group around it.
+           -- staged endpoint would record a duel against an unavailable
+           -- photo, metadata-freezing the group around it.
            AND p.is_present = 1 AND p.state IN ('unreviewed', 'kept')`,
-        extras.setBest.groupId,
+        Number(extras.duel.groupId),
         extras.duel.winnerId,
         extras.duel.loserId,
       );
@@ -360,9 +363,11 @@ export async function applyReviewDecisions(
       // every alive member must be one of the two endpoints. Compare
       // checks this before offering the dialog, but a warm scan can add
       // an undecided member between its load and this write — a verdict
-      // would then close a question the duel never asked. Triage duels
-      // (no verdicts) skip this: they make no whole-table claim.
-      if (changes.length > 0) {
+      // would then close a question the duel never asked. The triage
+      // "Keep this one" (m0.8.6 D7) opts out explicitly: a targeted keep
+      // on one endpoint makes no whole-table claim, and the endpoint
+      // check above is its narrow guard.
+      if (changes.length > 0 && extras.duelClaimsWholeTable !== false) {
         // The whole-table claim is judged over the SAME population the
         // UI showed (m0.8.3 §5, codex phase-3): an unreviewed member on
         // an ejected card is outside the table Compare offered, so it
@@ -375,7 +380,7 @@ export async function applyReviewDecisions(
            WHERE a.group_id = ? AND a.photo_id NOT IN (?, ?)
              AND p.is_present = 1 AND p.state = 'unreviewed'${duelReach.sql}
            LIMIT 1`,
-          extras.setBest.groupId,
+          Number(extras.duel.groupId),
           extras.duel.winnerId,
           extras.duel.loserId,
           ...duelReach.params,
@@ -509,16 +514,6 @@ export async function applyReviewDecisions(
         (stamp === null || dayKey(stamp) !== today)
       )
         freshDecisions += 1;
-      if (verdict === 'culled') {
-        // A staged cull is not ALIVE — a star pointing at it would show a
-        // cull as best and freeze the group via the metadata boundary.
-        // extras.setBest (the compare winner) applies below and may star
-        // a replacement.
-        await txn.runAsync(
-          'UPDATE photo_groups SET best_photo_id = NULL WHERE best_photo_id = ?',
-          assetId,
-        );
-      }
     }
     if (staleChanges > 0) {
       if (changes.length === 1) {
@@ -530,14 +525,6 @@ export async function applyReviewDecisions(
       // on the refresh; loud once, no user interruption.
       console.warn(`[review] ${staleChanges} decisions skipped — photos removed externally`);
     }
-    if (extras.setBest) {
-      await txn.runAsync(
-        'UPDATE photo_groups SET best_photo_id = ? WHERE id = ?',
-        extras.setBest.assetId,
-        extras.setBest.groupId,
-      );
-    }
-
     if (extras.duel) {
       await txn.runAsync(
         `INSERT INTO duels (group_id, winner_id, loser_id, kept_both, at)
@@ -760,17 +747,6 @@ export async function repairGroupMembership(
       ...guardParams,
     );
     await txn.runAsync(
-      `UPDATE photo_groups SET best_photo_id = NULL
-       WHERE ${scope === null ? '' : `id IN ${inList} AND `}best_photo_id IS NOT NULL
-         AND NOT EXISTS (
-           SELECT 1 FROM photo_group_assignments a
-           JOIN photos p ON p.asset_id = a.photo_id
-           WHERE a.group_id = photo_groups.id AND a.photo_id = photo_groups.best_photo_id
-             AND p.is_present = 1
-         )`,
-      ...params,
-    );
-    await txn.runAsync(
       `DELETE FROM photo_groups
        WHERE ${scope === null ? '' : `id IN ${inList} AND `}
          (SELECT COUNT(*) FROM photo_group_assignments a
@@ -836,7 +812,6 @@ export interface ReviewMemberRow {
 /** One reviewable cull group from the continuous grouping run. */
 export interface ReviewGroupRow {
   groupId: number;
-  bestPhotoId: string | null;
   /** NEWEST-first members, all states (the deck badges non-unreviewed).
    * Every deck reads most-recently-taken first (Tristan, m0.8.2). */
   members: ReviewMemberRow[];
@@ -873,10 +848,9 @@ async function listReviewGroupsIn(
     // the plan).
     const groups = await txn.getAllAsync<{
       id: number;
-      best_photo_id: string | null;
       newest: number;
     }>(
-      `SELECT g.id, g.best_photo_id,
+      `SELECT g.id,
             (SELECT MAX(p.taken_at) FROM photo_group_assignments a
               JOIN photos p ON p.asset_id = a.photo_id
               WHERE a.group_id = g.id AND p.is_present = 1${reach.sql}) AS newest
@@ -941,7 +915,6 @@ async function listReviewGroupsIn(
       const present = hiddenByGroup.get(Number(g.id));
       return {
         groupId: Number(g.id),
-        bestPhotoId: g.best_photo_id,
         members: groupMembers,
         unreachableCount: present === undefined ? 0 : Math.max(0, present - groupMembers.length),
       };
@@ -979,8 +952,8 @@ export async function getReviewGroup(
   let out: ReviewGroupRow | null = null;
   const reach = reachClause(mounted, 'p.volume_name');
   await withReadTransaction(db, async (txn) => {
-    const group = await txn.getFirstAsync<{ id: number; best_photo_id: string | null }>(
-      'SELECT id, best_photo_id FROM photo_groups WHERE id = ?',
+    const group = await txn.getFirstAsync<{ id: number }>(
+      'SELECT id FROM photo_groups WHERE id = ?',
       groupId,
     );
     if (!group) return;
@@ -1011,7 +984,6 @@ export async function getReviewGroup(
           ) - members.length;
     out = {
       groupId: Number(group.id),
-      bestPhotoId: group.best_photo_id,
       members,
       unreachableCount: hidden,
     };
@@ -1182,8 +1154,8 @@ export async function listGroupsForDay(
     )) {
       if (batch.length === 0) continue;
       const placeholders = batch.map(() => '?').join(',');
-      const headers = await txn.getAllAsync<{ id: number; best_photo_id: string | null }>(
-        `SELECT id, best_photo_id FROM photo_groups WHERE id IN (${placeholders})`,
+      const headers = await txn.getAllAsync<{ id: number }>(
+        `SELECT id FROM photo_groups WHERE id IN (${placeholders})`,
         ...batch,
       );
       const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
@@ -1217,7 +1189,6 @@ export async function listGroupsForDay(
         if (groupMembers.length === 0) continue;
         groups.push({
           groupId: Number(header.id),
-          bestPhotoId: header.best_photo_id,
           members: groupMembers,
         });
       }
@@ -1273,8 +1244,6 @@ export interface PhotoFacts {
   time_attached: number;
   /** User ejected it from a group ("Not related"). */
   user_single: number;
-  /** This photo is its group's starred best. */
-  is_best: number;
 }
 
 export async function getPhotoFacts(
@@ -1306,11 +1275,9 @@ export async function getPhotoFacts(
             (SELECT e2.resolved_at FROM photo_actions e2 WHERE e2.photo_id = p.asset_id
               AND e2.kind = 'edit') AS edit_completed_at,
             a.group_id, COALESCE(a.time_attached, 0) AS time_attached,
-            COALESCE(a.user_single, 0) AS user_single,
-            CASE WHEN g.best_photo_id = p.asset_id THEN 1 ELSE 0 END AS is_best
+            COALESCE(a.user_single, 0) AS user_single
      FROM photos p
      LEFT JOIN photo_group_assignments a ON a.photo_id = p.asset_id
-     LEFT JOIN photo_groups g ON g.id = a.group_id
      WHERE p.asset_id = ?`,
     assetId,
   );
@@ -1418,40 +1385,6 @@ export async function applyRedecision(
     if (stamp === null || dayKey(stamp) !== dayKey(at)) result.freshDecisions = 1;
   });
   return result;
-}
-
-/** Star/unstar a group's best (NULL clears; FK enforces membership). A
- * warm scan can rebuild an unreviewed group under a new id between
- * render and tap — a zero-row update is a STALE write and rejects, like
- * the compare and ejection paths. */
-export async function setGroupBest(
-  db: SQLiteDatabase,
-  groupId: number,
-  bestPhotoId: string | null,
-): Promise<void> {
-  // A non-null best must be a PRESENT, reviewable member — reconciliation
-  // keeps an absent member's assignment (only clearing its star), and the
-  // deferred FK would accept it, re-freezing the group around an
-  // unavailable photo.
-  const result =
-    bestPhotoId === null
-      ? await db.runAsync('UPDATE photo_groups SET best_photo_id = NULL WHERE id = ?', groupId)
-      : await db.runAsync(
-          `UPDATE photo_groups SET best_photo_id = ?
-           WHERE id = ? AND EXISTS (
-             SELECT 1 FROM photo_group_assignments a
-             JOIN photos p ON p.asset_id = a.photo_id
-             WHERE a.group_id = photo_groups.id AND a.photo_id = ?
-               AND p.is_present = 1
-               AND p.state NOT IN ('culled', 'trashed')
-           )`,
-          bestPhotoId,
-          groupId,
-          bestPhotoId,
-        );
-  if (Number(result.changes) === 0) {
-    throw new Error('This group changed while reviewing — reopen it and try again.');
-  }
 }
 
 /** Unreviewed present photos still to review: how many sit in groups /
@@ -1641,11 +1574,11 @@ export async function getCorpusStats(
  */
 async function resetUnreviewedGroupsIn(txn: SQLiteDatabase): Promise<void> {
   {
-    // A group with ANY reviewed member — or GROUP-LEVEL metadata (starred
-    // best, recorded duels) — is frozen WHOLE by the regroup boundary;
-    // deleting its members here would dissolve it and lose the star and
-    // orphan the duels. Reset only fully-unreviewed metadata-free groups
-    // and non-ejected singles.
+    // A group with ANY reviewed member — or GROUP-LEVEL metadata
+    // (recorded duels) — is frozen WHOLE by the regroup boundary;
+    // deleting its members here would dissolve it and orphan the duels.
+    // Reset only fully-unreviewed metadata-free groups and non-ejected
+    // singles.
     await txn.runAsync(
       `DELETE FROM photo_group_assignments
        WHERE user_single = 0
@@ -1658,8 +1591,7 @@ async function resetUnreviewedGroupsIn(txn: SQLiteDatabase): Promise<void> {
            )
            AND group_id NOT IN (
              SELECT id FROM photo_groups
-             WHERE best_photo_id IS NOT NULL
-                OR EXISTS (SELECT 1 FROM duels d WHERE d.group_id = CAST(photo_groups.id AS TEXT))
+             WHERE EXISTS (SELECT 1 FROM duels d WHERE d.group_id = CAST(photo_groups.id AS TEXT))
            )
          ))`,
     );
@@ -1701,7 +1633,7 @@ export async function applyGroupingSettingChange(
 }
 
 /** Among the given groups, those carrying GROUP-LEVEL review metadata —
- * a starred best or recorded duels — which freezes them whole against
+ * recorded compares (duel rows) — which freezes them whole against
  * regroup rewrites even while every member is still unreviewed. */
 export async function getMetadataGroupIds(
   db: SQLiteDatabase,
@@ -1713,8 +1645,7 @@ export async function getMetadataGroupIds(
     const rows = await db.getAllAsync<{ id: number }>(
       `SELECT id FROM photo_groups
        WHERE id IN (${ids.map(() => '?').join(',')})
-         AND (best_photo_id IS NOT NULL
-              OR EXISTS (SELECT 1 FROM duels d WHERE d.group_id = CAST(photo_groups.id AS TEXT)))`,
+         AND EXISTS (SELECT 1 FROM duels d WHERE d.group_id = CAST(photo_groups.id AS TEXT))`,
       ...ids,
     );
     for (const row of rows) out.add(Number(row.id));
@@ -2047,10 +1978,7 @@ export async function writeContinuousGroups(
     const touchedGroups = new Set<number>(liveTouched);
     for (const group of plan.groups) {
       if (identicalGroup(group)) continue;
-      const groupResult = await txn.runAsync(
-        'INSERT INTO photo_groups (run_id, best_photo_id) VALUES (?, NULL)',
-        runId,
-      );
+      const groupResult = await txn.runAsync('INSERT INTO photo_groups (run_id) VALUES (?)', runId);
       const groupId = Number(groupResult.lastInsertRowId);
       touchedGroups.add(groupId);
       const timeAttached = new Set(group.timeAttached);
@@ -2106,7 +2034,7 @@ export async function writeContinuousGroups(
         }
       } else if (additions.length >= 2) {
         const groupResult = await txn.runAsync(
-          'INSERT INTO photo_groups (run_id, best_photo_id) VALUES (?, NULL)',
+          'INSERT INTO photo_groups (run_id) VALUES (?)',
           runId,
         );
         const groupId = Number(groupResult.lastInsertRowId);
@@ -3232,11 +3160,6 @@ export async function unstageCullDirect(
    * and the prompt must stay re-emittable.
    */
   resolveCopyMatches: boolean,
-  /** Stars the staging cleared (edited-copy cancel, round 31) — restored
-   * in THIS transaction so a crash between the two writes cannot lose
-   * them (clearedStars lives only in memory). Best-effort per star: the
-   * group must still exist with this photo as a present member. */
-  restoreStars: readonly { groupId: number; photoId: string }[] = [],
 ): Promise<ReviewDecisionResult> {
   // The write moves decided_at into today, so it MUST report fresh work
   // like every other verdict write (A3): the ring counts the row the
@@ -3266,8 +3189,8 @@ export async function unstageCullDirect(
       assetId,
     );
     // A stale un-stage is a complete no-op across every layer — a
-    // resolved copy match or a restored star for a transition that did
-    // not happen is the same bug applyRedecision's guard prevents.
+    // resolved copy match for a transition that did not happen is the
+    // same bug applyRedecision's guard prevents.
     if (Number(moved.changes) === 0) return;
     result.appliedIds.push(assetId);
     const stamp = prior?.decided_at ?? null;
@@ -3276,23 +3199,6 @@ export async function unstageCullDirect(
       await txn.runAsync(
         "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
         assetId,
-      );
-    }
-    for (const star of restoreStars) {
-      // Same validity guard as setGroupBest; a changed group skips
-      // silently (best-effort restore of the user's prior star).
-      await txn.runAsync(
-        `UPDATE photo_groups SET best_photo_id = ?
-         WHERE id = ? AND EXISTS (
-           SELECT 1 FROM photo_group_assignments a
-           JOIN photos p ON p.asset_id = a.photo_id
-           WHERE a.group_id = photo_groups.id AND a.photo_id = ?
-             AND p.is_present = 1
-             AND p.state NOT IN ('culled', 'trashed')
-         )`,
-        star.photoId,
-        star.groupId,
-        star.photoId,
       );
     }
   });

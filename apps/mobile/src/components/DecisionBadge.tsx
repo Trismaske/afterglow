@@ -12,7 +12,6 @@ import type { BadgeWeight, PhotoBadge } from '../lib/photoBadges';
  * - cull     — red close
  * - keep     — green check
  * - edit     — blue pencil (the to-edit flag)
- * - best     — star in the session accent (pass `accent`; relative best-of-group)
  * - fav      — pink heart (absolute favourite, m0.6)
  * - share    — teal share glyph (waiting in the share queue)
  * - organize — amber folder-move (a queued move to another album)
@@ -30,8 +29,8 @@ import type { BadgeWeight, PhotoBadge } from '../lib/photoBadges';
  * dimmed and on a plain untinted disc, meaning the action already
  * happened and the photo carries it — history, not a chore. The hue is
  * never desaturated toward grey: a greyed action would read as disabled.
- * Only actions take a weight; a verdict and a best star have no
- * lifecycle and always render live.
+ * Only actions take a weight; a verdict has no lifecycle and always
+ * renders live.
  *
  * `BadgeCluster` is the REVIEW surfaces' layout (deck, Groups): the full
  * set from lib/photoBadges.ts — verdict plus all four actions — WRAPPED
@@ -41,8 +40,7 @@ import type { BadgeWeight, PhotoBadge } from '../lib/photoBadges';
  * their single state glyph, where a pencil means "in the edit queue"
  * rather than a flag beside a verdict.
  */
-export type DecisionKind =
-  'cull' | 'keep' | 'edit' | 'best' | 'fav' | 'fav_off' | 'share' | 'organize';
+export type DecisionKind = 'cull' | 'keep' | 'edit' | 'fav' | 'fav_off' | 'share' | 'organize';
 
 export const DECISION_GLYPHS: Record<
   DecisionKind,
@@ -51,7 +49,6 @@ export const DECISION_GLYPHS: Record<
   cull: 'close',
   keep: 'check',
   edit: 'pencil',
-  best: 'star',
   fav: 'heart',
   // Queued REMOVAL (Tristan, grilling Q5): the slash says the direction
   // — favourite-pink at the live weight, because the removal is waiting
@@ -65,7 +62,6 @@ const BADGE_COLORS: Record<DecisionKind, { fg: string; bg: string }> = {
   cull: { fg: colors.cull, bg: colors.cullDim },
   keep: { fg: colors.keep, bg: colors.keepDim },
   edit: { fg: colors.edit, bg: colors.editDim },
-  best: { fg: colors.text, bg: colors.surfaceRaised }, // fg overridden by accent
   fav: { fg: colors.fav, bg: colors.favDim },
   fav_off: { fg: colors.fav, bg: colors.favDim },
   share: { fg: colors.share, bg: colors.shareDim },
@@ -80,15 +76,12 @@ const CARRIED_ALPHA = 'a6';
 export function DecisionBadge({
   kind,
   size = 18,
-  accent,
   weight = 'live',
   style,
 }: {
   kind: DecisionKind;
   /** Badge diameter; the glyph scales with it. */
   size?: number;
-  /** Session accent — colors the `best` star (ignored elsewhere). */
-  accent?: string;
   /** `carried` quiets an action that has already happened (m0.8.2). */
   weight?: BadgeWeight;
   style?: StyleProp<ViewStyle>;
@@ -111,7 +104,7 @@ export function DecisionBadge({
       <MaterialCommunityIcons
         name={DECISION_GLYPHS[kind]}
         size={Math.round(size * 0.7)}
-        color={kind === 'best' && accent ? accent : carried ? `${fg}${CARRIED_ALPHA}` : fg}
+        color={carried ? `${fg}${CARRIED_ALPHA}` : fg}
       />
     </View>
   );
@@ -126,25 +119,17 @@ export function DecisionBadge({
 export function BadgeCluster({
   badges,
   size = 18,
-  accent,
   style,
 }: {
   badges: readonly PhotoBadge[];
   size?: number;
-  accent?: string;
   style?: StyleProp<ViewStyle>;
 }) {
   if (badges.length === 0) return null;
   return (
     <View style={[styles.cluster, style]} pointerEvents="none">
       {badges.map((badge) => (
-        <DecisionBadge
-          key={badge.kind}
-          kind={badge.kind}
-          size={size}
-          accent={accent}
-          weight={badge.weight}
-        />
+        <DecisionBadge key={badge.kind} kind={badge.kind} size={size} weight={badge.weight} />
       ))}
     </View>
   );

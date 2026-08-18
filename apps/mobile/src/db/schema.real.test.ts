@@ -179,28 +179,6 @@ describe('schema invariants', () => {
         .run(),
     ).toThrow(/UNIQUE|PRIMARY/);
   });
-
-  it('best-of-group must be an assigned member (deferred composite FK)', async () => {
-    const d = await fresh();
-    insertPhoto(d, 'p1');
-    d.raw
-      .prepare("INSERT INTO grouping_runs (provenance, created_at) VALUES ('continuous', ?)")
-      .run(AT);
-    d.raw.exec('BEGIN');
-    d.raw.prepare('INSERT INTO photo_groups (run_id, best_photo_id) VALUES (1, ?)').run('p1');
-    d.raw
-      .prepare(
-        "INSERT INTO photo_group_assignments (photo_id, run_id, group_id) VALUES ('p1', 1, 1)",
-      )
-      .run();
-    d.raw.exec('COMMIT'); // deferred FK satisfied by commit time
-    // A best that is NOT a member fails at commit.
-    insertPhoto(d, 'p2');
-    d.raw.exec('BEGIN');
-    d.raw.prepare('INSERT INTO photo_groups (run_id, best_photo_id) VALUES (1, ?)').run('p2');
-    expect(() => d.raw.exec('COMMIT')).toThrow(/FOREIGN KEY/);
-    d.raw.exec('ROLLBACK');
-  });
 });
 
 describe('the verdict column (v18)', () => {

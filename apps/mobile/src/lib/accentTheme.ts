@@ -10,7 +10,8 @@
  *                 luminance: a near-black tint of the accent on light
  *                 accents, near-white on dark ones
  * - accentMuted — the accent blended far toward the app background;
- *                 used for subtle "selected" fills (e.g. deck Best pill)
+ *                 used for subtle "selected" fills (e.g. the tab bar's
+ *                 focused tab)
  *
  * Success (keep-green) and destructive (cull-red) are NOT tokens here —
  * they stay fixed in src/theme.tsx regardless of the chosen accent.

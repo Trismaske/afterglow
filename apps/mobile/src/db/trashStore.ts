@@ -44,10 +44,6 @@ export type TrashOutcome =
 export interface PreparedTrashBatch {
   batchId: number;
   members: { photoId: string; measuredBytes: number }[];
-  /** Best stars cleared by the stage-and-reserve transition (edited-copy
-   * culls) — a DEFINITIVE non-application restores them with the
-   * un-staging (a cancelled sheet must be a true no-op). */
-  clearedStars: { groupId: number; photoId: string }[];
   /** Fresh goal work the stage-to-culled transition produced (same rule
    * as applyReviewDecisions: the row moved into today's decided bucket
    * from no decision or an earlier day's). Always 0 without
@@ -96,7 +92,6 @@ export async function prepareTrashBatch(
     const taken = new Set(reserved.map((r) => r.photo_id));
     const eligible = members.filter((m) => !taken.has(m.photoId)).slice(0, TRASH_BATCH_LIMIT);
     if (eligible.length === 0) return;
-    const clearedStars: { groupId: number; photoId: string }[] = [];
     let freshDecisions = 0;
     if (options.stageToEditMembers) {
       for (const member of eligible) {
@@ -142,30 +137,13 @@ export async function prepareTrashBatch(
             member.photoId,
           );
         }
-        // A stale prompt whose original left the edit queue stages NOTHING —
-        // clearing its star anyway would lose it silently (the empty
-        // batch returns null and Home never sees clearedStars).
+        // A stale prompt whose original left the edit queue stages
+        // NOTHING (the empty batch returns null).
         if (Number(staged.changes) === 0) continue;
         // Fresh work only (the once-per-day rule): a row already
         // stamped today is already inside the number the ring shows.
         const stamp = prior?.decided_at ?? null;
         if (stamp === null || dayKey(stamp) !== dayKey(at)) freshDecisions += 1;
-        // Every transition to 'culled' clears a star pointing at the
-        // photo (same hygiene as applyReviewDecisions): if the attempt
-        // stays ambiguous the photo remains staged, and a culled best
-        // would freeze its group. Record what was cleared — a DEFINITIVE
-        // cancellation restores it with the un-staging.
-        const starred = await txn.getAllAsync<{ id: number }>(
-          'SELECT id FROM photo_groups WHERE best_photo_id = ?',
-          member.photoId,
-        );
-        for (const group of starred) {
-          clearedStars.push({ groupId: Number(group.id), photoId: member.photoId });
-        }
-        await txn.runAsync(
-          'UPDATE photo_groups SET best_photo_id = NULL WHERE best_photo_id = ?',
-          member.photoId,
-        );
       }
     }
     const batch = await txn.runAsync(
@@ -173,7 +151,7 @@ export async function prepareTrashBatch(
       at,
     );
     const batchId = Number(batch.lastInsertRowId);
-    const out: PreparedTrashBatch = { batchId, members: [], clearedStars, freshDecisions };
+    const out: PreparedTrashBatch = { batchId, members: [], freshDecisions };
     for (const member of eligible) {
       const row = await txn.getFirstAsync<{
         trash_generation: number;

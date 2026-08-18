@@ -7,7 +7,7 @@
  * wraps them into the anchor).
  *
  * Order = verdict first (the decision is what the eye looks for), then
- * best, then the actions in tab-bar order.
+ * the actions in tab-bar order.
  *
  * m0.8.2 — TWO WEIGHTS, because the four actions now align on one rule
  * (docs/STATE_MODEL.md, layer 2):
@@ -22,8 +22,8 @@
  * The deck and Groups read each photo's per-action weight from
  * ReviewContext's `actionWeights`.
  *
- * The verdict and the best star have no lifecycle, so they always render
- * at full strength. (The time-attached scan annotation is deliberately
+ * The verdict has no lifecycle, so it always renders at full strength.
+ * (The time-attached scan annotation is deliberately
  * NOT a badge since m0.8.2 — it is internal scan quality the user cannot
  * act on, and the scan itself rewrites it once embeddings land.)
  */
@@ -49,8 +49,6 @@ export interface PhotoBadgeInput {
   favourite: BadgeWeight | 'removing' | null;
   organize: BadgeWeight | null;
   share: BadgeWeight | null;
-  /** Best-of-group star (group surfaces only). */
-  best?: boolean;
 }
 
 export function photoBadges(input: PhotoBadgeInput): PhotoBadge[] {
@@ -59,7 +57,6 @@ export function photoBadges(input: PhotoBadgeInput): PhotoBadge[] {
   // surface, so only the two live verdicts badge.
   if (input.state === 'culled') badges.push({ kind: 'cull', weight: 'live' });
   else if (input.state === 'kept') badges.push({ kind: 'keep', weight: 'live' });
-  if (input.best) badges.push({ kind: 'best', weight: 'live' });
   if (input.edit) badges.push({ kind: 'edit', weight: input.edit });
   if (input.favourite === 'removing') badges.push({ kind: 'fav_off', weight: 'live' });
   else if (input.favourite) badges.push({ kind: 'fav', weight: input.favourite });

@@ -417,7 +417,6 @@ export function PhotoViewer({
     const suspended = facts.state === 'culled' || facts.state === 'trashed';
     const queued = (liveText: string, retainedText: string) =>
       suspended ? retainedText : liveText;
-    if (facts.is_best === 1) factLines.push({ icon: 'star', text: 'Best of its group.' });
     // Favourite is DIRECTIONAL (STATE_MODEL.md): the queued row wins the
     // line while one waits — including a queued removal, under which the
     // carried heart must not show — else the resolved apply carries it

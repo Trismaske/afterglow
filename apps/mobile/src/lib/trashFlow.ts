@@ -30,9 +30,6 @@ export interface TrashAttemptResult {
   unknownIds: string[];
   /** Verified bytes credited by this attempt (at-most-once, P8#3). */
   creditedBytes: number;
-  /** Best stars the stage-and-reserve transition cleared (edited-copy
-   * culls) — a DEFINITIVE non-application restores them. */
-  clearedStars: { groupId: number; photoId: string }[];
   /** Fresh goal work the stage-to-culled transition produced (see
    * PreparedTrashBatch.freshDecisions) — the CALLER must route a
    * non-zero count into the goal counter. */
@@ -58,7 +55,6 @@ export async function runTrashAttempt(
       trashedIds: [],
       unknownIds: [],
       creditedBytes: 0,
-      clearedStars: [],
       freshDecisions: 0,
     };
   }
@@ -69,7 +65,6 @@ export async function runTrashAttempt(
       trashedIds: [],
       unknownIds: [],
       creditedBytes: 0,
-      clearedStars: [],
       freshDecisions: 0,
     };
   }
@@ -123,7 +118,6 @@ export async function runTrashAttempt(
       ),
       unknownIds: ids.filter((id) => resolved.outcomes[id] === 'unknown'),
       creditedBytes: resolved.creditedBytes,
-      clearedStars: batch.clearedStars,
       freshDecisions: batch.freshDecisions,
     };
   } catch (error) {
@@ -157,7 +151,6 @@ export async function runTrashAttempt(
         ),
         unknownIds: ids.filter((id) => recovered.outcomes[id] === 'unknown'),
         creditedBytes: recovered.creditedBytes,
-        clearedStars: batch.clearedStars,
         freshDecisions: batch.freshDecisions,
       };
     } catch {
@@ -170,7 +163,6 @@ export async function runTrashAttempt(
         trashedIds: [],
         unknownIds: ids,
         creditedBytes: 0,
-        clearedStars: batch.clearedStars,
         freshDecisions: batch.freshDecisions,
       };
     }

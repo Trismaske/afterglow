@@ -35,7 +35,7 @@ m0.8.2 renames it back to `kept`, so the button and the stored value use the sam
 It was once a verdict, which caused the "keep vs done vs to-edit" confusion.
 A photo flagged for editing is simply **kept, with an edit pending**.
 
-**A compare duel writes verdicts only when it is the whole table** (m0.8.2).
+**A compare duel opens the verdict DIALOG only when it is the whole table** (m0.8.2).
 That means any singles duel, or a group duel whose two endpoints include EVERY undecided member.
 A duel with zero undecided members (a browse duel between kept members) is vacuously covered.
 A count alone is not the test.
@@ -43,8 +43,9 @@ Kept endpoints are legal duelists, so a kept-vs-kept duel with an undecided memb
 The store re-validates the claim inside the write transaction against a racing scan.
 In that dialog, "Keep both" marks both participants kept.
 "Cull" stages the loser and leaves the winner untouched, because a cull judgment says nothing about keeping.
-A duel with three or more alive is triage: best star and duel history only, no verdict.
-Repeated duels through a burst pick best and worst. They do not keep.
+A duel with three or more alive is TRIAGE, and its positive act is a targeted keep (m0.8.6 D7): "Keep this one" writes `kept` on that photo alone — a narrow, explicitly-targeted verdict, never a whole-table claim — and records the duel row.
+The loser is untouched; the direct Cull chip stages it when that is what is meant.
+In a burst walked through repeated duels, each round's keep stands (a keep can still be culled later); the duel rows remain the history.
 
 ### 2. Actions: independent, any combination
 
@@ -124,7 +125,10 @@ Three shipped behaviours depend on it: per-cycle pass badges, next-pass auto-sel
 |---|---|---|
 | in a group | the scan clustered it | **yes** |
 | time-attached | joined its group by timestamp because its embedding was not ready | no — scan-quality internal; the scan rewrites these once embeddings land, and since m0.8.2 no surface draws it |
-| best of group | the user's starred pick; also freezes the group against regrouping | unchanged for now; its future is a separate decision |
+
+**"Best of group" is retired** (m0.8.6 D6).
+The starred pick, its accent badge, its freeze role and its best-first orderings are gone; a triage duel's positive act is now a targeted keep (D7), and "this one is special" is what favourite is for.
+Recorded compares (duel rows) remain, as history and as the group-metadata freeze.
 
 **"In a group" is not a review state.**
 It answers "has the scan clustered this yet": a scan fact the user cannot act on differently, since grouped and ungrouped unreviewed photos are both simply undecided.
@@ -193,8 +197,7 @@ Six rules. They apply to every surface that paints a state.
    It is the only hue that carries two meanings, and it is not a licence for the others.
 3. **The accent means interaction only**: selection, links, chevrons, primary buttons, tab state.
    The user chooses it (Material You), so it can never carry meaning that must stay stable.
-   One site still breaks this: **the best star**, decided in m0.8.6 with the rest of its knot, because whether it survives at all is open.
-   The other five (goal ring, Keeping-up bar, coverage markers, activity bars, milestone fills) were fixed in m0.8.5.
+   No site breaks this any more: five (goal ring, Keeping-up bar, coverage markers, activity bars, milestone fills) were fixed in m0.8.5, and the sixth — the best star's accent badge — was retired with the star itself (m0.8.6 D6).
    [Feedback_m0.8.x.md](Feedback_m0.8.x.md), "The accent must stop carrying meaning", carries the measurements that show why a curated accent picker cannot be the answer.
 
    **A data series takes the hue of what it counts.** Heat over reviewing is keep-green. The reviewed series in a chart is keep-green.
@@ -212,7 +215,7 @@ Six rules. They apply to every surface that paints a state.
    **Suspension demotes to quiet:** a staged cull's retained actions are off every to-do list, so their would-be live badges render carried.
    A suspended queued removal shows the carried heart: the gallery favourite still stands.
    The deck's action chips disable entirely on a staged cull. Its retained rows are exactly what an un-stage restores.
-   Verdicts and the best star have no lifecycle and always render at full strength.
+   Verdicts have no lifecycle and always render at full strength.
 
 ### What this means per surface
 
@@ -222,7 +225,7 @@ Six rules. They apply to every surface that paints a state.
   They answer the **grid** question (third row of the table above), never the queue one.
   Their count is the grid's population by construction, so a tapped chip always shows exactly the number it printed.
 - **Grid dots and badges** — verdict first, then actions, in the one order `photoBadges.ts` defines.
-  Annotations draw no badge: time-attachment is internal (below), and the best star renders through its own glyph beside the verdict.
+  Annotations draw no badge (time-attachment is internal, below).
   Badges answer "what does this photo carry".
   That is why they show a staged cull's pending edit even though the queues do not, and why a finished edit keeps its pencil at the `carried` weight.
   To *carry* an action and to *wait* on one are different questions.

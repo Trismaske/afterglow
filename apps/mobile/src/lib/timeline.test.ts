@@ -32,7 +32,6 @@ const member = (
 /** Members NEWEST-first, like the store returns them (m0.8.2). */
 const group = (groupId: number, members: ReviewMemberRow[]): ReviewGroupRow => ({
   groupId,
-  bestPhotoId: null,
   members,
 });
 
@@ -152,7 +151,7 @@ describe('buildTimeline', () => {
   });
 
   it('drops a memberless group instead of anchoring it at the epoch', () => {
-    const empty = { groupId: 9, bestPhotoId: null, members: [] };
+    const empty = { groupId: 9, members: [] };
     const g = group(1, [member('g1', 100, '2026-07-12')]);
     const units = buildTimeline([empty, g], [], { groupsTail: 100, singlesTail: null });
     expect(units.map(ids)).toEqual([['g1']]);

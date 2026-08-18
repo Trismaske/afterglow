@@ -184,7 +184,7 @@ describe('reconcileWindowGroups', () => {
 });
 
 describe('frozenPhotos (group-level metadata)', () => {
-  it('freezes an all-unreviewed group that carries a best star or duels', () => {
+  it('freezes an all-unreviewed group that carries recorded duels', () => {
     const frozen = frozenPhotos(
       ['a', 'b', 'c'],
       maps({
@@ -272,10 +272,10 @@ describe('grow-only (m0.8.3 grilling): unreachable-frozen groups accept new memb
     const freeze = windowFreeze(['a', 'b'], unreachableMaps());
     expect([...freeze.frozen]).toEqual(['a']);
     expect(freeze.growable.get('a')).toBe(7);
-    // Same shape but the group carries a star: frozen, NOT growable.
-    const starred = windowFreeze(['a', 'b'], unreachableMaps({ metadataGroups: new Set([7]) }));
-    expect([...starred.frozen]).toEqual(['a']);
-    expect(starred.growable.size).toBe(0);
+    // Same shape but the group carries duels: frozen, NOT growable.
+    const dueled = windowFreeze(['a', 'b'], unreachableMaps({ metadataGroups: new Set([7]) }));
+    expect([...dueled.frozen]).toEqual(['a']);
+    expect(dueled.growable.size).toBe(0);
   });
 
   it('appends the unfrozen cluster-mates to the growable group', () => {

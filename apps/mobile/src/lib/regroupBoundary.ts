@@ -58,7 +58,7 @@ export interface ReconcileMaps {
   assignments: ReadonlyMap<string, AssignmentInfo>;
   /** Full member list of every group referenced by `assignments`. */
   groupMembers: ReadonlyMap<number, readonly string[]>;
-  /** Groups carrying group-level review metadata (best star, duels). */
+  /** Groups carrying group-level review metadata (recorded duels). */
   metadataGroups: ReadonlySet<number>;
   /** Is this member's volume currently mounted? Absent = every member
    * reachable (the pre-m0.8.3 shape; non-scan callers and tests that

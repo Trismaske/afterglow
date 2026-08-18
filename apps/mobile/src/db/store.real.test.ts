@@ -38,7 +38,6 @@ import {
   markEditDone,
   resetUnreviewedGroups,
   restoreCarriedCull,
-  setGroupBest,
   setNeedsEdit,
   unstageCullDirect,
   writeContinuousGroups,
@@ -381,12 +380,19 @@ describe('applyReviewDecisions (decision 2)', () => {
   it('records a duel with its group and favourite intents atomically', async () => {
     const d = await fresh();
     await seed(d, ['1', '2'], [['1', '2']]);
+    const gid = groupIdOf(d, '1');
     await applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 100, {
-      duel: { groupId: '7', winnerId: id('1'), loserId: id('2'), keptBoth: false, at: AT + 100 },
+      duel: {
+        groupId: String(gid),
+        winnerId: id('1'),
+        loserId: id('2'),
+        keptBoth: false,
+        at: AT + 100,
+      },
       favouriteChanges: [{ assetId: id('1'), state: 'queued_apply', target: true }],
     });
     const duel = d.raw.prepare('SELECT * FROM duels').get() as Record<string, unknown>;
-    expect(duel.group_id).toBe('7');
+    expect(duel.group_id).toBe(String(gid));
     expect(duel.kept_both).toBe(0);
     const fav = (await getFavouriteActionStates(asExpo(d), [id('1')])).get(id('1'));
     expect(fav).toEqual({ state: 'queued_apply', target: true });
@@ -909,26 +915,24 @@ describe('gate 5: day queries', () => {
 });
 
 describe('gate 5: getPhotoFacts', () => {
-  it('joins state, group membership, best, time-attached and ejection facts', async () => {
+  it('joins state, group membership, time-attached and ejection facts', async () => {
     const d = await fresh();
     await seedDays(d, [P0('1'), P0('2'), P0('3'), P0('4')], [['1', '2', '3']], ['3']);
     const gid = groupIdOf(d, '1');
-    await setGroupBest(asExpo(d), gid, id('1'));
     await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 1);
     await makePhotoSingles(asExpo(d), [id('4')]);
 
-    const best = await getPhotoFacts(asExpo(d), id('1'));
-    expect(best).toMatchObject({
+    const kept = await getPhotoFacts(asExpo(d), id('1'));
+    expect(kept).toMatchObject({
       state: 'kept',
       group_id: gid,
-      is_best: 1,
       time_attached: 0,
       user_single: 0,
     });
-    expect(best?.reviewed_at).toBe(AT + 1);
+    expect(kept?.reviewed_at).toBe(AT + 1);
 
     const attached = await getPhotoFacts(asExpo(d), id('3'));
-    expect(attached).toMatchObject({ time_attached: 1, group_id: gid, is_best: 0 });
+    expect(attached).toMatchObject({ time_attached: 1, group_id: gid });
 
     const ejected = await getPhotoFacts(asExpo(d), id('4'));
     expect(ejected).toMatchObject({ group_id: null, user_single: 1 });
@@ -1185,7 +1189,7 @@ describe('source-scoped queue reads', () => {
 });
 
 describe('atomic compare verdicts', () => {
-  it('duel, loser verdict, and the star land in one write', async () => {
+  it('duel and loser verdict land in one write', async () => {
     const d = await fresh();
     await seed(d, ['1', '2'], [['1', '2']]);
     const gid = groupIdOf(d, '1');
@@ -1197,13 +1201,8 @@ describe('atomic compare verdicts', () => {
         keptBoth: false,
         at: AT + 1,
       },
-      setBest: { groupId: gid, assetId: id('1') },
     });
     expect(stateOf(d, '2').state).toBe('culled');
-    const best = d.raw.prepare('SELECT best_photo_id FROM photo_groups WHERE id = ?').get(gid) as {
-      best_photo_id: string;
-    };
-    expect(best.best_photo_id).toBe(id('1'));
     expect(d.raw.prepare('SELECT COUNT(*) AS n FROM duels').get()).toEqual({ n: 1 });
     expect(foreignKeyCheck(d)).toEqual([]);
   });
@@ -1352,13 +1351,23 @@ describe('corpus stats honor the source scope', () => {
 // -------------------------------------------- final-review round 4
 
 describe('group-level metadata freezes regroup rewrites', () => {
-  it('a starred all-unreviewed group survives a window rewrite intact', async () => {
+  it('an all-unreviewed group with recorded duels survives a window rewrite intact', async () => {
     const d = await fresh();
     await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
     const gid = groupIdOf(d, '1');
-    await setGroupBest(asExpo(d), gid, id('2'));
-    // The next window computes a DIFFERENT split — the starred group must
-    // freeze whole (in-transaction revalidation), not be rebuilt.
+    // A verdict-free triage duel: group metadata without any verdict.
+    await applyReviewDecisions(asExpo(d), [], AT + 1, {
+      duel: {
+        groupId: String(gid),
+        winnerId: id('1'),
+        loserId: id('2'),
+        keptBoth: true,
+        at: AT + 1,
+      },
+    });
+    // The next window computes a DIFFERENT split — the duel-carrying
+    // group must freeze whole (in-transaction revalidation), not be
+    // rebuilt.
     await writeContinuousGroups(
       asExpo(d),
       {
@@ -1370,10 +1379,6 @@ describe('group-level metadata freezes regroup rewrites', () => {
     );
     expect(groupIdOf(d, '1')).toBe(gid);
     expect(groupIdOf(d, '3')).toBe(gid);
-    const best = d.raw.prepare('SELECT best_photo_id FROM photo_groups WHERE id = ?').get(gid) as {
-      best_photo_id: string;
-    };
-    expect(best.best_photo_id).toBe(id('2'));
   });
 });
 
@@ -1440,7 +1445,7 @@ describe('absent members dissolve their groups', () => {
 // -------------------------------------------- final-review round 5
 
 describe('strictness reset spares metadata groups', () => {
-  it('an all-unreviewed group with a starred best survives the reset', async () => {
+  it('an all-unreviewed group with recorded duels survives the reset', async () => {
     const d = await fresh();
     await seed(
       d,
@@ -1450,16 +1455,20 @@ describe('strictness reset spares metadata groups', () => {
         ['3', '4'],
       ],
     );
-    const starred = groupIdOf(d, '1');
-    await setGroupBest(asExpo(d), starred, id('1'));
+    const dueled = groupIdOf(d, '1');
+    await applyReviewDecisions(asExpo(d), [], AT + 1, {
+      duel: {
+        groupId: String(dueled),
+        winnerId: id('1'),
+        loserId: id('2'),
+        keptBoth: true,
+        at: AT + 1,
+      },
+    });
     await resetUnreviewedGroups(asExpo(d));
-    // The starred group keeps membership + star; the plain one reset.
-    expect(groupIdOf(d, '1')).toBe(starred);
-    expect(groupIdOf(d, '2')).toBe(starred);
-    const best = d.raw
-      .prepare('SELECT best_photo_id FROM photo_groups WHERE id = ?')
-      .get(starred) as { best_photo_id: string };
-    expect(best.best_photo_id).toBe(id('1'));
+    // The duel-carrying group keeps membership; the plain one reset.
+    expect(groupIdOf(d, '1')).toBe(dueled);
+    expect(groupIdOf(d, '2')).toBe(dueled);
     const plain = d.raw
       .prepare('SELECT group_id FROM photo_group_assignments WHERE photo_id = ?')
       .get(id('3'));
@@ -1629,47 +1638,6 @@ describe('applyRedecision (state-aware change of mind)', () => {
   });
 });
 
-// -------------------------------------------- final-review round 7
-
-describe('best-star hygiene', () => {
-  it('culling the starred photo clears the star; a compare winner may replace it', async () => {
-    const d = await fresh();
-    await seed(d, ['1', '2'], [['1', '2']]);
-    const gid = groupIdOf(d, '1');
-    await setGroupBest(asExpo(d), gid, id('2'));
-    // Compare verdict: loser 2 culled, winner 1 starred — one transaction.
-    await applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 100, {
-      setBest: { groupId: gid, assetId: id('1') },
-    });
-    const best = d.raw.prepare('SELECT best_photo_id FROM photo_groups WHERE id = ?').get(gid) as {
-      best_photo_id: string | null;
-    };
-    expect(best.best_photo_id).toBe(id('1'));
-    // A plain cull of the star (no replacement) leaves NO best.
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 200);
-    const after = d.raw.prepare('SELECT best_photo_id FROM photo_groups WHERE id = ?').get(gid) as {
-      best_photo_id: string | null;
-    };
-    expect(after.best_photo_id).toBeNull();
-  });
-
-  it('an externally removed best is orphaned even while its assignment remains', async () => {
-    const d = await fresh();
-    await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
-    const gid = groupIdOf(d, '1');
-    await setGroupBest(asExpo(d), gid, id('1'));
-    const { reconcileExternallyRemoved } = await import('./trashStore');
-    await reconcileExternallyRemoved(asExpo(d), [id('1')], AT + 100);
-    // Two present members remain — the group survives, the star clears.
-    const best = d.raw.prepare('SELECT best_photo_id FROM photo_groups WHERE id = ?').get(gid) as {
-      best_photo_id: string | null;
-    };
-    expect(best.best_photo_id).toBeNull();
-    expect(await getReviewGroup(asExpo(d), gid)).not.toBeNull();
-    expect(foreignKeyCheck(d)).toEqual([]);
-  });
-});
-
 // -------------------------------------------- final-review round 15
 
 describe('compare verdicts validate membership in the transaction', () => {
@@ -1688,7 +1656,6 @@ describe('compare verdicts validate membership in the transaction', () => {
           keptBoth: false,
           at: AT + 100,
         },
-        setBest: { groupId: gid, assetId: id('1') },
       }),
     ).rejects.toThrow(/changed while comparing/);
     // NOTHING committed: no duel, loser still unreviewed.
@@ -1808,7 +1775,6 @@ describe('stale actions against absent/regrouped photos reject', () => {
           keptBoth: false,
           at: AT + 100,
         },
-        setBest: { groupId: gid, assetId: id('1') },
       }),
     ).rejects.toThrow(/changed while comparing/);
     expect(d.raw.prepare('SELECT COUNT(*) AS n FROM duels').get()).toEqual({ n: 0 });
@@ -1838,7 +1804,6 @@ describe('stale actions against absent/regrouped photos reject', () => {
         keptBoth: false,
         at: AT + 100,
       },
-      setBest: { groupId: gid, assetId: id('1') },
     });
     expect(d.raw.prepare('SELECT COUNT(*) AS n FROM duels').get()).toEqual({ n: 1 });
     expect(stateOf(d, '2').state).toBe('culled');
@@ -1861,7 +1826,6 @@ describe('stale actions against absent/regrouped photos reject', () => {
           keptBoth: false,
           at: AT + 100,
         },
-        setBest: { groupId: gid, assetId: id('1') },
       }),
     ).rejects.toThrow(/changed while comparing/);
     // The same duel WITHOUT verdicts is triage and writes fine.
@@ -1873,7 +1837,6 @@ describe('stale actions against absent/regrouped photos reject', () => {
         keptBoth: true,
         at: AT + 200,
       },
-      setBest: { groupId: gid, assetId: id('1') },
     });
     expect(d.raw.prepare('SELECT COUNT(*) AS n FROM duels').get()).toEqual({ n: 1 });
   });
@@ -1894,24 +1857,9 @@ describe('stale actions against absent/regrouped photos reject', () => {
           keptBoth: true,
           at: AT + 100,
         },
-        setBest: { groupId: gid, assetId: id('1') },
       }),
     ).rejects.toThrow(/changed while comparing/);
     expect(d.raw.prepare('SELECT COUNT(*) AS n FROM duels').get()).toEqual({ n: 0 });
-  });
-
-  it('starring an absent member rejects; a present member stars fine', async () => {
-    const d = await fresh();
-    await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
-    const gid = groupIdOf(d, '1');
-    const { reconcileExternallyRemoved } = await import('./trashStore');
-    await reconcileExternallyRemoved(asExpo(d), [id('1')], AT + 50);
-    await expect(setGroupBest(asExpo(d), gid, id('1'))).rejects.toThrow(/changed while reviewing/);
-    await setGroupBest(asExpo(d), gid, id('2'));
-    const best = d.raw.prepare('SELECT best_photo_id FROM photo_groups WHERE id = ?').get(gid) as {
-      best_photo_id: string;
-    };
-    expect(best.best_photo_id).toBe(id('2'));
   });
 
   it('ejecting an absent member rejects', async () => {

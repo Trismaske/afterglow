@@ -166,7 +166,7 @@ describe('index coverage for hot paths (m0.8.1 audit)', () => {
     expect(performance.now() - started).toBeLessThan(500);
   });
 
-  it('the duels EXISTS and star lookups are index-served', async () => {
+  it('the duels EXISTS is index-served', async () => {
     const d = await seedLarge();
     const duels = d.raw
       .prepare(
@@ -175,10 +175,6 @@ describe('index coverage for hot paths (m0.8.1 audit)', () => {
       )
       .all() as { detail: string }[];
     expect(duels.map((r) => r.detail).join(' | ')).toMatch(/idx_duels_group/);
-    const best = d.raw
-      .prepare('EXPLAIN QUERY PLAN SELECT id FROM photo_groups WHERE best_photo_id = ?')
-      .all() as { detail: string }[];
-    expect(best.map((r) => r.detail).join(' | ')).toMatch(/idx_groups_best/);
   });
 });
 

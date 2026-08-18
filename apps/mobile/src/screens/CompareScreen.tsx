@@ -85,9 +85,10 @@ function surfaceQueueWriteError(error: unknown): void {
  * outcome it rides on — auto-cull or auto-keep-both (Tristan's
  * grilling), resettable from Settings: "Keep both" marks
  * BOTH photos kept, "Cull" stages the loser and leaves the winner
- * untouched — atomically either way, with the winner's star + duel row
- * in the group case. A duel with 3+ alive is TRIAGE: star + history,
- * no verdict — repeated burst duels pick best/worst, they do not keep.
+ * untouched — atomically either way, with the duel row in the group
+ * case. A duel with 3+ alive is TRIAGE (m0.8.6 D7): its positive act is
+ * "Keep N" — a targeted keep on that photo plus the duel row, no
+ * whole-table claim, the rest of the table left open.
  * Eligibility is undecided-or-KEPT (F11), so a duel can re-decide a
  * prior keep; "Cull N" always just stages the visible photo.
  *
@@ -105,7 +106,7 @@ export function CompareScreen({ navigation, route }: Props) {
   const {
     groups,
     singles: singleRows,
-    recordCompare,
+    compareKeepWinner,
     compareCull,
     compareKeepBoth,
     needsEdit,
@@ -479,25 +480,26 @@ export function CompareScreen({ navigation, route }: Props) {
    */
   useEffect(() => registerCelebrationHost(), [registerCelebrationHost]);
 
-  /** Triage (3+ comparable in the group, F15): star the winner + record
-   * the duel, NO verdicts — repeated burst duels pick best/worst, they
-   * do not keep. */
-  const recordTriage = useCallback(
+  /** Triage (3+ comparable in the group), m0.8.6 D7: "Keep this one" —
+   * a targeted keep on the winner plus the duel row. The loser is
+   * untouched (the direct Cull chip is its path), and no whole-table
+   * claim is made: the rest of the table stays open. */
+  const keepWinnerNow = useCallback(
     async (winnerId: string, loserId: string) => {
       if (numericGroupId === null) return;
       try {
-        await recordCompare(numericGroupId, winnerId, loserId);
+        await compareKeepWinner(numericGroupId, winnerId, loserId);
       } catch {
         return; // surfaced by the provider alert; stay on the screen
       }
-      showToast(`Photo ${posOf(winnerId)} starred best of group — compare recorded`);
+      showToast(`Photo ${posOf(winnerId)} kept — compare recorded`);
       navigation.goBack();
     },
-    [numericGroupId, recordCompare, posOf, navigation],
+    [numericGroupId, compareKeepWinner, posOf, navigation],
   );
 
   /** Dialog outcome "Keep both" (F15): BOTH participants land on kept —
-   * atomically, with the winner's star + duel row in the group case. */
+   * atomically, with the duel row in the group case. */
   const keepBothNow = useCallback(
     async (winnerId: string, loserId: string) => {
       try {
@@ -509,11 +511,7 @@ export function CompareScreen({ navigation, route }: Props) {
       } catch {
         return; // surfaced by the provider alert; stay on the screen
       }
-      showToast(
-        singles
-          ? `Kept photos ${posOf(winnerId)} and ${posOf(loserId)}`
-          : `Both kept — photo ${posOf(winnerId)} starred best of group`,
-      );
+      showToast(`Kept photos ${posOf(winnerId)} and ${posOf(loserId)}`);
       navigation.goBack();
     },
     [compareKeepBoth, singles, numericGroupId, posOf, navigation],
@@ -533,9 +531,7 @@ export function CompareScreen({ navigation, route }: Props) {
           showToast(`Photo ${posOf(loserId)} staged to cull`);
         } else if (numericGroupId !== null) {
           await compareCull(numericGroupId, loserId, winnerId);
-          showToast(
-            `Photo ${posOf(winnerId)} starred best — photo ${posOf(loserId)} staged to cull`,
-          );
+          showToast(`Photo ${posOf(loserId)} staged to cull`);
         }
       } catch {
         return; // surfaced by the provider alert; stay on the screen
@@ -562,7 +558,7 @@ export function CompareScreen({ navigation, route }: Props) {
       if (!wholeTable) {
         setBusy(true);
         try {
-          await recordTriage(winnerId, loserId);
+          await keepWinnerNow(winnerId, loserId);
         } finally {
           setBusy(false);
         }
@@ -590,7 +586,7 @@ export function CompareScreen({ navigation, route }: Props) {
         setCullOffer({ winnerId, loserId });
       }
     },
-    [groupInfo, duelPref, busy, cullLoserNow, keepBothNow, recordTriage, singles],
+    [groupInfo, duelPref, busy, cullLoserNow, keepBothNow, keepWinnerNow, singles],
   );
 
   const resolveCullOffer = useCallback(
@@ -697,6 +693,12 @@ export function CompareScreen({ navigation, route }: Props) {
   const hidden = showB ? pair.a : pair.b;
   const visibleLabel = posOf(visible.id);
   const favourite = isFavouriteSelected(favouriteStatus(visible.id));
+  // Which act the positive button performs, computed the same way
+  // `decideBetter` will decide it (D7): whole table → the dialog;
+  // triage → a targeted keep. The button must SAY which (rule 2 — a
+  // button that writes a keep wears keep-green and the word).
+  const wholeTableNow =
+    singles || (groupInfo?.aliveIds ?? []).every((id) => id === visible.id || id === hidden.id);
 
   // Seconds always; millis when the two candidates share a second and the
   // data has sub-second resolution (same rule as the deck labels).
@@ -869,27 +871,28 @@ export function CompareScreen({ navigation, route }: Props) {
           <Text style={styles.actionText}>Cull {visibleLabel}</Text>
         </Pressable>
         <Pressable
-          // ACCENT, not keep-green (rule 2, Tristan's grilling): "better"
-          // is a selection whose outcome varies — triage, the dialog, or
-          // an auto-cull under the suppressed preference — so a verdict
-          // hue here claims a keep it may not write. The dialog's own
-          // buttons carry the verdict colours.
+          // TRIAGE (D7): the button IS a keep — keep-green and the word,
+          // parallel to "Cull N" beside it. WHOLE TABLE: accent, "N is
+          // better" — a selection whose outcome the dialog (or the
+          // suppressed preference) decides, so a verdict hue would claim
+          // a keep it may not write (rule 2, Tristan's grilling).
           style={[
             styles.actionButton,
-            { backgroundColor: theme.accentMuted, borderColor: theme.accent, borderWidth: 1 },
+            wholeTableNow
+              ? { backgroundColor: theme.accentMuted, borderColor: theme.accent, borderWidth: 1 }
+              : styles.keepButton,
           ]}
           disabled={busy}
           onPress={() => void decideBetter(visible.id, hidden.id)}
         >
           <MaterialCommunityIcons
-            name={singles ? 'check' : 'star'}
+            name="check"
             size={21}
-            color={theme.accent}
+            color={wholeTableNow ? theme.accent : colors.keep}
           />
-          {/* One label for both modes (F15): the dialog carries the
-              verdict question, so the button no longer promises a keep
-              it might not write. */}
-          <Text style={styles.actionText}>{visibleLabel} is better</Text>
+          <Text style={styles.actionText}>
+            {wholeTableNow ? `${visibleLabel} is better` : `Keep ${visibleLabel}`}
+          </Text>
         </Pressable>
       </View>
       <Pressable style={styles.closeButton} disabled={busy} onPress={() => navigation.goBack()}>
@@ -911,12 +914,9 @@ export function CompareScreen({ navigation, route }: Props) {
             {/* F15: the dialog IS the verdict — both answers write. */}
             <Text style={styles.offerText}>
               Keep both marks photos {cullOffer ? posOf(cullOffer.winnerId) : ''} and{' '}
-              {cullOffer ? posOf(cullOffer.loserId) : ''} kept
-              {singles
-                ? ''
-                : ` (photo ${cullOffer ? posOf(cullOffer.winnerId) : ''} stars as the group's best)`}
-              . Cull stages photo {cullOffer ? posOf(cullOffer.loserId) : ''} — deleted only after
-              you confirm the cull list.
+              {cullOffer ? posOf(cullOffer.loserId) : ''} kept . Cull stages photo{' '}
+              {cullOffer ? posOf(cullOffer.loserId) : ''} — deleted only after you confirm the cull
+              list.
             </Text>
             <Pressable
               style={styles.offerCheckRow}
@@ -1021,6 +1021,7 @@ const styles = StyleSheet.create({
     gap: 7,
   },
   cullButton: { backgroundColor: colors.cullDim },
+  keepButton: { backgroundColor: colors.keepDim },
   actionText: { color: colors.text, fontSize: 17, fontWeight: '800' },
   closeButton: {
     minHeight: 44,

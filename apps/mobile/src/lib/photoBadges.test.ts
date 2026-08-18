@@ -25,9 +25,8 @@ describe('photoBadges', () => {
         favourite: 'live',
         organize: 'live',
         share: 'live',
-        best: true,
       }),
-    ).toEqual(['keep', 'best', 'edit', 'fav', 'organize', 'share']);
+    ).toEqual(['keep', 'edit', 'fav', 'organize', 'share']);
   });
 
   it('keeps the action badges on a staged cull, with the cull verdict', () => {
@@ -48,10 +47,7 @@ describe('photoBadges', () => {
     ]);
   });
 
-  it('gives the verdict and star no weight of their own', () => {
-    expect(photoBadges({ ...NONE, state: 'culled', best: true })).toEqual([
-      { kind: 'cull', weight: 'live' },
-      { kind: 'best', weight: 'live' },
-    ]);
+  it('gives the verdict no weight of its own', () => {
+    expect(photoBadges({ ...NONE, state: 'culled' })).toEqual([{ kind: 'cull', weight: 'live' }]);
   });
 });

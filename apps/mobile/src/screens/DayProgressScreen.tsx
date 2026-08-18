@@ -26,14 +26,13 @@ import { BadgeCluster } from '../components/DecisionBadge';
 import { photoBadges, type PhotoBadge } from '../lib/photoBadges';
 import { UnitCard } from '../components/UnitCard';
 import { BigButton } from '../components/BigButton';
-import { colors, useTheme } from '../theme';
+import { colors } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'DayProgress'>;
 
 export function DayProgressScreen({ route, navigation }: Props) {
   const { day } = route.params;
   const db = useSQLiteContext();
-  const theme = useTheme();
   const { version, actionWeights, hydrateBadges } = useReview();
   // 'failed' is a distinct state, never an empty array: the CTA routes on
   // this list (group vs singles), and a failure read as "no pending
@@ -92,14 +91,13 @@ export function DayProgressScreen({ route, navigation }: Props) {
    * edit weight (same demotion) for any member the hydrated map lacks
    * (hydration failure itself fails the page — codex r7). */
   const badgesFor = useCallback(
-    (member: ReviewGroupRow['members'][number], bestPhotoId: string | null): PhotoBadge[] => {
+    (member: ReviewGroupRow['members'][number]): PhotoBadge[] => {
       const weights = actionWeights(member.asset_id, member.state);
       const suspended = member.state === 'culled' || member.state === 'trashed';
       return photoBadges({
         ...weights,
         state: member.state,
         edit: weights.edit ?? (member.needs_edit === 1 ? (suspended ? 'carried' : 'live') : null),
-        best: member.asset_id === bestPhotoId,
       });
     },
     [actionWeights],
@@ -189,12 +187,7 @@ export function DayProgressScreen({ route, navigation }: Props) {
                     renderOverlay={(assetId) => {
                       const member = group.members.find((m) => m.asset_id === assetId);
                       return member ? (
-                        <BadgeCluster
-                          badges={badgesFor(member, group.bestPhotoId)}
-                          size={14}
-                          accent={theme.accent}
-                          style={styles.badges}
-                        />
+                        <BadgeCluster badges={badgesFor(member)} size={14} style={styles.badges} />
                       ) : null;
                     }}
                   />
@@ -205,7 +198,7 @@ export function DayProgressScreen({ route, navigation }: Props) {
         </View>
       );
     },
-    [badgesFor, day, groups, navigation, theme.accent],
+    [badgesFor, day, groups, navigation],
   );
 
   return <ProgressView target={{ kind: 'day', day }} renderCta={renderCta} />;

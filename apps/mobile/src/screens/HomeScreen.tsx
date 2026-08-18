@@ -448,8 +448,8 @@ export function HomeScreen({ navigation }: Props) {
                   // verify) — the photo MAY be in system trash, so it
                   // conservatively stays staged in the durable cull list
                   // (the vetted fallback); the next confirm re-verifies.
-                  // The original already moved to_edit → culled (star
-                  // cleared) — the cached queue must observe it.
+                  // The original already moved to_edit → culled — the
+                  // cached queue must observe it.
                   await reviewRefresh().catch(() => {});
                   Alert.alert(
                     'Could not verify the move',
@@ -459,9 +459,8 @@ export function HomeScreen({ navigation }: Props) {
                   // Definitively NOT applied (cancel/failure/unsupported):
                   // back to the edit queue — a true no-op from the
                   // user's view, so the copy prompt's question stays
-                  // open (pending match kept) and the star the staging
-                  // cleared comes back. The rollback's fresh count is 0
-                  // in the same-day case (the staging just stamped
+                  // open (pending match kept). The rollback's fresh count
+                  // is 0 in the same-day case (the staging just stamped
                   // today), but a consent dialog left open across local
                   // midnight re-stamps the row into the NEW day — route
                   // whatever the write reports (codex device-pass round).
@@ -470,10 +469,6 @@ export function HomeScreen({ navigation }: Props) {
                     head.originalAssetId,
                     Date.now(),
                     false,
-                    // One transaction with the un-staging: a crash between
-                    // separate writes would lose the star forever
-                    // (clearedStars lives only in memory).
-                    attempt.clearedStars.filter((star) => star.photoId === head.originalAssetId),
                   );
                   noteDecisions(rollback.freshDecisions);
                   await reviewRefresh().catch(() => {});

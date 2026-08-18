@@ -125,7 +125,7 @@ describe('onAccentFor', () => {
 describe('accentMutedFor', () => {
   it('sinks the accent most of the way toward the background', () => {
     const muted = accentMutedFor(AMBER_ACCENT);
-    // Close to the old hand-picked #3d3116 deck "Best" fill.
+    // Close to the old hand-picked #3d3116 selected-fill hue.
     expect(muted).toBe('#3d301f');
     expect(relativeLuminance(muted)).toBeLessThan(relativeLuminance(AMBER_ACCENT));
   });

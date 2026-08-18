@@ -3,7 +3,6 @@ import {
   favouriteBadgeWeight,
   isFavouriteSelected,
   nextFavouriteIntent,
-  shouldOfferFavouriteHandoff,
   type FavouriteStatus,
 } from './favouriteState';
 
@@ -44,20 +43,6 @@ describe('favourite intent', () => {
       state: 'queued_apply',
       target: true,
     });
-  });
-});
-
-describe('shouldOfferFavouriteHandoff (m0.7 item F, #10)', () => {
-  it('never offers for an already-favourited photo (applied or queued)', () => {
-    expect(shouldOfferFavouriteHandoff({ state: 'applied', target: null })).toBe(false);
-    expect(shouldOfferFavouriteHandoff({ state: 'queued_apply', target: true })).toBe(false);
-    expect(shouldOfferFavouriteHandoff({ state: 'error', target: true })).toBe(false);
-  });
-
-  it('offers only when the photo reads as not favourited', () => {
-    expect(shouldOfferFavouriteHandoff({ state: 'none', target: null })).toBe(true);
-    expect(shouldOfferFavouriteHandoff({ state: 'queued_remove', target: false })).toBe(true);
-    expect(shouldOfferFavouriteHandoff({ state: 'error', target: false })).toBe(true);
   });
 });
 

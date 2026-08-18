@@ -3,9 +3,8 @@
  * by the review overview (group AND singles-run cards) and DayProgress's
  * per-day group list — extracted when the overview was rebuilt for the
  * merged timeline (the two screens carried byte-identical card markup).
- * The card renders structure only; callers supply the title/status copy,
- * any per-thumbnail overlay (badge clusters, decision badges) and an
- * optional border colour (the best star's accent ring).
+ * The card renders structure only; callers supply the title/status copy
+ * and any per-thumbnail overlay (badge clusters, decision badges).
  */
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -26,19 +25,16 @@ export function UnitCard({
   members,
   onPress,
   renderOverlay,
-  borderColorOf,
 }: {
   title: string;
   status: string;
   /** Renders the status in keep-green (the "Reviewed" resting state). */
   statusDone?: boolean;
-  /** Display-ordered (the caller decides e.g. best-first). */
+  /** Display-ordered. */
   members: readonly UnitCardMember[];
   onPress: () => void;
   /** Absolutely-positioned overlay inside a thumbnail (badges). */
   renderOverlay?: (assetId: string) => React.ReactNode;
-  /** A 2px border for a thumbnail (the best star's accent ring). */
-  borderColorOf?: (assetId: string) => string | undefined;
 }) {
   return (
     <Pressable style={styles.card} onPress={onPress}>
@@ -47,23 +43,17 @@ export function UnitCard({
         <Text style={[styles.status, statusDone && styles.statusDone]}>{status}</Text>
       </View>
       <View style={styles.strip}>
-        {members.slice(0, STRIP_THUMBS).map((member) => {
-          const border = borderColorOf?.(member.asset_id);
-          return (
-            <View key={member.asset_id} style={styles.thumbWrap} pointerEvents="none">
-              <Image
-                source={{ uri: member.uri }}
-                style={[
-                  styles.thumb,
-                  border !== undefined && { borderWidth: 2, borderColor: border },
-                ]}
-                contentFit="cover"
-                recyclingKey={member.asset_id}
-              />
-              {renderOverlay?.(member.asset_id)}
-            </View>
-          );
-        })}
+        {members.slice(0, STRIP_THUMBS).map((member) => (
+          <View key={member.asset_id} style={styles.thumbWrap} pointerEvents="none">
+            <Image
+              source={{ uri: member.uri }}
+              style={styles.thumb}
+              contentFit="cover"
+              recyclingKey={member.asset_id}
+            />
+            {renderOverlay?.(member.asset_id)}
+          </View>
+        ))}
         {members.length > STRIP_THUMBS && (
           <View style={[styles.thumb, styles.thumbMore]}>
             <Text style={styles.thumbMoreText}>+{members.length - STRIP_THUMBS}</Text>

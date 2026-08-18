@@ -21,8 +21,7 @@
  * - unstage         → unstageCullDirect (culled → kept, edit rides along)
  * - restore         → restoreCarriedCull (culled → unreviewed; a queued
  *                     edit survives, like every other verdict write)
- * - best            → setGroupBest
- * - duel            → applyReviewDecisions duel + setBest (compare)
+ * - duel            → applyReviewDecisions duel (compare)
  * - makeSingle      → makePhotoSingles (group member → singles feed)
  * - keepMany        → applyReviewDecisions batch keeps (keep-rest/-all)
  *
@@ -59,17 +58,15 @@ export type LocalAction =
   | { kind: 'redecide'; assetId: string; target: 'keep' | 'to_edit' }
   | { kind: 'unstage'; assetId: string }
   | { kind: 'restore'; assetId: string }
-  | { kind: 'best'; groupId: number; assetId: string | null }
-  /** `keptVerdicts` (m0.8.2, F15): the two-photo dialog's "Keep both"
-   * writes BOTH participants kept; a triage duel (3+ alive) stays
-   * verdict-free with keptBoth alone. */
+  /** The duel's verdict shape (m0.8.6 D7): the whole-table dialog's
+   * "Keep both" keeps BOTH, its "Cull" stages the loser, and a triage
+   * duel's "Keep this one" writes a targeted keep on the winner alone. */
   | {
       kind: 'duel';
       groupId: number;
       winnerId: string;
       loserId: string;
-      keptBoth: boolean;
-      keptVerdicts?: boolean;
+      mode: 'keepBoth' | 'cull' | 'keepWinner';
     }
   | { kind: 'makeSingle'; assetId: string; groupId: number }
   | { kind: 'keepMany'; assetIds: readonly string[] };
@@ -144,16 +141,6 @@ function withFlag(s: ReviewSnapshot, assetId: string, flag: boolean): ReviewSnap
   return { ...s, needsEdit };
 }
 
-/** Clear any star pointing at a culled photo (applyReviewDecisions does
- * this so a staged cull is never a group's best). */
-function clearStarsAt(s: ReviewSnapshot, assetId: string): ReviewSnapshot {
-  if (!s.groups.some((g) => g.bestPhotoId === assetId)) return s;
-  return {
-    ...s,
-    groups: s.groups.map((g) => (g.bestPhotoId === assetId ? { ...g, bestPhotoId: null } : g)),
-  };
-}
-
 function applyVerdict(
   s: ReviewSnapshot,
   assetId: string,
@@ -168,9 +155,7 @@ function applyVerdict(
   let next = s;
   if (queueEdit !== undefined) next = withFlag(next, assetId, queueEdit);
   const flag = next.needsEdit.has(assetId) ? 1 : 0;
-  next = patchMember(next, assetId, { state: verdict, needs_edit: flag });
-  if (verdict === 'culled') next = clearStarsAt(next, assetId);
-  return next;
+  return patchMember(next, assetId, { state: verdict, needs_edit: flag });
 }
 
 export function applyLocalAction(s: ReviewSnapshot, action: LocalAction): ReviewSnapshot {
@@ -228,26 +213,14 @@ export function applyLocalAction(s: ReviewSnapshot, action: LocalAction): Review
       const flag = s.needsEdit.has(action.assetId) ? 1 : 0;
       return patchMember(s, action.assetId, { state: 'unreviewed', needs_edit: flag });
     }
-    case 'best':
-      return {
-        ...s,
-        groups: s.groups.map((g) =>
-          g.groupId === action.groupId ? { ...g, bestPhotoId: action.assetId } : g,
-        ),
-      };
     case 'duel': {
-      let next = action.keptBoth
-        ? action.keptVerdicts
-          ? applyVerdict(applyVerdict(s, action.winnerId, 'kept'), action.loserId, 'kept')
-          : s
-        : applyVerdict(s, action.loserId, 'culled');
-      next = {
-        ...next,
-        groups: next.groups.map((g) =>
-          g.groupId === action.groupId ? { ...g, bestPhotoId: action.winnerId } : g,
-        ),
-      };
-      return next;
+      // The duel row itself is invisible to the queue snapshot — only
+      // the verdicts it carries patch anything.
+      return action.mode === 'keepBoth'
+        ? applyVerdict(applyVerdict(s, action.winnerId, 'kept'), action.loserId, 'kept')
+        : action.mode === 'cull'
+          ? applyVerdict(s, action.loserId, 'culled')
+          : applyVerdict(s, action.winnerId, 'kept');
     }
     case 'makeSingle': {
       const group = s.groups.find((g) => g.groupId === action.groupId);
@@ -262,12 +235,8 @@ export function applyLocalAction(s: ReviewSnapshot, action: LocalAction): Review
       const updated = s.groups.map((g) =>
         g.groupId === action.groupId
           ? remaining.length < 2
-            ? { ...g, bestPhotoId: null, members: [] }
-            : {
-                ...g,
-                bestPhotoId: g.bestPhotoId === action.assetId ? null : g.bestPhotoId,
-                members: remaining,
-              }
+            ? { ...g, members: [] }
+            : { ...g, members: remaining }
           : g,
       );
       const groups = updated.filter(inGroupQueue);
@@ -328,7 +297,7 @@ export function queueEquals(a: ReviewSnapshot, b: ReviewSnapshot): boolean {
   for (let i = 0; i < a.groups.length; i += 1) {
     const ga = a.groups[i];
     const gb = b.groups[i];
-    if (ga.groupId !== gb.groupId || ga.bestPhotoId !== gb.bestPhotoId) return false;
+    if (ga.groupId !== gb.groupId) return false;
     // Hidden-member metadata is queue state (final cycle T6): forgetting
     // an away card changes a group's "N on unmounted SD card" header
     // while its visible members stay identical.

@@ -68,6 +68,7 @@ import {
 } from './stateMeta';
 import { PhotoStateGrid, type GridPhoto } from './PhotoStateGrid';
 import { useExternalRefresh } from '../useExternalRefresh';
+import { perfLog } from '../../lib/perfLog';
 import { PhotoViewer, type ViewerItem } from '../PhotoViewer';
 
 interface ResolvedSrc {
@@ -435,6 +436,7 @@ export function ProgressView({
         // not-yet-ingested gap ("N still being analyzed", grilling Q8).
         // Null on failure = no claim, no line.
         const datedDay = 'day' in scope && scope.day !== UNDATED_DAY_KEY;
+        const countsStarted = Date.now();
         const [msTotal, counts] = await Promise.all([
           dayScope && !datedDay
             ? null
@@ -442,7 +444,12 @@ export function ProgressView({
                 console.warn('[progress] corpus count failed — numbers kept:', String(error));
                 return null;
               }),
-          getStateCountsInScope(db, scope, roots, mounted),
+          getStateCountsInScope(db, scope, roots, mounted).then((result) => {
+            // The LEFT JOIN rewrite's field measurement (m0.8.6 — the
+            // correlated EXISTS measured 22 ms whole-corpus in m0.8.1).
+            perfLog(() => `progress counts (${scopeKey}): ${Date.now() - countsStarted}ms`);
+            return result;
+          }),
         ]);
         const dbAlive = counts.tracked - counts.trashed;
         // Month scopes take Home's DISJOINT UNION (m0.8.6 change 3): the

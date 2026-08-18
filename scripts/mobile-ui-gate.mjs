@@ -549,7 +549,7 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
     shell('input keyevent KEYCODE_BACK');
     await waitForHome();
     await tapText(/\d+ to review$/, 20000);
-    await waitFor(/^Review$/, 20000, 'overview heading');
+    await waitFor(/^Timeline$/, 20000, 'overview heading');
     const bigCard = () => {
       const nodes = dumpUi();
       for (let i = 0; i < nodes.length; i += 1) {
@@ -1112,7 +1112,7 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
   // now (m0.8.2 F8) — assert the door works and shows the merged list.
   await step('queue breakdown opens the timeline overview', null, async () => {
     await tapText(/\d+ to review$/, 20000);
-    await waitFor(/^Review$/, 20000, 'overview heading');
+    await waitFor(/^Timeline$/, 20000, 'overview heading');
     await waitFor(/^(Group|Singles) ·/, 20000, 'timeline cards');
     shell('input keyevent KEYCODE_BACK');
     await waitForHome();

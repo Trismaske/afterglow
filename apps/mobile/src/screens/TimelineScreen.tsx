@@ -71,6 +71,7 @@ import {
   TIMELINE_FILTERS,
   type TimelineFilter,
 } from '../lib/timelinePrefs';
+import { perfLog } from '../lib/perfLog';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Timeline'>;
 
@@ -143,7 +144,12 @@ export function TimelineScreen({ navigation }: Props) {
     if (!pager || loadingRef.current) return;
     loadingRef.current = true;
     try {
+      // Field tripwire (the plan's named perf gate): the browse group
+      // anchors are a per-page aggregate with no stored column — this
+      // line is what proves or refutes that trade on real corpora.
+      const started = Date.now();
       const items = await pager.next(BROWSE_BATCH);
+      perfLog(() => `timeline browse page: ${items.length} items in ${Date.now() - started}ms`);
       if (gen !== genRef.current) return;
       setBrowse((prev) => ({
         assembly: appendBrowseItems(prev.assembly, items),

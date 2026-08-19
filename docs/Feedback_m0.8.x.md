@@ -187,6 +187,14 @@ L2 has just changed what the freeze means, so this is the cheapest moment to dec
 
 Where photos come from, what they wear, and the four queue screens behaving like one another.
 
+### Un-review drops only that photo's duels (agreed design, from the m0.8.6 device pass)
+
+**Today (m0.8.6 D5):** the state editor's un-review deletes the group's WHOLE Compare history, with a confirm.
+**Agreed (Tristan, 2026-08-19, ranked "first prize"):** delete only the duels the un-reviewed photo was in (`WHERE winner = ? OR loser = ?` within the group); the rest of the table stands.
+The confirm copy narrows to match ("its Compare answers involving this photo").
+Parked at the m0.8.6 tail deliberately: it reopens the decision-write contract (ReviewContext → store) and the D5 tests after the regroup path was device-passed.
+His explicitly rejected middle option ("second prize" — cascade to the counterpart's other duels) is recorded so it is not re-derived.
+
 ### F18 · Cull-queue photos survive their source being deselected
 
 **Reported:** removing a folder from the sources leaves its photos in the cull queue; they should hide, the way an ejected SD card's do, and return if the folder is re-added.

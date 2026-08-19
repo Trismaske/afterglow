@@ -25,6 +25,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import type { LayoutChangeEvent, StyleProp, ViewStyle } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { PhotoState } from '@afterglow/core';
@@ -87,6 +88,28 @@ const BROWSE_GROUPS_PAGE = 40;
 
 type BrowseCursor = BrowseGroupCursor | { takenAt: number; assetId: string };
 
+/** A reading position: the unit under the viewport top plus how far its
+ * own top sits from it (≤ 0 when partially scrolled off). */
+interface PlaceCapture {
+  anchor: TimelineAnchor;
+  delta: number;
+}
+
+/** The cell-top map's key — canonical, NOT the FlatList keyExtractor,
+ * whose run shape differs per filter. Only read back within one
+ * filter's data, where it is unique. */
+const cellTopKey = (unit: TimelineUnit): string =>
+  unit.kind === 'group' ? `g:${unit.group.groupId}` : `r:${unit.day}:${unit.from}:${unit.to}`;
+
+/** What VirtualizedList hands a CellRendererComponent (RN 0.86 keeps no
+ * public TS export for it). */
+interface CellProps {
+  item: TimelineUnit;
+  children: React.ReactNode;
+  style?: StyleProp<ViewStyle>;
+  onLayout?: (event: LayoutChangeEvent) => void;
+}
+
 interface BrowseState {
   assembly: BrowseAssembly;
   exhausted: boolean;
@@ -121,22 +144,46 @@ export function TimelineScreen({ navigation }: Props) {
   }, [db]);
   /** First visible unit, tracked for the filter-switch anchor. */
   const viewableRef = useRef<TimelineUnit | null>(null);
+  /** Live scroll offset + each mounted cell's content-y (canonical key,
+   * filter-independent) — together they give the anchor unit's exact
+   * on-screen position, so a jump restores the PIXEL the reader was at,
+   * not just the card (device pass round 3: "not quite aligned"). */
+  const scrollYRef = useRef(0);
+  const cellTopsRef = useRef(new Map<string, number>());
+  /** Where the reader last was in each filter, saved on every switch.
+   * Restored instead of the carried anchor when the reader has not
+   * DRAGGED since the last jump (round 3: peeking at a pending filter
+   * from deep in Everything must not lose the deep position — but a
+   * real scroll while away carries the new place across, the round-2
+   * contract). */
+  const memoryRef = useRef<Partial<Record<TimelineFilter, PlaceCapture>>>({});
+  const movedSinceJumpRef = useRef(true);
   /** Set by a filter switch, consumed once by the jump effect below.
-   * Anchor null = jump to the top (nothing was visible to anchor on). */
-  const jumpRef = useRef<{ anchor: TimelineAnchor | null } | null>(null);
+   * place null = jump to the top (nothing was visible to anchor on). */
+  const jumpRef = useRef<{ place: PlaceCapture | null } | null>(null);
   const setFilter = useCallback(
     (next: TimelineFilter) => {
       setFilterState((prev) => {
         if (prev === next || prev === null) return next;
+        const seen = viewableRef.current;
+        const top = seen === null ? undefined : cellTopsRef.current.get(cellTopKey(seen));
+        const place: PlaceCapture | null =
+          seen === null
+            ? null
+            : {
+                anchor: { ref: unitRefOf(seen), newestAt: seen.newestAt },
+                delta: top === undefined ? 0 : top - scrollYRef.current,
+              };
+        if (place !== null) memoryRef.current[prev] = place;
         // The raw scroll offset means nothing in the other filter's data,
         // and momentum carried across the swap fights the re-layout (the
         // sustained jitter of the 2026-08-19 device pass). Every switch
-        // involving Everything jumps to the anchor instead; the two
-        // pending filters share one read and keep their natural position.
+        // involving Everything jumps to a place instead; the two pending
+        // filters share one read and keep their natural position.
         if (prev === 'everything' || next === 'everything') {
-          const seen = viewableRef.current;
+          const remembered = memoryRef.current[next];
           jumpRef.current = {
-            anchor: seen === null ? null : { ref: unitRefOf(seen), newestAt: seen.newestAt },
+            place: !movedSinceJumpRef.current && remembered !== undefined ? remembered : place,
           };
         }
         return next;
@@ -309,20 +356,89 @@ export function TimelineScreen({ navigation }: Props) {
     },
   ).current;
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 }).current;
+  /** The in-flight jump's pixel offset, for the estimate-retry path. */
+  const jumpViewOffsetRef = useRef(0);
+  /** VirtualizedList's cell wrapper, extended to record each mounted
+   * cell's content-y. Identity MUST be stable (useMemo) — a new
+   * component type per render would remount every cell. The list's own
+   * onLayout is forwarded: it is how VirtualizedList measures cells. */
+  const TrackedCell = useMemo(
+    () =>
+      function TimelineCell({ item, children, style, onLayout, ...rest }: CellProps) {
+        return (
+          <View
+            {...rest}
+            style={style}
+            onLayout={(event) => {
+              cellTopsRef.current.set(cellTopKey(item), event.nativeEvent.layout.y);
+              onLayout?.(event);
+            }}
+          >
+            {children}
+          </View>
+        );
+      },
+    [],
+  );
+  /** The settle pass's timer, cancelled by any newer jump. */
+  const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const jump = jumpRef.current;
     if (jump === null) return;
     jumpRef.current = null;
     retriedJumpRef.current = false;
+    movedSinceJumpRef.current = false;
+    if (settleTimerRef.current !== null) clearTimeout(settleTimerRef.current);
     // Runs post-commit: `data` is already the target filter's array. A
     // non-animated jump also kills any carried fling. The pending feeds
     // are complete reads, so an anchor older than their horizon clamps
     // to their last unit (the footer under it says why the trail ends);
     // the incremental browse read falls back to the top instead.
     const index =
-      jump.anchor === null ? null : anchorIndexIn(data, jump.anchor, filter !== 'everything');
-    if (index === null) listRef.current?.scrollToOffset({ offset: 0, animated: false });
-    else listRef.current?.scrollToIndex({ index, animated: false, viewPosition: 0 });
+      jump.place === null ? null : anchorIndexIn(data, jump.place.anchor, filter !== 'everything');
+    if (index === null || jump.place === null) {
+      listRef.current?.scrollToOffset({ offset: 0, animated: false });
+      return;
+    }
+    const { delta } = jump.place;
+    // The swap discarded every cell measurement, so this first jump can
+    // only land on ESTIMATED offsets (device pass round 3: the restore
+    // came back a few cards off). Cleared here so the settle pass below
+    // reads only freshly measured tops, never the prior filter's.
+    cellTopsRef.current.clear();
+    // delta re-places the anchor at the exact pixel it occupied, not
+    // merely at the viewport top (round 3: "not quite aligned").
+    jumpViewOffsetRef.current = delta;
+    listRef.current?.scrollToIndex({ index, animated: false, viewPosition: 0, viewOffset: delta });
+    // The settle pass: once the anchor's cell has really mounted, its
+    // recorded top is MEASURED — one exact scrollToOffset erases the
+    // estimate error. Not mounted yet (the estimate landed far off) →
+    // re-issue the index jump with the metrics measured so far and try
+    // again, bounded. A drag aborts: the reader took over.
+    // Keyed off the unit LANDED ON in the target data — a run matched by
+    // range overlap carries different bounds there than the anchor's ref.
+    const anchorKey = cellTopKey(data[index]);
+    const settle = (attempt: number) => {
+      settleTimerRef.current = setTimeout(() => {
+        if (movedSinceJumpRef.current) return;
+        const top = cellTopsRef.current.get(anchorKey);
+        if (top !== undefined) {
+          const want = Math.max(0, top - delta);
+          if (Math.abs(want - scrollYRef.current) > 4)
+            listRef.current?.scrollToOffset({ offset: want, animated: false });
+          return;
+        }
+        if (attempt >= 3) return;
+        listRef.current?.scrollToIndex({
+          index,
+          animated: false,
+          viewPosition: 0,
+          viewOffset: delta,
+        });
+        settle(attempt + 1);
+      }, 250);
+    };
+    settle(1);
     // data is deliberately not a dependency: the jump happens once per
     // switch, not on every page the browse pager lands afterwards.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -486,9 +602,24 @@ export function TimelineScreen({ navigation }: Props) {
           if (retriedJumpRef.current) return;
           retriedJumpRef.current = true;
           setTimeout(() => {
-            listRef.current?.scrollToIndex({ index: info.index, animated: false, viewPosition: 0 });
+            listRef.current?.scrollToIndex({
+              index: info.index,
+              animated: false,
+              viewPosition: 0,
+              viewOffset: jumpViewOffsetRef.current,
+            });
           }, 150);
         }}
+        onScroll={(e) => {
+          scrollYRef.current = e.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={33}
+        // A finger-drag is the one signal that the reader took a NEW
+        // position in this filter; programmatic jumps never fire it.
+        onScrollBeginDrag={() => {
+          movedSinceJumpRef.current = true;
+        }}
+        CellRendererComponent={TrackedCell}
         keyExtractor={(unit) =>
           unit.kind === 'group'
             ? `g:${unit.group.groupId}`

@@ -363,11 +363,16 @@ export function ProgressView({
   const db = useSQLiteContext();
   const { accent } = useTheme();
   const [src, setSrc] = useState<ResolvedSrc | null>(null);
-  // Tagged with the scopeKey that PRODUCED it: the fail-closed keep-last
-  // below holds counts across a failed refresh, but only within the SAME
-  // scope — a histogram-month tap must not keep rendering the broader
-  // scope's totals over the narrowed grid (and a failed narrow count must
-  // read as loading, not as the old scope's numbers forever).
+  // The last SUCCESSFULLY loaded counts, tagged with the scopeKey that
+  // produced them. The render below keeps them on screen across a scope
+  // change (a histogram-month tap) while the narrowed load runs — the
+  // ~150 ms full-screen "Loading…" this used to show unmounted the whole
+  // header, and the histogram remounting at offset 0 was the device-pass
+  // flash-and-jar (the F8 effect then "rescued" the tapped bar to the
+  // right edge of a chart that had secretly jumped to its start). The tag
+  // exists for the FAILURE path: a load that dies for a DIFFERENT scope
+  // clears this to null, so a failed narrow count reads as loading, never
+  // as the old scope's numbers over the new grid forever.
   const [data, setData] = useState<{
     scopeKey: string;
     breakdown: StateBreakdown;
@@ -407,14 +412,17 @@ export function ProgressView({
   );
 
   const scopeKey = scopeKeyOf(scope);
-  /** The counts, only when they describe the CURRENT scope; otherwise
-   * the loading presentation renders. Keep-last still works within an
-   * unchanged scope, where the tag matches by construction. */
-  const scopedData = data !== null && data.scopeKey === scopeKey ? data : null;
 
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
+      /** The fail-closed exits below keep whatever is shown — except when
+       * what is shown belongs to a DIFFERENT scope than the one that just
+       * failed: the keep-last render has no tag check, so a cross-scope
+       * failure must clear to the loading presentation instead. */
+      const failCrossScope = () => {
+        setData((current) => (current !== null && current.scopeKey === scopeKey ? current : null));
+      };
       (async () => {
         // Respect the photo-source folder filter (m0.3.1) on both sides.
         // FAIL CLOSED: a resolution failure keeps the previously rendered
@@ -425,6 +433,7 @@ export function ProgressView({
           sources = await resolveSources(db);
         } catch (error) {
           console.warn('[progress] source resolution failed — scope kept:', String(error));
+          failCrossScope();
           return;
         }
         const roots = sources.roots ?? null;
@@ -450,20 +459,28 @@ export function ProgressView({
         // Null on failure = no claim, no line.
         const datedDay = 'day' in scope && scope.day !== UNDATED_DAY_KEY;
         const countsStarted = Date.now();
-        const [msTotal, counts] = await Promise.all([
-          dayScope && !datedDay
-            ? null
-            : countPhotosInRange(startMs, endMs, albumIds).catch((error): null => {
-                console.warn('[progress] corpus count failed — numbers kept:', String(error));
-                return null;
-              }),
-          getStateCountsInScope(db, scope, roots, mounted).then((result) => {
-            // The LEFT JOIN rewrite's field measurement (m0.8.6 — the
-            // correlated EXISTS measured 22 ms whole-corpus in m0.8.1).
-            perfLog(() => `progress counts (${scopeKey}): ${Date.now() - countsStarted}ms`);
-            return result;
-          }),
-        ]);
+        let msTotal: number | null;
+        let counts: Awaited<ReturnType<typeof getStateCountsInScope>>;
+        try {
+          [msTotal, counts] = await Promise.all([
+            dayScope && !datedDay
+              ? null
+              : countPhotosInRange(startMs, endMs, albumIds).catch((error): null => {
+                  console.warn('[progress] corpus count failed — numbers kept:', String(error));
+                  return null;
+                }),
+            getStateCountsInScope(db, scope, roots, mounted).then((result) => {
+              // The LEFT JOIN rewrite's field measurement (m0.8.6 — the
+              // correlated EXISTS measured 22 ms whole-corpus in m0.8.1).
+              perfLog(() => `progress counts (${scopeKey}): ${Date.now() - countsStarted}ms`);
+              return result;
+            }),
+          ]);
+        } catch (error) {
+          console.warn('[progress] state counts failed — numbers kept:', String(error));
+          failCrossScope();
+          return;
+        }
         const dbAlive = counts.tracked - counts.trashed;
         // Month scopes take Home's DISJOINT UNION (m0.8.6 change 3): the
         // bounded MediaStore count cannot see a rescued photo (NULL
@@ -478,7 +495,11 @@ export function ProgressView({
               ? null
               : Math.max(msTotal + counts.rescued, dbAlive)
             : msTotal;
-        if (cancelled || total === null) return;
+        if (cancelled) return;
+        if (total === null) {
+          failCrossScope();
+          return;
+        }
         // MediaStore sees dated photos (ingested or not) but never
         // rescued ones; the DB's dated-ingested population is therefore
         // alive − rescued. Anything MediaStore has beyond that is still
@@ -550,8 +571,8 @@ export function ProgressView({
   const onChanged = useCallback(() => setRefreshTick((t) => t + 1), []);
 
   const header = useMemo(() => {
-    if (!scopedData) return <View />;
-    const b = scopedData.breakdown;
+    if (data === null) return <View />;
+    const b = data.breakdown;
     const reviewed = reviewedOf(b);
     const pct = reviewedPct(b);
     return (
@@ -635,11 +656,11 @@ export function ProgressView({
           })}
         </View>
         <Text style={styles.footnote}>Tap a state to filter · tap a photo to change it.</Text>
-        {scopedData !== null && scopedData.analyzing > 0 && (
+        {data.analyzing > 0 && (
           <Text style={styles.insightLine}>
-            {scopedData.analyzing === 1
+            {data.analyzing === 1
               ? '1 photo still being analyzed — it joins these counts when the scan finishes'
-              : `${scopedData.analyzing} photos still being analyzed — they join these counts when the scan finishes`}
+              : `${data.analyzing} photos still being analyzed — they join these counts when the scan finishes`}
           </Text>
         )}
 
@@ -672,8 +693,8 @@ export function ProgressView({
         <View style={styles.gridLabelRow}>
           <Text style={styles.gridLabel}>
             {filter === 'all' ? 'Photos · all states' : `Photos · ${filterLabel(filter)}`}
-            {filter === 'kept' && scopedData.trashed > 0
-              ? `  (${scopedData.trashed} trashed — files gone, not shown)`
+            {filter === 'kept' && data.trashed > 0
+              ? `  (${data.trashed} trashed — files gone, not shown)`
               : ''}
           </Text>
           {/* An explicit way out of a month filter. Tapping the bar again
@@ -692,9 +713,14 @@ export function ProgressView({
         </View>
       </View>
     );
-  }, [scopedData, heading, filter, toggleFilter, renderCta, accent, insights, month, target.kind]);
+  }, [data, heading, filter, toggleFilter, renderCta, accent, insights, month, target.kind]);
 
-  if (!scopedData || !src) {
+  // First load only. A SCOPE change (a histogram-month tap) deliberately
+  // does NOT pass through here: unmounting the grid unmounts the header
+  // inside it, and the remounting histogram was the device-pass jar. The
+  // previous counts stay up for the ~150 ms the narrowed load takes; the
+  // grid resets itself on the same scopeKey and the two swap together.
+  if (data === null || src === null) {
     return (
       <View style={[styles.loadingRoot]}>
         <Text style={styles.loadingText}>Loading…</Text>

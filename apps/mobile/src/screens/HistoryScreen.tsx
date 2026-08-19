@@ -34,7 +34,8 @@ import { reconcileExternallyRemoved } from '../db/trashStore';
 import { mountedVolumeSet } from '../lib/mountedVolumes';
 import { mapWithConcurrency } from '../lib/concurrency';
 import { checkMediaPresence } from '../lib/media';
-import { formatDayClock } from '../lib/format';
+import { formatClock, formatDayClock } from '../lib/format';
+import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { DecisionBadge } from '../components/DecisionBadge';
 import { photoBadges, type BadgeWeight, type PhotoBadge } from '../lib/photoBadges';
 import { PhotoViewer } from '../components/PhotoViewer';
@@ -220,7 +221,7 @@ export function HistoryScreen(_props: Props) {
               Shared · {item.member_count} photo{item.member_count === 1 ? '' : 's'}
               {item.label ? ` · “${item.label}”` : ''}
             </Text>
-            <Text style={styles.rowTime}>{formatDayClock(item.opened_at)}</Text>
+            <Text style={styles.rowTime}>{formatDayClock(item.chosen_at)}</Text>
           </View>
           <MaterialCommunityIcons name="share-variant" size={20} color={colors.share} />
         </View>
@@ -241,7 +242,18 @@ export function HistoryScreen(_props: Props) {
           <Image source={{ uri: item.uri }} style={styles.thumb} contentFit="cover" />
         )}
         <View style={styles.rowBody}>
-          <Text style={styles.rowTime}>{formatDayClock(item.activity_at)}</Text>
+          {/* A tombstone's line is the photo's ORIGINAL date (D9) — the
+              capture day plus clock, or the honest Unknown day — never
+              the activity time a live row shows (codex r1): an executed
+              cull's activity_at is when the trash concluded, not when
+              the photo was taken. */}
+          <Text style={styles.rowTime}>
+            {tombstone
+              ? item.day === null
+                ? labelForDayKey(UNDATED_DAY_KEY)
+                : `${labelForDayKey(item.day)} ${formatClock(item.taken_at)}`
+              : formatDayClock(item.activity_at)}
+          </Text>
           <View style={styles.badges}>
             {badges.map((badge) => (
               <DecisionBadge key={badge.kind} kind={badge.kind} size={20} weight={badge.weight} />

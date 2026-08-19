@@ -213,10 +213,12 @@ describe('getHistoryPage', () => {
     const d = await fresh();
     insertPhoto(d, 'p1', 'kept', AT);
     d.raw.prepare('INSERT INTO share_cycles (started_at) VALUES (?)').run(AT);
+    // The real 'shared' lifecycle stamps chosen_at (D10); opened_at is
+    // deliberately EARLIER and constant — ordering must ignore it.
     const stmt = d.raw.prepare(
-      "INSERT INTO share_batches (cycle_id, attempted_at, opened_at, label, state) VALUES (1, ?, ?, ?, 'shared')",
+      "INSERT INTO share_batches (cycle_id, attempted_at, opened_at, chosen_at, label, state) VALUES (1, ?, ?, ?, ?, 'shared')",
     );
-    for (let i = 0; i < 55; i++) stmt.run(AT + i, AT + i, `pass ${i}`);
+    for (let i = 0; i < 55; i++) stmt.run(AT + i, AT - 1000, AT + i, `pass ${i}`);
     d.raw.prepare("INSERT INTO share_batch_members VALUES (1, 'p1')").run();
     const first = await getHistoryPage(asExpo(d), 'shared', null);
     expect(first.rows).toHaveLength(40);
@@ -240,10 +242,12 @@ describe('getHistoryPage', () => {
     for (let i = 0; i < 50; i++)
       insertPhoto(d, `p${String(i).padStart(2, '0')}`, 'kept', AT + i * 2);
     d.raw.prepare('INSERT INTO share_cycles (started_at) VALUES (?)').run(AT);
+    // opened_at sits far in the past: the merge must key on chosen_at
+    // (codex r1 — a chooser left open files the share at CHOICE time).
     const stmt = d.raw.prepare(
-      "INSERT INTO share_batches (cycle_id, attempted_at, opened_at, label, state) VALUES (1, ?, ?, ?, 'shared')",
+      "INSERT INTO share_batches (cycle_id, attempted_at, opened_at, chosen_at, label, state) VALUES (1, ?, ?, ?, ?, 'shared')",
     );
-    for (let i = 0; i < 50; i++) stmt.run(AT + i * 2 + 1, AT + i * 2 + 1, `s${i}`);
+    for (let i = 0; i < 50; i++) stmt.run(AT + i * 2 + 1, AT - 999, AT + i * 2 + 1, `s${i}`);
     const pages = [];
     let cursor: HistoryCursor | null = null;
     for (;;) {
@@ -254,7 +258,7 @@ describe('getHistoryPage', () => {
     }
     expect(pages).toHaveLength(100);
     // Globally descending by timestamp — shares appear beyond page one.
-    const times = pages.map((r) => (r.kind === 'photo' ? r.activity_at : r.opened_at));
+    const times = pages.map((r) => (r.kind === 'photo' ? r.activity_at : r.chosen_at));
     expect([...times].sort((a, b) => b - a)).toEqual(times);
     expect(pages.filter((r) => r.kind === 'share')).toHaveLength(50);
     expect(pages.slice(40).some((r) => r.kind === 'share')).toBe(true);
@@ -266,9 +270,12 @@ describe('getHistoryPage', () => {
     d.raw.prepare('INSERT INTO share_cycles (started_at) VALUES (?)').run(AT);
     d.raw
       .prepare(
-        "INSERT INTO share_batches (cycle_id, attempted_at, opened_at, label, state) VALUES (1, ?, ?, 'Mum', 'shared')",
+        // Sheet opened BEFORE the photo's decision, target chosen after:
+        // the row must sort by the choice (old code sorted by opened_at
+        // and filed this share behind the photo).
+        "INSERT INTO share_batches (cycle_id, attempted_at, opened_at, chosen_at, label, state) VALUES (1, ?, ?, ?, 'Mum', 'shared')",
       )
-      .run(AT + 20, AT + 20);
+      .run(AT + 20, AT + 5, AT + 20);
     d.raw
       .prepare("INSERT INTO share_batches (cycle_id, attempted_at, state) VALUES (1, ?, 'error')")
       .run(AT + 30);
@@ -277,7 +284,7 @@ describe('getHistoryPage', () => {
     const shares = page.rows.filter((r) => r.kind === 'share');
     expect(shares).toHaveLength(1);
     expect(shares[0].kind === 'share' && shares[0].label).toBe('Mum');
-    // The opened event sorts ahead of the older photo decision.
+    // The CHOSEN event sorts ahead of the older photo decision.
     expect(page.rows[0].kind).toBe('share');
   });
 });

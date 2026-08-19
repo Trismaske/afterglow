@@ -449,3 +449,32 @@ describe('anchorIndexIn (m0.8.6 device pass: filter-switch landing)', () => {
     expect(anchorIndexIn([], anchor, true)).toBeNull();
   });
 });
+
+describe('browseItemTime honours the SQL-minted anchor (codex r1)', () => {
+  const day = '2026-05-09';
+  it("a group's merge key is the source-scoped anchor, not its newest reachable member", () => {
+    // The heads query ordered this group at t=50 (its newest IN-SOURCE
+    // member); the projection still returns the whole group, whose
+    // newest member (t=90, out of source) must not re-order the stream.
+    const g: BrowseItem = {
+      kind: 'group',
+      group: { groupId: 7, anchor: 50, members: [member('out', 90, day), member('in', 50, day)] },
+    };
+    expect(browseItemTime(g)).toBe(50);
+    // No anchor minted (the pending read): the newest member stands.
+    const bare: BrowseItem = {
+      kind: 'group',
+      group: { groupId: 8, members: [member('a', 70, day)] },
+    };
+    expect(browseItemTime(bare)).toBe(70);
+  });
+
+  it('the assembled unit newestAt matches the merge key, keeping anchorIndexIn monotone', () => {
+    const g: BrowseItem = {
+      kind: 'group',
+      group: { groupId: 7, anchor: 50, members: [member('out', 90, day), member('in', 50, day)] },
+    };
+    const assembly = appendBrowseItems(EMPTY_BROWSE_ASSEMBLY, [g]);
+    expect(assembly.units[0].newestAt).toBe(50);
+  });
+});

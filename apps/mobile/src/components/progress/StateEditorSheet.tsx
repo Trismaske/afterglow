@@ -79,7 +79,7 @@ export function StateEditorSheet({
   onChanged: () => void;
 }) {
   const db = useSQLiteContext();
-  const { decide, unstageCull, restoreCull, clearDecision } = useReview();
+  const { decide, unstageCull, restoreCull, clearDecision, queuesChanged } = useReview();
   const { accent } = useTheme();
   const insets = useSafeAreaInsets();
   const [busy, setBusy] = useState(false);
@@ -121,6 +121,13 @@ export function StateEditorSheet({
       setBusy(true);
       try {
         await write();
+        // A DIRECT store write (surfaceErrors names exactly those — the
+        // provider verbs alert through writeError and bump the version
+        // themselves) can land on a photo outside the bounded pending
+        // snapshot, where the host's refresh observes no change; the
+        // queue tab badges key on the version and went stale (codex
+        // r1). Say it happened.
+        if (surfaceErrors) queuesChanged();
         onChanged();
         setTick((t) => t + 1);
       } catch (error) {
@@ -133,7 +140,7 @@ export function StateEditorSheet({
         setBusy(false);
       }
     },
-    [busy, onChanged],
+    [busy, onChanged, queuesChanged],
   );
 
   const setVerdict = useCallback(

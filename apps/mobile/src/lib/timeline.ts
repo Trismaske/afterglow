@@ -212,10 +212,15 @@ export function buildTimeline(
 export type BrowseItem =
   { kind: 'group'; group: ReviewGroupRow } | { kind: 'single'; member: ReviewMemberRow };
 
-/** The merged pager's ordering key — identical to buildTimeline's merge
- * anchors, so the assembled units come out in the same order. */
+/** The merged pager's ordering key. Groups take the SQL-minted `anchor`
+ * when the read supplies one (codex r1: the browse heads query orders
+ * by MAX(taken_at) over SOURCE-FILTERED members while the projection
+ * returns the whole reachable group — under a folder filter an
+ * out-of-source newest member would otherwise hand the merged pager a
+ * non-descending stream). Pending reads mint no anchor and fall back to
+ * the newest member, buildTimeline's own key. */
 export const browseItemTime = (item: BrowseItem): number =>
-  item.kind === 'group' ? groupAnchor(item.group) : item.member.taken_at;
+  item.kind === 'group' ? (item.group.anchor ?? groupAnchor(item.group)) : item.member.taken_at;
 
 export interface BrowseAssembly {
   /** Finished units, newest-first. */
@@ -252,7 +257,9 @@ export function appendBrowseItems(
       if (item.group.members.length === 0) continue;
       closeRunInto(units, run);
       run = [];
-      units.push({ kind: 'group', group: item.group, newestAt: groupAnchor(item.group) });
+      // Same key the merge ordered by — a unit's newestAt must stay
+      // monotone with its stream position (anchorIndexIn walks it).
+      units.push({ kind: 'group', group: item.group, newestAt: browseItemTime(item) });
       continue;
     }
     if (run.length > 0 && dayOf(run[run.length - 1]) !== dayOf(item.member)) {

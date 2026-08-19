@@ -14,8 +14,18 @@
  * - Clear is explicit and warns when never-shared photos remain; share
  *   events survive the clear for History.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Alert,
+  AppState,
+  FlatList,
+  Modal,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -34,7 +44,7 @@ import {
   SHARE_SOFT_WARN_COUNT,
   type ShareQueueRow,
 } from '../db/shareStore';
-import { shareMediaUris } from '../../modules/media-store-actions';
+import { shareMediaUris, subscribeShareTargetChosen } from '../../modules/media-store-actions';
 import { getEditableContentUri } from '../lib/media';
 import { showToast } from '../lib/toast';
 import { colors, touch, useTheme } from '../theme';
@@ -66,6 +76,47 @@ export function ShareQueueScreen(_props: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [labelBatchId, setLabelBatchId] = useState<number | null>(null);
+  /** The batch whose label prompt WAITS for target confirmation (codex
+   * r1): prompting on sheet-open dispatch meant backing out of the
+   * chooser returned to a modal claiming a pass that D10's abandon
+   * sweep was about to discard. The chosen-component event is the one
+   * signal a share actually happened — only it opens the prompt. */
+  const awaitingLabelRef = useRef<number | null>(null);
+  /** A confirmation that arrived while the chooser (or the target app)
+   * still covered this activity: an Android Modal presented while the
+   * activity is paused is silently swallowed — even a visible=true one
+   * never shows on resume (S10e, 2026-08-20). The prompt therefore
+   * waits here for the next 'active' transition. */
+  const confirmedAwaitingForegroundRef = useRef<number | null>(null);
+  const presentLabelPrompt = useCallback(
+    (batchId: number) => {
+      setLabelText('');
+      setLabelBatchId(batchId);
+      void reload().catch(() => {});
+    },
+    [reload],
+  );
+  const presentLabelPromptRef = useRef(presentLabelPrompt);
+  presentLabelPromptRef.current = presentLabelPrompt;
+  useEffect(
+    () =>
+      subscribeShareTargetChosen(({ token }) => {
+        if (awaitingLabelRef.current !== token) return;
+        awaitingLabelRef.current = null;
+        if (AppState.currentState === 'active') presentLabelPromptRef.current(token);
+        else confirmedAwaitingForegroundRef.current = token;
+      }),
+    [],
+  );
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active' || confirmedAwaitingForegroundRef.current === null) return;
+      const batchId = confirmedAwaitingForegroundRef.current;
+      confirmedAwaitingForegroundRef.current = null;
+      presentLabelPromptRef.current(batchId);
+    });
+    return () => sub.remove();
+  }, []);
   const [labelText, setLabelText] = useState('');
   const [labelChips, setLabelChips] = useState<string[]>([]);
   /** In-app full-screen viewer (gate 5) — long-press a thumbnail
@@ -162,8 +213,7 @@ export function ShareQueueScreen(_props: Props) {
           await promoteShareBatch(db, batchId, Date.now());
           showToast(`Sheet opened for ${ids.length} — queue kept for more sharing`);
           setSelected(new Set());
-          setLabelText('');
-          setLabelBatchId(batchId);
+          awaitingLabelRef.current = batchId;
         } else {
           await failShareBatch(db, batchId);
           Alert.alert('Share failed', dispatch.message);

@@ -2736,7 +2736,8 @@ export interface HistoryPhotoRow {
 export interface HistoryShareRow {
   kind: 'share';
   batch_id: number;
-  opened_at: number;
+  /** The chosen-component time — when sharing actually happened (D10). */
+  chosen_at: number;
   label: string | null;
   member_count: number;
   thumb_uris: string[];
@@ -2754,7 +2755,7 @@ type StreamPos<K> = K | 'top' | 'end';
  * independent keyset streams merged by timestamp. */
 export interface HistoryCursor {
   photo: StreamPos<{ activityAt: number; assetId: string }>;
-  share: StreamPos<{ openedAt: number; batchId: number }>;
+  share: StreamPos<{ chosenAt: number; batchId: number }>;
 }
 
 export interface HistoryPage {
@@ -2799,7 +2800,7 @@ const FAVOURITE_HELD = `(EXISTS (SELECT 1 FROM photo_actions pa_favourite
  * One keyset page of the History feed. Photo rows require presence
  * (is_present = 1 — trashed/deleted photos drop out; restore brings them
  * back) and at least one recorded decision (activity_at beyond the draw).
- * Share events form a second stream (keyset on opened_at) merged by
+ * Share events form a second stream (keyset on chosen_at) merged by
  * timestamp, so every page — not just the first — interleaves both, and
  * the Shared filter pages through all events.
  */
@@ -2884,25 +2885,30 @@ export async function getHistoryPage(
   const shareKeyset =
     sharePos === 'top' || sharePos === 'end'
       ? ''
-      : 'AND (b.opened_at < ? OR (b.opened_at = ? AND b.id < ?))';
+      : 'AND (b.chosen_at < ? OR (b.chosen_at = ? AND b.id < ?))';
   const shareParams: number[] =
     sharePos === 'top' || sharePos === 'end'
       ? []
-      : [sharePos.openedAt, sharePos.openedAt, sharePos.batchId];
+      : [sharePos.chosenAt, sharePos.chosenAt, sharePos.batchId];
   const shareRows =
     sharePos === 'end'
       ? []
       : await db.getAllAsync<{
           batch_id: number;
-          opened_at: number;
+          chosen_at: number;
           label: string | null;
           member_count: number;
         }>(
-          `SELECT b.id AS batch_id, b.opened_at, b.label,
+          // Ordered and stamped by the CHOSEN-COMPONENT time (codex r1):
+          // 'shared' is D10's target-confirmed state and chosen_at is
+          // written with it, while opened_at is only when the sheet rose
+          // — a chooser left open for an hour would otherwise file the
+          // share an hour early.
+          `SELECT b.id AS batch_id, b.chosen_at, b.label,
              (SELECT COUNT(*) FROM share_batch_members m WHERE m.batch_id = b.id) AS member_count
            FROM share_batches b
            WHERE b.state = 'shared' ${shareKeyset}
-           ORDER BY b.opened_at DESC, b.id DESC
+           ORDER BY b.chosen_at DESC, b.id DESC
            LIMIT ${HISTORY_PAGE}`,
           ...shareParams,
         );
@@ -2913,7 +2919,7 @@ export async function getHistoryPage(
     ...r,
     thumb_uris: [],
   }));
-  const tsOf = (r: HistoryRow) => (r.kind === 'photo' ? r.activity_at : r.opened_at);
+  const tsOf = (r: HistoryRow) => (r.kind === 'photo' ? r.activity_at : r.chosen_at);
   const merged: HistoryRow[] = [...photoRows, ...bareShares].sort((a, b) => tsOf(b) - tsOf(a));
   const rows = merged.slice(0, HISTORY_PAGE);
   for (const row of rows) {
@@ -2943,7 +2949,7 @@ export async function getHistoryPage(
     sharePos === 'end' || (shareRows.length < HISTORY_PAGE && emittedShares === shareRows.length)
       ? 'end'
       : lastShare && lastShare.kind === 'share'
-        ? { openedAt: lastShare.opened_at, batchId: lastShare.batch_id }
+        ? { chosenAt: lastShare.chosen_at, batchId: lastShare.batch_id }
         : sharePos;
   return {
     rows,

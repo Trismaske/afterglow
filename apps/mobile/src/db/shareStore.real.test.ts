@@ -114,6 +114,27 @@ describe('share queue + cycles', () => {
     ).toBe(AT + 11);
   });
 
+  it('a label lands only on a CONFIRMED share — an unresolved batch refuses it (codex r1)', async () => {
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    await addToShareQueue(asExpo(d), 'p1', AT);
+    const b1 = await createShareBatch(asExpo(d), ['p1'], AT + 10);
+    await promoteShareBatch(asExpo(d), b1, AT + 11);
+    // Still sheet_opened — the chooser is up, nothing is confirmed.
+    await labelShareBatch(asExpo(d), b1, 'Mum');
+    const row = d.raw.prepare('SELECT label FROM share_batches WHERE id = ?').get(b1) as {
+      label: string | null;
+    };
+    expect(row.label).toBeNull();
+    // Once the target is chosen, the same write sticks.
+    await markShareBatchShared(asExpo(d), b1, 'com.test/app', AT + 12);
+    await labelShareBatch(asExpo(d), b1, 'Mum');
+    const after = d.raw.prepare('SELECT label FROM share_batches WHERE id = ?').get(b1) as {
+      label: string | null;
+    };
+    expect(after.label).toBe('Mum');
+  });
+
   it('clear ends the cycle, keeps events, and a requeue starts a new cycle', async () => {
     const d = await fresh();
     insertPhoto(d, 'p1');

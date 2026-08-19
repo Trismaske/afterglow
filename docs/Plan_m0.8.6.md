@@ -80,7 +80,7 @@ A new store read, keyset-paged, newest-first, serving Everything:
 
 - Two keyset streams — groups (anchored on the newest present member's `taken_at`, no unreviewed-EXISTS requirement) and ungrouped singles — merged into units page by page, reusing `buildTimeline`'s day-boundary and interleave rules for run assembly.
 - A run straddling a page boundary stays **open**: the assembler holds the tail run and the next page's rows append to it before new units form. **(autonomous)** page size and the exact cursor shape are set during implementation against the 27k corpus and stated in the appendix.
-- Staleness: refetch page 1 on review `version` bump and on focus. No optimistic patches, no horizon tails.
+- Staleness: refetch page 1 on review `version` bump and on external invalidation (foreground return, volume mount — the reviewed-only changes a version bump cannot see). A version-silent focus deliberately does NOT reset: nothing changed, and the reset would discard the reading position the filter memory keeps (codex r1 reconciliation of this line with the round-3 position work — grilling item). No optimistic patches, no horizon tails.
 - Perf gate: `taken_at` deliberately has no index (+116 ms scan writes when measured). The browse page query is **measured on the S10e** before the design is called done; if it crawls, the index is re-measured as its own decision, not assumed.
 
 Tapping a reviewed unit opens the browse deck exactly as completed units open today.

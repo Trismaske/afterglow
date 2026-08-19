@@ -348,7 +348,14 @@ export async function labelShareBatch(
   batchId: number,
   label: string,
 ): Promise<void> {
-  await db.runAsync('UPDATE share_batches SET label = ? WHERE id = ?', label, batchId);
+  // Only a CONFIRMED share carries a recipient label (D10): an
+  // abandoned batch is on its way out of the table, and labelling it
+  // would resurrect a record the sweep exists to erase.
+  await db.runAsync(
+    "UPDATE share_batches SET label = ? WHERE id = ? AND state = 'shared'",
+    label,
+    batchId,
+  );
 }
 
 /** Recently used labels for the prompt chips. */

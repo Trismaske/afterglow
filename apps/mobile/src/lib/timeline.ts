@@ -294,6 +294,42 @@ export function unreviewedOnly(units: readonly TimelineUnit[]): TimelineUnit[] {
   return out;
 }
 
+/** What a filter switch carries across the data swap: the unit the
+ * reader was looking at, named the way rebuilds name units, plus its
+ * merge time for the nearest-neighbour fallback. */
+export interface TimelineAnchor {
+  ref: UnitRef;
+  newestAt: number;
+}
+
+/**
+ * Where a filter switch lands in the target data (m0.8.6 device pass:
+ * reusing the raw scroll offset across the swap let carried momentum
+ * fight the re-layout — the sustained jitter Tristan recorded).
+ *
+ * The same unit wins (groups by id, runs by day + range overlap); else
+ * the first unit at-or-older than the anchor — the closest content the
+ * target can show in a newest-first list. When the anchor is older than
+ * everything loaded, `clampToEnd` decides: the pending feeds are
+ * COMPLETE reads, so their last unit (the truncation footer under it
+ * says why the trail ends) is the honest landing; the browse read is
+ * incremental, and pretending its loading frontier is "near" the anchor
+ * would land the reader somewhere that just happens to be loaded — null
+ * sends the caller to the top instead.
+ */
+export function anchorIndexIn(
+  units: readonly TimelineUnit[],
+  anchor: TimelineAnchor,
+  clampToEnd: boolean,
+): number | null {
+  if (units.length === 0) return null;
+  const exact = findUnitIndex(units, anchor.ref);
+  if (exact >= 0) return exact;
+  const at = units.findIndex((unit) => unit.newestAt <= anchor.newestAt);
+  if (at >= 0) return at;
+  return clampToEnd ? units.length - 1 : null;
+}
+
 export interface UnitVisitState {
   ref: UnitRef | null;
   complete: boolean | null;

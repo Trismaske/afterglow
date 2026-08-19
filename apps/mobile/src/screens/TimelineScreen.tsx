@@ -38,15 +38,18 @@ import { colors, useTheme } from '../theme';
 import { formatClock } from '../lib/format';
 import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import {
+  anchorIndexIn,
   appendBrowseItems,
   browseItemTime,
   EMPTY_BROWSE_ASSEMBLY,
   firstPendingUnit,
   flushBrowseTail,
   unitDestination,
+  unitRefOf,
   unreviewedOnly,
   type BrowseAssembly,
   type BrowseItem,
+  type TimelineAnchor,
   type TimelineUnit,
 } from '../lib/timeline';
 import { deckParamsFor } from '../lib/deckUnit';
@@ -116,9 +119,28 @@ export function TimelineScreen({ navigation }: Props) {
       cancelled = true;
     };
   }, [db]);
+  /** First visible unit, tracked for the filter-switch anchor. */
+  const viewableRef = useRef<TimelineUnit | null>(null);
+  /** Set by a filter switch, consumed once by the jump effect below.
+   * Anchor null = jump to the top (nothing was visible to anchor on). */
+  const jumpRef = useRef<{ anchor: TimelineAnchor | null } | null>(null);
   const setFilter = useCallback(
     (next: TimelineFilter) => {
-      setFilterState(next);
+      setFilterState((prev) => {
+        if (prev === next || prev === null) return next;
+        // The raw scroll offset means nothing in the other filter's data,
+        // and momentum carried across the swap fights the re-layout (the
+        // sustained jitter of the 2026-08-19 device pass). Every switch
+        // involving Everything jumps to the anchor instead; the two
+        // pending filters share one read and keep their natural position.
+        if (prev === 'everything' || next === 'everything') {
+          const seen = viewableRef.current;
+          jumpRef.current = {
+            anchor: seen === null ? null : { ref: unitRefOf(seen), newestAt: seen.newestAt },
+          };
+        }
+        return next;
+      });
       // The pref write is best-effort: a failure costs only the memory
       // of the choice, said out loud once.
       void setSetting(db, TIMELINE_FILTER_KEY, next).catch((error: unknown) =>
@@ -274,6 +296,38 @@ export function TimelineScreen({ navigation }: Props) {
     return timeline;
   }, [filter, timeline, browse]);
 
+  // -------------------------------------------- filter-switch anchor
+  const listRef = useRef<FlatList<TimelineUnit>>(null);
+  /** One estimate-then-retry per jump: scrollToIndex past the render
+   * window fails onto onScrollToIndexFailed, whose offset estimate is
+   * corrected by ONE exact re-issue once the target has been measured —
+   * never a loop of them. */
+  const retriedJumpRef = useRef(false);
+  const onViewableItemsChanged = useRef(
+    ({ viewableItems }: { viewableItems: Array<{ item: TimelineUnit }> }) => {
+      viewableRef.current = viewableItems[0]?.item ?? null;
+    },
+  ).current;
+  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 }).current;
+  useEffect(() => {
+    const jump = jumpRef.current;
+    if (jump === null) return;
+    jumpRef.current = null;
+    retriedJumpRef.current = false;
+    // Runs post-commit: `data` is already the target filter's array. A
+    // non-animated jump also kills any carried fling. The pending feeds
+    // are complete reads, so an anchor older than their horizon clamps
+    // to their last unit (the footer under it says why the trail ends);
+    // the incremental browse read falls back to the top instead.
+    const index =
+      jump.anchor === null ? null : anchorIndexIn(data, jump.anchor, filter !== 'everything');
+    if (index === null) listRef.current?.scrollToOffset({ offset: 0, animated: false });
+    else listRef.current?.scrollToIndex({ index, animated: false, viewPosition: 0 });
+    // data is deliberately not a dependency: the jump happens once per
+    // switch, not on every page the browse pager lands afterwards.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter]);
+
   const stateOf = useMemo(() => {
     const map = new Map<string, PhotoState>();
     for (const unit of data) {
@@ -403,7 +457,25 @@ export function TimelineScreen({ navigation }: Props) {
         })}
       </View>
       <FlatList
+        ref={listRef}
         data={data}
+        onViewableItemsChanged={onViewableItemsChanged}
+        viewabilityConfig={viewabilityConfig}
+        onScrollToIndexFailed={(info) => {
+          // The anchor sits past the render window: land on the estimate,
+          // then re-issue the exact jump once — after measurement it
+          // succeeds; if it somehow fails again, the estimate stands
+          // rather than looping.
+          listRef.current?.scrollToOffset({
+            offset: info.averageItemLength * info.index,
+            animated: false,
+          });
+          if (retriedJumpRef.current) return;
+          retriedJumpRef.current = true;
+          setTimeout(() => {
+            listRef.current?.scrollToIndex({ index: info.index, animated: false, viewPosition: 0 });
+          }, 150);
+        }}
         keyExtractor={(unit) =>
           unit.kind === 'group'
             ? `g:${unit.group.groupId}`

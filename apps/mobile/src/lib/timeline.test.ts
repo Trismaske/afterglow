@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { PhotoState } from '@afterglow/core';
 import type { ReviewGroupRow, ReviewMemberRow } from '../db/store';
 import {
+  anchorIndexIn,
   appendBrowseItems,
   browseItemTime,
   buildTimeline,
@@ -402,5 +403,49 @@ describe('unreviewedOnly (m0.8.6 D3)', () => {
       NOT_FULL,
     );
     expect(unreviewedOnly(units)).toEqual([]);
+  });
+});
+
+describe('anchorIndexIn (m0.8.6 device pass: filter-switch landing)', () => {
+  const day = '2026-05-09';
+  // Newest-first: group 1 (t=100), run (t=80..70), group 2 (t=50).
+  const units = buildTimeline(
+    [group(1, [member('a2', 100, day), member('a1', 95, day)])],
+    [member('s2', 80, day), member('s1', 70, day)],
+    NOT_FULL,
+  );
+  const target = [...units, ...buildTimeline([group(2, [member('b1', 50, day)])], [], NOT_FULL)];
+
+  it('the same unit wins: a group by id wherever it sits', () => {
+    const anchor = { ref: { kind: 'group' as const, groupId: '2' }, newestAt: 50 };
+    expect(anchorIndexIn(target, anchor, false)).toBe(2);
+  });
+
+  it('a run matches by day + range overlap, not exact bounds', () => {
+    // The other filter loaded the run wider (70..80 vs a 75..75 slice).
+    const anchor = { ref: { kind: 'run' as const, day, from: 75, to: 75 }, newestAt: 75 };
+    expect(anchorIndexIn(target, anchor, false)).toBe(1);
+  });
+
+  it('a missing unit lands on the first at-or-older unit', () => {
+    // t=60 sits between the run (80) and group 2 (50) — group 2 is the
+    // closest content a newest-first list can show.
+    const anchor = { ref: { kind: 'group' as const, groupId: '99' }, newestAt: 60 };
+    expect(anchorIndexIn(target, anchor, false)).toBe(2);
+  });
+
+  it('older than everything loaded: clampToEnd picks the last unit (complete pending reads)', () => {
+    const anchor = { ref: { kind: 'group' as const, groupId: '99' }, newestAt: 5 };
+    expect(anchorIndexIn(target, anchor, true)).toBe(target.length - 1);
+  });
+
+  it('older than everything loaded: the incremental browse read sends the caller to the top', () => {
+    const anchor = { ref: { kind: 'group' as const, groupId: '99' }, newestAt: 5 };
+    expect(anchorIndexIn(target, anchor, false)).toBeNull();
+  });
+
+  it('empty target data is a top jump regardless of clamping', () => {
+    const anchor = { ref: { kind: 'group' as const, groupId: '1' }, newestAt: 100 };
+    expect(anchorIndexIn([], anchor, true)).toBeNull();
   });
 });

@@ -459,6 +459,19 @@ export function TimelineScreen({ navigation }: Props) {
       <FlatList
         ref={listRef}
         data={data}
+        // The device-pass jitter's root cause (2026-08-19, instrumented
+        // on the S10e): with cards of many heights, the virtualizer's
+        // window edge can land on a card whose ESTIMATED height differs
+        // from its measured one — content height then flip-flops by that
+        // difference on every layout pass (a measured 103 px lock-in,
+        // hours if left alone), each flip feeding back through the
+        // scroll offset into the next window computation. Anchoring the
+        // first visible item breaks the feedback: a re-measure above the
+        // viewport adjusts the offset instead of moving the content
+        // under it. Reproduced deterministically (bottom of a pending
+        // filter + a fling into the clamp + a mid-momentum switch) and
+        // gone under the same script with this prop.
+        maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={viewabilityConfig}
         onScrollToIndexFailed={(info) => {

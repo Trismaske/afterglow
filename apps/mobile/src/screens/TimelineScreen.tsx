@@ -354,6 +354,21 @@ export function TimelineScreen({ navigation }: Props) {
   // whatever the filter shows (L7).
   const first = firstPendingUnit(timeline);
   const total = queueCounts.grouped + queueCounts.singles;
+  // The pending feed is BOUNDED (two pages + the horizon truncation),
+  // so on a large backlog Unfinished and Unreviewed-only end long
+  // before the corpus does — which reads as a bug beside Everything's
+  // endless scroll (device pass, 2026-08-19: the list bounced at
+  // 09 May with 27k to review). Say the truncation out loud instead:
+  // the footer names how much is shown and that the tail pages in as
+  // review proceeds, exactly the m0.8.2 design's contract.
+  const shownPending = useMemo(() => {
+    if (filter === 'everything') return 0;
+    return data.reduce((n, unit) => {
+      const members = unit.kind === 'group' ? unit.group.members : unit.members;
+      return n + members.filter((m) => m.state === 'unreviewed').length;
+    }, 0);
+  }, [filter, data]);
+  const pendingTruncated = filter !== 'everything' && shownPending < total;
 
   if (filter === null) {
     return <View style={styles.root} />;
@@ -421,6 +436,11 @@ export function TimelineScreen({ navigation }: Props) {
           filter === 'everything' && browse.failed && data.length > 0 ? (
             <Text style={styles.emptyText}>
               Could not read all of your history just now — leave and reopen to retry.
+            </Text>
+          ) : pendingTruncated && data.length > 0 ? (
+            <Text style={styles.emptyText}>
+              Showing the newest {shownPending.toLocaleString()} of {total.toLocaleString()} to
+              review — more pages in as you review, or switch to Everything to browse it all.
             </Text>
           ) : null
         }

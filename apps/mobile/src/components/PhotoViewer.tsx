@@ -334,6 +334,13 @@ export function PhotoViewer({
   // exactly 1, which is what hides the overlay and unfreezes paging.
   const overlayDoubleTap = useTapGesture({
     numberOfTaps: 2,
+    // A walking pan's quick dabs must never read as a double tap
+    // (device pass, 2026-08-19: alternating thumbs zoomed the photo
+    // out mid-shove). The reset requires the pan to FAIL: a true
+    // double tap never drags past the pan's activation distance, so
+    // the pan fails at finger-up and the tap proceeds — while every
+    // dab of a walk activates the pan and blocks the tap outright.
+    requireToFail: overlayPan,
     onDeactivate: () => {
       scale.value = withTiming(1);
       savedScale.value = 1;

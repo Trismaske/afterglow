@@ -202,6 +202,11 @@ Same hygiene as above: promote on trigger, delete when answered.
   **m0.8.6's Timeline is the likeliest trigger**: its "Everything" filter shows the completed one-photo days that the pending feed hides today.
   That multiplies what a sparse stretch puts on screen (docs/Feedback_m0.8.x.md, F2).
 
+- **UI-gate scope configuration, and chart-interaction steps** (Tristan, 2026-08-19, m0.8.6 device pass).
+  Two wants from one pass: histogram-interaction steps (tap a month, assert the chart holds still and the grid filters — the F8 class), and a way to run only the gate sections whose surfaces a release touched, since the full walk is slow and most releases touch a few screens.
+  The counterargument to scoping: the full walk is exactly what catches cross-surface regressions nobody predicted (the m0.8.5 finish-advance probe caught a pager desync from a navigation change).
+  Decide the split — perhaps named section groups with an explicit --all default — before adding more steps makes the walk slower.
+
 - **Verify the UI gate's PiP dismissal against a live PiP** (2026-07-29).
   A YouTube picture-in-picture window ate the Stats tap without taking the foreground.
   The gate now force-stops known PiP apps at start (`dismissPipOverlays`).

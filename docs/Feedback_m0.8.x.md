@@ -305,6 +305,8 @@ Two smaller items belong with it: empty-state grammar has three phrasings (F15's
 **It wants before/after screenshots, not piecemeal edits.**
 This release's device pass provides exactly that.
 F10 (a tag that does not align) and F11 (an outline that shifts its neighbours) are two more instances of the same class.
+A fourth instance (Tristan, 2026-08-19, m0.8.6 device pass): UnitCard thumbnails size inversely to member count — a 1-2 photo group renders the biggest thumbs, a 6-photo group the smallest — so card heights vary widely down the Timeline.
+Decide there whether thumbs take a fixed size (consistent card heights), keep the dynamic fill, or become a setting; Tristan leans "probably okay as is" but wants it weighed.
 Lift it back out if the release runs long: nothing else here depends on it.
 
 ---

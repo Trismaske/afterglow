@@ -188,7 +188,15 @@ function CaptureHistogram({
       contentW,
       histogram.bars[0]?.undated === true,
     );
-    if (x !== null) scroller.current?.scrollTo({ x, animated: false });
+    if (x !== null) {
+      scroller.current?.scrollTo({ x, animated: false });
+      // Programmatic non-animated scrolls do not reliably emit onScroll
+      // on Android, so the tracked offset must be advanced by hand —
+      // stale at 0 after the open-at-recent scroll, EVERY visible-bar
+      // tap read as off-screen-right and scrolled the chart under the
+      // finger (device pass, 2026-08-19).
+      offsetX.current = x;
+    }
   }, [selected, contentW, histogram]);
   return (
     <View style={styles.histogramBlock}>
@@ -208,7 +216,12 @@ function CaptureHistogram({
           setContentW(w);
           if (openedAtRecent.current) return;
           openedAtRecent.current = true;
-          if (selected === null) scroller.current?.scrollToEnd({ animated: false });
+          if (selected === null) {
+            scroller.current?.scrollToEnd({ animated: false });
+            // Same by-hand offset advance as the selection scroll: the
+            // programmatic jump emits no onScroll on Android.
+            offsetX.current = Math.max(0, w - viewportW.current);
+          }
         }}
       >
         {histogram.bars.map((bar) => {

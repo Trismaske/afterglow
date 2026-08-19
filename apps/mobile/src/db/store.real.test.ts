@@ -2415,6 +2415,63 @@ describe("D5: the editor's un-review deletes its group's Compare history", () =>
     const facts = await getPhotoFacts(asExpo(d), id('3'));
     expect(facts?.group_has_duels).toBe(1);
   });
+
+  it("the confirm's gate survives an identical rebuild (device-pass round 2, 2026-08-19)", async () => {
+    const d = await fresh();
+    const groupId = await seedDuelGroup(d);
+    // Round 1: finish the group, then un-review every member (D4 makes
+    // it rebuildable; no duels were deleted — the seed's duel is from
+    // the triage keep, so clear it first to model a compare-free round).
+    await asExpo(d).runAsync('DELETE FROM duels WHERE group_id = ?', String(groupId));
+    await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('1'), 'kept'],
+        [id('2'), 'kept'],
+        [id('3'), 'kept'],
+      ],
+      AT + 100,
+    );
+    await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('1'), 'unreviewed'],
+        [id('2'), 'unreviewed'],
+        [id('3'), 'unreviewed'],
+      ],
+      AT + 200,
+    );
+    // The rescan recomputes the SAME grouping: the identical-group
+    // no-op keeps the id (m0.8.1), which is the device pass's "same
+    // members" observation.
+    await writeContinuousGroups(
+      asExpo(d),
+      {
+        photos: ['1', '2', '3'].map((r) => upsert(r)),
+        groups: [{ members: [id('1'), id('2'), id('3')], timeAttached: [] }],
+        singles: [],
+      },
+      AT + 300,
+    );
+    const rebuilt = await listReviewGroups(asExpo(d), 10);
+    expect(rebuilt[0].groupId).toBe(groupId);
+    // Round 2: a compare writes a duel on the (retained) id…
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 400, {
+      duel: {
+        groupId: String(groupId),
+        winnerId: id('1'),
+        loserId: id('2'),
+        keptBoth: null,
+        at: AT + 400,
+      },
+      duelClaimsWholeTable: false,
+    });
+    // …and the editor's confirm gate must see it on EVERY member.
+    for (const raw of ['1', '2', '3']) {
+      const facts = await getPhotoFacts(asExpo(d), id(raw));
+      expect(facts?.group_has_duels).toBe(1);
+    }
+  });
 });
 
 describe('the browse timeline reads (m0.8.6 F2/D1: Everything)', () => {

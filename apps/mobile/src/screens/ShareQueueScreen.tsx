@@ -38,6 +38,7 @@ import {
   failShareBatch,
   getShareQueue,
   labelShareBatch,
+  markShareBatchShared,
   promoteShareBatch,
   recentShareLabels,
   removeFromShareQueue,
@@ -100,12 +101,25 @@ export function ShareQueueScreen(_props: Props) {
   presentLabelPromptRef.current = presentLabelPrompt;
   useEffect(
     () =>
-      subscribeShareTargetChosen(({ token }) => {
+      subscribeShareTargetChosen(({ token, component }) => {
         if (awaitingLabelRef.current !== token) return;
         awaitingLabelRef.current = null;
-        if (AppState.currentState === 'active') presentLabelPromptRef.current(token);
-        else confirmedAwaitingForegroundRef.current = token;
+        // The prompt claims History will carry the label, so it opens
+        // only once the 'shared' transition is DURABLE (codex r4): the
+        // app-root subscriber's write may still be in flight — or may
+        // fail, leaving the batch for the sweep. This second write is
+        // idempotent (state-guarded; only the transition that lands
+        // stamps members), so awaiting our own settles it either way.
+        void markShareBatchShared(db, token, component, Date.now())
+          .then(() => {
+            if (AppState.currentState === 'active') presentLabelPromptRef.current(token);
+            else confirmedAwaitingForegroundRef.current = token;
+          })
+          .catch((error: unknown) =>
+            console.warn('[share] chosen-target record failed (no prompt):', String(error)),
+          );
       }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
   useEffect(() => {

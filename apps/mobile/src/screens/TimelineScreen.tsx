@@ -218,6 +218,7 @@ export function TimelineScreen({ navigation }: Props) {
   const loadMoreBrowse = useCallback(
     async (gen: number) => {
       const pager = pagerRef.current;
+      let continueRounds = false;
       if (!pager || loadingRef.current) return;
       // codex r2: during a reset's async scope resolution the ref still
       // holds the OLD generation's pager — driving it under the new
@@ -238,6 +239,13 @@ export function TimelineScreen({ navigation }: Props) {
         let assembly = assemblyRef.current;
         const before = assembly.units.length;
         const freshIds: string[] = [];
+        // Bounded per call (codex r4): a huge same-day singles stretch
+        // extends the open tail without closing a unit, and an unbounded
+        // close-a-unit loop would drain every one of its pages — and
+        // hold the JS thread — before publishing anything. The finally
+        // block schedules a continuation instead, so the drain proceeds
+        // in slices that yield between fetch rounds.
+        let rounds = 0;
         do {
           // Field tripwire (the plan's named perf gate): the browse group
           // anchors are a per-page aggregate with no stored column — this
@@ -271,7 +279,8 @@ export function TimelineScreen({ navigation }: Props) {
             else freshIds.push(item.member.asset_id);
           }
           assembly = appendBrowseItems(assembly, items);
-        } while (assembly.units.length === before && !pager.exhausted());
+        } while (assembly.units.length === before && !pager.exhausted() && ++rounds < 8);
+        continueRounds = assembly.units.length === before && !pager.exhausted();
         // Deep browse rows sit outside the bounded pending snapshot, so
         // their ACTION badges rendered empty until hydrated (codex r1) —
         // the same pre-publication hydration DayProgress runs. Fail-soft:
@@ -298,6 +307,11 @@ export function TimelineScreen({ navigation }: Props) {
         // under the new generation).
         if (gen !== genRef.current && pagerGenRef.current === genRef.current)
           void loadMoreBrowse(genRef.current);
+        // The capped drain continues in a fresh slice (same generation,
+        // flag released) — VirtualizedList will not re-fire onEndReached
+        // while the unit count is unchanged, so nothing else would.
+        else if (continueRounds && gen === genRef.current && !failedRef.current)
+          void loadMoreBrowse(gen);
       }
     },
     [hydrateBadges],

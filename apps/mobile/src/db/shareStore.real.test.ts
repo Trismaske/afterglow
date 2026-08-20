@@ -14,6 +14,7 @@ import {
   failShareBatch,
   getShareQueue,
   labelShareBatch,
+  oldestOpenShareSheet,
   discardAbandonedShareBatches,
   markShareBatchShared,
   promoteShareBatch,
@@ -112,6 +113,22 @@ describe('share queue + cycles', () => {
           .get() as { resolved_at: number }
       ).resolved_at,
     ).toBe(AT + 11);
+  });
+
+  it('oldestOpenShareSheet names the earliest unresolved sheet, null when none (codex r4)', async () => {
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    await addToShareQueue(asExpo(d), 'p1', AT);
+    expect(await oldestOpenShareSheet(asExpo(d))).toBeNull();
+    const b1 = await createShareBatch(asExpo(d), ['p1'], AT + 10);
+    await promoteShareBatch(asExpo(d), b1, AT + 11);
+    const b2 = await createShareBatch(asExpo(d), ['p1'], AT + 20);
+    await promoteShareBatch(asExpo(d), b2, AT + 21);
+    expect(await oldestOpenShareSheet(asExpo(d))).toBe(AT + 11);
+    // Resolution empties the answer once nothing is left open.
+    await markShareBatchShared(asExpo(d), b1, 'com.test/app', AT + 30);
+    await markShareBatchShared(asExpo(d), b2, 'com.test/app', AT + 31);
+    expect(await oldestOpenShareSheet(asExpo(d))).toBeNull();
   });
 
   it("a fast pick resolves a batch still 'launching' (codex r2: the event can beat the promote)", async () => {

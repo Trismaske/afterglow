@@ -316,6 +316,18 @@ export async function markShareBatchShared(
  * foregrounded again its absence IS the abandonment fact) and by
  * startup recovery. Returns how many were discarded, for the log.
  */
+/** The oldest still-open sheet's opened_at, or null when none remain —
+ * the abandonment sweep uses it to schedule its own follow-up: a sheet
+ * dismissed WITHIN the grace window is protected from the resume sweep,
+ * and without a re-check at grace expiry it would linger until the next
+ * unrelated foreground transition (codex r4). */
+export async function oldestOpenShareSheet(db: SQLiteDatabase): Promise<number | null> {
+  const row = await db.getFirstAsync<{ t: number | null }>(
+    "SELECT MIN(opened_at) AS t FROM share_batches WHERE state = 'sheet_opened'",
+  );
+  return row?.t ?? null;
+}
+
 export async function discardAbandonedShareBatches(
   db: SQLiteDatabase,
   /** Only batches OPENED before this instant are abandoned: the sweep

@@ -40,148 +40,9 @@ m0.9 (Videos) is unchanged and follows.
 
 ---
 
-## m0.8.6 — the browsing surfaces
+## m0.8.6 — the browsing surfaces (shipped)
 
-Going back to look at something you already reviewed.
-One query family (Timeline, Progress grids, History), one editing sheet over all three, and the star knot that sits in the middle of them.
-Plus the post-ship deck notes below (Tristan, 2026-08-17, on shipped m0.8.5) — small, deck-scoped, and riding with the browse-swap unify this release already carries.
-
-### N1 · A changed decision advances; an undone one stays
-
-**Reported:** re-deciding a photo the OTHER way (kept → culled, or culled → kept) leaves the pager sitting on it, same as an undo.
-Wanted: an undo (tapping the active verdict, back to unreviewed) stays — current behaviour, keep it — but a CHANGE advances exactly like a fresh unreviewed → decided verdict does.
-**Read:** `decideCurrent` advances only when the photo `wasUnreviewed` ([DeckScreen.tsx](../apps/mobile/src/screens/DeckScreen.tsx), the m0.8.2 F10 rule "re-deciding stays put — the user is looking at that one").
-The rule needs a third case, not a flip: unreviewed → decided advances, decided → cleared stays, decided → the opposite verdict advances.
-
-### N2 · The finish button dims on every write
-
-**Reported:** the big *Keep remaining* button still flickers whenever any decision is made or any action chip is tapped.
-**Read:** its `disabled` includes the screen-wide `busy`, and BigButton's disabled LOOK follows it — so every chip or verdict write dims the finish button for the write's duration.
-This is the same class the action chips were fixed for in m0.8.5 (`dimmed` split from `disabled`): the S23 pass owner-scoped the *label* (`busyOwner`), but the dim was left on the shared lock.
-Fix: the look tracks durable state (its own `finish` writes, an empty remainder); `busy` keeps blocking presses invisibly.
-
-### F2 · The review overview hides fully reviewed units
-
-**Reported:** *Continue reviewing* → review a group → want to go back to it → Home → the chevron in the main card → the group is gone.
-Staged culls still show; fully kept units vanish.
-**Read:** the overview renders the PENDING timeline.
-`listReviewGroups` requires a group to still hold an `unreviewed` member, and the singles feed keeps only pending rows.
-Day pages do list completed groups, but nothing in that flow points there.
-
-**Fix.** The full timeline: every group and singles run, newest-first, paged, with filters that peel back to today's view.
-The screen is renamed **Timeline** (`GroupsScreen`).
-
-| Filter | Shows |
-|---|---|
-| Unfinished | Today's behaviour: units with pending work, staged culls badged |
-| Everything | Every unit, reviewed included |
-| Unreviewed only | Hides queued items too |
-
-**Per L7** the last choice is remembered.
-First launch opens Unfinished.
-*Continue reviewing* anchors to the first PENDING unit whatever the filter shows.
-
-**The real work is the query.**
-The pending feed is bounded by construction.
-An unfiltered timeline over a 27k corpus is a different, bigger query.
-`lib/timeline.ts`'s horizon truncation (`TimelinePageTails`, carried through optimistic patches) was built around a bounded read.
-Paging and its interaction with the optimistic patches is the design risk in this release.
-
-**Watch what "Everything" exposes.**
-A sparse-photo stretch produces one card and one one-photo deck per day (dozens at the head on both phones, device-observed).
-Today only the pending ones are visible.
-Showing everything multiplies them, so this filter is the surface most likely to fire the trigger on `docs/TODO.md`'s "Coalesce tiny singles runs?" (settled as keep-as-is, pending tester complaints about ceremony).
-Design the filter so a run of one-photo days reads as one line of the list rather than dozens, or accept it and let the trigger fire honestly.
-Decide it here rather than discovering it on the device.
-
-### F9 · A photo's state is barely editable outside review
-
-**Reported:** selecting a photo in Progress or History hides everything behind *Change decision*, and the only decision offered is "mark edit".
-Wanted: add or remove any state.
-Stated use case — loosen grouping, set two kept photos back to unreviewed, and see whether they now group with the already-unreviewed one.
-Accepted asymmetry: once something is queued AND actioned, there is no going back.
-**Read:** `editorActions` returns one action per verdict: `culled` → un-cull, `kept` → queue-or-complete an edit, everything else read-only ([progress.ts:187-197](../apps/mobile/src/lib/progress.ts#L187-L197)).
-
-**Fix.** The editor becomes the state model made touchable: one verdict (`unreviewed`/`kept`/`culled`) and every action independently addable and removable, on the same photo, in the same sheet.
-The refusals must be the honest ones and nothing more: `trashed` is the OS's, an APPLIED organize move already happened, and a share pass already left the device.
-An applied favourite is removable (the app already models a queued un-favourite with its own heart-off badge), and F20 makes that state readable from the gallery in m0.8.7.
-
-**L2 is what makes it work.**
-The regroup boundary freezes on state history.
-Setting a photo back to `unreviewed` must return it to the scan's reach, or the use case above cannot happen.
-Narrow change only: the freeze predicate reads current state.
-Reviewed-and-still-reviewed groups stay frozen exactly as now.
-Also verify: `StateEditorSheet`'s date line reads `dayKey(photo.takenAt)` ([StateEditorSheet.tsx:118](../apps/mobile/src/components/progress/StateEditorSheet.tsx#L118)).
-That is the same `taken_at`-not-`day` defect change 5 below fixes.
-
-### F8 · Selecting a month scrolls the histogram away from the month you picked
-
-**Reported:** tapping a month in Progress scrolls the chart hard left, so the selected month is off-screen.
-**Read:** the guard causes it.
-`settled` suppresses the open-at-recent scroll whenever a month is selected ([ProgressView.tsx:161-183](../apps/mobile/src/components/progress/ProgressView.tsx#L161-L183)).
-The guard was written to stop the chart jumping back to today and stranding the selection.
-On a reload the ScrollView starts at offset 0, the early return fires, and it stays there: far left.
-
-**Fix.** Scroll to keep the SELECTED bar visible rather than choosing between "recent" and "don't move".
-That satisfies both the original constraint and the report.
-
-### F16 · "Sheet opened" is not a phrase anyone recognises
-
-**Reported:** what is the *Sheet opened* filter in History?
-**Read:** it filters to photos in a share batch that reached `sheet_opened` ([HistoryScreen.tsx:45](../apps/mobile/src/screens/HistoryScreen.tsx#L45)).
-That is an internal state name on a user-facing chip.
-The state is honest: we know the sheet opened, and we cannot know what the user then did with it.
-But "Sheet opened" states the mechanism instead of the meaning.
-**Fix.** Rewrite the label and keep the honesty.
-Part of F15's audit, done here because it is a History chip.
-
-### TODO promotion · A rescued photo's date does not reach the Progress library scope
-
-Moves here whole from `docs/TODO.md`, **fully investigated, agreed, and ready to implement**.
-Six changes:
-
-1. bounded month grid pages SQLite
-2. unbounded grid takes `takenAt` from the DB join
-3. header denominator takes Home's disjoint union
-4. `progressPager` unions rescued rows
-5. the undated-and-unrescued surfaces stop printing `Today · <mtime>` in BOTH the viewer and the state editor
-6. bounded month scopes key on `day`, not `taken_at`
-
-Two regression pins, both from real screens.
-A month view printing three different numbers must print one.
-A month view must render the same photo under `Unreviewed` as under `Kept`.
-Device fixtures for it are already in place (S23 `NOEXIF_undated.jpg`, the mtime-touched NEF, the `afterglow-api30` AVD).
-It belongs in this release and not m0.8.5.
-Five of its six changes are Progress-surface changes, and change 5 is the same date-honesty rule F17 applies to the deck.
-
-**The other parked SQL cost comes with it** (from `docs/TODO.md`, "Two measured SQL costs").
-`getStateCountsInScope` evaluates a correlated EXISTS per row in scope: 22 ms whole-corpus, measured, once per Progress open.
-Changes 1, 3 and 6 rewrite what Progress counts and how a month scope is keyed, so the query is open on the table anyway.
-The LEFT JOIN rewrite is straightforward and has simply never been measured against real device latency.
-Take it only if the counts work touches this query.
-A rewrite bolted on separately buys 22 ms and costs a review.
-
-### TODO promotion · History tombstone rows
-
-The feed requires `is_present = 1`, so Forget-keep tombstones keep every stat and drop out of the scrollable feed.
-Absent decided photos stay in the feed as a placeholder tile (grey cell, verdict badge, original date).
-Still to design: the tile treatment, whether trashed rows join (same gap), and the filter story.
-
-### TODO promotion · The star knot: best-of-group, and keeping from a triage duel
-
-Three TODO entries are one decision and settle together here (L8), because the star's regroup-freeze role has to be re-decided in the same release as L2:
-
-- **Does "best of group" still earn its place?** The star is an ANNOTATION that also freezes its group against regrouping (`lib/regroupBoundary.ts`) and is drawn in the accent.
-  That is the sixth site of m0.8.5's accent problem, and the worst: it sits in a badge cluster beside the organize badge at ΔE 6.5 on Amber.
-- **Retire it in favour of a plain Keep?** Marking best is the only positive act a triage duel offers, and it pulls toward the cull dialog rather than a keep.
-- **Compare: keeping photos in TRIAGE mode.** With 3+ undecided members a duel is verdict-free by design, so Compare offers no way to KEEP there.
-  Tristan found the pull-toward-culling acceptable but wants a keep path.
-
-If the star survives, it takes a fixed hue of its own.
-If it goes, the freeze needs a new home.
-L2 has just changed what the freeze means, so this is the cheapest moment to decide it.
-
----
+Shipped; the release's distilled record lives in PLAN.md's roadmap entry, and the settled behavior in the code headers.
 
 ## m0.8.7 — sources, badges, and the queues
 
@@ -329,19 +190,12 @@ Lift it back out if the release runs long: nothing else here depends on it.
 
 ## Cross-release dependencies
 
-Three places where an earlier release constrains a later one.
-Each is a decision already taken, recorded here so it is not re-litigated mid-build:
+One place where a shipped release constrains the next, recorded so it is not re-litigated mid-build:
 
-1. **F17 → the rescued-date fix.**
-   m0.8.5's deck badge renders from `day`, never `taken_at`.
-   m0.8.6's change 5 applies the same rule to the viewer and the state editor, which need `day` carried to them first.
-2. **F9 → the star knot.**
-   L2 changes what the regroup freeze means.
-   The star's freeze role is decided in the same release, after L2 lands, not before.
-3. **F20 → F9.**
-   F9 (m0.8.6) makes an applied favourite removable from the state editor.
+1. **F20 → F9.**
+   F9 (m0.8.6, shipped) made an applied favourite removable from the state editor.
    F20 (m0.8.7) makes an externally-set favourite visible to it.
-   Shipping F20 first would have the editor showing a favourite it could not remove.
+   Shipping F20 first would have had the editor showing a favourite it could not remove.
    This order avoids that, and the reconcile's never-touch-queued rule is what keeps the two from fighting.
 
 ## What stays in TODO

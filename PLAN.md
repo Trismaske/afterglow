@@ -246,8 +246,8 @@ afterglow/
 ## Release roadmap
 
 Two trains.
-v0.1–v0.5 and m0.1–m0.8.5 have shipped.
-Next up: the desktop RAW pipeline (v0.6) and mobile m0.8.6.
+v0.1–v0.5 and m0.1–m0.8.6 have shipped.
+Next up: the desktop RAW pipeline (v0.6) and mobile m0.8.7.
 
 ### Desktop train
 
@@ -422,15 +422,26 @@ Auto-update (electron-updater) lands here too.
   Built through six device-pass rounds and two closing grillings (28 vetted decisions), a three-round three-reviewer codex cycle (14 findings fixed, 2 parked in docs/TODO.md with evidence), and a UI gate that gained its first frame-level measured step: the finish advance is screenrecorded and pixel-checked for blank stages and vanished controls.
   783 tests.
 
+- **m0.8.6** — the browsing surfaces.
+  **The Timeline.** The review overview becomes the full **Timeline**: every group and singles run, newest-first, under three chips — **Everything** (a separate DB-paged keyset browse read: browse-group and singles streams merged descending, units assembled incrementally with the tail run open across pages, ~70–270 ms a page on a 27k-photo device, no optimistic patches — the read resets on version bumps and external invalidations), **Unfinished** (the pending feed exactly as before, its horizon truncation named out loud in a footer), and **Unreviewed** (a pure display subset). The last choice is remembered.
+  **One switch rule on exact geometry.** Every unit card is a style-pinned uniform height (one-line header, five thumb slots, "+N" past five), so `getItemLayout` is exact and every landing deterministic on a cold list; each filter owns its keyed FlatList — no scroll state ever bridges a switch.
+  The rule: at the top of any filter a switch lands the target's top; elsewhere the unit at the viewport top becomes the target's top; the pending feeds clamp a past-horizon anchor to their bottom, and one memory slot restores the deep Everything unit on the return while the reader still sits on that clamp.
+  An anchor deeper than Everything's loaded pages holds and pages toward its target; a drag during the hold abandons it.
+  A back-to-top disc appears past ~a dozen cards, and its tap IS a top landing.
+  Every programmatic landing sets the offset, disc, and viewport-unit mirrors by hand to the achievable geometry (Android emits no onScroll for them), and a brief post-jump window discards straggler events.
+  **The state editor.** A photo's whole state is editable from the standard viewer on Progress, History, and the queues: one verdict, all four actions, open across writes, refusing only what genuinely cannot be undone (un-review deletes the group's Compare duels, group-wide, behind a confirm).
+  **The freeze and the star.** The regroup freeze narrowed to a literal derived rule — a decided ungrouped photo is frozen, a group holding unreviewed work is rebuildable — so un-reviewing returns a photo to the scan's reach.
+  The star concept is fully retired (schema v21 destructive rebuild); Compare gains a triage keep.
+  **Share resolution.** Delivery resolves on the chooser's chosen-component event with abandoned-sheet discard, a durable launching mark, bounded retries, and the label prompt deferred to a live activity.
+  **History.** An externally removed decided photo becomes a tombstone **in place** — no restamped activity, no top-leap, no scroll reset; its live action legs clear with the DB cleanup (the carried favourite direction re-read post-transaction); a dead photo in the viewer says so instead of a black stage, zoom included.
+  Plus the rescued-date defect (a D15-rescued photo's real date now reaches the Progress scopes), the histogram keeping its selected month on screen, day labels with years, and the zoom walking pan anchored to touch position.
+  Built through the closing grillings (11 + 3 questions), two full device passes, and a nine-round three-reviewer codex cycle (six to convergence on the release delta, three on the closing fixes; ~46 finding groups fixed, 3 refuted with evidence).
+  848 tests; the UI gate passed on the final build.
+
 **The m0.8.x feedback line (next).**
 The remaining tester items from the 2026-07-31 round, organised into subsystem-aligned releases so each gets one device pass and one review cycle.
 Items, evidence, and the settled decisions: [docs/Feedback_m0.8.x.md](docs/Feedback_m0.8.x.md).
 
-- **m0.8.6 — the browsing surfaces.**
-  The review overview becomes the full **Timeline**: every group and singles run, newest-first and paged, with filters that peel back to today's pending view.
-  A photo's whole state becomes editable from Progress and History (one verdict, every action, refusing only what genuinely cannot be undone).
-  That reopens the regroup boundary in one narrow direction: the freeze follows a photo's CURRENT state, so un-reviewing returns it to the scan's reach.
-  Plus the rescued-date defect (designed and ready), History tombstone rows, the Progress histogram keeping its selected month on screen, and the star/Compare knot: whether "best of group" survives, and how you keep a photo from a triage duel.
 - **m0.8.7 — sources, badges, and the queues.**
   Source selection becomes a scope axis exactly like mount state: deselecting a folder writes nothing, and its photos leave every queue, count, and grid until it is re-added.
   Source-folder and SD-card badges join the shared vocabulary, with one control to hide badges.
@@ -439,6 +450,9 @@ Items, evidence, and the settled decisions: [docs/Feedback_m0.8.x.md](docs/Feedb
   A copy audit fixes singular strings in plural situations.
   The four queue screens get one action language, plus full action hydration in the Progress grids.
   Carries two more: the **error-surfacing contract** ([docs/Errors_design.md](docs/Errors_design.md) — one three-tier answer at every boundary where Android can refuse systematically, with its §6 to be settled before implementation) and the type-scale and token pass, whose evidence sits on this release's own screens.
+- **m0.8.8 — the accessibility pass** (Tristan, m0.8.6 closing grilling).
+  A dedicated release: OS font-scale changes measured across both test devices, full UI gates at each scale to assess the impact across the whole app, and the resulting policy for every pinned-height surface (the uniform timeline card, its footer note, and whatever else the measurements implicate).
+  Until then the pinned surfaces deliberately ellipsize at extreme scales rather than break the exact-geometry landings.
 
 **m0.9 — Videos (moved from m0.8)**
 - **Videos enter review** (singles-first: playback, keep/cull/queues, with grouping later if warranted).

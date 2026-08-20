@@ -16,7 +16,7 @@
  *   stays open across pages). No optimistic patches: the page resets
  *   when the review version bumps. Units render exactly as when pending
  *   (D2) — one card per unit, no collapse.
- * - UNREVIEWED ONLY — a pure display subset of the Unfinished data
+ * - UNREVIEWED — a pure display subset of the Unfinished data
  *   (D3): units with undecided work, staged-cull singles hidden.
  *
  * "Continue reviewing" anchors to the first PENDING unit whatever the

@@ -171,8 +171,10 @@ export function TimelineScreen({ navigation }: Props) {
    * top must still CAPTURE as top. */
   const lastJumpTopRef = useRef(true);
   /** Set by a filter switch, consumed once by the jump effect below.
-   * place null = jump to the top (nothing was visible to anchor on). */
-  const jumpRef = useRef<{ place: PlaceCapture | null } | null>(null);
+   * place null = jump to the top (nothing was visible to anchor on).
+   * held marks a jump waiting for deeper pages — a reader drag during
+   * the hold abandons it (the reader took over). */
+  const jumpRef = useRef<{ place: PlaceCapture | null; held?: boolean } | null>(null);
   const setFilter = useCallback(
     (next: TimelineFilter) => {
       setFilterState((prev) => {
@@ -339,6 +341,20 @@ export function TimelineScreen({ navigation }: Props) {
   const resetBrowse = useCallback(async () => {
     const gen = ++genRef.current;
     failedRef.current = false;
+    // The reset invalidates every index minted against the old data:
+    // disown pending settles/retries (device pass crash — a stale
+    // settle's scrollToIndex outlived the data it indexed). An armed
+    // jump stays armed: its ANCHOR is still meaningful, and the
+    // page-toward loop re-finds it in the fresh stream.
+    jumpGenRef.current += 1;
+    if (settleTimerRef.current !== null) {
+      clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = null;
+    }
+    if (retryTimerRef.current !== null) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
     assemblyRef.current = EMPTY_BROWSE_ASSEMBLY;
     setBrowse({ assembly: EMPTY_BROWSE_ASSEMBLY, exhausted: false, failed: false });
     // The browse read scopes like every review read: the selected
@@ -506,8 +522,11 @@ export function TimelineScreen({ navigation }: Props) {
     const jump = jumpRef.current;
     if (jump === null) return;
     jumpRef.current = null;
+    // A drag during a HOLD abandons the jump — the reader took over
+    // (device pass: the held page-toward must never fight a live
+    // finger; moved is reset only when a jump actually LANDS).
+    if (jump.held === true && movedSinceJumpRef.current) return;
     retriedJumpRef.current = false;
-    movedSinceJumpRef.current = false;
     jumpGenRef.current += 1;
     if (settleTimerRef.current !== null) clearTimeout(settleTimerRef.current);
     if (retryTimerRef.current !== null) clearTimeout(retryTimerRef.current);
@@ -529,7 +548,11 @@ export function TimelineScreen({ navigation }: Props) {
     if (filter === 'everything' && jump.place !== null && !browse.exhausted && !browse.failed) {
       const oldestLoaded = data.length > 0 ? data[data.length - 1].newestAt : Infinity;
       if (data.length === 0 || jump.place.anchor.newestAt < oldestLoaded) {
-        jumpRef.current = jump;
+        // FIRST hold: show the top while pages stream toward the anchor
+        // (device pass: a deep raw offset over a reset-emptied list read
+        // as a BLACK screen while the pager quietly rebuilt).
+        if (jump.held !== true) listRef.current?.scrollToOffset({ offset: 0, animated: false });
+        jumpRef.current = { ...jump, held: true };
         void loadMoreBrowse(genRef.current);
         return;
       }
@@ -543,6 +566,7 @@ export function TimelineScreen({ navigation }: Props) {
       jump.place === null ? null : anchorIndexIn(data, jump.place.anchor, filter !== 'everything');
     if (index === null || jump.place === null) {
       lastJumpTopRef.current = true;
+      movedSinceJumpRef.current = false;
       listRef.current?.scrollToOffset({ offset: 0, animated: false });
       // The top jump gets the same settle pass as anchored ones: mVCP's
       // post-swap adjustment can land after this scroll and drift the
@@ -556,6 +580,7 @@ export function TimelineScreen({ navigation }: Props) {
       return;
     }
     lastJumpTopRef.current = false;
+    movedSinceJumpRef.current = false;
     const { delta } = jump.place;
     // The swap discarded every cell measurement, so this first jump can
     // only land on ESTIMATED offsets (device pass round 3: the restore
@@ -574,9 +599,14 @@ export function TimelineScreen({ navigation }: Props) {
     // Keyed off the unit LANDED ON in the target data — a run matched by
     // range overlap carries different bounds there than the anchor's ref.
     const anchorKey = cellTopKey(data[index]);
+    const settleOwner = jumpGenRef.current;
     const settle = (attempt: number) => {
       settleTimerRef.current = setTimeout(() => {
-        if (movedSinceJumpRef.current) return;
+        // Disowned by a newer jump or a browse reset, or the reader
+        // took over — and NEVER a scrollToIndex past the live list
+        // (device pass crash: a reset shrank data under a pending
+        // settle and the stale index tripped RN's invariant).
+        if (settleOwner !== jumpGenRef.current || movedSinceJumpRef.current) return;
         const top = cellTopsRef.current.get(anchorKey);
         if (top !== undefined) {
           const want = Math.max(0, top - delta);
@@ -584,7 +614,7 @@ export function TimelineScreen({ navigation }: Props) {
             listRef.current?.scrollToOffset({ offset: want, animated: false });
           return;
         }
-        if (attempt >= 3) return;
+        if (attempt >= 3 || index >= dataLenRef.current) return;
         listRef.current?.scrollToIndex({
           index,
           animated: false,

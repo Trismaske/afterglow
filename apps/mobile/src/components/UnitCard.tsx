@@ -111,7 +111,10 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   title: { color: colors.text, fontSize: 15, fontWeight: '600', flexShrink: 1 },
-  status: { color: colors.textDim, fontSize: 13, flexShrink: 0 },
+  // Shrinkable as a LAST resort (large font scales): numberOfLines then
+  // ellipsizes instead of the card's overflow clipping mid-glyph. At
+  // normal scale the callers' copy fits whole (codex r7).
+  status: { color: colors.textDim, fontSize: 13, flexShrink: 1 },
   statusDone: { color: colors.keep },
   strip: { flexDirection: 'row', gap: 6 },
   // Fixed HEIGHT, flexible width capped for sparse cards: a one-photo

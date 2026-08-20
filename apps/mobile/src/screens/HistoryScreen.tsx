@@ -155,7 +155,21 @@ export function HistoryScreen(_props: Props) {
       // what the eye saw — the predicate drops it on the next read.
       return pageRows.map((row) =>
         row.kind === 'photo' && gone.has(row.asset_id) && row.state !== 'unreviewed'
-          ? { ...row, is_present: 0, state: 'trashed' as const }
+          ? {
+              ...row,
+              is_present: 0,
+              state: 'trashed' as const,
+              // The cleanup just DELETED every unresolved action row
+              // (queued and error) — mirror that here, or the tombstone
+              // wears carried badges for work that never happened (codex
+              // r7). Applied/carried columns are resolved_at proof and
+              // survive, exactly as they do in the DB.
+              needs_edit: 0,
+              favourite_live: 0,
+              favourite_removing: 0,
+              organize_pending: 0,
+              share_live: 0,
+            }
           : row,
       );
     },

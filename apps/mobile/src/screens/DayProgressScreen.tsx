@@ -170,17 +170,19 @@ export function DayProgressScreen({ route, navigation }: Props) {
               {loaded.map((group) => {
                 const pending = group.members.filter((m) => m.state === 'unreviewed').length;
                 const first = group.members[0];
+                // The disclosure outranks the tap hint on the single
+                // status line (codex r7: the uniform header clips
+                // instead of wrapping; the suffix is load-bearing).
                 const away =
                   (group.unreachableCount ?? 0) > 0
                     ? ` · ${group.unreachableCount} on unmounted SD card`
                     : '';
+                const done = away === '' ? 'Reviewed · tap to revisit' : 'Reviewed';
                 return (
                   <UnitCard
                     key={group.groupId}
                     title={`${group.members.length} shots${first ? ` · ${formatClock(first.taken_at)}` : ''}`}
-                    status={
-                      (pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`) + away
-                    }
+                    status={(pending === 0 ? done : `${pending} pending`) + away}
                     statusDone={pending === 0}
                     members={group.members}
                     onPress={() => navigation.navigate('Deck', { groupId: String(group.groupId) })}

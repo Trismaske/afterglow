@@ -92,6 +92,21 @@ export function findUnitIndex(units: readonly TimelineUnit[], ref: UnitRef): num
   return units.findIndex((unit) => sameUnit(unit, ref));
 }
 
+/** Must the Everything browse page DEEPER before this anchor can land?
+ * True while the anchor's time sits past the loaded frontier — or TIES
+ * it without its unit being loaded: capture times are not unique and a
+ * page boundary can split equal-time units, so frontier equality alone
+ * does not prove the unit is here. Terminates: each page moves the
+ * frontier or exhausts the stream, and a frontier past the anchor's
+ * time returns false for good (the caller then takes the nearest
+ * fallback). */
+export function needsDeeperPages(units: readonly TimelineUnit[], anchor: TimelineAnchor): boolean {
+  if (units.length === 0) return true;
+  const frontier = units[units.length - 1].newestAt;
+  if (anchor.newestAt < frontier) return true;
+  return anchor.newestAt === frontier && findUnitIndex(units, anchor.ref) < 0;
+}
+
 /** Ref-vs-ref identity, the same rules rebuilds use: groups by id, runs
  * by day plus range OVERLAP (the two filters load a run with different
  * bounds around the same photos). */

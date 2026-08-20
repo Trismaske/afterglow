@@ -616,18 +616,36 @@ export function PhotoViewer({
                   style={[StyleSheet.absoluteFill, { backgroundColor: '#000' }, zoomOverlayStyle]}
                   animatedProps={zoomOverlayProps}
                 >
-                  <Animated.View style={[StyleSheet.absoluteFill, zoomStyle]}>
-                    <Image
-                      source={{ uri: current.uri }}
-                      style={StyleSheet.absoluteFill}
-                      contentFit="contain"
-                      recyclingKey={`zoom-${current.id}`}
-                      onLoad={(event) => {
-                        const { width, height } = event.source;
-                        if (width > 0 && height > 0) imageAspect.value = width / height;
-                      }}
-                    />
-                  </Animated.View>
+                  {deadIds.has(current.id) ? (
+                    // A dead page double-tapped into zoom must keep its
+                    // explanation (codex r7): the overlay's plain black
+                    // stage over the same failed URI recreated exactly
+                    // what the placeholder exists to prevent. Rendered
+                    // on the UNtransformed layer so it stays legible.
+                    <View style={styles.deadPage}>
+                      <MaterialCommunityIcons
+                        name="image-off-outline"
+                        size={44}
+                        color={colors.textDim}
+                      />
+                      <Text style={styles.deadText}>
+                        This photo can't be shown — it may have been deleted outside Afterglow.
+                      </Text>
+                    </View>
+                  ) : (
+                    <Animated.View style={[StyleSheet.absoluteFill, zoomStyle]}>
+                      <Image
+                        source={{ uri: current.uri }}
+                        style={StyleSheet.absoluteFill}
+                        contentFit="contain"
+                        recyclingKey={`zoom-${current.id}`}
+                        onLoad={(event) => {
+                          const { width, height } = event.source;
+                          if (width > 0 && height > 0) imageAspect.value = width / height;
+                        }}
+                      />
+                    </Animated.View>
+                  )}
                 </Animated.View>
               </VirtualGestureDetector>
             </View>

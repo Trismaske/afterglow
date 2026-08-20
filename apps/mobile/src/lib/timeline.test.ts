@@ -14,6 +14,7 @@ import {
   destinationAfterUnit,
   findUnitIndex,
   firstPendingUnit,
+  needsDeeperPages,
   sameUnitRefs,
   unitDestination,
   unitHasPending,
@@ -448,6 +449,55 @@ describe('anchorIndexIn (m0.8.6 device pass: filter-switch landing)', () => {
   it('empty target data is a top jump regardless of clamping', () => {
     const anchor = { ref: { kind: 'group' as const, groupId: '1' }, newestAt: 100 };
     expect(anchorIndexIn([], anchor, true)).toBeNull();
+  });
+});
+
+describe('needsDeeperPages (codex r7: the page-toward hold predicate)', () => {
+  const day = '2026-05-09';
+  // Loaded frontier: group 1 (t=100), then the run (t=80..70).
+  const loaded = buildTimeline(
+    [group(1, [member('a2', 100, day), member('a1', 95, day)])],
+    [member('s2', 80, day), member('s1', 70, day)],
+    NOT_FULL,
+  );
+
+  it('an empty stream always pages', () => {
+    expect(needsDeeperPages([], { ref: { kind: 'group', groupId: '1' }, newestAt: 100 })).toBe(
+      true,
+    );
+  });
+
+  it('an anchor past the frontier pages deeper', () => {
+    expect(needsDeeperPages(loaded, { ref: { kind: 'group', groupId: '9' }, newestAt: 50 })).toBe(
+      true,
+    );
+  });
+
+  it('a frontier TIE without the unit loaded keeps paging (equal capture times split across a page boundary)', () => {
+    // t=80 equals the frontier (the run's newest member), but group 9
+    // is not here — it can still open the next page.
+    expect(needsDeeperPages(loaded, { ref: { kind: 'group', groupId: '9' }, newestAt: 80 })).toBe(
+      true,
+    );
+  });
+
+  it('a frontier tie WITH the unit loaded lands now', () => {
+    const anchor = { ref: { kind: 'run' as const, day, from: 70, to: 80 }, newestAt: 80 };
+    expect(needsDeeperPages(loaded, anchor)).toBe(false);
+  });
+
+  it('a frontier past the anchor stops paging — the nearest fallback takes over', () => {
+    // t=90 sits between group 1 (100) and the run (80): the frontier
+    // has already streamed past it, so more pages cannot help.
+    expect(needsDeeperPages(loaded, { ref: { kind: 'group', groupId: '9' }, newestAt: 90 })).toBe(
+      false,
+    );
+  });
+
+  it('a loaded unit shallower than the frontier lands now', () => {
+    expect(needsDeeperPages(loaded, { ref: { kind: 'group', groupId: '1' }, newestAt: 100 })).toBe(
+      false,
+    );
   });
 });
 

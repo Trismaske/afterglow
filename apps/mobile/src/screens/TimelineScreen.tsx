@@ -46,6 +46,7 @@ import {
   firstPendingUnit,
   flushBrowseTail,
   findUnitIndex,
+  needsDeeperPages,
   unitDestination,
   unitRefOf,
   unreviewedOnly,
@@ -89,6 +90,9 @@ const BROWSE_BATCH = 40;
  * rests on UNIT_CARD_HEIGHT being style-pinned. */
 const ROW_GAP = 12;
 const ROW_H = UNIT_CARD_HEIGHT + ROW_GAP;
+/** Depth past which the back-to-top disc shows — and below which a
+ * landing hides it (~a dozen cards: flinging back is a chore). */
+const DEEP_PX = 1600;
 const BROWSE_SINGLES_PAGE = 120;
 const BROWSE_GROUPS_PAGE = 40;
 
@@ -100,6 +104,12 @@ interface BrowseState {
   /** A page read failed — the footer says so instead of claiming the
    * history simply ends here (fail-closed). */
   failed: boolean;
+  /** The generation that published this state. A reset bumps genRef
+   * SYNCHRONOUSLY but publishes its fresh pages async — in between, the
+   * rendered state is a leftover of the OLD stream, and the jump effect
+   * must wait rather than consume an anchor against it (codex r7 P1:
+   * the landing would be wiped by the empty publish one render later). */
+  gen: number;
 }
 
 export function TimelineScreen({ navigation }: Props) {
@@ -193,6 +203,9 @@ export function TimelineScreen({ navigation }: Props) {
     assembly: EMPTY_BROWSE_ASSEMBLY,
     exhausted: false,
     failed: false,
+    // gen 0 predates every reset (the first reset mints gen 1), so the
+    // initial state can never masquerade as a live stream's.
+    gen: 0,
   });
   const pagerRef = useRef<MergedPager<BrowseItem> | null>(null);
   const genRef = useRef(0);
@@ -257,7 +270,7 @@ export function TimelineScreen({ navigation }: Props) {
             if (gen === genRef.current) {
               failedRef.current = true;
               assemblyRef.current = assembly;
-              setBrowse({ assembly, exhausted: false, failed: true });
+              setBrowse({ assembly, exhausted: false, failed: true, gen });
             }
             return;
           }
@@ -285,6 +298,7 @@ export function TimelineScreen({ navigation }: Props) {
           assembly,
           exhausted: pager.exhausted(),
           failed: failedRef.current,
+          gen,
         });
       } finally {
         loadingRef.current = false;
@@ -314,7 +328,7 @@ export function TimelineScreen({ navigation }: Props) {
     // and the page-toward loop re-finds it in the fresh stream. (With
     // exact getItemLayout there are no deferred scrolls left to disown.)
     assemblyRef.current = EMPTY_BROWSE_ASSEMBLY;
-    setBrowse({ assembly: EMPTY_BROWSE_ASSEMBLY, exhausted: false, failed: false });
+    setBrowse({ assembly: EMPTY_BROWSE_ASSEMBLY, exhausted: false, failed: false, gen });
     // The browse read scopes like every review read: the selected
     // sources and the mounted-volume set, resolved at reset. FAIL
     // CLOSED: an unresolved source filter must not broaden to "all".
@@ -327,7 +341,7 @@ export function TimelineScreen({ navigation }: Props) {
       console.warn('[timeline] browse scope resolution failed:', String(error));
       if (gen === genRef.current) {
         failedRef.current = true;
-        setBrowse({ assembly: EMPTY_BROWSE_ASSEMBLY, exhausted: true, failed: true });
+        setBrowse({ assembly: EMPTY_BROWSE_ASSEMBLY, exhausted: true, failed: true, gen });
       }
       return;
     }
@@ -432,6 +446,10 @@ export function TimelineScreen({ navigation }: Props) {
   const fabJumpAtRef = useRef(0);
   const backToTop = useCallback(() => {
     clampReturnRef.current = null;
+    // An authoritative top landing abandons any held page-toward jump
+    // (codex r7): without this, the next page nudge would resume the
+    // hold and pull the reader back deep after they chose the top.
+    jumpRef.current = null;
     scrollYRef.current = 0;
     fabJumpAtRef.current = Date.now();
     listRef.current?.scrollToOffset({ offset: 0, animated: false });
@@ -448,44 +466,72 @@ export function TimelineScreen({ navigation }: Props) {
     // its retry or its hold — never the scrolling that preceded the
     // switch (the inherited-flag class, third instance).
     holdDragRef.current = false;
+    // Landings keep BOTH scroll mirrors honest: programmatic scrolls
+    // emit no onScroll on Android (the histogram lesson), and the disc
+    // state survives the keyed remount, so each must be set by hand.
+    const landAt = (offset: number) => {
+      scrollYRef.current = offset;
+      setShowBackToTop(offset > DEEP_PX);
+    };
     // Runs post-commit: `data` is already the target filter's array,
     // and a non-animated jump also kills any carried fling.
     if (jump.target === 'top') {
-      scrollYRef.current = 0;
+      landAt(0);
       listRef.current?.scrollToOffset({ offset: 0, animated: false });
       return;
     }
     const anchor = jump.target.anchor;
-    // HOLD while Everything cannot answer yet: the browse loads
-    // incrementally, so an anchor DEEPER than the loaded frontier pages
-    // toward it (70-90 ms a page on the 27k device) instead of giving
-    // up to the top; each landed page re-enters through the nudge.
-    if (filter === 'everything' && !browse.exhausted && !browse.failed) {
-      const oldestLoaded = data.length > 0 ? data[data.length - 1].newestAt : Infinity;
-      if (data.length === 0 || anchor.newestAt < oldestLoaded) {
-        // FIRST hold: show the top while pages stream (a deep raw
-        // offset over a near-empty list reads as a black screen), and
-        // reset the drag baseline — only a drag AFTER the hold began
-        // abandons it, never the scrolling that preceded the switch.
-        if (jump.held !== true) {
-          scrollYRef.current = 0;
-          listRef.current?.scrollToOffset({ offset: 0, animated: false });
-        }
-        jumpRef.current = { ...jump, held: true };
-        void loadMoreBrowse(genRef.current);
-        return;
+    // A reset in this SAME flush already invalidated the assembly this
+    // effect closed over (the reset effect is declared first, and it
+    // bumps genRef synchronously): consuming the anchor against the
+    // leftover data would land, then be wiped by the reset's empty
+    // publish one render later (codex r7 P1). This wait IS a hold —
+    // same first-hold treatment (show the top, arm the drag baseline,
+    // a drag during it abandons), minus the pager kick: the reset owns
+    // starting its own stream, and the fresh generation's first page
+    // re-enters through jumpNudge.
+    if (filter === 'everything' && browse.gen !== genRef.current) {
+      if (jump.held !== true) {
+        landAt(0);
+        listRef.current?.scrollToOffset({ offset: 0, animated: false });
       }
+      jumpRef.current = { ...jump, held: true };
+      return;
+    }
+    // HOLD while Everything cannot answer yet: the browse loads
+    // incrementally, so an anchor DEEPER than the loaded frontier —
+    // or TYING it without its unit loaded (equal capture times split
+    // across a page boundary, codex r7) — pages toward it (70-90 ms a
+    // page on the 27k device) instead of giving up to the top; each
+    // landed page re-enters through the nudge.
+    if (
+      filter === 'everything' &&
+      !browse.exhausted &&
+      !browse.failed &&
+      needsDeeperPages(data, anchor)
+    ) {
+      // FIRST hold: show the top while pages stream (a deep raw
+      // offset over a near-empty list reads as a black screen), and
+      // reset the drag baseline — only a drag AFTER the hold began
+      // abandons it, never the scrolling that preceded the switch.
+      if (jump.held !== true) {
+        landAt(0);
+        listRef.current?.scrollToOffset({ offset: 0, animated: false });
+      }
+      jumpRef.current = { ...jump, held: true };
+      void loadMoreBrowse(genRef.current);
+      return;
     }
     if (data.length === 0) {
       // Exhausted or failed while still empty: nothing to land on.
-      scrollYRef.current = 0;
+      landAt(0);
       listRef.current?.scrollToOffset({ offset: 0, animated: false });
       return;
     }
     const clampToEnd = filter !== 'everything';
     const index = anchorIndexIn(data, anchor, clampToEnd);
     if (index === null) {
-      scrollYRef.current = 0;
+      landAt(0);
       listRef.current?.scrollToOffset({ offset: 0, animated: false });
       return;
     }
@@ -494,9 +540,7 @@ export function TimelineScreen({ navigation }: Props) {
     // Everything restores the unit this clamp came from.
     if (clampToEnd && index === data.length - 1 && findUnitIndex(data, anchor.ref) < 0)
       clampReturnRef.current = { cameFrom: anchor };
-    // Programmatic scrolls emit no onScroll on Android (the histogram
-    // lesson): keep the mirror honest by hand — exact, since rows are.
-    scrollYRef.current = ROW_H * index;
+    landAt(ROW_H * index);
     listRef.current?.scrollToIndex({ index, animated: false, viewPosition: 0 });
     // data is deliberately not a dependency: the jump happens once per
     // switch, not on every page the browse pager lands afterwards (the
@@ -554,16 +598,19 @@ export function TimelineScreen({ navigation }: Props) {
       const pending = group.members.filter((m) => m.state === 'unreviewed').length;
       // Hidden members are NAMED on the card itself (Tristan, m0.8.3
       // matrix): a mixed group showing one thumbnail must say why
-      // without being opened.
+      // without being opened. The disclosure outranks the tap hint on
+      // the single status line (codex r7: the uniform header clips
+      // instead of wrapping, and the suffix is the load-bearing half).
       const away =
         (group.unreachableCount ?? 0) > 0
           ? ` · ${group.unreachableCount} on unmounted SD card`
           : '';
+      const done = away === '' ? 'Reviewed · tap to revisit' : 'Reviewed';
       const newest = group.members[0];
       return (
         <UnitCard
           title={`Group · ${group.members.length} shots · ${labelForDayKey(newest?.day ?? UNDATED_DAY_KEY)}${newest ? ` ${formatClock(newest.taken_at)}` : ''}`}
-          status={(pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`) + away}
+          status={(pending === 0 ? done : `${pending} pending`) + away}
           statusDone={pending === 0}
           members={group.members}
           onPress={() => openUnit(unit)}
@@ -669,14 +716,17 @@ export function TimelineScreen({ navigation }: Props) {
           // disc and poison the scroll mirror.
           if (y > 100 && Date.now() - fabJumpAtRef.current < 400) return;
           scrollYRef.current = y;
-          const deep = y > 1600;
+          const deep = y > DEEP_PX;
           if (deep !== showBackToTop) setShowBackToTop(deep);
         }}
         scrollEventThrottle={33}
         // A finger-drag during a page-toward hold abandons it;
-        // programmatic jumps never fire this.
+        // programmatic jumps never fire this. A new drag also ends the
+        // post-disc stale-event window (codex r7): the finger's own
+        // events are fresh by definition.
         onScrollBeginDrag={() => {
           holdDragRef.current = true;
+          fabJumpAtRef.current = 0;
         }}
         keyExtractor={(unit) =>
           unit.kind === 'group'

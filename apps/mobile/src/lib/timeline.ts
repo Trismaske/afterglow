@@ -92,6 +92,14 @@ export function findUnitIndex(units: readonly TimelineUnit[], ref: UnitRef): num
   return units.findIndex((unit) => sameUnit(unit, ref));
 }
 
+/** Ref-vs-ref identity, the same rules rebuilds use: groups by id, runs
+ * by day plus range OVERLAP (the two filters load a run with different
+ * bounds around the same photos). */
+export function sameUnitRefs(a: UnitRef, b: UnitRef): boolean {
+  if (a.kind === 'group') return b.kind === 'group' && a.groupId === b.groupId;
+  return b.kind === 'run' && a.day === b.day && a.from <= b.to && b.from <= a.to;
+}
+
 /** Does this unit still hold REVIEW WORK? The singles feed deliberately
  * keeps staged culls in place (badged), so a run whose last unreviewed
  * member was culled stays on the timeline as a browseable card — but

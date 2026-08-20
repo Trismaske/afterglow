@@ -14,6 +14,7 @@ import {
   destinationAfterUnit,
   findUnitIndex,
   firstPendingUnit,
+  sameUnitRefs,
   unitDestination,
   unitHasPending,
   type TimelineRunUnit,
@@ -476,5 +477,26 @@ describe('browseItemTime honours the query-minted anchor (codex r1+r5)', () => {
     };
     const assembly = appendBrowseItems(EMPTY_BROWSE_ASSEMBLY, [g]);
     expect(assembly.units[0].newestAt).toBe(50);
+  });
+});
+
+describe('sameUnitRefs (the one switch rule, final device pass)', () => {
+  it('groups by id; runs by day + range overlap; kinds never cross', () => {
+    expect(sameUnitRefs({ kind: 'group', groupId: '7' }, { kind: 'group', groupId: '7' })).toBe(
+      true,
+    );
+    expect(sameUnitRefs({ kind: 'group', groupId: '7' }, { kind: 'group', groupId: '8' })).toBe(
+      false,
+    );
+    const day = '2026-05-09';
+    expect(
+      sameUnitRefs({ kind: 'run', day, from: 10, to: 20 }, { kind: 'run', day, from: 15, to: 30 }),
+    ).toBe(true);
+    expect(
+      sameUnitRefs({ kind: 'run', day, from: 10, to: 20 }, { kind: 'run', day, from: 21, to: 30 }),
+    ).toBe(false);
+    expect(
+      sameUnitRefs({ kind: 'run', day, from: 10, to: 20 }, { kind: 'group', groupId: '7' }),
+    ).toBe(false);
   });
 });

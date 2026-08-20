@@ -25,7 +25,6 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
-import type { LayoutChangeEvent, StyleProp, ViewStyle } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -34,7 +33,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { useReview } from '../review/ReviewContext';
 import { BigButton } from '../components/BigButton';
-import { UnitCard } from '../components/UnitCard';
+import { UNIT_CARD_HEIGHT, UnitCard } from '../components/UnitCard';
 import { BadgeCluster } from '../components/DecisionBadge';
 import { colors, useTheme } from '../theme';
 import { formatClock } from '../lib/format';
@@ -46,6 +45,7 @@ import {
   EMPTY_BROWSE_ASSEMBLY,
   firstPendingUnit,
   flushBrowseTail,
+  findUnitIndex,
   unitDestination,
   unitRefOf,
   unreviewedOnly,
@@ -85,32 +85,14 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Timeline'>;
  * fetchers page beneath it (singles wider than groups — a sparse
  * stretch is mostly singles). */
 const BROWSE_BATCH = 40;
+/** Every row = one uniform card + the row gap. getItemLayout's exactness
+ * rests on UNIT_CARD_HEIGHT being style-pinned. */
+const ROW_GAP = 12;
+const ROW_H = UNIT_CARD_HEIGHT + ROW_GAP;
 const BROWSE_SINGLES_PAGE = 120;
 const BROWSE_GROUPS_PAGE = 40;
 
 type BrowseCursor = BrowseGroupCursor | { takenAt: number; assetId: string };
-
-/** A reading position: the unit under the viewport top plus how far its
- * own top sits from it (≤ 0 when partially scrolled off). */
-interface PlaceCapture {
-  anchor: TimelineAnchor;
-  delta: number;
-}
-
-/** The cell-top map's key — canonical, NOT the FlatList keyExtractor,
- * whose run shape differs per filter. Only read back within one
- * filter's data, where it is unique. */
-const cellTopKey = (unit: TimelineUnit): string =>
-  unit.kind === 'group' ? `g:${unit.group.groupId}` : `r:${unit.day}:${unit.from}:${unit.to}`;
-
-/** What VirtualizedList hands a CellRendererComponent (RN 0.86 keeps no
- * public TS export for it). */
-interface CellProps {
-  item: TimelineUnit;
-  children: React.ReactNode;
-  style?: StyleProp<ViewStyle>;
-  onLayout?: (event: LayoutChangeEvent) => void;
-}
 
 interface BrowseState {
   assembly: BrowseAssembly;
@@ -146,66 +128,53 @@ export function TimelineScreen({ navigation }: Props) {
   }, [db]);
   /** First visible unit, tracked for the filter-switch anchor. */
   const viewableRef = useRef<TimelineUnit | null>(null);
-  /** Live scroll offset + each mounted cell's content-y (canonical key,
-   * filter-independent) — together they give the anchor unit's exact
-   * on-screen position, so a jump restores the PIXEL the reader was at,
-   * not just the card (device pass round 3: "not quite aligned"). */
+  /** Live scroll offset — the at-top test and the back-to-top disc. */
   const scrollYRef = useRef(0);
-  const cellTopsRef = useRef(new Map<string, number>());
-  /** Where the reader last was in each filter, saved on every switch.
-   * Restored instead of the carried anchor when the reader has not
-   * DRAGGED since the last jump (round 3: peeking at a pending filter
-   * from deep in Everything must not lose the deep position — but a
-   * real scroll while away carries the new place across, the round-2
-   * contract). place null = remembered TOP (final device pass: the
-   * maintain rule engages only after scrolling). */
-  const memoryRef = useRef<Partial<Record<TimelineFilter, { place: PlaceCapture | null }>>>({});
-  /** False from ENTRY: the screen opens at the top, and that counts as
-   * a landing — on the 27k S23 the mount-time reset and page-ins drift
-   * scrollY a few px off 0 before any jump runs, which made the very
-   * first capture carry an anchor instead of top (final device pass). */
-  const movedSinceJumpRef = useRef(false);
-  /** The last landing (a jump, or entry itself) targeted the TOP.
-   * mVCP's native adjustment after a full data swap can race the top
-   * jump and drift the list off 0 (S23) — an undrifted-by-the-reader
-   * top must still CAPTURE as top. */
-  const lastJumpTopRef = useRef(true);
-  /** Set by a filter switch, consumed once by the jump effect below.
-   * place null = jump to the top (nothing was visible to anchor on).
-   * held marks a jump waiting for deeper pages — a reader drag during
-   * the hold abandons it (the reader took over). */
-  const jumpRef = useRef<{ place: PlaceCapture | null; held?: boolean } | null>(null);
+  /** ONE switch rule (Tristan, final device pass — the simplification):
+   * at the top of any filter, a switch lands at the top of the target;
+   * otherwise the unit at the top of the viewport becomes the top of
+   * the target. When Everything's top unit has no pending counterpart,
+   * the pending feeds clamp to their bottom — and clampReturnRef (the
+   * ONE slot of memory) lets the return trip restore the Everything
+   * unit that clamp came from, as long as the reader still sits on the
+   * clamped landing. Nothing else is remembered. */
+  const jumpRef = useRef<{ target: 'top' | { anchor: TimelineAnchor }; held?: boolean } | null>(
+    null,
+  );
+  const clampReturnRef = useRef<{ cameFrom: TimelineAnchor } | null>(null);
+  /** Exact-geometry mirrors (rows are uniform): the clamp-return test is
+   * "does the reader still sit at the pending bottom", judged from
+   * scrollY + viewport against ROW_H × length. */
+  const viewportHRef = useRef(0);
+  const dataLenRef = useRef(0);
+  /** A drag DURING a page-toward hold abandons it — the reader took
+   * over. Reset when a hold begins; meaningless outside one. */
+  const holdDragRef = useRef(false);
   const setFilter = useCallback(
     (next: TimelineFilter) => {
       setFilterState((prev) => {
         if (prev === next || prev === null) return next;
-        // AT THE TOP, the place IS the top (final device pass, Tristan):
-        // the newest pending unit sits below every newer REVIEWED unit
-        // in Everything, so "maintaining" a top-of-pending anchor landed
-        // the reader mid-list needing to scroll up. The maintain rule
-        // engages only once the reader has scrolled.
-        const atTop =
-          scrollYRef.current <= 8 || (!movedSinceJumpRef.current && lastJumpTopRef.current);
         const seen = viewableRef.current;
-        const top = seen === null ? undefined : cellTopsRef.current.get(cellTopKey(seen));
-        const place: PlaceCapture | null =
-          atTop || seen === null
-            ? null
-            : {
-                anchor: { ref: unitRefOf(seen), newestAt: seen.newestAt },
-                delta: top === undefined ? 0 : top - scrollYRef.current,
-              };
-        memoryRef.current[prev] = { place };
-        // The raw scroll offset means nothing in the other filter's data,
-        // and momentum carried across the swap fights the re-layout (the
-        // sustained jitter of the 2026-08-19 device pass). Every switch
-        // involving Everything jumps to a place instead; the two pending
-        // filters share one read and keep their natural position.
-        if (prev === 'everything' || next === 'everything') {
-          const remembered = memoryRef.current[next];
+        // Unit-scale tolerance: mVCP's post-swap adjustments drift the
+        // offset a few px, and anything inside the first card still
+        // READS as the top — the fat threshold replaces the flag
+        // machinery that used to track this.
+        const atTop = scrollYRef.current <= 100 || seen === null;
+        // Still at the clamped bottom? (exact: uniform rows) — within a
+        // row of the end counts; scrolling away spends the slot.
+        const atBottom =
+          scrollYRef.current + viewportHRef.current >= ROW_H * dataLenRef.current - ROW_H;
+        const slot = clampReturnRef.current;
+        clampReturnRef.current = null;
+        if (atTop) {
+          jumpRef.current = { target: 'top' };
+        } else if (next === 'everything' && slot !== null && atBottom) {
+          // The reader still sits on the clamped landing: the return
+          // trip restores the Everything unit the clamp came from.
+          jumpRef.current = { target: { anchor: slot.cameFrom } };
+        } else {
           jumpRef.current = {
-            place:
-              !movedSinceJumpRef.current && remembered !== undefined ? remembered.place : place,
+            target: { anchor: { ref: unitRefOf(seen), newestAt: seen.newestAt } },
           };
         }
         return next;
@@ -341,20 +310,9 @@ export function TimelineScreen({ navigation }: Props) {
   const resetBrowse = useCallback(async () => {
     const gen = ++genRef.current;
     failedRef.current = false;
-    // The reset invalidates every index minted against the old data:
-    // disown pending settles/retries (device pass crash — a stale
-    // settle's scrollToIndex outlived the data it indexed). An armed
-    // jump stays armed: its ANCHOR is still meaningful, and the
-    // page-toward loop re-finds it in the fresh stream.
-    jumpGenRef.current += 1;
-    if (settleTimerRef.current !== null) {
-      clearTimeout(settleTimerRef.current);
-      settleTimerRef.current = null;
-    }
-    if (retryTimerRef.current !== null) {
-      clearTimeout(retryTimerRef.current);
-      retryTimerRef.current = null;
-    }
+    // An armed jump survives a reset: its ANCHOR is still meaningful,
+    // and the page-toward loop re-finds it in the fresh stream. (With
+    // exact getItemLayout there are no deferred scrolls left to disown.)
     assemblyRef.current = EMPTY_BROWSE_ASSEMBLY;
     setBrowse({ assembly: EMPTY_BROWSE_ASSEMBLY, exhausted: false, failed: false });
     // The browse read scopes like every review read: the selected
@@ -456,65 +414,21 @@ export function TimelineScreen({ navigation }: Props) {
 
   // -------------------------------------------- filter-switch anchor
   const listRef = useRef<FlatList<TimelineUnit>>(null);
-  /** One estimate-then-retry per jump: scrollToIndex past the render
-   * window fails onto onScrollToIndexFailed, whose offset estimate is
-   * corrected by ONE exact re-issue once the target has been measured —
-   * never a loop of them. */
-  const retriedJumpRef = useRef(false);
   const onViewableItemsChanged = useRef(
     ({ viewableItems }: { viewableItems: Array<{ item: TimelineUnit }> }) => {
       viewableRef.current = viewableItems[0]?.item ?? null;
     },
   ).current;
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 }).current;
-  /** The in-flight jump's pixel offset, for the estimate-retry path. */
-  const jumpViewOffsetRef = useRef(0);
-  /** VirtualizedList's cell wrapper, extended to record each mounted
-   * cell's content-y. Identity MUST be stable (useMemo) — a new
-   * component type per render would remount every cell. The list's own
-   * onLayout is forwarded: it is how VirtualizedList measures cells. */
-  const TrackedCell = useMemo(
-    () =>
-      function TimelineCell({ item, children, style, onLayout, ...rest }: CellProps) {
-        return (
-          <View
-            {...rest}
-            style={style}
-            onLayout={(event) => {
-              cellTopsRef.current.set(cellTopKey(item), event.nativeEvent.layout.y);
-              onLayout?.(event);
-            }}
-          >
-            {children}
-          </View>
-        );
-      },
-    [],
-  );
-  /** The settle pass's timer, cancelled by any newer jump. */
-  const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** The estimate-retry's timer + owning jump generation, and a live
-   * mirror of the list length (codex r6): the untracked 150 ms retry
-   * could fire against the NEXT filter's data with a stale index —
-   * out-of-range scrollToIndex throws an invariant — or override a
-   * newer restoration or the reader's own drag. */
-  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const jumpGenRef = useRef(0);
-  const dataLenRef = useRef(0);
-  /** Fires the held first-switch jump once Everything's data exists. */
+  /** Fires a held jump once Everything's data has grown. */
   const [jumpNudge, setJumpNudge] = useState(0);
   /** The back-to-top control shows once the reader is deep enough that
-   * flinging back is a chore (final device pass, Tristan). Using it IS
-   * a top landing: the next filter switch behaves exactly as if the
-   * reader had been at the top all along. */
+   * flinging back is a chore. Landing at 0 IS the top — the next
+   * switch's at-top test reads scrollY directly. */
   const [showBackToTop, setShowBackToTop] = useState(false);
   const backToTop = useCallback(() => {
-    movedSinceJumpRef.current = false;
-    lastJumpTopRef.current = true;
-    // Disown any in-flight settle or retry: the reader chose the top.
-    jumpGenRef.current += 1;
-    if (settleTimerRef.current !== null) clearTimeout(settleTimerRef.current);
-    if (retryTimerRef.current !== null) clearTimeout(retryTimerRef.current);
+    clampReturnRef.current = null;
+    scrollYRef.current = 0;
     listRef.current?.scrollToOffset({ offset: 0, animated: false });
     setShowBackToTop(false);
   }, []);
@@ -522,120 +436,66 @@ export function TimelineScreen({ navigation }: Props) {
     const jump = jumpRef.current;
     if (jump === null) return;
     jumpRef.current = null;
-    // A drag during a HOLD abandons the jump — the reader took over
-    // (device pass: the held page-toward must never fight a live
-    // finger; moved is reset only when a jump actually LANDS).
-    if (jump.held === true && movedSinceJumpRef.current) return;
-    retriedJumpRef.current = false;
-    jumpGenRef.current += 1;
-    if (settleTimerRef.current !== null) clearTimeout(settleTimerRef.current);
-    if (retryTimerRef.current !== null) clearTimeout(retryTimerRef.current);
-    // Runs post-commit: `data` is already the target filter's array. A
-    // non-animated jump also kills any carried fling. The pending feeds
-    // are complete reads, so an anchor older than their horizon clamps
-    // to their last unit (the footer under it says why the trail ends);
-    // the incremental browse read falls back to the top instead.
-    // HOLD the jump while Everything cannot answer it yet (codex r1 +
-    // the final device pass): the browse loads incrementally, so an
-    // anchor DEEPER than the loaded frontier used to fall back to the
-    // top — which made the landing depend on how deep the retained
-    // assembly happened to be (Tristan's "inconsistent" repro: bottom
-    // of Unfinished → top of Everything, sometimes aligned). The jump
-    // now stays armed and PAGES TOWARD its anchor (70-90 ms a page on
-    // the 27k device); each landed page re-enters through the nudge
-    // below, until the anchor's time is inside the loaded range or the
-    // stream ends.
-    if (filter === 'everything' && jump.place !== null && !browse.exhausted && !browse.failed) {
+    // A drag during a HOLD abandons the jump — the page-toward must
+    // never fight a live finger.
+    if (jump.held === true && holdDragRef.current) return;
+    // JUMP-SCOPED from here: only a drag AFTER this jump begins vetoes
+    // its retry or its hold — never the scrolling that preceded the
+    // switch (the inherited-flag class, third instance).
+    holdDragRef.current = false;
+    // Runs post-commit: `data` is already the target filter's array,
+    // and a non-animated jump also kills any carried fling.
+    if (jump.target === 'top') {
+      scrollYRef.current = 0;
+      listRef.current?.scrollToOffset({ offset: 0, animated: false });
+      return;
+    }
+    const anchor = jump.target.anchor;
+    // HOLD while Everything cannot answer yet: the browse loads
+    // incrementally, so an anchor DEEPER than the loaded frontier pages
+    // toward it (70-90 ms a page on the 27k device) instead of giving
+    // up to the top; each landed page re-enters through the nudge.
+    if (filter === 'everything' && !browse.exhausted && !browse.failed) {
       const oldestLoaded = data.length > 0 ? data[data.length - 1].newestAt : Infinity;
-      if (data.length === 0 || jump.place.anchor.newestAt < oldestLoaded) {
-        // FIRST hold: show the top while pages stream toward the anchor
-        // (device pass: a deep raw offset over a reset-emptied list read
-        // as a BLACK screen while the pager quietly rebuilt) — and RESET
-        // the drag baseline: moved still carries the reader's PRE-switch
-        // scrolling, and without a fresh baseline the very first held
-        // re-entry read it as a drag-during-hold and abandoned the jump
-        // (his bottom-of-Unfinished → top-of-Everything regression).
-        // Only a drag that happens AFTER the hold began abandons it.
+      if (data.length === 0 || anchor.newestAt < oldestLoaded) {
+        // FIRST hold: show the top while pages stream (a deep raw
+        // offset over a near-empty list reads as a black screen), and
+        // reset the drag baseline — only a drag AFTER the hold began
+        // abandons it, never the scrolling that preceded the switch.
         if (jump.held !== true) {
+          scrollYRef.current = 0;
           listRef.current?.scrollToOffset({ offset: 0, animated: false });
-          movedSinceJumpRef.current = false;
         }
         jumpRef.current = { ...jump, held: true };
         void loadMoreBrowse(genRef.current);
         return;
       }
     }
-    if (filter === 'everything' && data.length === 0) {
+    if (data.length === 0) {
       // Exhausted or failed while still empty: nothing to land on.
+      scrollYRef.current = 0;
       listRef.current?.scrollToOffset({ offset: 0, animated: false });
       return;
     }
-    const index =
-      jump.place === null ? null : anchorIndexIn(data, jump.place.anchor, filter !== 'everything');
-    if (index === null || jump.place === null) {
-      lastJumpTopRef.current = true;
-      movedSinceJumpRef.current = false;
+    const clampToEnd = filter !== 'everything';
+    const index = anchorIndexIn(data, anchor, clampToEnd);
+    if (index === null) {
+      scrollYRef.current = 0;
       listRef.current?.scrollToOffset({ offset: 0, animated: false });
-      // The top jump gets the same settle pass as anchored ones: mVCP's
-      // post-swap adjustment can land after this scroll and drift the
-      // list off 0 (S23) — one verified re-zero, reader drags excepted.
-      const owner = jumpGenRef.current;
-      settleTimerRef.current = setTimeout(() => {
-        settleTimerRef.current = null;
-        if (owner !== jumpGenRef.current || movedSinceJumpRef.current) return;
-        if (scrollYRef.current > 8) listRef.current?.scrollToOffset({ offset: 0, animated: false });
-      }, 300);
       return;
     }
-    lastJumpTopRef.current = false;
-    movedSinceJumpRef.current = false;
-    const { delta } = jump.place;
-    // The swap discarded every cell measurement, so this first jump can
-    // only land on ESTIMATED offsets (device pass round 3: the restore
-    // came back a few cards off). Cleared here so the settle pass below
-    // reads only freshly measured tops, never the prior filter's.
-    cellTopsRef.current.clear();
-    // delta re-places the anchor at the exact pixel it occupied, not
-    // merely at the viewport top (round 3: "not quite aligned").
-    jumpViewOffsetRef.current = delta;
-    listRef.current?.scrollToIndex({ index, animated: false, viewPosition: 0, viewOffset: delta });
-    // The settle pass: once the anchor's cell has really mounted, its
-    // recorded top is MEASURED — one exact scrollToOffset erases the
-    // estimate error. Not mounted yet (the estimate landed far off) →
-    // re-issue the index jump with the metrics measured so far and try
-    // again, bounded. A drag aborts: the reader took over.
-    // Keyed off the unit LANDED ON in the target data — a run matched by
-    // range overlap carries different bounds there than the anchor's ref.
-    const anchorKey = cellTopKey(data[index]);
-    const settleOwner = jumpGenRef.current;
-    const settle = (attempt: number) => {
-      settleTimerRef.current = setTimeout(() => {
-        // Disowned by a newer jump or a browse reset, or the reader
-        // took over — and NEVER a scrollToIndex past the live list
-        // (device pass crash: a reset shrank data under a pending
-        // settle and the stale index tripped RN's invariant).
-        if (settleOwner !== jumpGenRef.current || movedSinceJumpRef.current) return;
-        const top = cellTopsRef.current.get(anchorKey);
-        if (top !== undefined) {
-          const want = Math.max(0, top - delta);
-          if (Math.abs(want - scrollYRef.current) > 4)
-            listRef.current?.scrollToOffset({ offset: want, animated: false });
-          return;
-        }
-        if (attempt >= 3 || index >= dataLenRef.current) return;
-        listRef.current?.scrollToIndex({
-          index,
-          animated: false,
-          viewPosition: 0,
-          viewOffset: delta,
-        });
-        settle(attempt + 1);
-      }, 250);
-    };
-    settle(1);
+    // A pending CLAMP (the anchor has no counterpart and lands on the
+    // last unit) charges the one memory slot: the return trip to
+    // Everything restores the unit this clamp came from.
+    if (clampToEnd && index === data.length - 1 && findUnitIndex(data, anchor.ref) < 0)
+      clampReturnRef.current = { cameFrom: anchor };
+    // Programmatic scrolls emit no onScroll on Android (the histogram
+    // lesson): keep the mirror honest by hand — exact, since rows are.
+    scrollYRef.current = ROW_H * index;
+    listRef.current?.scrollToIndex({ index, animated: false, viewPosition: 0 });
     // data is deliberately not a dependency: the jump happens once per
     // switch, not on every page the browse pager lands afterwards (the
-    // one exception, the held first jump, re-enters through jumpNudge).
+    // one exception, the held jump, re-enters through jumpNudge).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter, jumpNudge]);
   useEffect(() => {
@@ -677,46 +537,51 @@ export function TimelineScreen({ navigation }: Props) {
 
   const renderUnit = useCallback(
     ({ item: unit }: { item: TimelineUnit }) => {
-      if (unit.kind === 'group') {
-        const group = unit.group;
-        const pending = group.members.filter((m) => m.state === 'unreviewed').length;
-        // Hidden members are NAMED on the card itself (Tristan, m0.8.3
-        // matrix): a mixed group showing one thumbnail must say why
-        // without being opened.
-        const away =
-          (group.unreachableCount ?? 0) > 0
-            ? ` · ${group.unreachableCount} on unmounted SD card`
-            : '';
-        const newest = group.members[0];
-        return (
-          <UnitCard
-            title={`Group · ${group.members.length} shots · ${labelForDayKey(newest?.day ?? UNDATED_DAY_KEY)}${newest ? ` ${formatClock(newest.taken_at)}` : ''}`}
-            status={(pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`) + away}
-            statusDone={pending === 0}
-            members={group.members}
-            onPress={() => openUnit(unit)}
-            renderOverlay={(id) => (
-              <BadgeCluster badges={badgesFor(id)} size={14} style={styles.badges} />
-            )}
-          />
-        );
-      }
-      const pending = unit.members.filter((m) => m.state === 'unreviewed').length;
+      const card = renderUnitCard(unit);
+      return <View style={styles.row}>{card}</View>;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [badgesFor, openUnit],
+  );
+  const renderUnitCard = (unit: TimelineUnit) => {
+    if (unit.kind === 'group') {
+      const group = unit.group;
+      const pending = group.members.filter((m) => m.state === 'unreviewed').length;
+      // Hidden members are NAMED on the card itself (Tristan, m0.8.3
+      // matrix): a mixed group showing one thumbnail must say why
+      // without being opened.
+      const away =
+        (group.unreachableCount ?? 0) > 0
+          ? ` · ${group.unreachableCount} on unmounted SD card`
+          : '';
+      const newest = group.members[0];
       return (
         <UnitCard
-          title={`Singles · ${unit.members.length} photo${unit.members.length === 1 ? '' : 's'} · ${labelForDayKey(unit.day)}`}
-          status={pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`}
+          title={`Group · ${group.members.length} shots · ${labelForDayKey(newest?.day ?? UNDATED_DAY_KEY)}${newest ? ` ${formatClock(newest.taken_at)}` : ''}`}
+          status={(pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`) + away}
           statusDone={pending === 0}
-          members={unit.members}
+          members={group.members}
           onPress={() => openUnit(unit)}
           renderOverlay={(id) => (
             <BadgeCluster badges={badgesFor(id)} size={14} style={styles.badges} />
           )}
         />
       );
-    },
-    [badgesFor, openUnit],
-  );
+    }
+    const pending = unit.members.filter((m) => m.state === 'unreviewed').length;
+    return (
+      <UnitCard
+        title={`Singles · ${unit.members.length} photo${unit.members.length === 1 ? '' : 's'} · ${labelForDayKey(unit.day)}`}
+        status={pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`}
+        statusDone={pending === 0}
+        members={unit.members}
+        onPress={() => openUnit(unit)}
+        renderOverlay={(id) => (
+          <BadgeCluster badges={badgesFor(id)} size={14} style={styles.badges} />
+        )}
+      />
+    );
+  };
 
   // First PENDING unit: a cull-only run stays a browseable card, but
   // the CTA must open review work — anchored to the PENDING feed
@@ -772,48 +637,25 @@ export function TimelineScreen({ navigation }: Props) {
         })}
       </View>
       <FlatList
+        // ONE LIST PER FILTER (the simplification's keystone): a switch
+        // is a fresh mount at offset 0 plus one jump — no scroll state
+        // ever bridges filters.
+        key={filter}
         ref={listRef}
         data={data}
-        // The device-pass jitter's root cause (2026-08-19, instrumented
-        // on the S10e): with cards of many heights, the virtualizer's
-        // window edge can land on a card whose ESTIMATED height differs
-        // from its measured one — content height then flip-flops by that
-        // difference on every layout pass (a measured 103 px lock-in,
-        // hours if left alone), each flip feeding back through the
-        // scroll offset into the next window computation. Anchoring the
-        // first visible item breaks the feedback: a re-measure above the
-        // viewport adjusts the offset instead of moving the content
-        // under it. Reproduced deterministically (bottom of a pending
-        // filter + a fling into the clamp + a mid-momentum switch) and
-        // gone under the same script with this prop.
-        maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+        // EXACT virtualization (uniform cards): every landing is
+        // deterministic on a cold list, the estimated-height machinery
+        // (mVCP, scroll retries) is gone, and the 103px re-measure
+        // oscillation class is impossible — estimates ARE measurements.
+        getItemLayout={(_items, index) => ({
+          length: ROW_H,
+          offset: ROW_H * index,
+          index,
+        })}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={viewabilityConfig}
-        onScrollToIndexFailed={(info) => {
-          // The anchor sits past the render window: land on the estimate,
-          // then re-issue the exact jump once — after measurement it
-          // succeeds; if it somehow fails again, the estimate stands
-          // rather than looping. The retry is generation-scoped and
-          // bounds-checked (codex r6): a filter switch, a data reset, or
-          // the reader's own drag in the 150 ms window disowns it.
-          listRef.current?.scrollToOffset({
-            offset: info.averageItemLength * info.index,
-            animated: false,
-          });
-          if (retriedJumpRef.current) return;
-          retriedJumpRef.current = true;
-          const owner = jumpGenRef.current;
-          retryTimerRef.current = setTimeout(() => {
-            retryTimerRef.current = null;
-            if (owner !== jumpGenRef.current || movedSinceJumpRef.current) return;
-            if (info.index >= dataLenRef.current) return;
-            listRef.current?.scrollToIndex({
-              index: info.index,
-              animated: false,
-              viewPosition: 0,
-              viewOffset: jumpViewOffsetRef.current,
-            });
-          }, 150);
+        onLayout={(e) => {
+          viewportHRef.current = e.nativeEvent.layout.height;
         }}
         onScroll={(e) => {
           scrollYRef.current = e.nativeEvent.contentOffset.y;
@@ -821,12 +663,11 @@ export function TimelineScreen({ navigation }: Props) {
           if (deep !== showBackToTop) setShowBackToTop(deep);
         }}
         scrollEventThrottle={33}
-        // A finger-drag is the one signal that the reader took a NEW
-        // position in this filter; programmatic jumps never fire it.
+        // A finger-drag during a page-toward hold abandons it;
+        // programmatic jumps never fire this.
         onScrollBeginDrag={() => {
-          movedSinceJumpRef.current = true;
+          holdDragRef.current = true;
         }}
-        CellRendererComponent={TrackedCell}
         keyExtractor={(unit) =>
           unit.kind === 'group'
             ? `g:${unit.group.groupId}`
@@ -910,7 +751,10 @@ const styles = StyleSheet.create({
   filterChipActive: { backgroundColor: colors.surfaceRaised },
   filterLabel: { color: colors.textDim, fontSize: 13, fontWeight: '600' },
   filterLabelActive: { color: colors.text },
-  list: { gap: 12, paddingBottom: 12 },
+  list: { paddingBottom: 12 },
+  /** The row owns the gap (padding, not margin): getItemLayout's ROW_H
+   * must equal the cell's true laid-out height. */
+  row: { height: ROW_H, paddingBottom: ROW_GAP },
   // Wrapping cluster inside the thumbnail — every badge stays visible.
   badges: { position: 'absolute', right: 2, bottom: 2, left: 2 },
   footer: { paddingTop: 8, gap: 8 },

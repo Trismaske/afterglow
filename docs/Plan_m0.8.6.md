@@ -134,7 +134,7 @@ Designed and agreed in full before this release ([Feedback_m0.8.x.md](Feedback_m
 
 1. Bounded month scopes route to the SQLite grid engine (`PhotoStateGrid`'s `dbEngine` gains month scopes; D16's proven day-scope pattern).
 2. The MediaStore-engine grid takes `takenAt` (and `day`) from the `getStateRowsForAssets` join for tracked rows.
-3. The header denominator takes Home's disjoint union: `max(msTotal + counts.rescued, dbAlive)`.
+3. The header denominator is `dbAlive`, exactly as day scopes (D16): the month grid pages SQLite exclusively, so a MediaStore-fed total would advertise photos the grid cannot render during ingestion — breaking "one month, one number" (codex r2; the disjoint union `max(msTotal + rescued, dbAlive)` was the earlier shape). The ingestion gap shows as the day scopes' "still being analyzed" line.
 4. `progressPager` gains one more fetcher: the DB's rescued rows (`exif_checked_mod_time IS NOT NULL AND day IS NOT NULL`, alive) sorted `taken_at DESC`, de-duplicated against the MediaStore streams' undated-tail copies.
 5. `day` (nullable) travels alongside `taken_at` through `PhotoFacts`, `getPhotoQueueFacts`, `GridPhotoRow` and `ViewerItem`; the viewer top bar and the editor date line render **Unknown day** on NULL, never `Today · <mtime>`.
 6. Bounded month scopes key on the indexed `day` column (`substr(day,1,7)`, the histogram's own pattern); `day IS NULL` matches no month — the Unknown-day pseudo-day is its home.

@@ -114,6 +114,26 @@ describe('share queue + cycles', () => {
     ).toBe(AT + 11);
   });
 
+  it("a fast pick resolves a batch still 'launching' (codex r2: the event can beat the promote)", async () => {
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    await addToShareQueue(asExpo(d), 'p1', AT);
+    const b1 = await createShareBatch(asExpo(d), ['p1'], AT + 10);
+    // No promote — the chosen event arrives while the batch is 'launching'.
+    await markShareBatchShared(asExpo(d), b1, 'com.test/app', AT + 11);
+    const row = d.raw
+      .prepare('SELECT state, chosen_component FROM share_batches WHERE id = ?')
+      .get(b1) as { state: string; chosen_component: string | null };
+    expect(row.state).toBe('shared');
+    expect(row.chosen_component).toBe('com.test/app');
+    // The late promote must not regress the resolved state.
+    await promoteShareBatch(asExpo(d), b1, AT + 12);
+    const after = d.raw.prepare('SELECT state FROM share_batches WHERE id = ?').get(b1) as {
+      state: string;
+    };
+    expect(after.state).toBe('shared');
+  });
+
   it('a label lands only on a CONFIRMED share — an unresolved batch refuses it (codex r1)', async () => {
     const d = await fresh();
     insertPhoto(d, 'p1');

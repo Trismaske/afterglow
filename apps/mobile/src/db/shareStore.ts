@@ -276,9 +276,13 @@ export async function markShareBatchShared(
   at: number,
 ): Promise<void> {
   await withWriteTransaction(db, async (txn) => {
+    // 'launching' is accepted too (codex r2): a fast pick can land the
+    // chosen event before the promote write commits — the event itself
+    // is definitive proof the sheet opened, and refusing it left a real
+    // share for the abandonment sweep to erase.
     const promoted = await txn.runAsync(
       `UPDATE share_batches SET state = 'shared', chosen_component = ?, chosen_at = ?
-        WHERE id = ? AND state = 'sheet_opened'`,
+        WHERE id = ? AND state IN ('launching', 'sheet_opened')`,
       component,
       at,
       batchId,

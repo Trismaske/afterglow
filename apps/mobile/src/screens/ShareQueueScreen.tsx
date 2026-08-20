@@ -201,9 +201,13 @@ export function ShareQueueScreen(_props: Props) {
           const uris = await Promise.all(ids.map(getEditableContentUri));
           // The batch id rides the chooser as the chosen-event token
           // (D10): app-root wiring resolves the batch to 'shared' when
-          // the user picks a target app.
+          // the user picks a target app. ARMED BEFORE dispatch (codex
+          // r2): a fast pick can beat the JS continuation, and an
+          // unarmed token would silently drop the label prompt.
+          awaitingLabelRef.current = batchId;
           dispatch = await shareMediaUris(uris, batchId);
         } catch (error) {
+          awaitingLabelRef.current = null;
           dispatch = {
             result: 'error',
             message: error instanceof Error ? error.message : String(error),
@@ -213,8 +217,8 @@ export function ShareQueueScreen(_props: Props) {
           await promoteShareBatch(db, batchId, Date.now());
           showToast(`Sheet opened for ${ids.length} — queue kept for more sharing`);
           setSelected(new Set());
-          awaitingLabelRef.current = batchId;
         } else {
+          awaitingLabelRef.current = null;
           await failShareBatch(db, batchId);
           Alert.alert('Share failed', dispatch.message);
         }

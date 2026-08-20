@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { migrateDatabase } from './database';
 import { getHistoryPage, type HistoryCursor } from './store';
+import { reconcileExternallyRemoved } from './trashStore';
 import { encodeOrganizeTarget } from './actions';
 import { openTestDb, type TestDb } from './testDb';
 
@@ -33,15 +34,24 @@ function insertPhoto(
   id: string,
   state: string,
   activityAt: number,
-  extras: { is_present?: number } = {},
+  extras: { is_present?: number; decided_at?: number | null } = {},
 ): void {
+  // Mirrors production: every verdict write stamps decided_at — the
+  // tombstone predicate discriminates on it (codex r2). Overridable so
+  // the reconcile-lifecycle test can model the one path that does not.
+  const decidedAt =
+    extras.decided_at !== undefined
+      ? extras.decided_at
+      : state === 'unreviewed'
+        ? null
+        : activityAt;
   d.raw
     .prepare(
       `INSERT INTO photos (asset_id, uri, taken_at, day, state, activity_at, is_present,
-                           volume_name, raw_id)
-       VALUES (?, 'content://x', ?, '2026-07-20', ?, ?, ?, 'external_primary', ?)`,
+                           decided_at, volume_name, raw_id)
+       VALUES (?, 'content://x', ?, '2026-07-20', ?, ?, ?, ?, 'external_primary', ?)`,
     )
-    .run(id, AT, state, activityAt, extras.is_present ?? 1, id);
+    .run(id, AT, state, activityAt, extras.is_present ?? 1, decidedAt, id);
 }
 
 /** Attach a pending action (v18) — `resolvedAt` set means it happened. */
@@ -84,6 +94,11 @@ describe('getHistoryPage', () => {
     insertPhoto(d, 'fresh', 'unreviewed', AT + 400);
     // An absent UNDECIDED row carries no completed work — it stays out.
     insertPhoto(d, 'gone-undecided', 'unreviewed', AT + 350, { is_present: 0 });
+    // The REAL external-removal lifecycle (codex r2): the reconcile
+    // rewrites even a never-reviewed photo to 'trashed', but stamps no
+    // decided_at — it must not mint a Trashed tombstone.
+    insertPhoto(d, 'gone-via-reconcile', 'unreviewed', AT + 360);
+    await reconcileExternallyRemoved(asExpo(d), ['gone-via-reconcile'], AT + 370);
     const page = await getHistoryPage(asExpo(d), 'all', null);
     const photoRows = page.rows.filter((r) => r.kind === 'photo');
     expect(photoRows.map((r) => (r.kind === 'photo' ? r.asset_id : ''))).toEqual([

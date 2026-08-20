@@ -482,19 +482,17 @@ export function ProgressView({
           return;
         }
         const dbAlive = counts.tracked - counts.trashed;
-        // Month scopes take Home's DISJOINT UNION (m0.8.6 change 3): the
-        // bounded MediaStore count cannot see a rescued photo (NULL
-        // DATE_TAKEN matches no month), so the two terms never overlap;
-        // dbAlive floors the failed-count edge exactly as on Home. The
-        // library range needs no union — its MediaStore count is
-        // unbounded, so undated and rescued rows are already inside it.
-        const total = dayScope
-          ? dbAlive
-          : monthScope
-            ? msTotal === null
-              ? null
-              : Math.max(msTotal + counts.rescued, dbAlive)
-            : msTotal;
+        // EVERY DB-paged scope — days AND months (D16 + m0.8.6 change 1)
+        // — takes its denominator from the DB (codex r2): the month grid
+        // pages SQLite exclusively, so a MediaStore-based total would
+        // advertise photos the grid cannot render while a scan is still
+        // ingesting, breaking the chip-population contract ("one month,
+        // one number"). The ingestion gap gets the day scopes' honest
+        // "still being analyzed" line instead. Only the open-ended
+        // library scope keeps the MediaStore total (instant visibility
+        // for photos the scan has not ingested yet — its grid pages
+        // MediaStore too).
+        const total = dayScope || monthScope ? dbAlive : msTotal;
         if (cancelled) return;
         if (total === null) {
           failCrossScope();
@@ -503,9 +501,12 @@ export function ProgressView({
         // MediaStore sees dated photos (ingested or not) but never
         // rescued ones; the DB's dated-ingested population is therefore
         // alive − rescued. Anything MediaStore has beyond that is still
-        // on its way through the scan.
+        // on its way through the scan. Months share the formula: their
+        // bounded MediaStore count is equally blind to rescued rows.
         const analyzing =
-          datedDay && msTotal !== null ? Math.max(0, msTotal - (dbAlive - counts.rescued)) : 0;
+          (datedDay || monthScope) && msTotal !== null
+            ? Math.max(0, msTotal - (dbAlive - counts.rescued))
+            : 0;
         setGridMounted((prev) =>
           prev !== undefined && sameVolumeSet(prev, mounted) ? prev : mounted,
         );

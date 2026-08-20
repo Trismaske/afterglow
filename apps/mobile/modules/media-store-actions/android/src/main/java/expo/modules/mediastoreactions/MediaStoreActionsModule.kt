@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Process
 import android.provider.MediaStore
+import androidx.core.content.ContextCompat
 import androidx.exifinterface.media.ExifInterface
 import expo.modules.kotlin.activityresult.AppContextActivityResultLauncher
 import expo.modules.kotlin.functions.Coroutine
@@ -75,17 +76,20 @@ class MediaStoreActionsModule : Module() {
         }
       }
       shareChosenReceiver = chosen
-      // A custom action needs the export flag on API 33+ (targetSdk 36);
-      // NOT_EXPORTED still receives same-app broadcasts, and the
-      // PendingIntent's send carries our own identity.
-      if (Build.VERSION.SDK_INT >= 33) {
-        appContext.reactContext?.registerReceiver(
+      // NOT_EXPORTED on EVERY API level (codex r2): the send side is an
+      // explicit same-package PendingIntent, so nothing legitimate ever
+      // arrives from outside — an exported registration on API 30-32
+      // let any installed app forge a chosen event with a guessed
+      // sequential token and promote an abandoned batch to 'shared'.
+      // ContextCompat enforces the same isolation below 33 through the
+      // androidx per-app signature permission.
+      appContext.reactContext?.let {
+        ContextCompat.registerReceiver(
+          it,
           chosen,
           IntentFilter(ACTION_SHARE_CHOSEN),
-          Context.RECEIVER_NOT_EXPORTED,
+          ContextCompat.RECEIVER_NOT_EXPORTED,
         )
-      } else {
-        appContext.reactContext?.registerReceiver(chosen, IntentFilter(ACTION_SHARE_CHOSEN))
       }
     }
 

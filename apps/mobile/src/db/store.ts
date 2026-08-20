@@ -2875,7 +2875,12 @@ export async function getHistoryPage(
            -- whose bytes left (forget-keep, executed culls) renders as
            -- a placeholder tile — History's charter is completed work
            -- as fact. Absent UNDECIDED rows stay out: they carry none.
-           WHERE (is_present = 1 OR state <> 'unreviewed')
+           -- decided_at is the discriminator (codex r2): the external-
+           -- removal reconcile rewrites even a never-reviewed photo to
+           -- 'trashed', but only a real verdict ever stamps decided_at —
+           -- without this, deleting an undecided photo in the gallery
+           -- minted a Trashed tombstone claiming completed work.
+           WHERE (is_present = 1 OR (state <> 'unreviewed' AND decided_at IS NOT NULL))
              AND activity_at IS NOT NULL ${filterSql} ${photoKeyset}
            ORDER BY activity_at DESC, asset_id DESC
            LIMIT ${HISTORY_PAGE}`,

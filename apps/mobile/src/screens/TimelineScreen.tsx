@@ -219,6 +219,13 @@ export function TimelineScreen({ navigation }: Props) {
     async (gen: number) => {
       const pager = pagerRef.current;
       if (!pager || loadingRef.current) return;
+      // codex r2: during a reset's async scope resolution the ref still
+      // holds the OLD generation's pager — driving it under the new
+      // generation would publish previous-scope pages as fresh data.
+      if (pagerGenRef.current !== gen) return;
+      // A failed pager is never reused: its buffers lost items with the
+      // rejection, so only a reset ("leave and reopen") may continue.
+      if (failedRef.current) return;
       loadingRef.current = true;
       try {
         // Progress is measured in RENDERED UNITS, not fetched items
@@ -236,7 +243,26 @@ export function TimelineScreen({ navigation }: Props) {
           // anchors are a per-page aggregate with no stored column — this
           // line is what proves or refutes that trade on real corpora.
           const started = Date.now();
-          const items = await pager.next(BROWSE_BATCH);
+          let items: readonly BrowseItem[];
+          try {
+            items = await pager.next(BROWSE_BATCH);
+          } catch (error) {
+            // codex r2: the fetchers used to convert a rejected page into
+            // a fake EMPTY page — the merged pager then drained that
+            // stream for good and assembled units across unknown rows
+            // (same-day singles joined across an unfetched group). The
+            // failure now stops this pager outright: publish the safe
+            // prefix already assembled, say the read failed, and leave
+            // the retry to a reset. Gen-scoped (the round-1 race shape):
+            // a stale pager's failure must not poison the replacement.
+            console.warn('[timeline] browse page failed:', String(error));
+            if (gen === genRef.current) {
+              failedRef.current = true;
+              assemblyRef.current = assembly;
+              setBrowse({ assembly, exhausted: false, failed: true });
+            }
+            return;
+          }
           perfLog(() => `timeline browse page: ${items.length} items in ${Date.now() - started}ms`);
           if (gen !== genRef.current) return;
           for (const item of items) {
@@ -245,7 +271,7 @@ export function TimelineScreen({ navigation }: Props) {
             else freshIds.push(item.member.asset_id);
           }
           assembly = appendBrowseItems(assembly, items);
-        } while (assembly.units.length === before && !pager.exhausted() && !failedRef.current);
+        } while (assembly.units.length === before && !pager.exhausted());
         // Deep browse rows sit outside the bounded pending snapshot, so
         // their ACTION badges rendered empty until hydrated (codex r1) —
         // the same pre-publication hydration DayProgress runs. Fail-soft:
@@ -306,11 +332,7 @@ export function TimelineScreen({ navigation }: Props) {
         mounted,
         cursor as { takenAt: number; assetId: string } | undefined,
         Math.max(count, BROWSE_SINGLES_PAGE),
-      ).catch((error: unknown) => {
-        console.warn('[timeline] browse singles page failed:', String(error));
-        failedRef.current = true;
-        return [];
-      });
+      );
       const last = rows.length > 0 ? rows[rows.length - 1] : undefined;
       return {
         items: rows.map((member) => ({ kind: 'single' as const, member })),
@@ -327,11 +349,7 @@ export function TimelineScreen({ navigation }: Props) {
         mounted,
         cursor as BrowseGroupCursor | undefined,
         Math.max(count, BROWSE_GROUPS_PAGE),
-      ).catch((error: unknown) => {
-        console.warn('[timeline] browse groups page failed:', String(error));
-        failedRef.current = true;
-        return [];
-      });
+      );
       const last = rows.length > 0 ? rows[rows.length - 1] : undefined;
       return {
         items: rows.map((group) => ({ kind: 'group' as const, group })),
@@ -693,7 +711,8 @@ export function TimelineScreen({ navigation }: Props) {
         extraData={version}
         onEndReachedThreshold={0.6}
         onEndReached={() => {
-          if (filter === 'everything' && !browse.exhausted) void loadMoreBrowse(genRef.current);
+          if (filter === 'everything' && !browse.exhausted && !browse.failed)
+            void loadMoreBrowse(genRef.current);
         }}
         ListEmptyComponent={
           <Text style={styles.emptyText}>

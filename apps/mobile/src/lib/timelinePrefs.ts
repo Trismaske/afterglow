@@ -10,10 +10,13 @@ export const TIMELINE_FILTER_KEY = 'timeline_filter';
 
 export type TimelineFilter = 'unfinished' | 'everything' | 'unreviewed';
 
+// Chip order (final device pass, Tristan): Everything leads — it is
+// the whole timeline the others peel back from. "Only" dropped from
+// the last chip: it is a filter chip, only is implied.
 export const TIMELINE_FILTERS: readonly { value: TimelineFilter; label: string }[] = [
-  { value: 'unfinished', label: 'Unfinished' },
   { value: 'everything', label: 'Everything' },
-  { value: 'unreviewed', label: 'Unreviewed only' },
+  { value: 'unfinished', label: 'Unfinished' },
+  { value: 'unreviewed', label: 'Unreviewed' },
 ];
 
 export function parseTimelineFilter(raw: string | null | undefined): TimelineFilter {

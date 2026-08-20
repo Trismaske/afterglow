@@ -159,7 +159,16 @@ export function TimelineScreen({ navigation }: Props) {
    * contract). place null = remembered TOP (final device pass: the
    * maintain rule engages only after scrolling). */
   const memoryRef = useRef<Partial<Record<TimelineFilter, { place: PlaceCapture | null }>>>({});
-  const movedSinceJumpRef = useRef(true);
+  /** False from ENTRY: the screen opens at the top, and that counts as
+   * a landing — on the 27k S23 the mount-time reset and page-ins drift
+   * scrollY a few px off 0 before any jump runs, which made the very
+   * first capture carry an anchor instead of top (final device pass). */
+  const movedSinceJumpRef = useRef(false);
+  /** The last landing (a jump, or entry itself) targeted the TOP.
+   * mVCP's native adjustment after a full data swap can race the top
+   * jump and drift the list off 0 (S23) — an undrifted-by-the-reader
+   * top must still CAPTURE as top. */
+  const lastJumpTopRef = useRef(true);
   /** Set by a filter switch, consumed once by the jump effect below.
    * place null = jump to the top (nothing was visible to anchor on). */
   const jumpRef = useRef<{ place: PlaceCapture | null } | null>(null);
@@ -172,7 +181,8 @@ export function TimelineScreen({ navigation }: Props) {
         // in Everything, so "maintaining" a top-of-pending anchor landed
         // the reader mid-list needing to scroll up. The maintain rule
         // engages only once the reader has scrolled.
-        const atTop = scrollYRef.current <= 8;
+        const atTop =
+          scrollYRef.current <= 8 || (!movedSinceJumpRef.current && lastJumpTopRef.current);
         const seen = viewableRef.current;
         const top = seen === null ? undefined : cellTopsRef.current.get(cellTopKey(seen));
         const place: PlaceCapture | null =
@@ -516,9 +526,20 @@ export function TimelineScreen({ navigation }: Props) {
     const index =
       jump.place === null ? null : anchorIndexIn(data, jump.place.anchor, filter !== 'everything');
     if (index === null || jump.place === null) {
+      lastJumpTopRef.current = true;
       listRef.current?.scrollToOffset({ offset: 0, animated: false });
+      // The top jump gets the same settle pass as anchored ones: mVCP's
+      // post-swap adjustment can land after this scroll and drift the
+      // list off 0 (S23) — one verified re-zero, reader drags excepted.
+      const owner = jumpGenRef.current;
+      settleTimerRef.current = setTimeout(() => {
+        settleTimerRef.current = null;
+        if (owner !== jumpGenRef.current || movedSinceJumpRef.current) return;
+        if (scrollYRef.current > 8) listRef.current?.scrollToOffset({ offset: 0, animated: false });
+      }, 300);
       return;
     }
+    lastJumpTopRef.current = false;
     const { delta } = jump.place;
     // The swap discarded every cell measurement, so this first jump can
     // only land on ESTIMATED offsets (device pass round 3: the restore

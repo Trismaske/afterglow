@@ -26,6 +26,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { LayoutChangeEvent, StyleProp, ViewStyle } from 'react-native';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { PhotoState } from '@afterglow/core';
@@ -486,6 +487,21 @@ export function TimelineScreen({ navigation }: Props) {
   const dataLenRef = useRef(0);
   /** Fires the held first-switch jump once Everything's data exists. */
   const [jumpNudge, setJumpNudge] = useState(0);
+  /** The back-to-top control shows once the reader is deep enough that
+   * flinging back is a chore (final device pass, Tristan). Using it IS
+   * a top landing: the next filter switch behaves exactly as if the
+   * reader had been at the top all along. */
+  const [showBackToTop, setShowBackToTop] = useState(false);
+  const backToTop = useCallback(() => {
+    movedSinceJumpRef.current = false;
+    lastJumpTopRef.current = true;
+    // Disown any in-flight settle or retry: the reader chose the top.
+    jumpGenRef.current += 1;
+    if (settleTimerRef.current !== null) clearTimeout(settleTimerRef.current);
+    if (retryTimerRef.current !== null) clearTimeout(retryTimerRef.current);
+    listRef.current?.scrollToOffset({ offset: 0, animated: false });
+    setShowBackToTop(false);
+  }, []);
   useEffect(() => {
     const jump = jumpRef.current;
     if (jump === null) return;
@@ -763,6 +779,8 @@ export function TimelineScreen({ navigation }: Props) {
         }}
         onScroll={(e) => {
           scrollYRef.current = e.nativeEvent.contentOffset.y;
+          const deep = e.nativeEvent.contentOffset.y > 1600;
+          if (deep !== showBackToTop) setShowBackToTop(deep);
         }}
         scrollEventThrottle={33}
         // A finger-drag is the one signal that the reader took a NEW
@@ -813,6 +831,15 @@ export function TimelineScreen({ navigation }: Props) {
           ) : null
         }
       />
+      {showBackToTop && (
+        <Pressable
+          style={[styles.topFab, { bottom: insets.bottom + 96 }]}
+          onPress={backToTop}
+          accessibilityLabel="Back to top"
+        >
+          <MaterialCommunityIcons name="chevron-up" size={26} color={colors.text} />
+        </Pressable>
+      )}
       <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
         <BigButton
           label={first ? 'Continue reviewing' : 'Review cull list'}
@@ -849,4 +876,18 @@ const styles = StyleSheet.create({
   // Wrapping cluster inside the thumbnail — every badge stays visible.
   badges: { position: 'absolute', right: 2, bottom: 2, left: 2 },
   footer: { paddingTop: 8, gap: 8 },
+  // A quiet raised disc, not an accent CTA: navigation, not an action
+  // (the accent belongs to "Continue reviewing" below it).
+  topFab: {
+    position: 'absolute',
+    right: 16,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

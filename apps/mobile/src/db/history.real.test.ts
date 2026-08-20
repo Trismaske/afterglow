@@ -99,14 +99,21 @@ describe('getHistoryPage', () => {
     // decided_at — it must not mint a Trashed tombstone.
     insertPhoto(d, 'gone-via-reconcile', 'unreviewed', AT + 360);
     await reconcileExternallyRemoved(asExpo(d), ['gone-via-reconcile'], AT + 370);
+    // A DECIDED photo removed externally becomes a tombstone AT ITS OWN
+    // activity position (closing grilling, 2026-08-20): the reconcile
+    // must NOT restamp activity_at — the discovery is not app activity,
+    // and the old top-leap forced a mid-scroll rebase Tristan rejected.
+    insertPhoto(d, 'gone-decided-external', 'kept', AT + 250);
+    await reconcileExternallyRemoved(asExpo(d), ['gone-decided-external'], AT + 9999);
     const page = await getHistoryPage(asExpo(d), 'all', null);
     const photoRows = page.rows.filter((r) => r.kind === 'photo');
     expect(photoRows.map((r) => (r.kind === 'photo' ? r.asset_id : ''))).toEqual([
       'newest',
+      'gone-decided-external', // AT + 250 — kept its slot, no top-leap
       'gone',
       'older',
     ]);
-    expect(photoRows.map((r) => (r.kind === 'photo' ? r.is_present : -1))).toEqual([1, 0, 1]);
+    expect(photoRows.map((r) => (r.kind === 'photo' ? r.is_present : -1))).toEqual([1, 0, 0, 1]);
   });
 
   it('the Trashed chip filters to executed culls (D9)', async () => {

@@ -233,11 +233,21 @@ async function applyRemovalCleanup(
    * sweep on every removal regardless. */
   permanent: boolean,
 ): Promise<void> {
+  // activity_at moves ONLY for an executed cull (markCulled): the trash
+  // concluding is app activity, so its tombstone files at that moment.
+  // An EXTERNAL removal is not app activity (closing grilling,
+  // 2026-08-20): the tombstone keeps the photo's last real activity —
+  // and therefore its feed position — instead of leaping to the top of
+  // History on discovery (the leap forced a mid-scroll rebase Tristan
+  // rejected). COALESCE only fills a missing stamp: History requires
+  // activity_at non-null.
   await txn.runAsync(
     `UPDATE photos SET state = 'trashed', is_present = 0,
        culled_at = CASE WHEN ? = 1 THEN COALESCE(culled_at, ?) ELSE culled_at END,
-       activity_at = ?
+       activity_at = CASE WHEN ? = 1 THEN ? ELSE COALESCE(activity_at, ?) END
      WHERE asset_id = ?`,
+    markCulled ? 1 : 0,
+    at,
     markCulled ? 1 : 0,
     at,
     at,

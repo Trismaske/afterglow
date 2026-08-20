@@ -187,6 +187,14 @@ L2 has just changed what the freeze means, so this is the cheapest moment to dec
 
 Where photos come from, what they wear, and the four queue screens behaving like one another.
 
+### Retire the regroup freeze (agreed direction, m0.8.6 closing grilling)
+
+**Tristan, 2026-08-20:** grouping becomes pure presentation — photos own their state; groups may grow, shrink, and re-form freely under any strictness or source change.
+Two survivors: "Not related" ejections stay durable (the one explicit user judgment about membership), and a duel lives only while its two photos share a group — the scan deletes duels whose pair separates.
+Unreachable volumes regroup on remount (membership repair, not freezing).
+This deletes windowFreeze, the grow-only append machinery, and the reset carve-outs (net-negative code), and it ABSORBS the per-photo duel-scoping item below (a duel dying on pair separation is the same rule applied by the engine).
+Full design-doc + grilling before implementation; the m0.8.6 freeze behavior ships as reviewed.
+
 ### Un-review drops only that photo's duels (agreed design, from the m0.8.6 device pass)
 
 **Today (m0.8.6 D5):** the state editor's un-review deletes the group's WHOLE Compare history, with a confirm.

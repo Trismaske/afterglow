@@ -156,8 +156,9 @@ export function TimelineScreen({ navigation }: Props) {
    * DRAGGED since the last jump (round 3: peeking at a pending filter
    * from deep in Everything must not lose the deep position — but a
    * real scroll while away carries the new place across, the round-2
-   * contract). */
-  const memoryRef = useRef<Partial<Record<TimelineFilter, PlaceCapture>>>({});
+   * contract). place null = remembered TOP (final device pass: the
+   * maintain rule engages only after scrolling). */
+  const memoryRef = useRef<Partial<Record<TimelineFilter, { place: PlaceCapture | null }>>>({});
   const movedSinceJumpRef = useRef(true);
   /** Set by a filter switch, consumed once by the jump effect below.
    * place null = jump to the top (nothing was visible to anchor on). */
@@ -166,16 +167,22 @@ export function TimelineScreen({ navigation }: Props) {
     (next: TimelineFilter) => {
       setFilterState((prev) => {
         if (prev === next || prev === null) return next;
+        // AT THE TOP, the place IS the top (final device pass, Tristan):
+        // the newest pending unit sits below every newer REVIEWED unit
+        // in Everything, so "maintaining" a top-of-pending anchor landed
+        // the reader mid-list needing to scroll up. The maintain rule
+        // engages only once the reader has scrolled.
+        const atTop = scrollYRef.current <= 8;
         const seen = viewableRef.current;
         const top = seen === null ? undefined : cellTopsRef.current.get(cellTopKey(seen));
         const place: PlaceCapture | null =
-          seen === null
+          atTop || seen === null
             ? null
             : {
                 anchor: { ref: unitRefOf(seen), newestAt: seen.newestAt },
                 delta: top === undefined ? 0 : top - scrollYRef.current,
               };
-        if (place !== null) memoryRef.current[prev] = place;
+        memoryRef.current[prev] = { place };
         // The raw scroll offset means nothing in the other filter's data,
         // and momentum carried across the swap fights the re-layout (the
         // sustained jitter of the 2026-08-19 device pass). Every switch
@@ -184,7 +191,8 @@ export function TimelineScreen({ navigation }: Props) {
         if (prev === 'everything' || next === 'everything') {
           const remembered = memoryRef.current[next];
           jumpRef.current = {
-            place: !movedSinceJumpRef.current && remembered !== undefined ? remembered : place,
+            place:
+              !movedSinceJumpRef.current && remembered !== undefined ? remembered.place : place,
           };
         }
         return next;
@@ -482,12 +490,27 @@ export function TimelineScreen({ navigation }: Props) {
     // are complete reads, so an anchor older than their horizon clamps
     // to their last unit (the footer under it says why the trail ends);
     // the incremental browse read falls back to the top instead.
-    // The first switch into Everything arrives BEFORE its first page
-    // (codex r1): hold the jump for the data-arrival nudge below instead
-    // of consuming it against an empty array — a shallow anchor the
-    // first page can answer then lands properly.
-    if (filter === 'everything' && data.length === 0 && !browse.exhausted && !browse.failed) {
-      jumpRef.current = jump;
+    // HOLD the jump while Everything cannot answer it yet (codex r1 +
+    // the final device pass): the browse loads incrementally, so an
+    // anchor DEEPER than the loaded frontier used to fall back to the
+    // top — which made the landing depend on how deep the retained
+    // assembly happened to be (Tristan's "inconsistent" repro: bottom
+    // of Unfinished → top of Everything, sometimes aligned). The jump
+    // now stays armed and PAGES TOWARD its anchor (70-90 ms a page on
+    // the 27k device); each landed page re-enters through the nudge
+    // below, until the anchor's time is inside the loaded range or the
+    // stream ends.
+    if (filter === 'everything' && jump.place !== null && !browse.exhausted && !browse.failed) {
+      const oldestLoaded = data.length > 0 ? data[data.length - 1].newestAt : Infinity;
+      if (data.length === 0 || jump.place.anchor.newestAt < oldestLoaded) {
+        jumpRef.current = jump;
+        void loadMoreBrowse(genRef.current);
+        return;
+      }
+    }
+    if (filter === 'everything' && data.length === 0) {
+      // Exhausted or failed while still empty: nothing to land on.
+      listRef.current?.scrollToOffset({ offset: 0, animated: false });
       return;
     }
     const index =

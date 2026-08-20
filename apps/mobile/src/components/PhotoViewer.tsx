@@ -435,19 +435,33 @@ export function PhotoViewer({
     undefined,
     currentId,
   );
+  /** Photos whose load FAILED — a black stage says nothing, and the
+   * one real way here is a file deleted outside Afterglow that no
+   * reconcile has met yet (device pass, 2026-08-20). Named in place. */
+  const [deadIds, setDeadIds] = useState<ReadonlySet<string>>(new Set());
   const renderPage = useCallback(
     ({ item }: { item: ViewerItem }) => (
       <Pressable style={{ width, height: '100%' }} onPress={onPagePress}>
-        <Image
-          source={{ uri: item.uri }}
-          style={StyleSheet.absoluteFill}
-          contentFit="contain"
-          recyclingKey={item.id}
-          transition={40}
-        />
+        {deadIds.has(item.id) ? (
+          <View style={styles.deadPage}>
+            <MaterialCommunityIcons name="image-off-outline" size={44} color={colors.textDim} />
+            <Text style={styles.deadText}>
+              This photo can't be shown — it may have been deleted outside Afterglow.
+            </Text>
+          </View>
+        ) : (
+          <Image
+            source={{ uri: item.uri }}
+            style={StyleSheet.absoluteFill}
+            contentFit="contain"
+            recyclingKey={item.id}
+            transition={40}
+            onError={() => setDeadIds((old) => new Set(old).add(item.id))}
+          />
+        )}
       </Pressable>
     ),
-    [width, onPagePress],
+    [width, onPagePress, deadIds],
   );
 
   const meta = facts ? VERDICT_META[classifyPhotoState({ state: facts.state })] : null;
@@ -716,6 +730,18 @@ export function PhotoViewer({
 }
 
 const styles = StyleSheet.create({
+  deadPage: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    paddingHorizontal: 40,
+  },
+  deadText: { color: colors.textDim, fontSize: 14, textAlign: 'center' },
   root: { flex: 1, backgroundColor: '#000' },
   stage: { flex: 1 },
   topBar: {

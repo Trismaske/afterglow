@@ -550,8 +550,16 @@ export function TimelineScreen({ navigation }: Props) {
       if (data.length === 0 || jump.place.anchor.newestAt < oldestLoaded) {
         // FIRST hold: show the top while pages stream toward the anchor
         // (device pass: a deep raw offset over a reset-emptied list read
-        // as a BLACK screen while the pager quietly rebuilt).
-        if (jump.held !== true) listRef.current?.scrollToOffset({ offset: 0, animated: false });
+        // as a BLACK screen while the pager quietly rebuilt) — and RESET
+        // the drag baseline: moved still carries the reader's PRE-switch
+        // scrolling, and without a fresh baseline the very first held
+        // re-entry read it as a drag-during-hold and abandoned the jump
+        // (his bottom-of-Unfinished → top-of-Everything regression).
+        // Only a drag that happens AFTER the hold began abandons it.
+        if (jump.held !== true) {
+          listRef.current?.scrollToOffset({ offset: 0, animated: false });
+          movedSinceJumpRef.current = false;
+        }
         jumpRef.current = { ...jump, held: true };
         void loadMoreBrowse(genRef.current);
         return;

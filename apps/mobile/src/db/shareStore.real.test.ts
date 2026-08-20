@@ -405,21 +405,23 @@ describe('D10: share resolves on a chosen target; abandoned sheets evaporate', (
     const batchId = await createShareBatch(asExpo(d), ['p1'], AT + 10);
     await promoteShareBatch(asExpo(d), batchId, AT + 11);
     await markShareBatchShared(asExpo(d), batchId, 'com.a/x', AT + 20);
-    // Duplicate: the recorded component must not move.
-    await markShareBatchShared(asExpo(d), batchId, 'com.b/y', AT + 30);
+    // Duplicate: the recorded component must not move — but the batch
+    // IS durably shared, so the label prompt may open (codex r5).
+    await expect(markShareBatchShared(asExpo(d), batchId, 'com.b/y', AT + 30)).resolves.toBe(true);
     const row = await asExpo(d).getFirstAsync<{ chosen_component: string | null }>(
       'SELECT chosen_component FROM share_batches WHERE id = ?',
       batchId,
     );
     expect(row?.chosen_component).toBe('com.a/x');
     // Mark against a discarded batch: the accepted crash-window
-    // undercount — a clean no-op, never a throw.
+    // undercount — a clean no-op, never a throw, and FALSE says no
+    // durable row exists for a label (codex r5).
     const ghost = await createShareBatch(asExpo(d), ['p1'], AT + 40);
     await promoteShareBatch(asExpo(d), ghost, AT + 41);
     await discardAbandonedShareBatches(asExpo(d), AT + 60_000);
-    await expect(
-      markShareBatchShared(asExpo(d), ghost, 'com.c/z', AT + 70_000),
-    ).resolves.toBeUndefined();
+    await expect(markShareBatchShared(asExpo(d), ghost, 'com.c/z', AT + 70_000)).resolves.toBe(
+      false,
+    );
   });
 
   it('startup recovery discards stranded sheet_opened batches beside failing launching ones', async () => {

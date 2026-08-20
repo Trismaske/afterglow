@@ -368,9 +368,9 @@ export function TimelineScreen({ navigation }: Props) {
       return {
         items: rows.map((group) => ({ kind: 'group' as const, group })),
         // The cursor's anchor is MINTED BY THE QUERY that owns the
-        // ordering key (self-review finding 2): the members projection
-        // applies no source filter, so members[0].taken_at can exceed
-        // the SQL anchor and re-match the same group on the next page.
+        // ordering key (self-review finding 2; codex r5 made the two
+        // coincide — the anchor now spans the whole reachable group,
+        // exactly what the projection renders).
         nextCursor:
           rows.length < Math.max(count, BROWSE_GROUPS_PAGE) || last === undefined
             ? null

@@ -79,7 +79,8 @@ export function StateEditorSheet({
   onChanged: () => void;
 }) {
   const db = useSQLiteContext();
-  const { decide, unstageCull, restoreCull, clearDecision, queuesChanged } = useReview();
+  const { decide, unstageCull, restoreCull, clearDecision, queuesChanged, hydrateBadges } =
+    useReview();
   const { accent } = useTheme();
   const insets = useSafeAreaInsets();
   const [busy, setBusy] = useState(false);
@@ -126,8 +127,17 @@ export function StateEditorSheet({
         // themselves) can land on a photo outside the bounded pending
         // snapshot, where the host's refresh observes no change; the
         // queue tab badges key on the version and went stale (codex
-        // r1). Say it happened.
-        if (surfaceErrors) queuesChanged();
+        // r1). Say it happened — and rehydrate THIS asset's provider
+        // badge caches first (codex r5): the version bump alone left
+        // needsEdit/favourite/queued sets stale, so the next deck or
+        // Timeline card showed obsolete badges, and a stale Edit toggle
+        // could restart an already-queued edit cycle.
+        if (surfaceErrors && photoId !== null) {
+          await hydrateBadges([photoId]).catch((error: unknown) =>
+            console.warn('[editor] badge rehydrate failed:', String(error)),
+          );
+          queuesChanged();
+        }
         onChanged();
         setTick((t) => t + 1);
       } catch (error) {
@@ -140,7 +150,7 @@ export function StateEditorSheet({
         setBusy(false);
       }
     },
-    [busy, onChanged, queuesChanged],
+    [busy, onChanged, queuesChanged, hydrateBadges, photoId],
   );
 
   const setVerdict = useCallback(

@@ -111,7 +111,11 @@ export function ShareQueueScreen(_props: Props) {
         // idempotent (state-guarded; only the transition that lands
         // stamps members), so awaiting our own settles it either way.
         void markShareBatchShared(db, token, component, Date.now())
-          .then(() => {
+          .then((durable) => {
+            // A false return means the batch is GONE — the sweep won
+            // the race; a prompt would offer a label with no History
+            // row to receive it (codex r5).
+            if (!durable) return;
             if (AppState.currentState === 'active') presentLabelPromptRef.current(token);
             else confirmedAwaitingForegroundRef.current = token;
           })

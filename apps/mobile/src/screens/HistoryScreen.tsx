@@ -113,7 +113,7 @@ export function HistoryScreen(_props: Props) {
   // like a verified trash outcome, without credit); 'unknown' changes
   // nothing.
   const reconcilePage = useCallback(
-    async (pageRows: HistoryRow[]): Promise<HistoryRow[]> => {
+    async (pageRows: HistoryRow[]): Promise<{ rows: HistoryRow[]; changed: boolean }> => {
       // BOUNDED CONCURRENCY (m0.8.1): checkMediaPresence is two native
       // calls, and a 40-row page ran them 80× in series — the page's
       // dominant cost on every focus and every "load more".
@@ -130,7 +130,7 @@ export function HistoryScreen(_props: Props) {
       const gone = new Set<string>(
         photoIds.filter((_, i) => presences[i] === 'trashed' || presences[i] === 'absent'),
       );
-      if (gone.size === 0) return pageRows;
+      if (gone.size === 0) return { rows: pageRows, changed: false };
       // Quad-state 'absent' = permanently gone → duel history dies with
       // the sweep; 'trashed' is restorable and keeps it (grilling Q13).
       const permanentlyGone = new Set<string>(photoIds.filter((_, i) => presences[i] === 'absent'));
@@ -146,7 +146,10 @@ export function HistoryScreen(_props: Props) {
       // The removal may have dissolved a cached group or moved its
       // survivor to singles — the review queue must observe it.
       void refreshReview().catch(() => {});
-      return pageRows.filter((row) => row.kind !== 'photo' || !gone.has(row.asset_id));
+      return {
+        rows: pageRows.filter((row) => row.kind !== 'photo' || !gone.has(row.asset_id)),
+        changed: true,
+      };
     },
     [db, refreshReview],
   );
@@ -155,10 +158,21 @@ export function HistoryScreen(_props: Props) {
     async (which: HistoryFilter) => {
       const token = ++requestRef.current;
       try {
-        const page = await getHistoryPage(db, which, null);
-        const rowsNow = await reconcilePage(page.rows);
+        let page = await getHistoryPage(db, which, null);
+        let r = await reconcilePage(page.rows);
+        if (r.changed) {
+          // The reconcile just rewrote rows (decided ones became D9
+          // tombstones with fresh activity times) — re-read the page so
+          // they render as placeholders NOW instead of vanishing for
+          // the rest of this visit, and so the cursor re-derives from
+          // the moved order (codex r5). One re-read: a second-pass
+          // change (rows vanishing between reads) falls back to the
+          // filtered view.
+          page = await getHistoryPage(db, which, null);
+          r = await reconcilePage(page.rows);
+        }
         if (requestRef.current !== token) return; // superseded by a newer reload
-        setRows(rowsNow);
+        setRows(r.rows);
         setNext(page.next);
         setFailed(false);
       } catch {
@@ -186,10 +200,16 @@ export function HistoryScreen(_props: Props) {
     // meanwhile bumps the token and this append is discarded.
     const token = requestRef.current;
     try {
-      const page = await getHistoryPage(db, filter, next);
-      const rowsNow = await reconcilePage(page.rows);
+      let page = await getHistoryPage(db, filter, next);
+      let r = await reconcilePage(page.rows);
+      if (r.changed) {
+        // Same one-shot re-read as reload (codex r5): the tombstoned
+        // rows must join THIS page, from the same cursor.
+        page = await getHistoryPage(db, filter, next);
+        r = await reconcilePage(page.rows);
+      }
       if (requestRef.current !== token) return;
-      setRows((old) => [...(old ?? []), ...rowsNow]);
+      setRows((old) => [...(old ?? []), ...r.rows]);
       setNext(page.next);
       setFailed(false);
     } catch {

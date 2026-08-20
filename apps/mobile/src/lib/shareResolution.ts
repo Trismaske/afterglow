@@ -37,15 +37,33 @@ const OPEN_GRACE_MS = 5_000;
 export function installShareResolution(db: SQLiteDatabase): () => void {
   const unsubscribeChosen = subscribeShareTargetChosen(({ token, component }) => {
     if (token < 0) return;
-    void markShareBatchShared(db, token, component, Date.now()).catch((error: unknown) =>
-      console.warn('[share] chosen-target record failed:', String(error)),
-    );
+    // Bounded retry (codex r5): the chosen event is delivered exactly
+    // once, so a transient write failure here (plus the Share screen's
+    // own parallel attempt) is the only chance to record a real share —
+    // an unrecorded one gets swept as abandoned. Three tries, spaced.
+    const record = async () => {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await markShareBatchShared(db, token, component, Date.now());
+          return;
+        } catch (error) {
+          if (attempt >= 3) {
+            console.warn('[share] chosen-target record failed after retries:', String(error));
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
+        }
+      }
+    };
+    void record();
   });
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let sweepFailures = 0;
   const sweep = () => {
     timer = null;
     void discardAbandonedShareBatches(db, Date.now() - OPEN_GRACE_MS)
       .then(async (discarded) => {
+        sweepFailures = 0;
         // Loud once, per the deliberate-fallback rule: a discarded
         // attempt is a real user action reduced to nothing.
         if (discarded > 0) {
@@ -61,7 +79,14 @@ export function installShareResolution(db: SQLiteDatabase): () => void {
         const wait = Math.max(250, oldest + OPEN_GRACE_MS - Date.now() + 250);
         timer = setTimeout(sweep, wait);
       })
-      .catch((error: unknown) => console.warn('[share] abandonment sweep failed:', String(error)));
+      .catch((error: unknown) => {
+        console.warn('[share] abandonment sweep failed:', String(error));
+        // Bounded re-arm (codex r5): a transiently failed sweep would
+        // otherwise leave the batch until an unrelated transition — but
+        // a persistently broken database must not retry forever.
+        sweepFailures += 1;
+        if (sweepFailures < 3 && timer === null) timer = setTimeout(sweep, SWEEP_DELAY_MS);
+      });
   };
   const appState = AppState.addEventListener('change', (state) => {
     if (state !== 'active') return;

@@ -274,7 +274,12 @@ export async function markShareBatchShared(
   batchId: number,
   component: string,
   at: number,
-): Promise<void> {
+  /** True iff a durable 'shared' row exists after this call — false
+   * when the batch is GONE (the sweep won the race), so a label prompt
+   * gated on this never claims a History row that does not exist
+   * (codex r5). */
+): Promise<boolean> {
+  let durable = false;
   await withWriteTransaction(db, async (txn) => {
     // 'launching' is accepted too (codex r2): a fast pick can land the
     // chosen event before the promote write commits — the event itself
@@ -290,7 +295,15 @@ export async function markShareBatchShared(
     // Only a batch this call actually resolved may stamp its members: a
     // duplicate event against an already-shared batch must not move the
     // record.
-    if (Number(promoted.changes) === 0) return;
+    if (Number(promoted.changes) === 0) {
+      const row = await txn.getFirstAsync<{ state: string }>(
+        'SELECT state FROM share_batches WHERE id = ?',
+        batchId,
+      );
+      durable = row?.state === 'shared';
+      return;
+    }
+    durable = true;
     // The LATEST send, not the first: a photo re-queued into a new cycle
     // moves queued_at forward, and keeping an older resolved_at would
     // leave resolved_at < queued_at — which getQueueTurnaround discards.
@@ -305,6 +318,7 @@ export async function markShareBatchShared(
       batchId,
     );
   });
+  return durable;
 }
 
 /**

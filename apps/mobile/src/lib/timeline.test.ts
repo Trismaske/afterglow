@@ -450,12 +450,12 @@ describe('anchorIndexIn (m0.8.6 device pass: filter-switch landing)', () => {
   });
 });
 
-describe('browseItemTime honours the SQL-minted anchor (codex r1)', () => {
+describe('browseItemTime honours the query-minted anchor (codex r1+r5)', () => {
   const day = '2026-05-09';
-  it("a group's merge key is the source-scoped anchor, not its newest reachable member", () => {
-    // The heads query ordered this group at t=50 (its newest IN-SOURCE
-    // member); the projection still returns the whole group, whose
-    // newest member (t=90, out of source) must not re-order the stream.
+  it("a group's merge key is the query-minted anchor, wherever the read minted it", () => {
+    // Whatever the heads query minted (since codex r5: the whole
+    // reachable group's newest, matching the projection) is the merge
+    // key — members[0] must never override it.
     const g: BrowseItem = {
       kind: 'group',
       group: { groupId: 7, anchor: 50, members: [member('out', 90, day), member('in', 50, day)] },

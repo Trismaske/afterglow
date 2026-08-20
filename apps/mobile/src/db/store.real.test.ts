@@ -2527,6 +2527,46 @@ describe('the browse timeline reads (m0.8.6 F2/D1: Everything)', () => {
     expect(next).toEqual([]);
   });
 
+  it('a mixed-source group orders by its WHOLE reachable group; source gates eligibility only (codex r5)', async () => {
+    const d = await fresh();
+    const CAMERA_ROOT = [{ volume: 'external_primary', dir: 'Camera' }];
+    const at = (raw: string, dir: string, takenAt: number) => ({
+      ...upsert(raw, takenAt),
+      uri: `file:///dcim/${dir}/${raw}.jpg`,
+    });
+    await writeContinuousGroups(
+      asExpo(d),
+      {
+        photos: [
+          at('mix-in', 'Camera', T + 100),
+          at('mix-out', 'Elsewhere', T + 900),
+          at('pure-a', 'Camera', T + 500),
+          at('pure-b', 'Camera', T + 490),
+          at('foreign-a', 'Elsewhere', T + 800),
+          at('foreign-b', 'Elsewhere', T + 790),
+        ],
+        groups: [
+          { members: [id('mix-in'), id('mix-out')], timeAttached: [] },
+          { members: [id('pure-a'), id('pure-b')], timeAttached: [] },
+          { members: [id('foreign-a'), id('foreign-b')], timeAttached: [] },
+        ],
+        singles: [],
+      },
+      AT,
+    );
+    const page = await fetchBrowseGroupsPage(asExpo(d), CAMERA_ROOT, null, undefined, 10);
+    // The mixed group is eligible (an in-source member) and ORDERS by
+    // its whole-group newest (T+900, the out-of-source member) — ahead
+    // of the pure T+500 group; the all-foreign group never appears.
+    expect(page.map((g) => g.members.map((m) => m.asset_id))).toEqual([
+      [id('mix-out'), id('mix-in')],
+      [id('pure-a'), id('pure-b')],
+    ]);
+    expect(page[0].anchor).toBe(T + 900);
+    // The card's displayed date IS the ordering key.
+    expect(page[0].members[0].taken_at).toBe(page[0].anchor);
+  });
+
   it('singles page includes every verdict except trashed, keyset-stable', async () => {
     const d = await fresh();
     await seedBrowse(d);

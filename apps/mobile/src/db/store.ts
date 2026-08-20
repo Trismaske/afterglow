@@ -985,10 +985,26 @@ export async function fetchBrowseGroupsPage(
   before: BrowseGroupCursor | undefined,
   limit: number,
 ): Promise<ReviewGroupRow[]> {
-  const src = sourceClause(roots, 'p.uri');
+  const srcExists = sourceClause(roots, 'p2.uri');
+  const reachExists = reachClause(mounted, 'p2.volume_name');
   const reach = reachClause(mounted, 'p.volume_name');
   const keyset = before === undefined ? '' : ' HAVING anchor < ? OR (anchor = ? AND g.id < ?)';
   const keysetParams = before === undefined ? [] : [before.anchor, before.anchor, before.groupId];
+  // The source filter gates ELIGIBILITY only; the anchor — the ordering
+  // key AND the cursor — spans the WHOLE reachable group (codex r5),
+  // exactly as the pending read anchors (listReviewGroupsIn): the card
+  // displays members[0] of the whole reachable projection, so a source-
+  // scoped anchor let a card wearing timestamp 90 merge below units at
+  // 50. With no source filter the EXISTS collapses away entirely.
+  const eligibility =
+    srcExists.sql === ''
+      ? ''
+      : ` AND EXISTS (SELECT 1 FROM photo_group_assignments a2
+             JOIN photos p2 ON p2.asset_id = a2.photo_id
+            WHERE a2.group_id = g.id AND p2.is_present = 1
+              AND p2.state <> 'trashed'${srcExists.sql}${reachExists.sql})`;
+  const eligibilityParams =
+    srcExists.sql === '' ? [] : [...srcExists.params, ...reachExists.params];
   let out: ReviewGroupRow[] = [];
   await withReadTransaction(db, async (txn) => {
     const heads = await txn.getAllAsync<{ id: number; anchor: number }>(
@@ -996,12 +1012,12 @@ export async function fetchBrowseGroupsPage(
          FROM photo_groups g
          JOIN photo_group_assignments a ON a.group_id = g.id
          JOIN photos p ON p.asset_id = a.photo_id
-        WHERE p.is_present = 1 AND p.state <> 'trashed'${src.sql}${reach.sql}
+        WHERE p.is_present = 1 AND p.state <> 'trashed'${reach.sql}${eligibility}
         GROUP BY g.id${keyset}
         ORDER BY anchor DESC, g.id DESC
         LIMIT ?`,
-      ...src.params,
       ...reach.params,
+      ...eligibilityParams,
       ...keysetParams,
       limit,
     );

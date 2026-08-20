@@ -254,10 +254,36 @@ describe('grow-only appends (m0.8.3 grilling): unreachable-frozen groups accept 
     expect(after).toEqual(before);
   });
 
-  it('a target that got REVIEWED mid-flight degrades the append to a single', async () => {
+  it('a MIXED target keeps growing — one unreviewed member leaves it unsettled (D4, codex r3)', async () => {
     const d = await fresh();
     const groupId = await seedFrozenGroup(d);
+    // One member decided, the other still unreviewed: under D4 the
+    // composition is unsettled and growth stays legal — the old
+    // all-unreviewed revalidation rejected this append and split
+    // similar photos solely because the SD card was absent.
     d.raw.prepare("UPDATE photos SET state = 'kept' WHERE asset_id = ?").run(`${PRIMARY}/p1`);
+    await writeContinuousGroups(
+      asExpo(d),
+      {
+        photos: [photo(PRIMARY, 'p2', AT - 3_500_000)],
+        groups: [],
+        singles: [],
+        appends: [{ groupId, members: [`${PRIMARY}/p2`], timeAttached: [] }],
+      },
+      AT + 100,
+      { mountedVolumes: [PRIMARY] },
+    );
+    const grown = (await getGroupAssignments(asExpo(d), [`${PRIMARY}/p2`])).get(`${PRIMARY}/p2`)!;
+    expect(grown.groupId).toBe(groupId);
+  });
+
+  it('a target that got FINISHED mid-flight degrades the append to a single', async () => {
+    const d = await fresh();
+    const groupId = await seedFrozenGroup(d);
+    // EVERY member decided: settled work — the append must not reopen it.
+    d.raw
+      .prepare("UPDATE photos SET state = 'kept' WHERE asset_id IN (?, ?)")
+      .run(`${PRIMARY}/p1`, `${SD}/s1`);
     await writeContinuousGroups(
       asExpo(d),
       {

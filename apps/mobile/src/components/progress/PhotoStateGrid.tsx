@@ -197,7 +197,9 @@ export function PhotoStateGrid({
             mounted ?? null,
           ).catch((error: unknown) => {
             console.warn('[progress] grid query failed:', String(error));
-            failedRef.current = true;
+            // Gen-scoped (codex r3): a superseded pass's late rejection
+            // must not poison the replacement generation's failure flag.
+            if (gen === genRef.current) failedRef.current = true;
             return [];
           });
           if (!fresh()) return;
@@ -236,7 +238,7 @@ export function PhotoStateGrid({
               raw.map((p) => p.id),
             ).catch((error: unknown) => {
               console.warn('[progress] grid state join failed:', String(error));
-              failedRef.current = true;
+              if (gen === genRef.current) failedRef.current = true;
               return null;
             });
             if (states === null) break;
@@ -311,7 +313,7 @@ export function PhotoStateGrid({
             count,
           ).catch((error: unknown) => {
             console.warn('[progress] photo page failed:', String(error));
-            failedRef.current = true;
+            if (gen === genRef.current) failedRef.current = true;
             return { photos: [], endCursor: undefined, hasNext: false };
           });
           const items: GridPagedItem[] = page.photos.map((p: LoadedPhoto) => ({
@@ -340,7 +342,7 @@ export function PhotoStateGrid({
           count,
         ).catch((error: unknown) => {
           console.warn('[progress] rescued page failed:', String(error));
-          failedRef.current = true;
+          if (gen === genRef.current) failedRef.current = true;
           return [];
         });
         const items: GridPagedItem[] = rows.map((r) => ({

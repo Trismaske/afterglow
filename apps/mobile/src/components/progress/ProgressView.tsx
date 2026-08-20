@@ -433,7 +433,10 @@ export function ProgressView({
           sources = await resolveSources(db);
         } catch (error) {
           console.warn('[progress] source resolution failed — scope kept:', String(error));
-          failCrossScope();
+          // Cancelled work must not touch shared state (codex r3): a
+          // superseded scope's late rejection could null the data a
+          // NEWER scope had already committed, stranding "Loading…".
+          if (!cancelled) failCrossScope();
           return;
         }
         const roots = sources.roots ?? null;
@@ -478,7 +481,7 @@ export function ProgressView({
           ]);
         } catch (error) {
           console.warn('[progress] state counts failed — numbers kept:', String(error));
-          failCrossScope();
+          if (!cancelled) failCrossScope();
           return;
         }
         const dbAlive = counts.tracked - counts.trashed;

@@ -2168,10 +2168,15 @@ export async function writeContinuousGroups(
     }
     // GROW-ONLY appends, revalidated on live state (m0.8.3 grilling): the
     // target must still be a growable group — it exists, carries no
-    // review metadata, and every member is still unreviewed — and each
-    // appended photo must itself still be unfrozen. A disqualified entry
-    // degrades to the pre-grow plan shape (own group when ≥2, single
-    // otherwise); existing member rows are never touched either way.
+    // review metadata, and holds at least one unreviewed member (D4,
+    // codex r3: the old all-unreviewed demand was the retired contagion
+    // rule — the planner marks unfinished MIXED unreachable groups
+    // growable, and this guard rejected every one of its appends,
+    // splitting similar photos solely because an SD card was absent) —
+    // and each appended photo must itself still be unfrozen. A
+    // disqualified entry degrades to the pre-grow plan shape (own group
+    // when ≥2, single otherwise); existing member rows are never
+    // touched either way.
     for (const append of appendWrites) {
       const additions = append.members.filter((id) => !frozen.has(id));
       if (additions.length === 0) continue;
@@ -2179,7 +2184,7 @@ export async function writeContinuousGroups(
       const targetGrowable =
         targetMembers.length > 0 &&
         !metadataLive.has(append.groupId) &&
-        targetMembers.every((m) => (liveStates.get(m) ?? 'unreviewed') === 'unreviewed');
+        targetMembers.some((m) => (liveStates.get(m) ?? 'unreviewed') === 'unreviewed');
       const timeAttached = new Set(append.timeAttached);
       if (targetGrowable) {
         touchedGroups.add(append.groupId);

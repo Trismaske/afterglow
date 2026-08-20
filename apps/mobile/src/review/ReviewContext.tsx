@@ -224,7 +224,7 @@ interface ReviewContextValue {
   /** State-aware change of mind on a DECIDED photo (gate 5 browse):
    * keep leaves pending actions alone; to_edit starts a fresh cycle; both
    * resolve pending copy matches. */
-  redecideDecided: (assetId: string, target: 'keep' | 'to_edit') => Promise<void>;
+  redecideDecided: (assetId: string, target: 'keep' | 'to_edit') => Promise<number>;
   /** Finish a group: every remaining unreviewed member keeps (kept). */
   /** Resolves to the number actually kept (codex r10 — see keepAllSingles). */
   keepRest: (groupId: number) => Promise<number>;
@@ -776,6 +776,11 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           else carriedRef.current[kind].delete(id);
         }
       }
+      // The favourite query is SPARSE (codex r6): cancelling a
+      // never-applied queued favourite deletes its action row and
+      // returns no entry — absence must clear the cached heart, or the
+      // next toggle repeats the cancellation against nothing.
+      for (const id of ids) if (!favourites.has(id)) favouriteRef.current.delete(id);
       for (const [id, status] of favourites) favouriteRef.current.set(id, status);
     },
     [db],
@@ -1381,7 +1386,10 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           outcome.result && outcome.result.appliedIds.length > 0
             ? { kind: 'redecide', assetId, target }
             : null,
-      );
+        // The APPLIED count rides back to the deck (codex r6): a stale
+        // row's guarded no-op must not advance the pager (D11 gates on
+        // the durable result, not the rendered state).
+      ).then(() => outcome.result?.appliedIds.length ?? 0);
     },
     [db, write],
   );

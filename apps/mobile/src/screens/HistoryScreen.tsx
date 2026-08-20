@@ -200,13 +200,16 @@ export function HistoryScreen(_props: Props) {
     // meanwhile bumps the token and this append is discarded.
     const token = requestRef.current;
     try {
-      let page = await getHistoryPage(db, filter, next);
-      let r = await reconcilePage(page.rows);
+      const page = await getHistoryPage(db, filter, next);
+      const r = await reconcilePage(page.rows);
       if (r.changed) {
-        // Same one-shot re-read as reload (codex r5): the tombstoned
-        // rows must join THIS page, from the same cursor.
-        page = await getHistoryPage(db, filter, next);
-        r = await reconcilePage(page.rows);
+        // The reconcile just MOVED rows (fresh tombstones with new
+        // activity times sort to the feed's top — a deep cursor's
+        // re-read can never contain them, codex r6): rebase the whole
+        // feed from page one so the D9 placeholders render this visit.
+        // reload() bumps the token, so this stale append self-discards.
+        await reload(filter);
+        return;
       }
       if (requestRef.current !== token) return;
       setRows((old) => [...(old ?? []), ...r.rows]);
@@ -220,7 +223,7 @@ export function HistoryScreen(_props: Props) {
     } finally {
       setLoadingMore(false);
     }
-  }, [db, filter, next, loadingMore, reconcilePage]);
+  }, [db, filter, next, loadingMore, reconcilePage, reload]);
 
   const renderItem = useCallback(({ item }: { item: HistoryRow }) => {
     if (item.kind === 'share') {

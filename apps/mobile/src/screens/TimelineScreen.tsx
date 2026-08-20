@@ -458,6 +458,14 @@ export function TimelineScreen({ navigation }: Props) {
   );
   /** The settle pass's timer, cancelled by any newer jump. */
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The estimate-retry's timer + owning jump generation, and a live
+   * mirror of the list length (codex r6): the untracked 150 ms retry
+   * could fire against the NEXT filter's data with a stale index —
+   * out-of-range scrollToIndex throws an invariant — or override a
+   * newer restoration or the reader's own drag. */
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const jumpGenRef = useRef(0);
+  const dataLenRef = useRef(0);
   /** Fires the held first-switch jump once Everything's data exists. */
   const [jumpNudge, setJumpNudge] = useState(0);
   useEffect(() => {
@@ -466,7 +474,9 @@ export function TimelineScreen({ navigation }: Props) {
     jumpRef.current = null;
     retriedJumpRef.current = false;
     movedSinceJumpRef.current = false;
+    jumpGenRef.current += 1;
     if (settleTimerRef.current !== null) clearTimeout(settleTimerRef.current);
+    if (retryTimerRef.current !== null) clearTimeout(retryTimerRef.current);
     // Runs post-commit: `data` is already the target filter's array. A
     // non-animated jump also kills any carried fling. The pending feeds
     // are complete reads, so an anchor older than their horizon clamps
@@ -534,6 +544,7 @@ export function TimelineScreen({ navigation }: Props) {
     if (jumpRef.current !== null && data.length > 0) setJumpNudge((n) => n + 1);
   }, [data]);
 
+  dataLenRef.current = data.length;
   const stateOf = useMemo(() => {
     const map = new Map<string, PhotoState>();
     for (const unit of data) {
@@ -684,14 +695,20 @@ export function TimelineScreen({ navigation }: Props) {
           // The anchor sits past the render window: land on the estimate,
           // then re-issue the exact jump once — after measurement it
           // succeeds; if it somehow fails again, the estimate stands
-          // rather than looping.
+          // rather than looping. The retry is generation-scoped and
+          // bounds-checked (codex r6): a filter switch, a data reset, or
+          // the reader's own drag in the 150 ms window disowns it.
           listRef.current?.scrollToOffset({
             offset: info.averageItemLength * info.index,
             animated: false,
           });
           if (retriedJumpRef.current) return;
           retriedJumpRef.current = true;
-          setTimeout(() => {
+          const owner = jumpGenRef.current;
+          retryTimerRef.current = setTimeout(() => {
+            retryTimerRef.current = null;
+            if (owner !== jumpGenRef.current || movedSinceJumpRef.current) return;
+            if (info.index >= dataLenRef.current) return;
             listRef.current?.scrollToIndex({
               index: info.index,
               animated: false,

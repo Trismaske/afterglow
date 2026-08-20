@@ -1559,16 +1559,24 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   // UNDECIDED photo
   // takes the ordinary verdict path, where "to edit" keeps it AND queues
   // the edit in one transaction.
-  const redecide = async (id: string, target: RedecideTarget) => {
+  const redecide = async (id: string, target: RedecideTarget): Promise<boolean> => {
     const state = stateOf.get(id) ?? 'unreviewed';
     // v18: 'to edit' is no longer a verdict, so the active target is
     // kept-vs-cull; the edit flag is read separately.
     const activeTarget: RedecideTarget | null =
       state === 'culled' ? 'cull' : state === 'kept' ? 'keep' : null;
-    if (activeTarget === target) await clearDecision(id);
-    else if (state !== 'unreviewed' && (target === 'keep' || target === 'to_edit'))
-      await redecideDecided(id, target);
-    else await decide(id, target, singlesMode ? null : (group?.groupId ?? undefined));
+    if (activeTarget === target) {
+      await clearDecision(id);
+      return false; // an undo never advances
+    }
+    if (state !== 'unreviewed' && (target === 'keep' || target === 'to_edit')) {
+      // The DURABLE result gates the advance (codex r6, D11): a row
+      // gone stale between render and tap makes this a guarded no-op,
+      // and the pager must not jump off an unchanged photo.
+      return (await redecideDecided(id, target)) > 0;
+    }
+    await decide(id, target, singlesMode ? null : (group?.groupId ?? undefined));
+    return true;
   };
 
   /** ONE decide handler for both deck kinds (m0.8.2 unification, F10):
@@ -1591,8 +1599,8 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     const activeTarget = prior === 'culled' ? 'cull' : prior === 'kept' ? 'keep' : null;
     const targetVerdict = target === 'cull' ? 'culled' : 'kept';
     const advances = activeTarget !== target && (prior === 'unreviewed' || targetVerdict !== prior);
-    await redecide(current.id, target);
-    if (advances && index + 1 < deckItems.length) jumpTo(index + 1);
+    const applied = await redecide(current.id, target);
+    if (advances && applied && index + 1 < deckItems.length) jumpTo(index + 1);
   };
 
   return (

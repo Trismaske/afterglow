@@ -109,19 +109,30 @@ export function ShareQueueScreen(_props: Props) {
         // app-root subscriber's write may still be in flight — or may
         // fail, leaving the batch for the sweep. This second write is
         // idempotent (state-guarded; only the transition that lands
-        // stamps members), so awaiting our own settles it either way.
-        void markShareBatchShared(db, token, component, Date.now())
-          .then((durable) => {
-            // A false return means the batch is GONE — the sweep won
-            // the race; a prompt would offer a label with no History
-            // row to receive it (codex r5).
-            if (!durable) return;
-            if (AppState.currentState === 'active') presentLabelPromptRef.current(token);
-            else confirmedAwaitingForegroundRef.current = token;
-          })
-          .catch((error: unknown) =>
-            console.warn('[share] chosen-target record failed (no prompt):', String(error)),
-          );
+        // stamps members), so awaiting our own settles it either way —
+        // retried bounded (codex r6): a transient failure here while
+        // the root's retry succeeds would otherwise lose the prompt for
+        // a share History DOES record.
+        void (async () => {
+          for (let attempt = 1; ; attempt++) {
+            try {
+              // False means the batch is GONE — the sweep won the race;
+              // a prompt would offer a label with no History row to
+              // receive it (codex r5).
+              const durable = await markShareBatchShared(db, token, component, Date.now());
+              if (!durable) return;
+              if (AppState.currentState === 'active') presentLabelPromptRef.current(token);
+              else confirmedAwaitingForegroundRef.current = token;
+              return;
+            } catch (error) {
+              if (attempt >= 3) {
+                console.warn('[share] chosen-target record failed (no prompt):', String(error));
+                return;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
+            }
+          }
+        })();
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],

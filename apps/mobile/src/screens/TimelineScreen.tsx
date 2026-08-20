@@ -426,9 +426,14 @@ export function TimelineScreen({ navigation }: Props) {
    * flinging back is a chore. Landing at 0 IS the top — the next
    * switch's at-top test reads scrollY directly. */
   const [showBackToTop, setShowBackToTop] = useState(false);
+  /** Instant jumps fire no onScroll, but a LATE event minted before the
+   * jump can land after the hide and re-show the disc with the old deep
+   * offset (device pass). Events in this brief window are stale. */
+  const fabJumpAtRef = useRef(0);
   const backToTop = useCallback(() => {
     clampReturnRef.current = null;
     scrollYRef.current = 0;
+    fabJumpAtRef.current = Date.now();
     listRef.current?.scrollToOffset({ offset: 0, animated: false });
     setShowBackToTop(false);
   }, []);
@@ -658,8 +663,13 @@ export function TimelineScreen({ navigation }: Props) {
           viewportHRef.current = e.nativeEvent.layout.height;
         }}
         onScroll={(e) => {
-          scrollYRef.current = e.nativeEvent.contentOffset.y;
-          const deep = e.nativeEvent.contentOffset.y > 1600;
+          const y = e.nativeEvent.contentOffset.y;
+          // A deep-offset event just after the back-to-top jump is a
+          // straggler from before it — believing it would re-show the
+          // disc and poison the scroll mirror.
+          if (y > 100 && Date.now() - fabJumpAtRef.current < 400) return;
+          scrollYRef.current = y;
+          const deep = y > 1600;
           if (deep !== showBackToTop) setShowBackToTop(deep);
         }}
         scrollEventThrottle={33}
@@ -712,11 +722,11 @@ export function TimelineScreen({ navigation }: Props) {
       />
       {showBackToTop && (
         <Pressable
-          style={[styles.topFab, { bottom: insets.bottom + 96 }]}
+          style={[styles.topFab, { bottom: insets.bottom + 96, borderColor: theme.accent }]}
           onPress={backToTop}
           accessibilityLabel="Back to top"
         >
-          <MaterialCommunityIcons name="chevron-up" size={26} color={colors.text} />
+          <MaterialCommunityIcons name="chevron-up" size={26} color={theme.accent} />
         </Pressable>
       )}
       <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
@@ -758,8 +768,9 @@ const styles = StyleSheet.create({
   // Wrapping cluster inside the thumbnail — every badge stays visible.
   badges: { position: 'absolute', right: 2, bottom: 2, left: 2 },
   footer: { paddingTop: 8, gap: 8 },
-  // A quiet raised disc, not an accent CTA: navigation, not an action
-  // (the accent belongs to "Continue reviewing" below it).
+  // Accent outline + accent chevron (device pass: the neutral disc
+  // vanished into the background); the raised surface keeps it from
+  // competing with the solid-accent CTA below.
   topFab: {
     position: 'absolute',
     right: 16,
@@ -767,8 +778,7 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 22,
     backgroundColor: colors.surfaceRaised,
-    borderWidth: 1,
-    borderColor: colors.border,
+    borderWidth: 1.5,
     alignItems: 'center',
     justifyContent: 'center',
   },

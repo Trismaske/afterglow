@@ -93,6 +93,13 @@ const ROW_H = UNIT_CARD_HEIGHT + ROW_GAP;
 /** Depth past which the back-to-top disc shows — and below which a
  * landing hides it (~a dozen cards: flinging back is a chore). */
 const DEEP_PX = 1600;
+/** The rest of the scrollable geometry, pinned so the landing mirror's
+ * clamp is EXACT (codex r9): the list's own bottom padding, and a
+ * fixed-height slot for the one footer note (truncation / failed read)
+ * — a content-sized footer would put the physical maximum offset
+ * outside what the mirror can compute. */
+const LIST_PAD_BOTTOM = 12;
+const FOOTER_H = 76;
 const BROWSE_SINGLES_PAGE = 120;
 const BROWSE_GROUPS_PAGE = 40;
 
@@ -157,6 +164,9 @@ export function TimelineScreen({ navigation }: Props) {
    * scrollY + viewport against ROW_H × length. */
   const viewportHRef = useRef(0);
   const dataLenRef = useRef(0);
+  /** Render mirror of "a footer note is rendered" — part of the exact
+   * content geometry the landing clamp needs (codex r9). */
+  const footerNoteRef = useRef(false);
   /** A drag DURING a page-toward hold abandons it — the reader took
    * over. Reset when a hold begins; meaningless outside one. */
   const holdDragRef = useRef(false);
@@ -430,6 +440,12 @@ export function TimelineScreen({ navigation }: Props) {
   const listRef = useRef<FlatList<TimelineUnit>>(null);
   const onViewableItemsChanged = useRef(
     ({ viewableItems }: { viewableItems: Array<{ item: TimelineUnit }> }) => {
+      // Same stale window as onScroll (codex r9): this handler is one
+      // stable ref shared across the keyed list instances, and a late
+      // viewability update from the keyed-out list — or the fresh
+      // mount's initial pass racing the jump — would overwrite the
+      // landing's hand-set unit mirror.
+      if (Date.now() - jumpAtRef.current < 400) return;
       viewableRef.current = viewableItems[0]?.item ?? null;
     },
   ).current;
@@ -480,9 +496,18 @@ export function TimelineScreen({ navigation }: Props) {
     // queued event from the keyed-out list can outlive its unmount and
     // would overwrite these fresh mirrors.
     const landAt = (offset: number) => {
-      const max = Math.max(0, ROW_H * data.length - viewportHRef.current);
+      const contentH =
+        ROW_H * data.length + LIST_PAD_BOTTOM + (footerNoteRef.current ? FOOTER_H : 0);
+      const max = Math.max(0, contentH - viewportHRef.current);
       const y = Math.max(0, Math.min(offset, max));
       scrollYRef.current = y;
+      // The viewport-top UNIT mirror too (codex r9): viewability is
+      // recomputed from scroll events, and this landing emits none — a
+      // consecutive switch would otherwise anchor on the fresh mount's
+      // initial top instead of what the landing shows. Exact, since
+      // rows are.
+      viewableRef.current =
+        data.length === 0 ? null : data[Math.min(Math.floor(y / ROW_H), data.length - 1)];
       jumpAtRef.current = Date.now();
       setShowBackToTop(y > DEEP_PX);
     };
@@ -668,6 +693,16 @@ export function TimelineScreen({ navigation }: Props) {
     }, 0);
   }, [filter, data]);
   const pendingTruncated = filter !== 'everything' && shownPending < total;
+  // The ONE home for "is a footer note rendered" — the JSX and the
+  // landing mirror's geometry both read it (codex r9: a condition
+  // duplicated between them would drift).
+  const footerNote =
+    filter === 'everything' && browse.failed && data.length > 0
+      ? 'Could not read all of your history just now — leave and reopen to retry.'
+      : pendingTruncated && data.length > 0
+        ? `Showing the newest ${shownPending.toLocaleString()} of ${total.toLocaleString()} to review — more pages in as you review, or switch to Everything to browse it all.`
+        : null;
+  footerNoteRef.current = footerNote !== null;
 
   if (filter === null) {
     return <View style={styles.root} />;
@@ -772,15 +807,15 @@ export function TimelineScreen({ navigation }: Props) {
           </Text>
         }
         ListFooterComponent={
-          filter === 'everything' && browse.failed && data.length > 0 ? (
-            <Text style={styles.emptyText}>
-              Could not read all of your history just now — leave and reopen to retry.
-            </Text>
-          ) : pendingTruncated && data.length > 0 ? (
-            <Text style={styles.emptyText}>
-              Showing the newest {shownPending.toLocaleString()} of {total.toLocaleString()} to
-              review — more pages in as you review, or switch to Everything to browse it all.
-            </Text>
+          footerNote !== null ? (
+            // Pinned height (codex r9): a content-sized footer would put
+            // the list's physical maximum offset outside the exact
+            // geometry the landing mirror computes from.
+            <View style={styles.footerNote}>
+              <Text style={styles.footerNoteText} numberOfLines={3}>
+                {footerNote}
+              </Text>
+            </View>
           ) : null
         }
       />
@@ -825,7 +860,11 @@ const styles = StyleSheet.create({
   filterChipActive: { backgroundColor: colors.surfaceRaised },
   filterLabel: { color: colors.textDim, fontSize: 13, fontWeight: '600' },
   filterLabelActive: { color: colors.text },
-  list: { paddingBottom: 12 },
+  list: { paddingBottom: LIST_PAD_BOTTOM },
+  /** Height-pinned like the cards (FOOTER_H is part of the landing
+   * mirror's exact geometry); extreme font scales ellipsize. */
+  footerNote: { height: FOOTER_H, justifyContent: 'center' },
+  footerNoteText: { color: colors.textDim, fontSize: 14, textAlign: 'center' },
   /** The row owns the gap (padding, not margin): getItemLayout's ROW_H
    * must equal the cell's true laid-out height. */
   row: { height: ROW_H, paddingBottom: ROW_GAP },

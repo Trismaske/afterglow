@@ -441,9 +441,12 @@ export function TimelineScreen({ navigation }: Props) {
    * switch's at-top test reads scrollY directly. */
   const [showBackToTop, setShowBackToTop] = useState(false);
   /** Instant jumps fire no onScroll, but a LATE event minted before the
-   * jump can land after the hide and re-show the disc with the old deep
-   * offset (device pass). Events in this brief window are stale. */
-  const fabJumpAtRef = useRef(0);
+   * jump — on the disc's own list, or queued by a keyed-out list that
+   * outlives its unmount — can land after the mirrors were set by hand
+   * and overwrite them with the old offset (device pass; codex r8).
+   * Every programmatic jump arms this window; a real finger disarms it
+   * (onScrollBeginDrag precedes its own scroll events). */
+  const jumpAtRef = useRef(0);
   const backToTop = useCallback(() => {
     clampReturnRef.current = null;
     // An authoritative top landing abandons any held page-toward jump
@@ -451,7 +454,7 @@ export function TimelineScreen({ navigation }: Props) {
     // hold and pull the reader back deep after they chose the top.
     jumpRef.current = null;
     scrollYRef.current = 0;
-    fabJumpAtRef.current = Date.now();
+    jumpAtRef.current = Date.now();
     listRef.current?.scrollToOffset({ offset: 0, animated: false });
     setShowBackToTop(false);
   }, []);
@@ -469,9 +472,19 @@ export function TimelineScreen({ navigation }: Props) {
     // Landings keep BOTH scroll mirrors honest: programmatic scrolls
     // emit no onScroll on Android (the histogram lesson), and the disc
     // state survives the keyed remount, so each must be set by hand.
+    // Mirror the ACHIEVABLE offset, not the ask (codex r8): the native
+    // list clamps a near-end request to its physical max, and a false-
+    // deep mirror fails the next switch's top rule (restoring a deep
+    // anchor over a visibly-top list) and shows the disc over a short
+    // one. Landing also ARMS the stale-event window (codex r8): a
+    // queued event from the keyed-out list can outlive its unmount and
+    // would overwrite these fresh mirrors.
     const landAt = (offset: number) => {
-      scrollYRef.current = offset;
-      setShowBackToTop(offset > DEEP_PX);
+      const max = Math.max(0, ROW_H * data.length - viewportHRef.current);
+      const y = Math.max(0, Math.min(offset, max));
+      scrollYRef.current = y;
+      jumpAtRef.current = Date.now();
+      setShowBackToTop(y > DEEP_PX);
     };
     // Runs post-commit: `data` is already the target filter's array,
     // and a non-animated jump also kills any carried fling.
@@ -710,11 +723,12 @@ export function TimelineScreen({ navigation }: Props) {
           viewportHRef.current = e.nativeEvent.layout.height;
         }}
         onScroll={(e) => {
+          // ANY event inside the post-jump window is a straggler from
+          // before the jump (programmatic scrolls emit none): believing
+          // it would poison the mirror and the disc in either direction
+          // (codex r8). A real drag disarms the window first.
+          if (Date.now() - jumpAtRef.current < 400) return;
           const y = e.nativeEvent.contentOffset.y;
-          // A deep-offset event just after the back-to-top jump is a
-          // straggler from before it — believing it would re-show the
-          // disc and poison the scroll mirror.
-          if (y > 100 && Date.now() - fabJumpAtRef.current < 400) return;
           scrollYRef.current = y;
           const deep = y > DEEP_PX;
           if (deep !== showBackToTop) setShowBackToTop(deep);
@@ -726,7 +740,7 @@ export function TimelineScreen({ navigation }: Props) {
         // events are fresh by definition.
         onScrollBeginDrag={() => {
           holdDragRef.current = true;
-          fabJumpAtRef.current = 0;
+          jumpAtRef.current = 0;
         }}
         keyExtractor={(unit) =>
           unit.kind === 'group'

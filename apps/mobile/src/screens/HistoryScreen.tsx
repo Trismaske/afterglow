@@ -136,7 +136,7 @@ export function HistoryScreen(_props: Props) {
       const permanentlyGone = new Set<string>(photoIds.filter((_, i) => presences[i] === 'absent'));
       // Mounted snapshot: the repair must defer a group still holding a
       // member on an ejected card (final cycle P4, plan §5).
-      await reconcileExternallyRemoved(
+      const carriedFavourites = await reconcileExternallyRemoved(
         db,
         [...gone],
         Date.now(),
@@ -163,10 +163,15 @@ export function HistoryScreen(_props: Props) {
               // (queued and error) — mirror that here, or the tombstone
               // wears carried badges for work that never happened (codex
               // r7). Applied/carried columns are resolved_at proof and
-              // survive, exactly as they do in the DB.
+              // survive — except the favourite, whose carried bit is
+              // DERIVED (COALESCE of pending over applied direction) and
+              // can flip when cleanup drops a re-queued opposite
+              // direction: the reconcile hands back the post-cleanup
+              // truth (codex r8).
               needs_edit: 0,
               favourite_live: 0,
               favourite_removing: 0,
+              favourite_carried: carriedFavourites.has(row.asset_id) ? 1 : 0,
               organize_pending: 0,
               share_live: 0,
             }

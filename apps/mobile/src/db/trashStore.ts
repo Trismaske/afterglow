@@ -330,8 +330,9 @@ export async function reconcileExternallyRemoved(
    * are system-trashed (restorable): duels survive a possible restore.
    * Omitted = none permanent (the conservative default). */
   permanentIds?: ReadonlySet<string>,
-): Promise<void> {
-  if (photoIds.length === 0) return;
+): Promise<Set<string>> {
+  const carriedFavourites = new Set<string>();
+  if (photoIds.length === 0) return carriedFavourites;
   await withWriteTransaction(db, async (txn) => {
     // The groups these photos sit in, read BEFORE cleanup (m0.8.1 scope:
     // the whole-table repair costs ~12 ms even as a no-op).
@@ -339,11 +340,31 @@ export async function reconcileExternallyRemoved(
     for (const id of photoIds) {
       await applyRemovalCleanup(txn, id, at, false, permanentIds?.has(id) ?? false);
     }
+    // The post-cleanup favourite truth, for a caller projecting rows in
+    // place (codex r8): the cleanup nulls `target` on resolved rows, so
+    // the carried direction the History read derives — COALESCE(target,
+    // applied_target) = '1' — can FLIP relative to the pre-cleanup row
+    // when a re-queued opposite direction died with its queue entry.
+    // Read it here, in the same transaction, with the read's own
+    // predicate; the other carried kinds key on resolved_at alone and
+    // cannot flip.
+    for (const ids of chunk(photoIds, IN_CHUNK)) {
+      if (ids.length === 0) continue;
+      const rows = await txn.getAllAsync<{ photo_id: string }>(
+        `SELECT photo_id FROM photo_actions
+         WHERE kind = 'favourite' AND resolved_at IS NOT NULL
+           AND COALESCE(target, applied_target) = '1'
+           AND photo_id IN (${ids.map(() => '?').join(',')})`,
+        ...ids,
+      );
+      for (const row of rows) carriedFavourites.add(row.photo_id);
+    }
     // A removal can leave a group with one present member — dissolve it
     // in the same transaction so the deck never receives a 1-photo group.
     await repairGroupMembership(txn, affected, mountedVolumes);
     await closeShareCycleIfQueueEmpty(txn, at);
   });
+  return carriedFavourites;
 }
 
 export type PresenceCheck = 'present' | 'absent' | 'unknown';

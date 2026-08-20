@@ -116,6 +116,42 @@ describe('getHistoryPage', () => {
     expect(photoRows.map((r) => (r.kind === 'photo' ? r.is_present : -1))).toEqual([1, 0, 0, 1]);
   });
 
+  it('reconcile hands back the POST-cleanup carried-favourite direction (codex r8)', async () => {
+    const d = await fresh();
+    // Applied favourite, then a queued REMOVAL: pre-cleanup the read
+    // derives carried=0 (the pending '0' wins the COALESCE) — cleanup
+    // drops the queue entry, so the applied heart is carried again.
+    insertPhoto(d, 'heart-stays', 'kept', AT + 100);
+    action(d, 'heart-stays', 'favourite', 'queued', {
+      target: '0',
+      appliedTarget: '1',
+      resolvedAt: AT + 50,
+    });
+    // Applied removal, then a queued APPLY: pre-cleanup carried=1 (the
+    // pending '1' wins) — cleanup drops it, so no heart is carried.
+    insertPhoto(d, 'heart-dies', 'kept', AT + 200);
+    action(d, 'heart-dies', 'favourite', 'queued', {
+      target: '1',
+      appliedTarget: '0',
+      resolvedAt: AT + 50,
+    });
+    const carried = await reconcileExternallyRemoved(
+      asExpo(d),
+      ['heart-stays', 'heart-dies'],
+      AT + 300,
+    );
+    expect(carried).toEqual(new Set(['heart-stays']));
+    // The set matches what a fresh read now derives — one predicate.
+    const page = await getHistoryPage(asExpo(d), 'all', null);
+    const favs = new Map(
+      page.rows
+        .filter((r) => r.kind === 'photo')
+        .map((r) => (r.kind === 'photo' ? [r.asset_id, r.favourite_carried] : ['', -1])),
+    );
+    expect(favs.get('heart-stays')).toBe(1);
+    expect(favs.get('heart-dies')).toBe(0);
+  });
+
   it('the Trashed chip filters to executed culls (D9)', async () => {
     const d = await fresh();
     insertPhoto(d, 'kept', 'kept', AT + 300);

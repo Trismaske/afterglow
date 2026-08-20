@@ -81,7 +81,13 @@ import {
 import type { BadgeWeight } from '../lib/photoBadges';
 import { perfLog } from '../lib/perfLog';
 import { showToast } from '../lib/toast';
-import { applyLocalAction, queueEquals, type LocalAction } from '../lib/reviewPatch';
+import {
+  applyLocalAction,
+  badgeStateEqualsWithin,
+  queueEquals,
+  sameIdsWithin,
+  type LocalAction,
+} from '../lib/reviewPatch';
 import {
   buildTimeline,
   groupAnchor,
@@ -332,14 +338,6 @@ function makePassBarrier(): PassBarrier {
   return { promise, resolve, reject };
 }
 
-/** Set equality for the badge id sets (same no-op-refresh purpose as
- * reviewPatch's queueEquals, for state the patch model does not hold). */
-function sameIds(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
-  if (a.size !== b.size) return false;
-  for (const id of a) if (!b.has(id)) return false;
-  return true;
-}
-
 /** Split an action-badge read into the CARRIED sets the badges need; the
  * live half is owned by the patched refs, which are a render ahead. */
 function carriedSets(map: ActionBadgeMap): Record<BadgeActionKind, Set<string>> {
@@ -505,16 +503,24 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           },
           { groups: nextGroups, singles: nextSingles, counts, needsEdit, favourites },
         ) &&
-        // The badge maps are outside the patch model, so they are their
-        // own no-op condition: a share/organize queue changed elsewhere
-        // (the queue tabs) leaves the queue itself identical.
-        sameIds(queuedForRef.current.share, queuedFor.share) &&
-        sameIds(queuedForRef.current.organize, queuedFor.organize) &&
+        // Badge equality is judged WITHIN the read universe only (m0.8.6
+        // codex closing): the refs also hold browse-deep ids the
+        // Timeline hydrated, which this bounded read can never contain —
+        // whole-set equality read them as permanent drift, so every
+        // scan-status refresh committed, bumped the version, and reset
+        // the Everything browse once a second (S23, instrumented).
+        badgeStateEqualsWithin(
+          ids,
+          { needsEdit: needsEditRef.current, favourites: favouriteRef.current },
+          { needsEdit, favourites },
+        ) &&
+        sameIdsWithin(ids, queuedForRef.current.share, queuedFor.share) &&
+        sameIdsWithin(ids, queuedForRef.current.organize, queuedFor.organize) &&
         // Carried badges are read state too: finishing an edit turns its
         // pencil from live to carried while the QUEUE is unchanged.
-        sameIds(carriedRef.current.edit, carried.edit) &&
-        sameIds(carriedRef.current.organize, carried.organize) &&
-        sameIds(carriedRef.current.share, carried.share)
+        sameIdsWithin(ids, carriedRef.current.edit, carried.edit) &&
+        sameIdsWithin(ids, carriedRef.current.organize, carried.organize) &&
+        sameIdsWithin(ids, carriedRef.current.share, carried.share)
       ) {
         // Even a no-op refresh updates the PAIRED mounted snapshot
         // (final cycle T6): a card swap that leaves the visible rows
@@ -522,10 +528,24 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
         snapshotMountedRef.current = mounted;
         return;
       }
-      needsEditRef.current = needsEdit;
-      favouriteRef.current = favourites;
-      queuedForRef.current = queuedFor;
-      carriedRef.current = carried;
+      // Reconcile WITHIN the read universe, never replace (same rule as
+      // hydrateBadgeRefs): wholesale assignment dropped every hydrated
+      // browse-deep entry on each pass.
+      for (const id of ids) {
+        if (needsEdit.has(id)) needsEditRef.current.add(id);
+        else needsEditRef.current.delete(id);
+        const fav = favourites.get(id);
+        if (fav !== undefined) favouriteRef.current.set(id, fav);
+        else favouriteRef.current.delete(id);
+        if (queuedFor.share.has(id)) queuedForRef.current.share.add(id);
+        else queuedForRef.current.share.delete(id);
+        if (queuedFor.organize.has(id)) queuedForRef.current.organize.add(id);
+        else queuedForRef.current.organize.delete(id);
+        for (const kind of ['edit', 'organize', 'share'] as const) {
+          if (carried[kind].has(id)) carriedRef.current[kind].add(id);
+          else carriedRef.current[kind].delete(id);
+        }
+      }
       loadedIdsRef.current = ids;
       // The set keep-rest re-reads under for on-page groups (R1/S3) —
       // published only past the generation guard, as one unit with the
@@ -916,19 +936,29 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       getActionBadges(db, ids),
     ]);
     const carried = carriedSets(actionBadges);
+    // Scoped like the full pass (m0.8.6 codex closing): entries for ids
+    // outside this read are hydrated browse-deep state, not drift.
     if (
-      sameIds(queuedForRef.current.share, next.share) &&
-      sameIds(queuedForRef.current.organize, next.organize) &&
-      sameIds(carriedRef.current.edit, carried.edit) &&
-      sameIds(carriedRef.current.organize, carried.organize) &&
-      sameIds(carriedRef.current.share, carried.share)
+      sameIdsWithin(ids, queuedForRef.current.share, next.share) &&
+      sameIdsWithin(ids, queuedForRef.current.organize, next.organize) &&
+      sameIdsWithin(ids, carriedRef.current.edit, carried.edit) &&
+      sameIdsWithin(ids, carriedRef.current.organize, carried.organize) &&
+      sameIdsWithin(ids, carriedRef.current.share, carried.share)
     )
       return;
     // Invalidate any in-flight refresh pass that read the PRE-write rows
     // (its commit would revert these badges), exactly as patchLocal does.
     refreshGenRef.current += 1;
-    queuedForRef.current = next;
-    carriedRef.current = carried;
+    for (const id of ids) {
+      if (next.share.has(id)) queuedForRef.current.share.add(id);
+      else queuedForRef.current.share.delete(id);
+      if (next.organize.has(id)) queuedForRef.current.organize.add(id);
+      else queuedForRef.current.organize.delete(id);
+      for (const kind of ['edit', 'organize', 'share'] as const) {
+        if (carried[kind].has(id)) carriedRef.current[kind].add(id);
+        else carriedRef.current[kind].delete(id);
+      }
+    }
     setVersion((v) => v + 1);
   }, [db]);
 

@@ -286,6 +286,14 @@ function memberEquals(a: ReviewMemberRow, b: ReviewMemberRow): boolean {
  * nothing at all.
  */
 export function queueEquals(a: ReviewSnapshot, b: ReviewSnapshot): boolean {
+  // Badge state (needsEdit/favourites/queued/carried) is deliberately
+  // NOT compared here (m0.8.6 codex closing): the provider's refs hold
+  // a UNION universe — the bounded pass ids plus browse-deep ids the
+  // Timeline hydrated — so whole-set equality read every hydrated extra
+  // as drift, and every scan-status refresh bumped the version and
+  // reset the Everything browse (the S23's once-a-second Loading
+  // flash). Badge equality is judged per read id by
+  // badgeStateEqualsWithin/sameIdsWithin beside this.
   if (
     a.counts.grouped !== b.counts.grouped ||
     a.counts.singles !== b.counts.singles ||
@@ -310,13 +318,6 @@ export function queueEquals(a: ReviewSnapshot, b: ReviewSnapshot): boolean {
   for (let i = 0; i < a.singles.length; i += 1) {
     if (!memberEquals(a.singles[i], b.singles[i])) return false;
   }
-  if (a.needsEdit.size !== b.needsEdit.size) return false;
-  for (const id of a.needsEdit) if (!b.needsEdit.has(id)) return false;
-  if (a.favourites.size !== b.favourites.size) return false;
-  for (const [id, status] of a.favourites) {
-    const other = b.favourites.get(id);
-    if (!other || other.state !== status.state || other.target !== status.target) return false;
-  }
   return true;
 }
 
@@ -332,4 +333,40 @@ function insertFeedOrdered(
   );
   if (at === -1) return [...out, member];
   return [...out.slice(0, at), member, ...out.slice(at)];
+}
+
+/** Set equality judged ONLY within `ids` — an entry outside the read
+ * universe is neither confirmation nor drift (hydrated browse-deep ids
+ * live in the same refs the bounded refresh reconciles). */
+export function sameIdsWithin(
+  ids: readonly string[],
+  current: ReadonlySet<string>,
+  next: ReadonlySet<string>,
+): boolean {
+  for (const id of ids) if (current.has(id) !== next.has(id)) return false;
+  return true;
+}
+
+/** needsEdit + favourite equality within the read universe (the two
+ * badge legs queueEquals no longer judges). */
+export function badgeStateEqualsWithin(
+  ids: readonly string[],
+  current: {
+    needsEdit: ReadonlySet<string>;
+    favourites: ReadonlyMap<string, FavouriteStatus>;
+  },
+  next: {
+    needsEdit: ReadonlySet<string>;
+    favourites: ReadonlyMap<string, FavouriteStatus>;
+  },
+): boolean {
+  for (const id of ids) {
+    if (current.needsEdit.has(id) !== next.needsEdit.has(id)) return false;
+    const a = current.favourites.get(id);
+    const b = next.favourites.get(id);
+    if ((a === undefined) !== (b === undefined)) return false;
+    if (a !== undefined && b !== undefined && (a.state !== b.state || a.target !== b.target))
+      return false;
+  }
+  return true;
 }

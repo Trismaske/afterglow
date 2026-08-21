@@ -118,7 +118,7 @@ import {
   getReviewGroup,
   listSinglesForDeck,
   applyRedecision,
-  makePhotoSingles,
+  ejectNotRelated,
   restoreCarriedCull,
   unstageCullDirect,
   type QueueCounts,
@@ -218,15 +218,17 @@ interface ReviewContextValue {
   /** Verdict writes (decision 2 semantics; 'keep' → kept). The optional
    * expected assignment (group id, or null for a single) is validated in
    * the transaction — a scan reassignment between render and tap must
-   * reject rather than freeze a group the user never reviewed;
-   * `undefined` skips the check (callers without a rendered context). */
+   * reject rather than record a verdict against membership the user
+   * never saw; `undefined` skips the check (callers without a rendered
+   * context). */
   decide: (
     assetId: string,
     action: SingleReviewAction,
     expectedGroupId?: number | null,
   ) => Promise<void>;
-  /** Clear a photo's verdict back to unreviewed (active-chip tap). */
-  clearDecision: (assetId: string, clearDuelsForGroup?: number) => Promise<void>;
+  /** Clear a photo's verdict back to unreviewed (active-chip tap).
+   * Fully non-destructive (v22): duels are append-only, so no confirm. */
+  clearDecision: (assetId: string) => Promise<void>;
   /** State-aware change of mind on a DECIDED photo (gate 5 browse):
    * keep leaves pending actions alone; to_edit starts a fresh cycle; both
    * resolve pending copy matches. */
@@ -234,7 +236,8 @@ interface ReviewContextValue {
   /** Finish a group: every remaining unreviewed member keeps (kept). */
   /** Resolves to the number actually kept (codex r10 — see keepAllSingles). */
   keepRest: (groupId: number) => Promise<number>;
-  /** "Not related — review as single" (durable user ejection). The
+  /** "Not related" ejection (v22): records durable cannot-link pairs
+   * against the group's present members and clears the assignment. The
    * displayed group id is validated in the transaction — a background
    * rescan may have rebuilt the group since render. */
   makeSingle: (assetId: string, expectedGroupId: number) => Promise<void>;
@@ -269,7 +272,7 @@ interface ReviewContextValue {
   /** Re-decide from the cull list: not-a-cull-after-all lands on kept. */
   unstageCull: (assetId: string) => Promise<void>;
   /** CullList "Restore to unreviewed": back to the review pool. */
-  restoreCull: (assetId: string, clearDuelsForGroup?: number) => Promise<void>;
+  restoreCull: (assetId: string) => Promise<void>;
   /** Keep every still-unreviewed single in one write. `day` (and a run's
    * taken_at range) narrows it to the deck's own scope — and, like
    * keepRest's off-page fetch, that scope is re-read from the DB at
@@ -1291,6 +1294,11 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
         const action = typeof patch === 'function' ? patch() : patch;
         if (action) patchLocal(action);
       } catch (error) {
+        // The app's most important failure — a verdict that did not
+        // write — used to leave no trace once the alert was dismissed
+        // (m0.8.7 audit finding 1). Logged BEFORE surfacing, so the
+        // diagnostics sink holds it whatever the user does next.
+        console.warn('[review] decision write failed:', String(error));
         setWriteError(error instanceof Error ? error.message : String(error));
         throw error;
       } finally {
@@ -1323,25 +1331,14 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   );
 
   const clearDecision = useCallback(
-    // `clearDuelsForGroup` is D5's editor-only lever (m0.8.6): ONLY the
-    // state editor's deliberate un-review passes it, after its confirm
-    // names the Compare-history deletion. The deck's undo never does —
-    // a transient unreviewed state must not dissolve duels.
-    (assetId: string, clearDuelsForGroup?: number) =>
-      write(
-        () =>
-          applyReviewDecisions(
-            db,
-            [[assetId, 'unreviewed']],
-            Date.now(),
-            clearDuelsForGroup !== undefined ? { deleteDuelsForGroup: clearDuelsForGroup } : {},
-          ),
-        {
-          kind: 'verdict',
-          assetId,
-          verdict: 'unreviewed',
-        },
-      ),
+    // Fully non-destructive (v22): duels are append-only, so un-review
+    // clears only the verdict — no confirm, no Compare-history loss.
+    (assetId: string) =>
+      write(() => applyReviewDecisions(db, [[assetId, 'unreviewed']], Date.now()), {
+        kind: 'verdict',
+        assetId,
+        verdict: 'unreviewed',
+      }),
     [db, write],
   );
 
@@ -1385,7 +1382,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
               ? await applyReviewDecisions(db, changes, Date.now(), {
                   // Validated in the transaction: a warm scan can rebuild
                   // the group between render and tap — the stale member
-                  // list must not freeze photos inside superseding groups.
+                  // list must not keep photos the user never saw together.
                   requireGroupMembership: { groupId, assetIds: changes.map(([id]) => id) },
                 })
               : null;
@@ -1428,9 +1425,17 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     (assetId: string, expectedGroupId: number) =>
       write(
         async () => {
-          // The tap's mounted snapshot (final cycle O1): "Not related"
-          // must not user_single-freeze a survivor on an ejected card.
-          await makePhotoSingles(db, [assetId], expectedGroupId, await mountedVolumeSet());
+          // "Not related" records cannot-link pairs against the group's
+          // present members (v22) and clears the assignment — the photo
+          // leaves the deck now; the mounted snapshot lets the repair
+          // defer a rump group waiting on an ejected card.
+          await ejectNotRelated(
+            db,
+            [assetId],
+            Date.now(),
+            expectedGroupId,
+            await mountedVolumeSet(),
+          );
         },
         { kind: 'makeSingle', assetId, groupId: expectedGroupId },
       ),
@@ -1517,7 +1522,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       }
       // Singles: no group, no duel row — just both kept, each
       // validated STILL single (a scan may have grouped one mid-compare,
-      // and keeping it would silently freeze the newly formed group).
+      // and a verdict would then answer for a group the user never saw).
       return write(
         () =>
           applyReviewDecisions(
@@ -1618,19 +1623,11 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   );
 
   const restoreCull = useCallback(
-    // Same D5 lever as clearDecision: only the state editor's deliberate
-    // culled → unreviewed passes `clearDuelsForGroup`.
-    (assetId: string, clearDuelsForGroup?: number) => {
+    (assetId: string) => {
       const outcome = { applied: false };
       return write(
         async () => {
-          outcome.applied = await restoreCarriedCull(
-            db,
-            assetId,
-            Date.now(),
-            true,
-            clearDuelsForGroup,
-          );
+          outcome.applied = await restoreCarriedCull(db, assetId, Date.now(), true);
         },
         () => (outcome.applied ? { kind: 'restore', assetId } : null),
       );
@@ -1710,8 +1707,8 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
             changes.length > 0
               ? await applyReviewDecisions(db, changes, Date.now(), {
                   // Every target must STILL be a single — a scan can move
-                  // one into a group mid-tap, and keeping it would
-                  // silently freeze the newly formed group.
+                  // one into a group mid-tap, and the keep would then
+                  // silently answer for a group the user never saw.
                   requireAssignment: changes.map(([id]) => ({ assetId: id, groupId: null })),
                 })
               : null;

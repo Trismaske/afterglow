@@ -155,7 +155,7 @@ describe('getDuelSummary', () => {
   it('counts duels, dialog outcomes, and kept-both — triage (NULL) stays out of the %', async () => {
     const d = await fresh();
     const insert = d.raw.prepare(
-      "INSERT INTO duels (group_id, winner_id, loser_id, kept_both, at) VALUES ('1', 'a', 'b', ?, 1)",
+      "INSERT INTO duels (winner_id, loser_id, kept_both, at) VALUES ('a', 'b', ?, 1)",
     );
     // Two triage duels (v19: NULL = verdict-free) among five dialog ones:
     // they count as compares but never as keep-both decisions.

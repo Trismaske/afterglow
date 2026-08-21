@@ -275,15 +275,7 @@ export async function runEditDetection(
         // 'done' row for an absent photo with no way back.
         // Mounted snapshot so the membership repair defers a group still
         // holding a member on an ejected card (final cycle P4, plan §5).
-        // 'absent' = permanently gone → duels die too; a restorable
-        // 'trashed' keeps them (grilling Q13).
-        await reconcileExternallyRemoved(
-          db,
-          [match.copy_id],
-          Date.now(),
-          await mountedVolumeSet(),
-          presence === 'absent' ? new Set([match.copy_id]) : undefined,
-        );
+        await reconcileExternallyRemoved(db, [match.copy_id], Date.now(), await mountedVolumeSet());
         result.reconciled += 1;
         await dismissCopyMatch(db, match.original_id, match.copy_id);
       }

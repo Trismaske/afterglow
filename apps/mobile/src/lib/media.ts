@@ -341,6 +341,25 @@ export async function getAssetDetails(assetId: string): Promise<AssetDetails | n
   }
 }
 
+/**
+ * Load one photo by canonical id in the scan's LoadedPhoto shape (F27:
+ * the delta's direct landing of changed undated photos). Null when the
+ * asset is gone, its uri volume mismatches the canonical id (cross-volume
+ * raw-id collision — fail closed), or the lookup fails; the scan counts
+ * that as a fail-closed skip and withholds its baselines.
+ */
+export async function loadPhotoById(assetId: string): Promise<LoadedPhoto | null> {
+  try {
+    const info = await MediaLibrary.getAssetInfoAsync(rawIdOf(assetId));
+    if (!info) return null;
+    const photo = toLoadedPhoto(info);
+    if (photo === null || photo.item.id !== assetId) return null;
+    return photo;
+  } catch {
+    return null;
+  }
+}
+
 /** Candidate asset for edited-copy detection. */
 export interface CandidateAsset {
   id: string;

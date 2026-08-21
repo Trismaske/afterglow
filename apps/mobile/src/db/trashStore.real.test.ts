@@ -287,12 +287,9 @@ describe('resolveTrashBatch — unreachable partner (final cycle O2)', () => {
     await seedPair(d);
     await trashPrimaryMember(d, ['external_primary']);
     const partner = d.raw
-      .prepare(
-        `SELECT group_id, user_single FROM photo_group_assignments WHERE photo_id = '0a91-e18d/s1'`,
-      )
-      .get() as { group_id: number | null; user_single: number };
+      .prepare(`SELECT group_id FROM photo_group_assignments WHERE photo_id = '0a91-e18d/s1'`)
+      .get() as { group_id: number | null };
     expect(partner.group_id).not.toBeNull();
-    expect(partner.user_single).toBe(0);
   });
 
   it('without mount knowledge (null) the standard dissolve applies', async () => {

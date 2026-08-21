@@ -44,3 +44,41 @@ export function perfLog(message: () => string): void {
   if (!enabled) return;
   console.log(`[perf] ${message()}`);
 }
+
+/** Samples settle into one line after this much quiet. */
+const AGGREGATE_QUIET_MS = 10_000;
+
+interface Aggregate {
+  samples: number[];
+  items: number;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const aggregates = new Map<string, Aggregate>();
+
+/**
+ * Aggregate a repeating measurement instead of logging per occurrence
+ * (m0.8.7 audit shape rule: the timeline's per-page line flooded the
+ * sink one line per scroll page). Samples for a key accumulate; after
+ * ten quiet seconds ONE line lands with count, min–max and median (plus
+ * an item total when given). A one-off measurement still uses perfLog.
+ */
+export function perfAggregate(key: string, ms: number, items = 0): void {
+  if (!enabled) return;
+  const existing = aggregates.get(key);
+  if (existing) clearTimeout(existing.timer);
+  const aggregate: Aggregate = {
+    samples: existing ? [...existing.samples, ms] : [ms],
+    items: (existing?.items ?? 0) + items,
+    timer: setTimeout(() => {
+      aggregates.delete(key);
+      const sorted = [...aggregate.samples].sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      console.log(
+        `[perf] ${key}: ${sorted.length} samples, ${sorted[0]}–${sorted[sorted.length - 1]} ms ` +
+          `(median ${median}${aggregate.items > 0 ? `, ${aggregate.items} items` : ''})`,
+      );
+    }, AGGREGATE_QUIET_MS),
+  };
+  aggregates.set(key, aggregate);
+}

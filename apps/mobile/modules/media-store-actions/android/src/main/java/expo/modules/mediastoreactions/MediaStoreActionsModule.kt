@@ -294,6 +294,11 @@ class MediaStoreActionsModule : Module() {
             MediaStore.MediaColumns.IS_TRASHED,
             MediaStore.MediaColumns.GENERATION_ADDED,
             MediaStore.MediaColumns.GENERATION_MODIFIED,
+            // The row's CURRENT bucket (m0.8.7, F27): the delta planner
+            // filters the changed set to the source scope, keyed on where
+            // the row is NOW — so a move into a selected source registers
+            // while an out-of-source change plans nothing.
+            MediaStore.Images.Media.BUCKET_ID,
           ),
           queryArgs,
           null,
@@ -304,6 +309,7 @@ class MediaStoreActionsModule : Module() {
           val trashedCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_TRASHED)
           val addedGenCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.GENERATION_ADDED)
           val modGenCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.GENERATION_MODIFIED)
+          val bucketCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_ID)
           while (cursor.moveToNext()) {
             out.add(
               mapOf(
@@ -318,12 +324,46 @@ class MediaStoreActionsModule : Module() {
                 "isTrashed" to (cursor.getInt(trashedCol) != 0),
                 "generationAdded" to cursor.getLong(addedGenCol).toDouble(),
                 "generationModified" to cursor.getLong(modGenCol).toDouble(),
+                "bucketId" to
+                  if (cursor.isNull(bucketCol)) null else cursor.getLong(bucketCol).toString(),
               ),
             )
           }
         } ?: throw IllegalStateException("null cursor for volume $volume")
       } catch (error: Exception) {
         throw IllegalStateException("change query failed for volume $volume", error)
+      }
+      out
+    }
+
+    /**
+     * Raw ids of every image with IS_FAVORITE=1 on one volume (m0.8.7,
+     * F20): ONE indexed query per pass per volume, so the scan can
+     * project gallery hearts onto the rows it already walks without a
+     * per-row probe. Default view (trashed rows excluded) — a trashed
+     * photo's flag is unreachable in every gallery anyway. Throws on any
+     * error: a partial favourite set would CLEAR carried favourites the
+     * query failed to return, so the caller degrades to "project
+     * nothing" instead.
+     */
+    AsyncFunction("listFavouriteImageIds") { volume: String ->
+      val context = appContext.reactContext
+        ?: throw IllegalStateException("Android context unavailable")
+      val uri = MediaStore.Images.Media.getContentUri(volume)
+      val out = mutableListOf<String>()
+      try {
+        context.contentResolver.query(
+          uri,
+          arrayOf(MediaStore.MediaColumns._ID),
+          "${MediaStore.MediaColumns.IS_FAVORITE} = 1",
+          null,
+          null,
+        )?.use { cursor ->
+          val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+          while (cursor.moveToNext()) out.add(cursor.getLong(idCol).toString())
+        } ?: throw IllegalStateException("null cursor for volume $volume")
+      } catch (error: Exception) {
+        throw IllegalStateException("favourite query failed for volume $volume", error)
       }
       out
     }

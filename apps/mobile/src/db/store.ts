@@ -25,7 +25,6 @@ import {
   type ActionKind,
 } from './actions';
 import type { LoadedPhoto } from '../lib/media';
-import { frozenPhotos, reconcileWindowGroups } from '../lib/regroupBoundary';
 import { sourceLikePattern, type SourceRoot } from '../lib/sources';
 import { rawIdOf, volumeOf } from '../lib/mediaIdentity';
 import { dayKey, monthDayBounds, rangeOfDayKey, UNDATED_DAY_KEY } from '../lib/dates';
@@ -51,22 +50,19 @@ export interface PersistDecisionExtras {
   duel?: DuelRecord;
   favouriteChanges?: readonly FavouriteIntentChange[];
   needsEditChanges?: readonly NeedsEditIntentChange[];
-  /** Photos that left their group ("not related" ejection + dissolve
-   * survivor) — durable membership updates ride the same transaction. */
-  madeSingles?: readonly string[];
   /** Restored staged culls: resolve their PENDING edited-copy matches —
    * un-culling answers the copy prompt's question, so its stale re-emit
    * must not return, nor block a future cycle's fresh match (C#12). */
   resolveCopyMatchesFor?: readonly string[];
   /** Validate — inside the transaction — that every listed photo still
    * belongs to the given group (Keep remaining: a warm scan can rebuild
-   * an all-unreviewed group between render and tap; writing the stale
-   * member list would partially freeze the superseding groups). */
+   * a group between render and tap; writing the stale member list would
+   * keep photos the user never saw together). */
   requireGroupMembership?: { groupId: number; assetIds: readonly string[] };
   /** Validate each photo's RENDERED assignment (group id, or null for a
    * single) inside the transaction — a scan can reassign an unreviewed
    * photo between render and tap, and a verdict against the stale
-   * assignment would freeze a group the user never reviewed. */
+   * assignment would answer a question the user never saw. */
   requireAssignment?: readonly { assetId: string; groupId: number | null }[];
   /** The mounted set the UI rendered under (m0.8.3 §5): the compare
    * whole-table revalidation judges outsiders over the SAME population
@@ -78,12 +74,6 @@ export interface PersistDecisionExtras {
    * about the rest of the table, so the outsider check must not run for
    * it. Defaulting to the stricter claim keeps the guard fail-closed. */
   duelClaimsWholeTable?: boolean;
-  /** D5 (m0.8.6): the state editor's DELIBERATE un-review clears its
-   * group's entire Compare history in the same transaction, so the
-   * metadata freeze releases and the group returns to the scan's reach.
-   * Editor-only by design — the deck's undo and CullList's Restore never
-   * pass this, so a transient unreviewed state cannot dissolve duels. */
-  deleteDuelsForGroup?: number;
 }
 
 /**
@@ -319,9 +309,9 @@ export async function applyReviewDecisions(
         'SELECT group_id FROM photo_group_assignments WHERE photo_id = ?',
         expected.assetId,
       );
-      // A MISSING row always fails — a settings reset can delete a
-      // rendered single's assignment, and a verdict on it would freeze a
-      // photo whose assignment can never be rebuilt.
+      // A MISSING row always fails — a removal path can delete a
+      // rendered single's assignment row, and a verdict on it would land
+      // on a photo the durable state no longer places anywhere.
       const actual = row === null ? undefined : row.group_id === null ? null : Number(row.group_id);
       if (actual !== expected.groupId) {
         throw new Error('This group changed while reviewing — reopen it and try again.');
@@ -539,23 +529,17 @@ export async function applyReviewDecisions(
       console.warn(`[review] ${staleChanges} decisions skipped — photos removed externally`);
     }
     if (extras.duel) {
+      // PAIR-KEYED (v22): the duel's groupId validated the rendered table
+      // above but is NOT stored — group ids re-mint on any composition
+      // change, and the append-only event log outlives every group.
       await txn.runAsync(
-        `INSERT INTO duels (group_id, winner_id, loser_id, kept_both, at)
-         VALUES (?, ?, ?, ?, ?)`,
-        extras.duel.groupId,
+        `INSERT INTO duels (winner_id, loser_id, kept_both, at)
+         VALUES (?, ?, ?, ?)`,
         extras.duel.winnerId,
         extras.duel.loserId,
         // null = verdict-free triage — excluded from the kept-both stat.
         extras.duel.keptBoth === null ? null : extras.duel.keptBoth ? 1 : 0,
         extras.duel.at,
-      );
-    }
-    if (extras.deleteDuelsForGroup !== undefined) {
-      // D5: group-wide, or the metadata freeze survives on the pairs not
-      // deleted (any remaining duel keeps EXISTS true).
-      await txn.runAsync(
-        `DELETE FROM duels WHERE group_id = ?`,
-        String(extras.deleteDuelsForGroup),
       );
     }
     for (const change of extras.favouriteChanges ?? []) {
@@ -597,9 +581,6 @@ export async function applyReviewDecisions(
         change.assetId,
       );
     }
-    if (extras.madeSingles && extras.madeSingles.length > 0) {
-      await applyPhotoSingles(txn, extras.madeSingles);
-    }
     for (const assetId of extras.resolveCopyMatchesFor ?? []) {
       await txn.runAsync(
         "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
@@ -611,70 +592,67 @@ export async function applyReviewDecisions(
 }
 
 /**
- * Eject photos to durable singles: the explicitly "not related" photo
- * plus the survivor when the group dissolved. Marks user_single so no
- * scan ever regroups them, then runs the shared repairs.
+ * "Not related" ejection (v22, docs/Regroup_design.md §4): record the
+ * user's cannot-link judgment as directional pairs and clear the photo's
+ * assignment so it leaves the deck immediately. Per photo, in order:
+ *
+ *  1. THE DISSOLUTION RULE first — delete every pair in which this photo
+ *     is the PARTNER: a pair records "X does not belong with the cluster
+ *     this photo represented", and its own ejection revokes that
+ *     standing, so photos ejected from the same group may reunite
+ *     elsewhere (the A→B scenario).
+ *  2. Insert (ejected, m) for every PRESENT member m of its group —
+ *     hidden unreachable members included (vetted 2026-08-21: the
+ *     judgment is about the group, and recording only the rendered
+ *     subset would let the photo regroup with the unreachable members on
+ *     remount; the dissolution rule is the over-reach safety valve).
+ *  3. Clear the photo's assignment (single, unbadged) and repair the
+ *     group left behind.
+ *
+ * Pairs are membership constraints, never state: verdicts, actions and
+ * stats are untouched. Enforcement is symmetric and lives in the scan
+ * (core cannot-link + the write-transaction revalidation). There is no
+ * survivor promotion any more — the pair itself is the judgment about
+ * both photos, and the other member regroups freely with anyone else.
  */
-async function applyPhotoSingles(
+async function applyNotRelatedEjection(
   txn: SQLiteDatabase,
   assetIds: readonly string[],
-  /** Mounted volumes (m0.8.3 final cycle O1): the survivor promotion is
-   * a durable, never-regroupable verdict about a photo — it must not
-   * land on a member the user could not see. Null = unknowable =
-   * today's semantics (query-side fail open). */
+  at: number,
+  /** Mounted volumes: the membership repair defers dissolving a rump
+   * group that still holds an unreachable member (plan §5 byte-for-byte
+   * — unchanged by the freeze retirement). Null = unknowable. */
   mounted: readonly string[] | null = null,
 ): Promise<void> {
-  // An UNREACHABLE present survivor keeps its assignment byte-for-byte
-  // (plan §5): the promotion skips it, and the mounted-aware repair
-  // below defers its rump group; the next pass with every member
-  // reachable re-windows it normally.
-  const survivorReachable =
-    mounted === null
-      ? ''
-      : mounted.length === 0
-        ? ` AND NOT EXISTS (SELECT 1 FROM photos sp
-              WHERE sp.asset_id = a.photo_id AND sp.is_present = 1)`
-        : ` AND NOT EXISTS (SELECT 1 FROM photos sp
-              WHERE sp.asset_id = a.photo_id AND sp.is_present = 1
-                AND sp.volume_name NOT IN (${mounted.map(() => '?').join(',')}))`;
-  const survivorParams = mounted ?? [];
-  // The survivor query interpolates the id list THREE times, so batches
-  // stay ≤ 300 ids (3 × 300 < SQLite's 999-parameter floor) — the callers
-  // used to pass 1-2 ids by discipline, but m0.8.2's batch flows made
-  // "the first caller that passes a batch" real (TODO rider). Sequential
-  // batches compose: an earlier batch's ejections are already
-  // group_id = NULL, so a later batch's survivor count still lands on
-  // exactly the member left behind.
-  for (const batch of chunk(assetIds, 300)) {
-    const placeholders = batch.map(() => '?').join(',');
-    // "Not related" on a pair judged BOTH photos: the survivor of a group
-    // this ejection shrinks to one member becomes a durable user single too
-    // — the bare membership repair would leave it regroupable, silently
-    // undoing the decision (the session flow persisted both ids).
+  const touchedGroups = new Set<number>();
+  for (const assetId of assetIds) {
+    const row = await txn.getFirstAsync<{ group_id: number | null }>(
+      'SELECT group_id FROM photo_group_assignments WHERE photo_id = ?',
+      assetId,
+    );
+    const groupId = row?.group_id ?? null;
+    // Dissolution BEFORE the inserts, always — even for a photo that is
+    // no longer grouped: the tap is a fresh judgment either way.
+    await txn.runAsync('DELETE FROM not_related WHERE partner_id = ?', assetId);
+    if (groupId === null) continue;
+    touchedGroups.add(Number(groupId));
     await txn.runAsync(
-      `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0, user_single = 1
-       WHERE photo_id IN (
-         SELECT a.photo_id FROM photo_group_assignments a
-         WHERE a.group_id IS NOT NULL
-           AND a.photo_id NOT IN (${placeholders})
-           AND a.group_id IN (SELECT group_id FROM photo_group_assignments
-                              WHERE photo_id IN (${placeholders}) AND group_id IS NOT NULL)
-           AND (SELECT COUNT(*) FROM photo_group_assignments b
-                WHERE b.group_id = a.group_id AND b.photo_id NOT IN (${placeholders})) = 1
-           ${survivorReachable}
-       )`,
-      ...batch,
-      ...batch,
-      ...batch,
-      ...survivorParams,
+      `INSERT OR REPLACE INTO not_related (ejected_id, partner_id, at)
+       SELECT ?, a.photo_id, ? FROM photo_group_assignments a
+       JOIN photos p ON p.asset_id = a.photo_id
+       WHERE a.group_id = ? AND a.photo_id <> ? AND p.is_present = 1`,
+      assetId,
+      at,
+      groupId,
+      assetId,
     );
     await txn.runAsync(
-      `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0, user_single = 1
-       WHERE photo_id IN (${placeholders})`,
-      ...batch,
+      `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0
+       WHERE photo_id = ?`,
+      assetId,
     );
   }
-  await repairGroupMembership(txn, undefined, mounted);
+  await repairGroupMembership(txn, [...touchedGroups], mounted);
 }
 
 /**
@@ -777,15 +755,16 @@ export async function repairGroupMembership(
   }
 }
 
-export async function makePhotoSingles(
+export async function ejectNotRelated(
   db: SQLiteDatabase,
   assetIds: readonly string[],
+  at: number,
   /** The group the USER was looking at — a background rescan can rebuild
-   * an all-unreviewed group between render and tap; ejecting from the
-   * wrong group (and user_single-freezing its unseen survivor) must
-   * abort whole instead. Omit for callers without a group context. */
+   * an all-unreviewed group between render and tap; recording pairs
+   * against a group the user never judged must abort whole instead.
+   * Omit for callers without a group context. */
   expectedGroupId?: number,
-  /** Mounted volumes at the tap (final cycle O1) — see applyPhotoSingles. */
+  /** Mounted volumes at the tap — see applyNotRelatedEjection. */
   mounted: readonly string[] | null = null,
 ): Promise<void> {
   if (assetIds.length === 0) return;
@@ -795,8 +774,8 @@ export async function makePhotoSingles(
         `SELECT a.photo_id FROM photo_group_assignments a
          JOIN photos p ON p.asset_id = a.photo_id
          WHERE a.group_id = ? AND a.photo_id IN (${assetIds.map(() => '?').join(',')})
-           -- An absent member must not become user_single: a Gallery
-           -- restore would honor the flag and never regroup it.
+           -- An absent member must not record pairs: the judgment was
+           -- about photos the user could actually see.
            AND p.is_present = 1`,
         expectedGroupId,
         ...assetIds,
@@ -805,7 +784,7 @@ export async function makePhotoSingles(
         throw new Error('This group changed while reviewing — reopen it and try again.');
       }
     }
-    await applyPhotoSingles(txn, assetIds, mounted);
+    await applyNotRelatedEjection(txn, assetIds, at, mounted);
   });
 }
 
@@ -1423,11 +1402,11 @@ export interface PhotoFacts {
   group_id: number | null;
   /** Grouped by time only — embedding missing (decision 5). */
   time_attached: number;
-  /** User ejected it from a group ("Not related"). */
-  user_single: number;
-  /** Its group carries Compare history (m0.8.6 D5) — the state editor's
-   * un-review confirm names the deletion this implies. */
-  group_has_duels: number;
+  /** "Not related" pairs this photo's OWN ejections recorded (v22) — the
+   * viewer fact line and the editor's un-eject row key on it. Pairs
+   * naming this photo as a PARTNER are other photos' judgments and are
+   * deliberately not counted. */
+  not_related_count: number;
 }
 
 export async function getPhotoFacts(
@@ -1459,9 +1438,8 @@ export async function getPhotoFacts(
             (SELECT e2.resolved_at FROM photo_actions e2 WHERE e2.photo_id = p.asset_id
               AND e2.kind = 'edit') AS edit_completed_at,
             a.group_id, COALESCE(a.time_attached, 0) AS time_attached,
-            COALESCE(a.user_single, 0) AS user_single,
-            (a.group_id IS NOT NULL AND EXISTS (SELECT 1 FROM duels d
-              WHERE d.group_id = CAST(a.group_id AS TEXT))) AS group_has_duels
+            (SELECT COUNT(*) FROM not_related nr WHERE nr.ejected_id = p.asset_id)
+              AS not_related_count
      FROM photos p
      LEFT JOIN photo_group_assignments a ON a.photo_id = p.asset_id
      WHERE p.asset_id = ?`,
@@ -1756,91 +1734,29 @@ export async function getCorpusStats(
 }
 
 /**
- * Decision 5's explicit opt-in "regroup everything not yet done": drop
- * the assignments of photos that are unreviewed AND not user-ejected —
- * the next scan rebuilds them under the new grouping settings. Reviewed
- * groups and user singles stay untouched (the regroup boundary would
- * freeze them anyway; deleting their assignments would lose membership).
- */
-async function resetUnreviewedGroupsIn(txn: SQLiteDatabase): Promise<void> {
-  {
-    // A group with ANY reviewed member — or GROUP-LEVEL metadata
-    // (recorded duels) — is frozen WHOLE by the regroup boundary;
-    // deleting its members here would dissolve it and orphan the duels.
-    // Reset only fully-unreviewed metadata-free groups and non-ejected
-    // singles.
-    await txn.runAsync(
-      `DELETE FROM photo_group_assignments
-       WHERE user_single = 0
-         AND photo_id IN (SELECT asset_id FROM photos WHERE state = 'unreviewed')
-         AND (group_id IS NULL OR (
-           group_id NOT IN (
-             SELECT a2.group_id FROM photo_group_assignments a2
-             JOIN photos p2 ON p2.asset_id = a2.photo_id
-             WHERE a2.group_id IS NOT NULL AND p2.state <> 'unreviewed'
-           )
-           AND group_id NOT IN (
-             SELECT id FROM photo_groups
-             WHERE EXISTS (SELECT 1 FROM duels d WHERE d.group_id = CAST(photo_groups.id AS TEXT))
-           )
-         ))`,
-    );
-    await repairGroupMembership(txn);
-  }
-}
-
-/** Public wrapper (tests). */
-export async function resetUnreviewedGroups(db: SQLiteDatabase): Promise<void> {
-  await withWriteTransaction(db, (txn) => resetUnreviewedGroupsIn(txn));
-}
-
-/**
- * A grouping-relevant setting change (photo source, strictness) and its
- * unfrozen-assignment reset commit in ONE exclusive transaction — a
- * process death between them would leave the next launch rendering old
- * assignments under the new scope (whole-group rendering could expose
- * excluded members whose decisions freeze stale membership). `value =
- * null` deletes the row (an unset source keeps its dynamic default).
+ * A grouping-relevant setting change (photo source, strictness): a plain
+ * durable write — `value = null` deletes the row (an unset source keeps
+ * its dynamic default). Groups re-form freely (v22, the freeze
+ * retirement), so nothing needs resetting: the caller supersedes the
+ * in-flight scan and requests a forced rescan, and the next pass
+ * rewrites every assignment under the new setting while decisions and
+ * "not related" pairs stand untouched.
  */
 export async function applyGroupingSettingChange(
   db: SQLiteDatabase,
   key: string,
   value: string | null,
 ): Promise<void> {
-  await withWriteTransaction(db, async (txn) => {
-    if (value === null) {
-      await txn.runAsync('DELETE FROM settings WHERE key = ?', key);
-    } else {
-      await txn.runAsync(
-        `INSERT INTO settings (key, value) VALUES (?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-        key,
-        value,
-      );
-    }
-    await resetUnreviewedGroupsIn(txn);
-  });
-}
-
-/** Among the given groups, those carrying GROUP-LEVEL review metadata —
- * recorded compares (duel rows) — which freezes them whole against
- * regroup rewrites even while every member is still unreviewed. */
-export async function getMetadataGroupIds(
-  db: SQLiteDatabase,
-  groupIds: readonly number[],
-): Promise<Set<number>> {
-  const out = new Set<number>();
-  for (const ids of chunk(groupIds, IN_CHUNK)) {
-    if (ids.length === 0) continue;
-    const rows = await db.getAllAsync<{ id: number }>(
-      `SELECT id FROM photo_groups
-       WHERE id IN (${ids.map(() => '?').join(',')})
-         AND EXISTS (SELECT 1 FROM duels d WHERE d.group_id = CAST(photo_groups.id AS TEXT))`,
-      ...ids,
+  if (value === null) {
+    await db.runAsync('DELETE FROM settings WHERE key = ?', key);
+  } else {
+    await db.runAsync(
+      `INSERT INTO settings (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      key,
+      value,
     );
-    for (const row of rows) out.add(Number(row.id));
   }
-  return out;
 }
 
 /** The staged culls with their last-scanned sizes, one snapshot. The
@@ -1961,6 +1877,10 @@ export interface ContinuousPhotoUpsert {
    * this pass — the upsert then RETAINS the stored marker (COALESCE), so
    * a dated photo or a reuse pass never erases a past rescue's proof. */
   exifCheckedModTime?: number | null;
+  /** MediaStore's IS_FAVORITE at pass start (F20, m0.8.7): true/false
+   * projects the carried favourite action (queued rows never touched);
+   * null/absent = the pass had no flag data — nothing is touched. */
+  favourite?: boolean | null;
 }
 
 /** One group's continuous-scan write (post-reconciliation). */
@@ -1970,7 +1890,8 @@ export interface ContinuousGroupWrite {
   timeAttached: readonly string[];
 }
 
-/** One grouped window's membership writes (post-reconciliation). */
+/** One grouped window's membership writes — the engine's output, landed
+ * as truth (v22: no freeze, no reconciliation, no grow-only appends). */
 export interface ContinuousWindowWrite {
   /** Every window photo — row upsert only; review state is never touched. */
   photos: readonly ContinuousPhotoUpsert[];
@@ -1978,18 +1899,6 @@ export interface ContinuousWindowWrite {
   groups: readonly ContinuousGroupWrite[];
   /** Photos to (re)assign as singles (NULL group). */
   singles: readonly string[];
-  /** Grow-only appends (m0.8.3 grilling): unfrozen photos the engine
-   * clustered with an unreachable-frozen group's reachable members —
-   * added to that group without touching any existing member row.
-   * Revalidated in the transaction; a target that no longer qualifies
-   * degrades the entry to the pre-grow plan shape (own group / single). */
-  appends?: readonly ContinuousAppendWrite[];
-}
-
-export interface ContinuousAppendWrite {
-  groupId: number;
-  members: readonly string[];
-  timeAttached: readonly string[];
 }
 
 /** The scan-owned grouping run's id, creating it on first use. */
@@ -2008,12 +1917,12 @@ async function ensureContinuousRun(txn: SQLiteDatabase, at: number): Promise<num
 /**
  * Persist one grouped scan window (m0.8 gate 2) atomically: upsert the
  * photo rows (identity/metadata only — an existing row's review state,
- * queues, and flags are never modified), then write the given group and
- * single assignments into the one 'continuous' grouping run, then run
- * the shared membership repairs. Photos in `photos` but in neither
- * `groups` nor `singles` were frozen by the regroup boundary
- * (reconcileWindowGroups) and keep their existing assignments.
- *
+ * queues, and flags are never modified), write the given group and
+ * single assignments into the one 'continuous' grouping run (v22: the
+ * engine's output IS the membership truth — groups re-form freely,
+ * decided members included; the in-transaction decision-write guards
+ * protect verdicts, not membership), project the pass's IS_FAVORITE
+ * observations (F20), then run the shared membership repairs.
  */
 export async function writeContinuousGroups(
   db: SQLiteDatabase,
@@ -2101,41 +2010,30 @@ export async function writeContinuousGroups(
       );
     }
     // Revalidate the plan INSIDE the transaction: the runner computed it
-    // from reads that predate this write, and a review decision can land
-    // in between (the scan runs in the background). Fresh state/assignment
-    // reads + the same pure freeze rules decide what may still be written.
-    const appendWrites = write.appends ?? [];
+    // from reads that predate this write (the scan runs in the
+    // background). Two checks — the identical-group no-op below, and the
+    // "not related" pair check (docs/Regroup_design.md §4.2): the runner
+    // already filtered grouping input through the pair set, but an eject
+    // can land between its read and this write, and a stale plan must
+    // never regroup an excluded pair. A violating group is skipped
+    // WHOLE — its members keep the assignments the eject left, and the
+    // next pass regroups the window under the filter.
     const plannedIds = [
-      ...new Set([
-        ...write.groups.flatMap((g) => [...g.members]),
-        ...write.singles,
-        ...appendWrites.flatMap((a) => [...a.members]),
-      ]),
+      ...new Set([...write.groups.flatMap((g) => [...g.members]), ...write.singles]),
     ];
     const liveAssignments = await getGroupAssignments(txn, plannedIds);
     const liveTouched = [
-      ...new Set([
-        ...[...liveAssignments.values()]
-          .map((a) => a.groupId)
-          .filter((g): g is number => g !== null),
-        ...appendWrites.map((a) => a.groupId),
-      ]),
+      ...new Set(
+        [...liveAssignments.values()].map((a) => a.groupId).filter((g): g is number => g !== null),
+      ),
     ];
     const liveMembers = await getGroupMembers(txn, liveTouched);
-    const liveStateIds = new Set(plannedIds);
-    for (const memberIds of liveMembers.values()) for (const m of memberIds) liveStateIds.add(m);
-    const liveStates = await getStatesForAssets(txn, [...liveStateIds]);
-    const metadataLive = await getMetadataGroupIds(txn, [...liveMembers.keys()]);
-    const frozen = frozenPhotos(plannedIds, {
-      states: liveStates,
-      assignments: liveAssignments,
-      groupMembers: liveMembers,
-      metadataGroups: metadataLive,
-    });
-    const plan = reconcileWindowGroups(
-      [...write.groups, ...write.singles.map((s) => ({ members: [s], timeAttached: [] }))],
-      frozen,
-    );
+    const pairs = await getNotRelatedPairsAmong(txn, plannedIds);
+    const pairConflict = (group: ContinuousGroupWrite): boolean => {
+      if (pairs.length === 0) return false;
+      const members = new Set(group.members);
+      return pairs.some(([a, b]) => members.has(a) && members.has(b));
+    };
 
     // UNCHANGED assignments are NO-OPS (m0.8.1): re-scan windows used to
     // delete-and-recreate identical unreviewed groups under fresh ids,
@@ -2166,7 +2064,14 @@ export async function writeContinuousGroups(
     // Repair scope: the groups these photos already belonged to (they can
     // be left short a member) plus the ones written below.
     const touchedGroups = new Set<number>(liveTouched);
-    for (const group of plan.groups) {
+    for (const group of write.groups) {
+      if (pairConflict(group)) {
+        console.warn(
+          '[scan] group write skipped — a "not related" pair landed mid-window; ' +
+            'the next pass regroups it',
+        );
+        continue;
+      }
       if (identicalGroup(group)) continue;
       const groupResult = await txn.runAsync('INSERT INTO photo_groups (run_id) VALUES (?)', runId);
       const groupId = Number(groupResult.lastInsertRowId);
@@ -2183,7 +2088,7 @@ export async function writeContinuousGroups(
         );
       }
     }
-    for (const assetId of plan.singles) {
+    for (const assetId of write.singles) {
       const live = liveAssignments.get(assetId);
       if (live && live.groupId === null && !live.timeAttached) continue; // already this single
       await txn.runAsync(
@@ -2193,65 +2098,48 @@ export async function writeContinuousGroups(
         runId,
       );
     }
-    // GROW-ONLY appends, revalidated on live state (m0.8.3 grilling): the
-    // target must still be a growable group — it exists, carries no
-    // review metadata, and holds at least one unreviewed member (D4,
-    // codex r3: the old all-unreviewed demand was the retired contagion
-    // rule — the planner marks unfinished MIXED unreachable groups
-    // growable, and this guard rejected every one of its appends,
-    // splitting similar photos solely because an SD card was absent) —
-    // and each appended photo must itself still be unfrozen. A
-    // disqualified entry degrades to the pre-grow plan shape (own group
-    // when ≥2, single otherwise); existing member rows are never
-    // touched either way.
-    for (const append of appendWrites) {
-      const additions = append.members.filter((id) => !frozen.has(id));
-      if (additions.length === 0) continue;
-      const targetMembers = liveMembers.get(append.groupId) ?? [];
-      const targetGrowable =
-        targetMembers.length > 0 &&
-        !metadataLive.has(append.groupId) &&
-        targetMembers.some((m) => (liveStates.get(m) ?? 'unreviewed') === 'unreviewed');
-      const timeAttached = new Set(append.timeAttached);
-      if (targetGrowable) {
-        touchedGroups.add(append.groupId);
-        for (const assetId of additions) {
-          const live = liveAssignments.get(assetId);
-          if (live && live.groupId === append.groupId) continue; // already a member
-          await txn.runAsync(
-            `INSERT OR REPLACE INTO photo_group_assignments (photo_id, run_id, group_id, time_attached)
-             VALUES (?, ?, ?, ?)`,
-            assetId,
-            runId,
-            append.groupId,
-            timeAttached.has(assetId) ? 1 : 0,
-          );
-        }
-      } else if (additions.length >= 2) {
-        const groupResult = await txn.runAsync(
-          'INSERT INTO photo_groups (run_id) VALUES (?)',
-          runId,
-        );
-        const groupId = Number(groupResult.lastInsertRowId);
-        touchedGroups.add(groupId);
-        for (const assetId of additions) {
-          await txn.runAsync(
-            `INSERT OR REPLACE INTO photo_group_assignments (photo_id, run_id, group_id, time_attached)
-             VALUES (?, ?, ?, ?)`,
-            assetId,
-            runId,
-            groupId,
-            timeAttached.has(assetId) ? 1 : 0,
-          );
-        }
-      } else {
+    // F20 (m0.8.7): project MediaStore's IS_FAVORITE, observed on rows
+    // this pass already walked, as the CARRIED favourite action — a heart
+    // set in the gallery finally reaches Afterglow's badges and editor.
+    // QUEUED (and error) rows are never touched: a waiting intent
+    // outranks an observation, or this reconcile would silently cancel
+    // work the user asked for. activity_at is deliberately NOT stamped —
+    // an observation is not a photo decision, and restamping would
+    // resurface thousands of untouched photos atop History (the same
+    // rule as forget-card's O7). `favourite` is null when the pass had no
+    // flag data (the favourite read failed — logged once by the runner).
+    for (const photo of write.photos) {
+      if (photo.favourite === true) {
         await txn.runAsync(
-          `INSERT OR REPLACE INTO photo_group_assignments (photo_id, run_id, group_id, time_attached)
-           VALUES (?, ?, NULL, 0)`,
-          additions[0],
-          runId,
+          `INSERT INTO photo_actions (photo_id, kind, state, target, applied_target,
+                                      queued_at, resolved_at)
+           VALUES (?, 'favourite', 'applied', NULL, '1', ?, ?)
+           ON CONFLICT(photo_id, kind) DO UPDATE SET
+             state = 'applied', target = NULL, applied_target = '1',
+             resolved_at = excluded.resolved_at
+           WHERE photo_actions.state NOT IN ('queued', 'error')
+             AND NOT (photo_actions.resolved_at IS NOT NULL
+                      AND COALESCE(photo_actions.target, photo_actions.applied_target) = '1')`,
+          photo.assetId,
+          at,
+          at,
         );
       }
+    }
+    // A CLEARED gallery flag clears the carried action (direction flips
+    // to a verified-off '0'; the row itself is history and stays).
+    const unfavIds = write.photos
+      .filter((photo) => photo.favourite === false)
+      .map((photo) => photo.assetId);
+    for (const ids of chunk(unfavIds, IN_CHUNK)) {
+      if (ids.length === 0) continue;
+      await txn.runAsync(
+        `UPDATE photo_actions SET target = NULL, applied_target = '0'
+         WHERE kind = 'favourite' AND state NOT IN ('queued', 'error')
+           AND resolved_at IS NOT NULL AND COALESCE(target, applied_target) = '1'
+           AND photo_id IN (${ids.map(() => '?').join(',')})`,
+        ...ids,
+      );
     }
     await repairGroupMembership(txn, [...touchedGroups], options.mountedVolumes);
   });
@@ -2261,8 +2149,6 @@ export async function writeContinuousGroups(
 export interface GroupAssignmentRow {
   /** null = assigned single. */
   groupId: number | null;
-  /** The USER ejected this photo to singles — never regroup it. */
-  userSingle: boolean;
   /** Grouped by time only (embedding was unavailable). */
   timeAttached: boolean;
 }
@@ -2279,24 +2165,46 @@ export async function getGroupAssignments(
     const rows = await db.getAllAsync<{
       photo_id: string;
       group_id: number | null;
-      user_single: number;
       time_attached: number;
     }>(
-      `SELECT photo_id, group_id, user_single, time_attached FROM photo_group_assignments
+      `SELECT photo_id, group_id, time_attached FROM photo_group_assignments
        WHERE photo_id IN (${placeholders})`,
       ...ids,
     );
     for (const row of rows)
       out.set(row.photo_id, {
         groupId: row.group_id === null ? null : Number(row.group_id),
-        userSingle: row.user_single === 1,
         timeAttached: row.time_attached === 1,
       });
   }
   return out;
 }
 
-/** All members of the given groups (regroup-boundary freeze checks). */
+/** The "not related" pairs BOTH of whose endpoints are among `ids` — the
+ * cannot-link set a scan window hands core, and the write transaction's
+ * revalidation input (docs/Regroup_design.md §4.2; enforcement is
+ * symmetric, so direction is irrelevant here). */
+export async function getNotRelatedPairsAmong(
+  db: SQLiteDatabase,
+  ids: readonly string[],
+): Promise<[string, string][]> {
+  if (ids.length === 0) return [];
+  const idSet = new Set(ids);
+  const out: [string, string][] = [];
+  for (const batch of chunk(ids, IN_CHUNK)) {
+    const rows = await db.getAllAsync<{ ejected_id: string; partner_id: string }>(
+      `SELECT ejected_id, partner_id FROM not_related
+       WHERE ejected_id IN (${batch.map(() => '?').join(',')})`,
+      ...batch,
+    );
+    for (const row of rows) {
+      if (idSet.has(row.partner_id)) out.push([row.ejected_id, row.partner_id]);
+    }
+  }
+  return out;
+}
+
+/** All members of the given groups (scan-write revalidation). */
 export async function getGroupMembers(
   db: SQLiteDatabase,
   groupIds: readonly number[],
@@ -2620,11 +2528,8 @@ export async function updateModTimeBaseline(
  * edit_copy_matches, and "edits completed" counts the ORIGINAL's
  * resolved action, once, whichever way the prompt is answered.
  *
- * Known limit: the copy will not be GROUPED with its original, because
- * the regroup boundary freezes any photo that has left 'unreviewed' and
- * the original has a verdict by then (docs/TODO.md). The exception is
- * pleasant — flag an edit while the original is still undecided and both
- * stay unfrozen, so the scan can pair them.
+ * The copy groups with its original whenever the engine clusters them
+ * (v22: groups re-form freely — a verdict no longer freezes membership).
  */
 export async function insertDetectedCopyWithMatch(
   db: SQLiteDatabase,
@@ -3298,10 +3203,6 @@ export async function restoreCarriedCull(
   assetId: string,
   at: number,
   resolvePendingMatches = true,
-  /** D5 (m0.8.6): the STATE EDITOR's culled → unreviewed also clears its
-   * group's Compare history, in this transaction, so the metadata freeze
-   * releases with the verdict. CullList's Restore never passes this. */
-  deleteDuelsForGroup?: number,
 ): Promise<boolean> {
   // True when the restore actually landed — callers gate their
   // optimistic patches on it (a guarded no-op must stay a no-op in the
@@ -3331,11 +3232,6 @@ export async function restoreCarriedCull(
         "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
         assetId,
       );
-    }
-    if (deleteDuelsForGroup !== undefined) {
-      // Group-wide, like the extras path: any surviving duel would keep
-      // the metadata freeze standing (D5).
-      await txn.runAsync(`DELETE FROM duels WHERE group_id = ?`, String(deleteDuelsForGroup));
     }
   });
   return applied;

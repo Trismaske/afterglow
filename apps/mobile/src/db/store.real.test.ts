@@ -2,7 +2,7 @@
  * Store contract tests on real SQLite (m0.8 gate 3 — sessionless):
  * applyReviewDecisions verdict semantics (decision 2: keeps write done at
  * swipe, reviewed_at first-stamps, edit-cycle resets), durable user
- * ejection (makePhotoSingles), needs-edit cycle hardening, the favourite
+ * ejection (ejectNotRelated pairs, v22), needs-edit cycle hardening, the favourite
  * batch commits, un-staging paths, and activity_at on every transition.
  */
 import { afterEach, describe, expect, it } from 'vitest';
@@ -22,8 +22,8 @@ import {
   getDaySummariesForDays,
   fetchBrowseGroupsPage,
   fetchBrowseSinglesPage,
+  ejectNotRelated,
   getGridPhotosByFilter,
-  getMetadataGroupIds,
   getPhotoFacts,
   getRescuedPhotoPage,
   getStateRowsForAssets,
@@ -37,9 +37,7 @@ import {
   listReviewGroups,
   listSinglesFeed,
   listSinglesForDeck,
-  makePhotoSingles,
   markEditDone,
-  resetUnreviewedGroups,
   restoreCarriedCull,
   setNeedsEdit,
   unstageCullDirect,
@@ -395,7 +393,9 @@ describe('applyReviewDecisions (decision 2)', () => {
       favouriteChanges: [{ assetId: id('1'), state: 'queued_apply', target: true }],
     });
     const duel = d.raw.prepare('SELECT * FROM duels').get() as Record<string, unknown>;
-    expect(duel.group_id).toBe(String(gid));
+    // Pair-keyed (v22): the endpoints are the identity; no group column.
+    expect(duel.winner_id).toBe(id('1'));
+    expect(duel.loser_id).toBe(id('2'));
     expect(duel.kept_both).toBe(0);
     const fav = (await getFavouriteActionStates(asExpo(d), [id('1')])).get(id('1'));
     expect(fav).toEqual({ state: 'queued_apply', target: true });
@@ -434,20 +434,24 @@ describe('needs-edit cycle hardening (m0.7 carried over)', () => {
   });
 });
 
-describe('makePhotoSingles (durable user ejection)', () => {
-  it('marks user_single and dissolves the emptied group', async () => {
+describe('ejectNotRelated ("not related" pairs, v22)', () => {
+  const pairs = (d: TestDb): { ejected_id: string; partner_id: string }[] =>
+    d.raw
+      .prepare('SELECT ejected_id, partner_id FROM not_related ORDER BY ejected_id, partner_id')
+      .all() as { ejected_id: string; partner_id: string }[];
+
+  it('records pairs against the group, clears the assignment, dissolves the rump', async () => {
     const d = await fresh();
     await seed(d, ['1', '2', '3'], [['1', '2']]);
-    await makePhotoSingles(asExpo(d), [id('1'), id('2')]);
+    await ejectNotRelated(asExpo(d), [id('1')], AT + 100);
+    expect(pairs(d)).toEqual([{ ejected_id: id('1'), partner_id: id('2') }]);
     const assignments = d.raw
-      .prepare('SELECT photo_id, group_id, user_single FROM photo_group_assignments')
-      .all() as { photo_id: string; group_id: number | null; user_single: number }[];
+      .prepare('SELECT photo_id, group_id FROM photo_group_assignments')
+      .all() as { photo_id: string; group_id: number | null }[];
     expect(assignments).toHaveLength(3);
+    // The ejected photo is a single; the one-member rump dissolved too —
+    // but the PAIR, not a flag on the survivor, is what keeps them apart.
     expect(assignments.every((a) => a.group_id === null)).toBe(true);
-    const marked = Object.fromEntries(assignments.map((a) => [a.photo_id, a.user_single]));
-    expect(marked[id('1')]).toBe(1);
-    expect(marked[id('2')]).toBe(1);
-    expect(marked[id('3')]).toBe(0); // scan-made single, not user-ejected
     const groups = d.raw.prepare('SELECT COUNT(*) AS n FROM photo_groups').get() as { n: number };
     expect(groups.n).toBe(0);
     expect(foreignKeyCheck(d)).toEqual([]);
@@ -456,7 +460,11 @@ describe('makePhotoSingles (durable user ejection)', () => {
   it('ejecting from a 3-member group keeps the surviving pair grouped', async () => {
     const d = await fresh();
     await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
-    await makePhotoSingles(asExpo(d), [id('1')]);
+    await ejectNotRelated(asExpo(d), [id('1')], AT + 100);
+    expect(pairs(d)).toEqual([
+      { ejected_id: id('1'), partner_id: id('2') },
+      { ejected_id: id('1'), partner_id: id('3') },
+    ]);
     const assignments = Object.fromEntries(
       (
         d.raw.prepare('SELECT photo_id, group_id FROM photo_group_assignments').all() as {
@@ -469,9 +477,32 @@ describe('makePhotoSingles (durable user ejection)', () => {
     expect(assignments[id('2')]).not.toBeNull();
     expect(assignments[id('2')]).toBe(assignments[id('3')]);
   });
+
+  it('DISSOLVES pairs naming the newly-ejected photo as partner first (the A→B rule)', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
+    // Eject 1, then 2 — the design's double-ejection walk: 2's own
+    // ejection revokes its standing as a proxy for the cluster, so
+    // (1→2) dissolves and the two may reunite elsewhere, while 3 stays
+    // protected from both.
+    await ejectNotRelated(asExpo(d), [id('1')], AT + 100);
+    await ejectNotRelated(asExpo(d), [id('2')], AT + 200);
+    expect(pairs(d)).toEqual([
+      { ejected_id: id('1'), partner_id: id('3') },
+      { ejected_id: id('2'), partner_id: id('3') },
+    ]);
+  });
+
+  it('never pairs against a tombstoned member — the judgment is about visible photos', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
+    d.raw.prepare('UPDATE photos SET is_present = 0 WHERE asset_id = ?').run(id('3'));
+    await ejectNotRelated(asExpo(d), [id('1')], AT + 100);
+    expect(pairs(d)).toEqual([{ ejected_id: id('1'), partner_id: id('2') }]);
+  });
 });
 
-describe('makePhotoSingles with an unreachable survivor (final cycle O1)', () => {
+describe('ejectNotRelated with an unreachable partner (plan §5)', () => {
   const SD = '0a91-e18d';
   const sdId = (rawId: string): string => `${SD}/${rawId}`;
 
@@ -501,33 +532,38 @@ describe('makePhotoSingles with an unreachable survivor (final cycle O1)', () =>
     return row.group_id;
   }
 
-  it('never user_single-freezes a survivor on an unmounted card; its assignment defers', async () => {
+  it('pairs record against the HIDDEN member too; its assignment defers (byte-for-byte)', async () => {
     const d = await fresh();
     const groupId = await seedMixedPair(d);
-    await makePhotoSingles(asExpo(d), [id('v1')], groupId, ['external_primary']);
+    await ejectNotRelated(asExpo(d), [id('v1')], AT + 100, groupId, ['external_primary']);
+    // The judgment is about the group — unreachable members included
+    // (vetted 2026-08-21): without the pair, the photo would regroup
+    // with them on remount. The dissolution rule is the safety valve.
+    const pair = d.raw.prepare('SELECT ejected_id, partner_id FROM not_related').get() as {
+      ejected_id: string;
+      partner_id: string;
+    };
+    expect(pair).toEqual({ ejected_id: id('v1'), partner_id: sdId('s1') });
     const ejected = d.raw
-      .prepare('SELECT group_id, user_single FROM photo_group_assignments WHERE photo_id = ?')
-      .get(id('v1')) as { group_id: number | null; user_single: number };
+      .prepare('SELECT group_id FROM photo_group_assignments WHERE photo_id = ?')
+      .get(id('v1')) as { group_id: number | null };
     expect(ejected.group_id).toBeNull();
-    expect(ejected.user_single).toBe(1);
-    // The unseen survivor keeps every byte (plan §5): same group, never
-    // marked a user single — remount re-windows it normally.
+    // The unseen partner keeps every byte (plan §5): the rump dissolve
+    // defers while its card is out — remount re-windows it normally.
     const survivor = d.raw
-      .prepare('SELECT group_id, user_single FROM photo_group_assignments WHERE photo_id = ?')
-      .get(sdId('s1')) as { group_id: number | null; user_single: number };
+      .prepare('SELECT group_id FROM photo_group_assignments WHERE photo_id = ?')
+      .get(sdId('s1')) as { group_id: number | null };
     expect(survivor.group_id).toBe(groupId);
-    expect(survivor.user_single).toBe(0);
   });
 
-  it('a REACHABLE survivor still promotes to a durable single (pair semantics)', async () => {
+  it('a REACHABLE partner rump dissolves to a plain single', async () => {
     const d = await fresh();
     const groupId = await seedMixedPair(d);
-    await makePhotoSingles(asExpo(d), [id('v1')], groupId, ['external_primary', SD]);
+    await ejectNotRelated(asExpo(d), [id('v1')], AT + 100, groupId, ['external_primary', SD]);
     const survivor = d.raw
-      .prepare('SELECT group_id, user_single FROM photo_group_assignments WHERE photo_id = ?')
-      .get(sdId('s1')) as { group_id: number | null; user_single: number };
+      .prepare('SELECT group_id FROM photo_group_assignments WHERE photo_id = ?')
+      .get(sdId('s1')) as { group_id: number | null };
     expect(survivor.group_id).toBeNull();
-    expect(survivor.user_single).toBe(1);
   });
 });
 
@@ -920,25 +956,37 @@ describe('gate 5: day queries', () => {
 describe('gate 5: getPhotoFacts', () => {
   it('joins state, group membership, time-attached and ejection facts', async () => {
     const d = await fresh();
-    await seedDays(d, [P0('1'), P0('2'), P0('3'), P0('4')], [['1', '2', '3']], ['3']);
+    await seedDays(
+      d,
+      [P0('1'), P0('2'), P0('3'), P0('4'), P0('5')],
+      [
+        ['1', '2', '3'],
+        ['4', '5'],
+      ],
+      ['3'],
+    );
     const gid = groupIdOf(d, '1');
     await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 1);
-    await makePhotoSingles(asExpo(d), [id('4')]);
+    await ejectNotRelated(asExpo(d), [id('4')], AT + 2);
 
     const kept = await getPhotoFacts(asExpo(d), id('1'));
     expect(kept).toMatchObject({
       state: 'kept',
       group_id: gid,
       time_attached: 0,
-      user_single: 0,
+      not_related_count: 0,
     });
     expect(kept?.reviewed_at).toBe(AT + 1);
 
     const attached = await getPhotoFacts(asExpo(d), id('3'));
     expect(attached).toMatchObject({ time_attached: 1, group_id: gid });
 
+    // The ejected photo's OWN pairs count; being someone else's partner
+    // does not (5 shows 0 — the judgment belongs to 4).
     const ejected = await getPhotoFacts(asExpo(d), id('4'));
-    expect(ejected).toMatchObject({ group_id: null, user_single: 1 });
+    expect(ejected).toMatchObject({ group_id: null, not_related_count: 1 });
+    const partner = await getPhotoFacts(asExpo(d), id('5'));
+    expect(partner).toMatchObject({ not_related_count: 0 });
 
     expect(await getPhotoFacts(asExpo(d), id('nope'))).toBeNull();
     expect(foreignKeyCheck(d)).toEqual([]);
@@ -1165,7 +1213,7 @@ describe('source-scoped queue reads', () => {
     expect(await listGroupsForDay(asExpo(d), '2026-07-20', CAMERA)).toHaveLength(1);
     // Singles: ejecting one member of each pair dissolves it (both become
     // singles) — the feed must list only the Camera two.
-    await makePhotoSingles(asExpo(d), [id('c1'), id('w1')]);
+    await ejectNotRelated(asExpo(d), [id('c1'), id('w1')], AT + 100);
     const feed = await listSinglesFeed(asExpo(d), 10, CAMERA);
     expect(feed.map((m) => m.asset_id).sort()).toEqual([id('c1'), id('c2')]);
   });
@@ -1219,38 +1267,6 @@ describe('atomic compare verdicts', () => {
 
 // -------------------------------------------- final-review round 2
 
-describe('resetUnreviewedGroups spares mixed groups', () => {
-  it('only fully-unreviewed groups and plain singles reset', async () => {
-    const d = await fresh();
-    // g1 mixed (one done member), g2 fully unreviewed, s single, e ejected.
-    await seed(
-      d,
-      ['1', '2', '3', '4', 's', 'e'],
-      [
-        ['1', '2'],
-        ['3', '4'],
-      ],
-    );
-    await makePhotoSingles(asExpo(d), [id('e')]);
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 1);
-    await resetUnreviewedGroups(asExpo(d));
-    const rows = d.raw
-      .prepare('SELECT photo_id, group_id, user_single FROM photo_group_assignments')
-      .all() as { photo_id: string; group_id: number | null; user_single: number }[];
-    const byId = new Map(rows.map((r) => [r.photo_id, r]));
-    // Mixed group survives whole; its unreviewed member keeps membership.
-    expect(byId.get(id('1'))?.group_id).not.toBeNull();
-    expect(byId.get(id('2'))?.group_id).toBe(byId.get(id('1'))?.group_id);
-    // Fully-unreviewed group and the plain single reset (assignments gone).
-    expect(byId.has(id('3'))).toBe(false);
-    expect(byId.has(id('4'))).toBe(false);
-    expect(byId.has(id('s'))).toBe(false);
-    // The user-ejected single is untouchable.
-    expect(byId.get(id('e'))).toMatchObject({ group_id: null, user_single: 1 });
-    expect(foreignKeyCheck(d)).toEqual([]);
-  });
-});
-
 describe('getDayReviewSummary (decision-day accounting)', () => {
   it('counts photos DECIDED that day whatever their capture day', async () => {
     const d = await fresh();
@@ -1287,8 +1303,8 @@ describe('corpus stats vs MediaStore denominator', () => {
 
 // -------------------------------------------- final-review round 3
 
-describe('pair ejection is durable for BOTH photos', () => {
-  it('the survivor of a dissolved pair becomes a user single too', async () => {
+describe('ejection records the judgment as pairs, not survivor flags (v22)', () => {
+  it('the pair keeps both photos apart; the other member regroups freely', async () => {
     const d = await fresh();
     await seed(
       d,
@@ -1298,19 +1314,29 @@ describe('pair ejection is durable for BOTH photos', () => {
         ['3', '4', '5'],
       ],
     );
-    await makePhotoSingles(asExpo(d), [id('1'), id('3')]);
-    const rows = d.raw
-      .prepare('SELECT photo_id, group_id, user_single FROM photo_group_assignments')
-      .all() as { photo_id: string; group_id: number | null; user_single: number }[];
+    await ejectNotRelated(asExpo(d), [id('1')], AT + 100);
+    await ejectNotRelated(asExpo(d), [id('3')], AT + 101);
+    const rows = d.raw.prepare('SELECT photo_id, group_id FROM photo_group_assignments').all() as {
+      photo_id: string;
+      group_id: number | null;
+    }[];
     const byId = new Map(rows.map((r) => [r.photo_id, r]));
-    // The pair: ejected AND survivor are durable singles.
-    expect(byId.get(id('1'))).toMatchObject({ group_id: null, user_single: 1 });
-    expect(byId.get(id('2'))).toMatchObject({ group_id: null, user_single: 1 });
-    // The trio: survivors keep their (now pair) group, not user_single.
-    expect(byId.get(id('3'))).toMatchObject({ group_id: null, user_single: 1 });
+    // The two-photo group dissolves whole; the pair (1→2) is the durable
+    // judgment — no flag lands on the survivor.
+    expect(byId.get(id('1'))?.group_id).toBeNull();
+    expect(byId.get(id('2'))?.group_id).toBeNull();
+    // The trio: survivors keep their (now pair) group.
+    expect(byId.get(id('3'))?.group_id).toBeNull();
     expect(byId.get(id('4'))?.group_id).not.toBeNull();
-    expect(byId.get(id('4'))?.user_single).toBe(0);
     expect(byId.get(id('5'))?.group_id).toBe(byId.get(id('4'))?.group_id);
+    const pairs = d.raw
+      .prepare('SELECT ejected_id, partner_id FROM not_related ORDER BY ejected_id, partner_id')
+      .all();
+    expect(pairs).toEqual([
+      { ejected_id: id('1'), partner_id: id('2') },
+      { ejected_id: id('3'), partner_id: id('4') },
+      { ejected_id: id('3'), partner_id: id('5') },
+    ]);
     expect(foreignKeyCheck(d)).toEqual([]);
   });
 });
@@ -1359,12 +1385,12 @@ describe('corpus stats honor the source scope', () => {
 
 // -------------------------------------------- final-review round 4
 
-describe('group-level metadata freezes regroup rewrites', () => {
-  it('an all-unreviewed group with recorded duels survives a window rewrite intact', async () => {
+describe('duels never pin membership — groups re-form freely (v22)', () => {
+  it('a duel-carrying group is freely rewritten and the duel count never moves', async () => {
     const d = await fresh();
     await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
     const gid = groupIdOf(d, '1');
-    // A verdict-free triage duel: group metadata without any verdict.
+    // A verdict-free triage duel used to metadata-freeze the group.
     await applyReviewDecisions(asExpo(d), [], AT + 1, {
       duel: {
         groupId: String(gid),
@@ -1374,9 +1400,8 @@ describe('group-level metadata freezes regroup rewrites', () => {
         at: AT + 1,
       },
     });
-    // The next window computes a DIFFERENT split — the duel-carrying
-    // group must freeze whole (in-transaction revalidation), not be
-    // rebuilt.
+    // The next window computes a different split — it LANDS (grouping is
+    // presentation), and the append-only duel row is untouched by it.
     await writeContinuousGroups(
       asExpo(d),
       {
@@ -1386,8 +1411,12 @@ describe('group-level metadata freezes regroup rewrites', () => {
       },
       AT + 10,
     );
-    expect(groupIdOf(d, '1')).toBe(gid);
-    expect(groupIdOf(d, '3')).toBe(gid);
+    expect(groupIdOf(d, '1')).toBe(groupIdOf(d, '2'));
+    expect(groupIdOf(d, '1')).not.toBe(gid);
+    expect(
+      d.raw.prepare('SELECT group_id FROM photo_group_assignments WHERE photo_id = ?').get(id('3')),
+    ).toEqual({ group_id: null });
+    expect(d.raw.prepare('SELECT COUNT(*) AS n FROM duels').get()).toEqual({ n: 1 });
   });
 });
 
@@ -1440,11 +1469,11 @@ describe('absent members dissolve their groups', () => {
     await reconcileExternallyRemoved(asExpo(d), [id('1')], AT + 100);
     const groups = await listReviewGroups(asExpo(d), 10);
     expect(groups).toEqual([]);
-    // The present survivor is a plain single again (not user-ejected).
+    // The present survivor is a plain single again.
     const row = d.raw
-      .prepare('SELECT group_id, user_single FROM photo_group_assignments WHERE photo_id = ?')
-      .get(id('2')) as { group_id: number | null; user_single: number };
-    expect(row).toMatchObject({ group_id: null, user_single: 0 });
+      .prepare('SELECT group_id FROM photo_group_assignments WHERE photo_id = ?')
+      .get(id('2')) as { group_id: number | null };
+    expect(row).toMatchObject({ group_id: null });
     const feed = await listSinglesFeed(asExpo(d), 10);
     expect(feed.map((m) => m.asset_id)).toEqual([id('2')]);
     expect(foreignKeyCheck(d)).toEqual([]);
@@ -1453,36 +1482,23 @@ describe('absent members dissolve their groups', () => {
 
 // -------------------------------------------- final-review round 5
 
-describe('strictness reset spares metadata groups', () => {
-  it('an all-unreviewed group with recorded duels survives the reset', async () => {
+describe('applyGroupingSettingChange is a plain setting write (v22)', () => {
+  it('writes or deletes the key and touches no assignment', async () => {
     const d = await fresh();
-    await seed(
-      d,
-      ['1', '2', '3', '4'],
-      [
-        ['1', '2'],
-        ['3', '4'],
-      ],
-    );
-    const dueled = groupIdOf(d, '1');
-    await applyReviewDecisions(asExpo(d), [], AT + 1, {
-      duel: {
-        groupId: String(dueled),
-        winnerId: id('1'),
-        loserId: id('2'),
-        keptBoth: true,
-        at: AT + 1,
-      },
-    });
-    await resetUnreviewedGroups(asExpo(d));
-    // The duel-carrying group keeps membership; the plain one reset.
-    expect(groupIdOf(d, '1')).toBe(dueled);
-    expect(groupIdOf(d, '2')).toBe(dueled);
-    const plain = d.raw
-      .prepare('SELECT group_id FROM photo_group_assignments WHERE photo_id = ?')
-      .get(id('3'));
-    expect(plain).toBeUndefined();
-    expect(foreignKeyCheck(d)).toEqual([]);
+    await seed(d, ['1', '2'], [['1', '2']]);
+    const gid = groupIdOf(d, '1');
+    const { applyGroupingSettingChange } = await import('./store');
+    await applyGroupingSettingChange(asExpo(d), 'grouping_strictness', 'strict');
+    expect(
+      d.raw.prepare("SELECT value FROM settings WHERE key = 'grouping_strictness'").get(),
+    ).toEqual({ value: 'strict' });
+    // No reset rides the write any more — the forced rescan the caller
+    // requests is what re-forms groups under the new setting.
+    expect(groupIdOf(d, '1')).toBe(gid);
+    await applyGroupingSettingChange(asExpo(d), 'grouping_strictness', null);
+    expect(
+      d.raw.prepare("SELECT value FROM settings WHERE key = 'grouping_strictness'").get(),
+    ).toBeUndefined();
   });
 });
 
@@ -1655,7 +1671,7 @@ describe('compare verdicts validate membership in the transaction', () => {
     await seed(d, ['1', '2', '3'], [['1', '2']]);
     const gid = groupIdOf(d, '1');
     // The group dissolves (ejection) before the compare verdict lands.
-    await makePhotoSingles(asExpo(d), [id('1')]);
+    await ejectNotRelated(asExpo(d), [id('1')], AT + 50);
     await expect(
       applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 100, {
         duel: {
@@ -1706,24 +1722,18 @@ describe('ejection validates the displayed group', () => {
     const d = await fresh();
     await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
     const staleGid = groupIdOf(d, '1') + 999;
-    await expect(makePhotoSingles(asExpo(d), [id('1')], staleGid)).rejects.toThrow(
+    await expect(ejectNotRelated(asExpo(d), [id('1')], AT + 100, staleGid)).rejects.toThrow(
       /changed while reviewing/,
     );
-    // Nothing moved: the photo keeps its real group, no survivor frozen.
+    // Nothing moved: the photo keeps its real group, no pair recorded.
     const row = d.raw
-      .prepare('SELECT group_id, user_single FROM photo_group_assignments WHERE photo_id = ?')
-      .get(id('1')) as { group_id: number | null; user_single: number };
+      .prepare('SELECT group_id FROM photo_group_assignments WHERE photo_id = ?')
+      .get(id('1')) as { group_id: number | null };
     expect(row.group_id).not.toBeNull();
-    expect(row.user_single).toBe(0);
+    expect(d.raw.prepare('SELECT COUNT(*) AS n FROM not_related').get()).toEqual({ n: 0 });
     // The matching id still works.
-    await makePhotoSingles(asExpo(d), [id('1')], groupIdOf(d, '1'));
-    expect(
-      (
-        d.raw
-          .prepare('SELECT user_single FROM photo_group_assignments WHERE photo_id = ?')
-          .get(id('1')) as { user_single: number }
-      ).user_single,
-    ).toBe(1);
+    await ejectNotRelated(asExpo(d), [id('1')], AT + 200, groupIdOf(d, '1'));
+    expect(d.raw.prepare('SELECT COUNT(*) AS n FROM not_related').get()).toEqual({ n: 2 });
   });
 });
 
@@ -1877,7 +1887,7 @@ describe('stale actions against absent/regrouped photos reject', () => {
     const gid = groupIdOf(d, '1');
     const { reconcileExternallyRemoved } = await import('./trashStore');
     await reconcileExternallyRemoved(asExpo(d), [id('1')], AT + 50);
-    await expect(makePhotoSingles(asExpo(d), [id('1')], gid)).rejects.toThrow(
+    await expect(ejectNotRelated(asExpo(d), [id('1')], AT + 100, gid)).rejects.toThrow(
       /changed while reviewing/,
     );
   });
@@ -2357,7 +2367,7 @@ describe('month scopes and the rescued-date pins (m0.8.6)', () => {
   });
 });
 
-describe("D5: the editor's un-review deletes its group's Compare history", () => {
+describe('duels are an append-only event log (v22) — no verdict path deletes them', () => {
   async function seedDuelGroup(d: TestDb): Promise<number> {
     await writeContinuousGroups(
       asExpo(d),
@@ -2384,86 +2394,45 @@ describe("D5: the editor's un-review deletes its group's Compare history", () =>
     return groupId;
   }
 
-  async function duelCount(d: TestDb, groupId: number): Promise<number> {
-    const row = await asExpo(d).getFirstAsync<{ n: number }>(
-      'SELECT COUNT(*) AS n FROM duels WHERE group_id = ?',
-      String(groupId),
-    );
-    return Number(row?.n ?? 0);
+  function duelCount(d: TestDb): number {
+    return Number((d.raw.prepare('SELECT COUNT(*) AS n FROM duels').get() as { n: number }).n);
   }
 
-  it('the un-review write clears the duels in the same transaction, and the freeze releases', async () => {
-    const d = await fresh();
-    const groupId = await seedDuelGroup(d);
-    expect(await duelCount(d, groupId)).toBe(1);
-    expect(await getMetadataGroupIds(asExpo(d), [groupId])).toEqual(new Set([groupId]));
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'unreviewed']], AT + 20, {
-      deleteDuelsForGroup: groupId,
-    });
-    expect(await duelCount(d, groupId)).toBe(0);
-    // Duels-only metadata: nothing left to freeze on.
-    expect(await getMetadataGroupIds(asExpo(d), [groupId])).toEqual(new Set());
-    const facts = await getPhotoFacts(asExpo(d), id('1'));
-    expect(facts?.state).toBe('unreviewed');
-    expect(facts?.group_has_duels).toBe(0);
-  });
-
-  it("restoreCarriedCull's editor path clears them too; CullList's plain restore never does", async () => {
-    const d = await fresh();
-    const groupId = await seedDuelGroup(d);
-    await applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 20);
-    // CullList's Restore: no duel deletion.
-    expect(await restoreCarriedCull(asExpo(d), id('2'), AT + 30)).toBe(true);
-    expect(await duelCount(d, groupId)).toBe(1);
-    // The editor's culled → unreviewed passes the group.
-    await applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 40);
-    expect(await restoreCarriedCull(asExpo(d), id('2'), AT + 50, true, groupId)).toBe(true);
-    expect(await duelCount(d, groupId)).toBe(0);
-  });
-
-  it('a guarded no-op restore deletes nothing (the stale-sheet rule)', async () => {
-    const d = await fresh();
-    const groupId = await seedDuelGroup(d);
-    // Photo 2 is NOT culled — the restore must no-op whole, duels intact.
-    expect(await restoreCarriedCull(asExpo(d), id('2'), AT + 30, true, groupId)).toBe(false);
-    expect(await duelCount(d, groupId)).toBe(1);
-  });
-
-  it('group_has_duels reaches the facts row (the confirm copy gates on it)', async () => {
+  it('un-review keeps the Compare history — fully non-destructive, no confirm needed', async () => {
     const d = await fresh();
     await seedDuelGroup(d);
-    const facts = await getPhotoFacts(asExpo(d), id('3'));
-    expect(facts?.group_has_duels).toBe(1);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'unreviewed']], AT + 20);
+    expect(duelCount(d)).toBe(1);
+    const facts = await getPhotoFacts(asExpo(d), id('1'));
+    expect(facts?.state).toBe('unreviewed');
   });
 
-  it("the confirm's gate survives an identical rebuild (device-pass round 2, 2026-08-19)", async () => {
+  it('every restore path keeps the rows too', async () => {
     const d = await fresh();
-    const groupId = await seedDuelGroup(d);
-    // Round 1: finish the group, then un-review every member (D4 makes
-    // it rebuildable; no duels were deleted — the seed's duel is from
-    // the triage keep, so clear it first to model a compare-free round).
-    await asExpo(d).runAsync('DELETE FROM duels WHERE group_id = ?', String(groupId));
-    await applyReviewDecisions(
+    await seedDuelGroup(d);
+    await applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 20);
+    expect(await restoreCarriedCull(asExpo(d), id('2'), AT + 30)).toBe(true);
+    expect(duelCount(d)).toBe(1);
+    await applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 40);
+    expect(await unstageCullDirect(asExpo(d), id('2'), AT + 50, true)).toMatchObject({
+      appliedIds: [id('2')],
+    });
+    expect(duelCount(d)).toBe(1);
+  });
+
+  it('the lifetime count is stable across regrouping and re-mints', async () => {
+    const d = await fresh();
+    await seedDuelGroup(d);
+    // Regroup into a different split, twice — the duel never notices.
+    await writeContinuousGroups(
       asExpo(d),
-      [
-        [id('1'), 'kept'],
-        [id('2'), 'kept'],
-        [id('3'), 'kept'],
-      ],
+      {
+        photos: ['1', '2', '3'].map((r) => upsert(r)),
+        groups: [{ members: [id('2'), id('3')], timeAttached: [] }],
+        singles: [id('1')],
+      },
       AT + 100,
     );
-    await applyReviewDecisions(
-      asExpo(d),
-      [
-        [id('1'), 'unreviewed'],
-        [id('2'), 'unreviewed'],
-        [id('3'), 'unreviewed'],
-      ],
-      AT + 200,
-    );
-    // The rescan recomputes the SAME grouping: the identical-group
-    // no-op keeps the id (m0.8.1), which is the device pass's "same
-    // members" observation.
     await writeContinuousGroups(
       asExpo(d),
       {
@@ -2471,26 +2440,14 @@ describe("D5: the editor's un-review deletes its group's Compare history", () =>
         groups: [{ members: [id('1'), id('2'), id('3')], timeAttached: [] }],
         singles: [],
       },
-      AT + 300,
+      AT + 200,
     );
-    const rebuilt = await listReviewGroups(asExpo(d), 10);
-    expect(rebuilt[0].groupId).toBe(groupId);
-    // Round 2: a compare writes a duel on the (retained) id…
-    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 400, {
-      duel: {
-        groupId: String(groupId),
-        winnerId: id('1'),
-        loserId: id('2'),
-        keptBoth: null,
-        at: AT + 400,
-      },
-      duelClaimsWholeTable: false,
-    });
-    // …and the editor's confirm gate must see it on EVERY member.
-    for (const raw of ['1', '2', '3']) {
-      const facts = await getPhotoFacts(asExpo(d), id(raw));
-      expect(facts?.group_has_duels).toBe(1);
-    }
+    expect(duelCount(d)).toBe(1);
+    const row = d.raw.prepare('SELECT winner_id, loser_id FROM duels').get() as {
+      winner_id: string;
+      loser_id: string;
+    };
+    expect(row).toEqual({ winner_id: id('1'), loser_id: id('2') });
   });
 });
 

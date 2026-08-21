@@ -126,23 +126,28 @@ export const BASELINE_DDL = `
   CREATE INDEX idx_photos_decided_first ON photos(decided_first_at)
     WHERE decided_first_at IS NOT NULL;
 
-  -- Compare history (m0.1+, mined by later features; m0.8: sessions are
-  -- gone — a duel belongs to its group).
+  -- Compare history as an APPEND-ONLY EVENT LOG (v22, docs/
+  -- Regroup_design.md §3): written by Compare, deleted by nothing except
+  -- the destructive schema reset. Pair-keyed — group ids re-mint on any
+  -- composition change, so a group-keyed duel dies on benign re-mints;
+  -- the pair is the truth. No FK to photos: a duel outlives its
+  -- endpoints (a tombstoned or purged photo keeps its place in the
+  -- lifetime counts). "Forget this card" ERASE anonymizes instead of
+  -- deleting: endpoint ids null out, the row (and the count) survives.
   CREATE TABLE duels (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    group_id   TEXT NOT NULL,
-    winner_id  TEXT NOT NULL,
-    loser_id   TEXT NOT NULL,
+    winner_id  TEXT,
+    loser_id   TEXT,
     -- NULL = a verdict-free TRIAGE duel (3+ alive): history only,
     -- excluded from the kept-both statistic (v19).
     kept_both  INTEGER,
     at         INTEGER NOT NULL
   );
 
-  -- The regroup boundary asks 'does this group carry duels?' twice per
-  -- scan window; without this the EXISTS scanned every duel per group,
-  -- growing with the user's whole compare history.
-  CREATE INDEX idx_duels_group ON duels(group_id);
+  -- Serve the forget-erase anonymization update and future per-photo
+  -- duel-history reads (docs/TODO.md "History event streams").
+  CREATE INDEX idx_duels_winner ON duels(winner_id);
+  CREATE INDEX idx_duels_loser ON duels(loser_id);
 
   CREATE TABLE settings (
     key   TEXT PRIMARY KEY,
@@ -195,11 +200,9 @@ export const BASELINE_DDL = `
     group_id INTEGER,
     -- m0.8: grouped by TIME because the embedding was unavailable (the UI
     -- badges these; the scan rewrites them once the embedding lands).
+    -- (v22: user_single is gone — "not related" is the pair table below,
+    -- docs/Regroup_design.md §4; assignments are pure scan output.)
     time_attached INTEGER NOT NULL DEFAULT 0 CHECK (time_attached IN (0, 1)),
-    -- m0.8: the USER ejected this photo to singles ('not related') — the
-    -- scan must never regroup it (singles are never promoted, settled
-    -- contract); only a user decision or regroup-everything opt-in clears it.
-    user_single INTEGER NOT NULL DEFAULT 0 CHECK (user_single IN (0, 1)),
     UNIQUE (group_id, photo_id),
     FOREIGN KEY (run_id, group_id) REFERENCES photo_groups(run_id, id)
   );

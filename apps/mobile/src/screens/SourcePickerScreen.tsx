@@ -89,10 +89,10 @@ export function SourcePickerScreen({ navigation }: Props) {
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
 
-  // While the apply/rollback transaction chain runs, EVERY exit is
-  // blocked (header back, hardware back, gestures): leaving mid-apply
-  // would let the cached old-scope queue take decisions that freeze
-  // stale membership before the strict refresh lands.
+  // While the apply/rollback chain runs, EVERY exit is blocked (header
+  // back, hardware back, gestures): leaving mid-apply would let the
+  // cached old-scope queue keep rendering photos the new scope excludes
+  // before the strict refresh lands.
   useEffect(() => {
     const unsubscribe = navigation.addListener('beforeRemove', (event) => {
       if (savingRef.current) event.preventDefault();
@@ -101,7 +101,7 @@ export function SourcePickerScreen({ navigation }: Props) {
   }, [navigation]);
   /** The persisted state at load — the rollback target if applying a new
    * scope fails after it committed. `unset` preserves the DYNAMIC default
-   * (rolling back to a resolved snapshot would freeze it). */
+   * (rolling back to a resolved snapshot would pin it). */
   const previousSettingRef = useRef<
     { kind: 'set'; setting: PhotoSourceSetting } | { kind: 'unset' } | null
   >(null);
@@ -230,9 +230,9 @@ export function SourcePickerScreen({ navigation }: Props) {
       // completing during the apply below could repopulate a group with
       // newly excluded photos and have the scoped refresh render it.
       supersedeScan();
-      // Setting + unfrozen-assignment reset commit ATOMICALLY — a process
-      // death between them would leave the next launch rendering old
-      // assignments under the new scope.
+      // A plain durable setting write (v22): groups re-form freely, so
+      // nothing needs resetting — the forced rescan below rewrites every
+      // assignment under the new scope.
       try {
         await applyGroupingSettingChange(
           db,

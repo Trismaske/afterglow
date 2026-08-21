@@ -26,9 +26,11 @@
  * deliver: the modification is never re-ingested, the generation
  * advances past it, and the delta silently stops equalling a full pass —
  * which is the one property the design cannot lose. Every changed row
- * without a DATE_TAKEN therefore counts as `undated` and forces the
- * full-pass fallback (a full pass's unbounded query does return those
- * rows, batched by effective time).
+ * without a DATE_TAKEN therefore counts as `undated`, and the planner
+ * routes those rows to a DIRECT per-id fetch instead (F27, m0.8.7 —
+ * until then each one forced a full corpus walk, the measured "random
+ * scan" cause): they land through the same rescue/window machinery the
+ * full pass gives its undated batch.
  *
  * Everything here was measured on real devices before anything routed
  * through it — the trash finding, the mtime fallback and the window-walk
@@ -36,6 +38,32 @@
  * reading the MediaStore documentation.
  */
 import type { ChangedMediaRow } from '../../modules/media-store-actions';
+
+/**
+ * Restrict a change set to the source scope (F27, m0.8.7), keyed on each
+ * row's CURRENT bucket — so a photo moved INTO a selected source still
+ * registers, while an out-of-source change plans nothing (the measured
+ * S23 cause: every WhatsApp arrival, with the WhatsApp folder never
+ * selected, cost a full corpus walk that could not even ingest the
+ * photo that triggered it). TRASHED rows always pass: they are id-keyed
+ * reconciliation work wherever they sit, a trash conceivably relocates
+ * the row's bucket, and an untracked trashed id is a cheap no-op
+ * downstream — filtering one out could hide a real deletion. A null
+ * bucket (volume-root legacy media) is out of every dirs scope, exactly
+ * as the bucket-scoped paging already treats it. `albumIdsByVolume ===
+ * null` = "All folders" — no filtering.
+ */
+export function filterChangedToSources(
+  changed: readonly ChangedMediaRow[],
+  albumIdsByVolume: Readonly<Record<string, readonly string[]>> | null,
+): ChangedMediaRow[] {
+  if (albumIdsByVolume === null) return [...changed];
+  return changed.filter((row) => {
+    if (row.isTrashed) return true;
+    if (row.bucketId === null) return false;
+    return (albumIdsByVolume[row.volumeName] ?? []).includes(row.bucketId);
+  });
+}
 
 /** One contiguous time range to re-page and regroup. */
 export interface DeltaRange {
@@ -50,8 +78,8 @@ export interface DeltaPlan {
   ranges: DeltaRange[];
   /** Changed rows with no DATE_TAKEN — no range can cover them, because
    * the re-page query filters on DATE_TAKEN alone (an mtime-only row is
-   * placeable in the timeline but not fetchable by range). Any of these
-   * forces the full-pass fallback. */
+   * placeable in the timeline but not fetchable by range). The planner
+   * lands the non-trashed ones by direct per-id fetch (F27). */
   undated: number;
   /** Changed rows carrying IS_TRASHED — a deletion made VISIBLE. */
   trashed: number;

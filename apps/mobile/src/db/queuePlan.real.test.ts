@@ -166,15 +166,18 @@ describe('index coverage for hot paths (m0.8.1 audit)', () => {
     expect(performance.now() - started).toBeLessThan(500);
   });
 
-  it('the duels EXISTS is index-served', async () => {
+  it('the duel endpoint lookups are index-served (v22)', async () => {
+    // Forget-erase anonymization and future per-photo duel history both
+    // key on an endpoint id — the two endpoint indexes must serve them.
     const d = await seedLarge();
-    const duels = d.raw
-      .prepare(
-        `EXPLAIN QUERY PLAN SELECT id FROM photo_groups g WHERE EXISTS
-         (SELECT 1 FROM duels dd WHERE dd.group_id = CAST(g.id AS TEXT))`,
-      )
+    const winner = d.raw
+      .prepare(`EXPLAIN QUERY PLAN SELECT id FROM duels WHERE winner_id = 'x'`)
       .all() as { detail: string }[];
-    expect(duels.map((r) => r.detail).join(' | ')).toMatch(/idx_duels_group/);
+    expect(winner.map((r) => r.detail).join(' | ')).toMatch(/idx_duels_winner/);
+    const loser = d.raw
+      .prepare(`EXPLAIN QUERY PLAN SELECT id FROM duels WHERE loser_id = 'x'`)
+      .all() as { detail: string }[];
+    expect(loser.map((r) => r.detail).join(' | ')).toMatch(/idx_duels_loser/);
   });
 });
 

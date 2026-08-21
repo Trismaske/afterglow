@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { coveredBy, describeDeltaPlan, deltaVerdict, planDeltaRanges } from './deltaScan';
+import {
+  coveredBy,
+  describeDeltaPlan,
+  deltaVerdict,
+  filterChangedToSources,
+  planDeltaRanges,
+} from './deltaScan';
 import type { ChangedMediaRow } from '../../modules/media-store-actions';
 
 const GAP = 15 * 60_000;
@@ -15,6 +21,7 @@ function row(over: Partial<ChangedMediaRow> = {}): ChangedMediaRow {
     isTrashed: false,
     generationAdded: 10,
     generationModified: 10,
+    bucketId: '100',
     ...over,
   };
 }
@@ -104,7 +111,7 @@ describe('planDeltaRanges', () => {
     // re-page filters on DATE_TAKEN alone, so a range built from the
     // mtime fallback would claim coverage the query cannot deliver and
     // the modification would silently never be re-ingested. Unrangeable
-    // rows must force the full-pass fallback instead.
+    // rows are routed to the planner's direct per-id fetch (F27).
     const plan = planDeltaRanges(
       [row({ dateTakenMs: null, dateModifiedSec: T / 1000 })],
       lib(0),
@@ -324,5 +331,46 @@ describe('delta/full parity', () => {
     const { ranges } = planDeltaRanges([row({ dateTakenMs: T + 5 * MIN })], timestamps, GAP);
     expect(ranges).toEqual([{ startMs: T, endMs: T + 15 * MIN, changed: 1 }]);
     expect(coveredBy(timestamps, ranges)).toBe(4);
+  });
+});
+
+describe('filterChangedToSources (F27, m0.8.7)', () => {
+  const scope = { external_primary: ['100', '200'], sdcard: ['300'] };
+
+  it('passes All-folders (null scope) through untouched', () => {
+    const rows = [row(), row({ bucketId: '999' }), row({ bucketId: null })];
+    expect(filterChangedToSources(rows, null)).toEqual(rows);
+  });
+
+  it('keeps in-source rows and drops out-of-source ones (the measured WhatsApp case)', () => {
+    const whatsapp = row({ rawId: '7', bucketId: '555' });
+    const camera = row({ rawId: '8', bucketId: '100' });
+    expect(filterChangedToSources([whatsapp, camera], scope)).toEqual([camera]);
+  });
+
+  it('keys on the row CURRENT bucket, so a move INTO a source registers', () => {
+    // The photo used to live in bucket 555 (unselected); MediaStore now
+    // reports it in 200 — the filter sees only "now", which is the point.
+    const moved = row({ rawId: '9', bucketId: '200' });
+    expect(filterChangedToSources([moved], scope)).toEqual([moved]);
+  });
+
+  it('scopes buckets per volume — the same bucket id on another volume does not match', () => {
+    const wrongVolume = row({ volumeName: 'sdcard', bucketId: '100' });
+    const rightVolume = row({ volumeName: 'sdcard', bucketId: '300' });
+    expect(filterChangedToSources([wrongVolume, rightVolume], scope)).toEqual([rightVolume]);
+  });
+
+  it('always passes trashed rows — a deletion is id-keyed reconcile work wherever it sits', () => {
+    const trashedOutOfSource = row({ rawId: '10', bucketId: '555', isTrashed: true });
+    const trashedNullBucket = row({ rawId: '11', bucketId: null, isTrashed: true });
+    expect(filterChangedToSources([trashedOutOfSource, trashedNullBucket], scope)).toEqual([
+      trashedOutOfSource,
+      trashedNullBucket,
+    ]);
+  });
+
+  it('drops a null-bucket non-trashed row under a dirs scope, like the paging it mirrors', () => {
+    expect(filterChangedToSources([row({ bucketId: null })], scope)).toEqual([]);
   });
 });

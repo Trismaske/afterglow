@@ -18,12 +18,11 @@
  *
  * Verdict writes route through the ReviewContext provider — the write
  * credits the goal by construction (m0.8.5 A3), carries write priority,
- * and surfaces failure through the provider's alert. Setting a grouped
- * photo back to unreviewed is D5's one deliberate lever: when the group
- * carries Compare history the confirm names the deletion, and the write
- * clears the group's duels in the same transaction, returning the group
- * to the scan's reach (D4). Action-layer writes are direct store calls
- * under user write priority, exactly like the queue screens' own.
+ * and surfaces failure through the provider's alert. Every verdict
+ * transition here is non-destructive (v22): duels are append-only and
+ * groups re-form freely, so un-review needs no confirm. Action-layer
+ * writes are direct store calls under user write priority, exactly like
+ * the queue screens' own.
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -172,27 +171,12 @@ export function StateEditorSheet({
         void run(() => decide(facts.asset_id, 'cull', expectedGroup), false);
         return;
       }
-      // → unreviewed. D5: when the group carries Compare history, the
-      // confirm names the deletion the un-review implies; the deletion
-      // and the verdict land in one transaction.
-      const clearGroup =
-        facts.group_has_duels === 1 && expectedGroup !== null ? expectedGroup : undefined;
-      const write = () =>
-        current === 'culled'
-          ? restoreCull(facts.asset_id, clearGroup)
-          : clearDecision(facts.asset_id, clearGroup);
-      if (clearGroup !== undefined) {
-        Alert.alert(
-          'Un-review this photo?',
-          "Its group's Compare history is cleared with it, so the scan may regroup these photos.",
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Un-review', style: 'destructive', onPress: () => void run(write, false) },
-          ],
-        );
-        return;
-      }
-      void run(write, false);
+      // → unreviewed. Fully non-destructive (v22): duels are append-only
+      // and groups re-form freely, so nothing needs a confirm.
+      void run(
+        () => (current === 'culled' ? restoreCull(facts.asset_id) : clearDecision(facts.asset_id)),
+        false,
+      );
     },
     [facts, run, decide, unstageCull, restoreCull, clearDecision],
   );

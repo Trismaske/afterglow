@@ -31,6 +31,7 @@ import { ProgressScreen } from './src/screens/ProgressScreen';
 import { SourcePickerScreen } from './src/screens/SourcePickerScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
 import { colors, ThemeProvider, useTheme } from './src/theme';
+import { DiagErrorBoundary } from './src/components/DiagErrorBoundary';
 import { MainTabBar } from './src/components/MainTabBar';
 import { AMBER_ACCENT } from './src/lib/accentTheme';
 
@@ -229,18 +230,23 @@ function ThemedNavigator() {
 
 export default function App() {
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaProvider>
-        <Suspense fallback={<Loading />}>
-          <SQLiteProvider databaseName={DATABASE_NAME} onInit={migrateDatabase} useSuspense>
-            <ThemeProvider>
-              <ReviewProvider>
-                <ThemedNavigator />
-              </ReviewProvider>
-            </ThemeProvider>
-          </SQLiteProvider>
-        </Suspense>
-      </SafeAreaProvider>
-    </GestureHandlerRootView>
+    // The boundary wraps the WHOLE provider stack: a render crash
+    // anywhere below logs (with its component stack) before dying —
+    // release builds used to die silently (m0.8.7 diagnostics).
+    <DiagErrorBoundary>
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <SafeAreaProvider>
+          <Suspense fallback={<Loading />}>
+            <SQLiteProvider databaseName={DATABASE_NAME} onInit={migrateDatabase} useSuspense>
+              <ThemeProvider>
+                <ReviewProvider>
+                  <ThemedNavigator />
+                </ReviewProvider>
+              </ThemeProvider>
+            </SQLiteProvider>
+          </Suspense>
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
+    </DiagErrorBoundary>
   );
 }

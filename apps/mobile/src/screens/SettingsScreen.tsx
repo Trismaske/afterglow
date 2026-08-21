@@ -136,10 +136,10 @@ export function SettingsScreen({ navigation }: Props) {
   const customGoalActive =
     goal !== null && !(DAILY_GOAL_CHOICES as readonly number[]).includes(goal);
 
-  // While a strictness change applies (setting+reset txn, refresh,
-  // possibly a rollback), EVERY exit is blocked — leaving mid-apply would
-  // let the cached old-threshold queue take decisions that freeze a lone
-  // stale member before the refresh removes the obsolete group.
+  // While a strictness change applies (setting write, refresh, possibly
+  // a rollback), EVERY exit is blocked — leaving mid-apply could strand
+  // the rendered queue and the durable setting mid-rollback, disagreeing
+  // until the next open.
   useEffect(() => {
     const unsubscribe = navigation.addListener('beforeRemove', (event) => {
       if (applyingRef.current) event.preventDefault();
@@ -459,7 +459,7 @@ export function SettingsScreen({ navigation }: Props) {
       // promising an opt-out the next launch would break.
       Alert.alert(
         'Change grouping strictness?',
-        'Photos you have not reviewed yet will be regrouped under the new setting. Reviewed groups and photos you made single are never touched.',
+        "Regroups your whole library (takes a few minutes). Review decisions and 'not related' judgments are never touched.",
         [
           { text: 'Cancel', style: 'cancel' },
           {
@@ -467,25 +467,21 @@ export function SettingsScreen({ navigation }: Props) {
             onPress: () => {
               const previous = strictness;
               // Supersede the in-flight scan FIRST: it must stop writing
-              // old-threshold groups before the reset/refresh below, or it
-              // could repopulate exactly what the reset cleared.
+              // old-threshold groups before the refresh below renders,
+              // and before the forced rescan starts the new pass.
               supersedeScan();
               setStrictness(step);
               setApplying(true);
               applyingRef.current = true;
-              // Setting + assignment reset commit ATOMICALLY (process
-              // death between them would strand old-threshold groups
-              // under the new setting).
+              // A plain durable setting write (v22): the forced rescan
+              // below re-forms every group under the new threshold.
               void applyGroupingSettingChange(
                 db,
                 GROUPING_STRICTNESS_KEY,
                 serializeStrictness(step),
               )
-                // Refresh BEFORE the rescan: the rendered queue still
-                // shows the reset groups — a decision on one of those
-                // stale members would permanently lose its whole-group
-                // boundary (the member freezes alone, companions
-                // reassign separately).
+                // Refresh BEFORE the rescan, so the queue renders the
+                // durable state the rescan will start from.
                 .then(() => refresh())
                 .then(() => {
                   void requestRescan(db);
@@ -510,9 +506,8 @@ export function SettingsScreen({ navigation }: Props) {
                     );
                     if (restored) setStrictness(previous);
                   }
-                  // COMPLETE the reset-state refresh before anything else — the
-                  // deleted groups must leave the rendered queue before the user
-                  // can navigate back and decide one (freezing a member alone).
+                  // COMPLETE the refresh before anything else, so the
+                  // rendered queue matches whichever setting survived.
                   const rerendered = await refresh().then(
                     () => true,
                     () => false,

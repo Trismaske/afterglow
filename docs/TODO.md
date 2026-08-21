@@ -30,40 +30,24 @@ Numbers change whenever an item closes, so **cross-references from code or other
    A workaround is in place: the embedder module decodes natively instead.
    File a minimal-repro issue upstream so the workaround can eventually be dropped.
 
-3. **Group a detected edited copy with its original** (Tristan, 2026-07-28; blocker restated after m0.8.6 D4).
-   The de-dupe case is obvious: an editor that saves a copy leaves you holding two near-identical photos.
-   But the scan cannot pair them today, and the blocker is specific.
-   Under the m0.8.6 freeze (`lib/regroupBoundary.ts`, D4): a DECIDED UNGROUPED photo is frozen, and only a group holding an unreviewed member is rebuildable.
-   By the time the scan detects a copy, the original is kept-with-an-edit or staged to cull — an ungrouped decided photo, frozen — so a computed {original, copy} pair sheds the original and degrades to nothing.
-   The copy itself is written `unreviewed` (m0.8.2).
-   The one case that DOES pair is flagging an edit while the original is still undecided.
-   NEW under D4: if the original already sits in a group with any undecided member, that group is rebuildable, so a detected copy CAN join it — the blocker is now only the ungrouped-decided original, the common case.
-   Option one: an explicit "detected copy joins its original" write that bypasses the freeze.
-   Option two: treat a detected copy as the group-forming event (the pair forms with the original's freeze waived once, at detection time).
-   Decide this alongside the question of what the copy prompt should offer.
-   Tristan notes the use case for copy-saving editors is unclear in the first place, and a substantially cropped copy may genuinely be a different photo.
-
-4. **Field diagnostics: persistent capture + user-shareable export** (Tristan, m0.8.3 grilling).
-   Today every field diagnostic (`[scan]`/`[perf]` lines, count tripwires, fallback warnings) is a plain console line.
-   It is visible only over adb and gone with the process.
-   Wanted: users run the app in the field for weeks, then share a diagnostics bundle we can analyze for weirdness they never noticed.
-   Silent-safe events (tripwire full-passes, fallback badges, hash-collision symptoms) are exactly the class that needs this.
-   This needs its own design pass:
-   - a persistent ring buffer (size- and time-bounded)
-   - what gets captured (log lines vs structured events)
-   - privacy: paths and filenames appear in lines, so scrub or disclose
+3. **Field diagnostics: user-shareable export** (Tristan, m0.8.3 grilling; capture slice shipped m0.8.7).
+   Every console line now persists to the on-device rotating sink (`lib/diagLog.ts` + `modules/diag-log`: 50 MB, ten segments, crash hooks included), so weeks of field evidence survive — but only `adb pull` can read it.
+   Wanted: users share a diagnostics bundle from the phone itself.
+   The EXPORT needs its own design pass:
+   - privacy: paths and filenames appear in lines, so scrub or disclose is a hard gate before anything leaves the device
    - a Settings "Share diagnostics" row via the share sheet
    - how this composes with the v1 re-gating of the `[perf]` lines
+   The ~44 silent `.catch(() => {})` swallows are a noted class the sink makes cheap to instrument case-by-case when suspicion arises.
 
-5. **History event streams for actions, and a duel-history surface** (Tristan, m0.8.3 matrix).
+4. **History event streams for actions, and a duel-history surface** (Tristan, m0.8.3 matrix).
    History's two streams are photo VERDICTS and SHARE events.
    Favourite/organize/edit activity appears only as badges on verdict rows.
    Duel records have NO browse surface at all.
-   They exist as data (star provenance, whole-table revalidation), and the Q13 permanence split protects them for exactly this future.
+   They exist as data, and the append-only duels contract (m0.8.7) preserves every row for exactly this future.
    Wanted: action events in the History feed (queued/applied, with the same keyset paging discipline), and somewhere to SEE a group's Compare history.
    This needs its own design pass: which actions are events vs noise, feed volume, and where duel history lives (viewer decision panel vs group sheet).
 
-6. **A favourite EVENT log** (narrowed 2026-07-31 from the m0.8.3 action-layer entry, whose other two parts went into m0.8.7).
+5. **A favourite EVENT log** (narrowed 2026-07-31 from the m0.8.3 action-layer entry, whose other two parts went into m0.8.7).
    The favourite surfaces are directional current-state projections of one `photo_actions` row, which is the honest reading of that model.
    But two consequences survive m0.8.7's `IS_FAVORITE` reconcile, which only makes the CURRENT state readable.
    First, lifetime "favourites applied" is really *current verified favourites*.
@@ -72,7 +56,7 @@ Numbers change whenever an item closes, so **cross-references from code or other
    Until then the directional predicates (FAVOURITE_HELD, the lifetime COALESCE(applied_target, target) read, the heart-off 'removing' badge) are settled behavior.
    Decide it with "History event streams for actions" above: one feed, one design.
 
-7. **Capture-time truth: DST-normalized times, and photos shot in another timezone** (Tristan, m0.8.3 grilling Q2).
+6. **Capture-time truth: DST-normalized times, and photos shot in another timezone** (Tristan, m0.8.3 grilling Q2).
    EXIF `DateTimeOriginal` is a ZONELESS wall time.
    Every consumer, Android's own `DATE_TAKEN` extraction and our D15 rescue alike, reads it in whatever zone applies at read time.
    Two consequences follow, both currently silent.

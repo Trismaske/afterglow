@@ -1,10 +1,9 @@
 /**
  * Continuous-grouping persistence on real SQLite (m0.8 gate 2):
  * writeContinuousGroups owns the single 'continuous' run, upserts photo
- * rows without ever touching review state, replaces assignments for
- * rebuilt groups, and leaves frozen photos' assignments alone (the
- * runner's regroup boundary decides who is frozen — here we prove the
- * write path honors whatever plan it is handed).
+ * rows without ever touching review state, lands the engine's groups as
+ * membership truth (v22 — no freeze), refuses to regroup a "not
+ * related" pair, and projects the pass's IS_FAVORITE observations (F20).
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { SQLiteDatabase } from 'expo-sqlite';
@@ -77,7 +76,6 @@ describe('writeContinuousGroups', () => {
     expect(assignments.get(id('1'))!.groupId).not.toBeNull();
     expect(assignments.get(id('3'))).toEqual({
       groupId: null,
-      userSingle: false,
       timeAttached: false,
     });
     expect(foreignKeyCheck(d)).toEqual([]);
@@ -365,10 +363,10 @@ describe('writeContinuousGroups', () => {
     expect(after.has(id('copy'))).toBe(true);
   });
 
-  it('a user-ejected single is never regrouped by a later scan write', async () => {
+  it('an excluded pair is never regrouped by a later scan write', async () => {
     const d = await fresh();
     const db = asExpo(d);
-    const { makePhotoSingles } = await import('./store');
+    const { ejectNotRelated } = await import('./store');
     await writeContinuousGroups(
       db,
       {
@@ -378,11 +376,12 @@ describe('writeContinuousGroups', () => {
       },
       AT,
     );
-    // The user ejects photo 3 ("not related").
-    await makePhotoSingles(db, [id('3')]);
+    // The user ejects photo 3 ("not related") — pairs (3→1), (3→2) land.
+    await ejectNotRelated(db, [id('3')], AT + 5);
 
-    // A warm rescan recomputes the same 3-photo group; the write-side
-    // revalidation must keep 3 out (the runner's stale plan included it).
+    // A STALE plan (computed before the eject) regroups all three; the
+    // write-transaction revalidation must skip the violating group whole
+    // — 1 and 2 keep their group, 3 stays the single the eject made it.
     await writeContinuousGroups(
       db,
       {
@@ -395,11 +394,25 @@ describe('writeContinuousGroups', () => {
     const rows = await db.getAllAsync<{
       photo_id: string;
       group_id: number | null;
-      user_single: number;
-    }>('SELECT photo_id, group_id, user_single FROM photo_group_assignments ORDER BY photo_id');
+    }>('SELECT photo_id, group_id FROM photo_group_assignments ORDER BY photo_id');
     expect(rows[0].group_id).not.toBeNull();
     expect(rows[0].group_id).toEqual(rows[1].group_id);
-    expect(rows[2]).toEqual({ photo_id: id('3'), group_id: null, user_single: 1 });
+    expect(rows[2]).toEqual({ photo_id: id('3'), group_id: null });
+
+    // A later plan grouping only the unexcluded pair is welcome — the
+    // exclusions constrain exactly the recorded pairs, nothing more.
+    await writeContinuousGroups(
+      db,
+      {
+        photos: [upsert('1'), upsert('2')],
+        groups: [{ members: [id('1'), id('2')], timeAttached: [] }],
+        singles: [],
+      },
+      AT + 20,
+    );
+    const still = await getGroupAssignments(db, [id('1'), id('2')]);
+    expect(still.get(id('1'))!.groupId).not.toBeNull();
+    expect(still.get(id('1'))).toEqual(still.get(id('2')));
   });
 
   it('copy matching aborts when the guarded upsert lost its race', async () => {
@@ -447,7 +460,7 @@ describe('writeContinuousGroups', () => {
     expect(copyRow).toEqual({ state: 'culled' });
   });
 
-  it('leaves untouched photos assignments intact (frozen plan omission)', async () => {
+  it('leaves assignments intact for photos the plan does not place', async () => {
     const d = await fresh();
     const db = asExpo(d);
     await writeContinuousGroups(
@@ -461,8 +474,8 @@ describe('writeContinuousGroups', () => {
     );
     const before = await getGroupAssignments(db, [id('1'), id('2')]);
 
-    // The window included the photos but the plan froze them: row upserts
-    // only, no group/single writes.
+    // Photos in `photos` but in neither `groups` nor `singles` are row
+    // upserts only — the pair-skip path relies on exactly this.
     await writeContinuousGroups(
       db,
       { photos: [upsert('1'), upsert('2')], groups: [], singles: [] },
@@ -610,5 +623,106 @@ describe('D15 rescue marker persistence (m0.8.3)', () => {
       AT,
     );
     expect(markerOf(d, '1')).toBeNull();
+  });
+});
+
+describe('IS_FAVORITE projection (F20, m0.8.7)', () => {
+  const favRow = (d: TestDb, rawId: string): Record<string, unknown> | undefined =>
+    d.raw
+      .prepare(
+        "SELECT state, target, applied_target, resolved_at FROM photo_actions WHERE photo_id = ? AND kind = 'favourite'",
+      )
+      .get(id(rawId)) as Record<string, unknown> | undefined;
+
+  it('a gallery heart lands as a CARRIED favourite; a cleared one clears it', async () => {
+    const d = await fresh();
+    const db = asExpo(d);
+    await writeContinuousGroups(
+      db,
+      {
+        photos: [
+          { ...upsert('1'), favourite: true },
+          { ...upsert('2'), favourite: false },
+        ],
+        groups: [],
+        singles: [id('1'), id('2')],
+      },
+      AT,
+    );
+    expect(favRow(d, '1')).toEqual({
+      state: 'applied',
+      target: null,
+      applied_target: '1',
+      resolved_at: AT,
+    });
+    // No prior action, no flag: nothing is invented for photo 2.
+    expect(favRow(d, '2')).toBeUndefined();
+
+    // The gallery clears the heart: the carried direction flips off, the
+    // row (history) survives.
+    await writeContinuousGroups(
+      db,
+      { photos: [{ ...upsert('1'), favourite: false }], groups: [], singles: [id('1')] },
+      AT + 10,
+    );
+    expect(favRow(d, '1')).toMatchObject({ applied_target: '0' });
+  });
+
+  it('a QUEUED intent outranks the observation — never touched either way', async () => {
+    const d = await fresh();
+    const db = asExpo(d);
+    await writeContinuousGroups(
+      db,
+      { photos: [upsert('1'), upsert('2')], groups: [], singles: [id('1'), id('2')] },
+      AT,
+    );
+    // 1 waits on an APPLY; the gallery still says un-favourited.
+    await queueAction(db, id('1'), 'favourite', AT + 1, '1');
+    // 2 waits on a REMOVE; the gallery still says favourited.
+    await queueAction(db, id('2'), 'favourite', AT + 2, '0');
+    await writeContinuousGroups(
+      db,
+      {
+        photos: [
+          { ...upsert('1'), favourite: false },
+          { ...upsert('2'), favourite: true },
+        ],
+        groups: [],
+        singles: [id('1'), id('2')],
+      },
+      AT + 10,
+    );
+    expect(favRow(d, '1')).toMatchObject({ state: 'queued', target: '1' });
+    expect(favRow(d, '2')).toMatchObject({ state: 'queued', target: '0' });
+  });
+
+  it('a null flag (failed read) touches nothing', async () => {
+    const d = await fresh();
+    const db = asExpo(d);
+    await writeContinuousGroups(
+      db,
+      { photos: [{ ...upsert('1'), favourite: true }], groups: [], singles: [id('1')] },
+      AT,
+    );
+    await writeContinuousGroups(
+      db,
+      { photos: [{ ...upsert('1'), favourite: null }], groups: [], singles: [id('1')] },
+      AT + 10,
+    );
+    expect(favRow(d, '1')).toMatchObject({ applied_target: '1', resolved_at: AT });
+  });
+
+  it('projection never stamps activity_at — an observation is not app activity', async () => {
+    const d = await fresh();
+    const db = asExpo(d);
+    await writeContinuousGroups(
+      db,
+      { photos: [{ ...upsert('1'), favourite: true }], groups: [], singles: [id('1')] },
+      AT,
+    );
+    const row = d.raw.prepare('SELECT activity_at FROM photos WHERE asset_id = ?').get(id('1')) as {
+      activity_at: number | null;
+    };
+    expect(row.activity_at).toBeNull();
   });
 });

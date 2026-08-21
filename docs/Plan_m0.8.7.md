@@ -112,3 +112,16 @@ Getting these human-vetted is a top priority; an approved entry is pruned per th
    Dropping `duels.group_id` or `user_single` in phase 1 would break the store code that still reads them, so each destructive DDL change ships in the phase that deletes its readers; the version constant bumped once (21→22) in phase 1.
    Cost: a test device that installed a mid-release build carries a stale v22 layout — wipe app data on phase installs (the devices hold only disposable test data).
    Testers only ever see the final v22.
+2. **Eject writes pairs from phase 2, not phase 6.**
+   Phase 2 drops `user_single` (its reading code — the freeze — dies here), and an eject that recorded nothing would silently lose its durability until phase 6; so the pair-recording store half of Regroup_design §9 phase 4 (dissolve-then-insert, present members, assignment clear) landed with the drop.
+   Phase 6 keeps the un-eject editor row, the targeted window rescan (until then an ejected photo re-places on the next natural pass), and the viewer copy.
+   Riding along for the same docs-describe-now reason: the Settings strictness confirm already wears R8's new copy (the old "reviewed groups are never touched" promise became false the moment the freeze died), and docs/TODO.md's "group a detected copy with its original" entry is deleted — its blocker WAS the freeze.
+3. **diagLog routes every site through ONE console hook, not 85 rewrites.**
+   The audit's own finding — all 85 emissions are curated, zero dev noise — means hooking console.log/warn/error routes exactly the audited set with no per-site churn, keeps logcat behavior identical, and auto-routes future lines (console is the diagnostics API; the contract lives in `lib/diagLog.ts`'s header).
+   The shape rules land as a generic identical-line suppressor with summary counts (covers the echo and paging-loop classes) plus the timeline aggregation in `lib/perfLog.ts`; root causes are distinct strings and never mask each other.
+4. **F27's undated direct-land windows among the delta's own fetched batch.**
+   A full pass windows undated photos among batch-mates too (the documented batch-boundary approximation), so the delta fetching only the changed undated rows and windowing them together is the same approximation class, coarser — accepted over re-deriving rescued-date ranges.
+   Fail-safes: a fetch failure counts as a fail-closed skip (baselines withheld, next open retries), and TRASHED rows always pass the new source filter (a filtered-out trash could hide a real deletion; an untracked one is a cheap no-op).
+5. **F20 projects through the existing action-row vocabulary.**
+   A gallery heart lands as a resolved favourite action (`applied_target = '1'`), a cleared flag flips the carried direction to `'0'` (the row stays — it is history), queued/error rows are never touched, and `activity_at` is never stamped (an observation is not app activity — the forget-card O7 rule).
+   The favourite set is ONE indexed `IS_FAVORITE = 1` query per mounted volume per pass; a failed read projects nothing that pass, loudly once — an empty set would read as "un-favourite everything".

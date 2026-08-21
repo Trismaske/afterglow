@@ -70,8 +70,8 @@ async function seed(d: TestDb): Promise<void> {
       .run(id, AT);
   }
   d.raw
-    .prepare('INSERT INTO duels (group_id, winner_id, loser_id, kept_both, at) VALUES (?,?,?,?,?)')
-    .run('1', `${SD}/sd1`, `${PRIMARY}/p1`, 1, AT);
+    .prepare('INSERT INTO duels (winner_id, loser_id, kept_both, at) VALUES (?,?,?,?)')
+    .run(`${SD}/sd1`, `${PRIMARY}/p1`, 1, AT);
   await queueAction(db, `${SD}/sd2`, 'edit', AT);
   await queueAction(db, `${SD}/sd1`, 'share', AT);
   await resolveActions(db, [`${SD}/sd1`], 'share', AT + 1);
@@ -82,18 +82,11 @@ function count(d: TestDb, sql: string, ...args: (string | number)[]): number {
 }
 
 describe('mechanism 1 — the tombstone sweep rides removal cleanup', () => {
-  it('sweeps embeddings, hashes and duels; keeps the row and its verdict', async () => {
+  it('sweeps embeddings and hashes; keeps the row, its verdict, and its duels', async () => {
     const d = await fresh();
     await seed(d);
     d.raw.prepare("UPDATE photos SET state = 'kept' WHERE asset_id = ?").run(`${PRIMARY}/p1`);
-    await reconcileExternallyRemoved(
-      asExpo(d),
-      [`${PRIMARY}/p1`],
-      AT + 10,
-      [PRIMARY, SD],
-      // Scan-confirmed PERMANENT delete — the mechanism-1 case (§7).
-      new Set([`${PRIMARY}/p1`]),
-    );
+    await reconcileExternallyRemoved(asExpo(d), [`${PRIMARY}/p1`], AT + 10, [PRIMARY, SD]);
     // The row survives as a tombstone (all-time counts intact)…
     const row = d.raw
       .prepare('SELECT state, is_present, day FROM photos WHERE asset_id = ?')
@@ -107,22 +100,22 @@ describe('mechanism 1 — the tombstone sweep rides removal cleanup', () => {
     expect(
       count(d, 'SELECT COUNT(*) AS n FROM photo_hashes WHERE asset_id = ?', `${PRIMARY}/p1`),
     ).toBe(0);
-    expect(count(d, 'SELECT COUNT(*) AS n FROM duels WHERE loser_id = ?', `${PRIMARY}/p1`)).toBe(0);
+    // Duels are append-only (v22): the departed loser's row still counts.
+    expect(count(d, 'SELECT COUNT(*) AS n FROM duels WHERE loser_id = ?', `${PRIMARY}/p1`)).toBe(1);
     // Unrelated photos' satellites untouched.
     expect(
       count(d, 'SELECT COUNT(*) AS n FROM photo_embeddings WHERE asset_id = ?', `${SD}/sd2`),
     ).toBe(1);
   });
 
-  it('a RESTORABLE trash keeps duel history — only permanence sweeps it (grilling Q13)', async () => {
+  it('duel history survives EVERY removal — the event log has no deleters (v22)', async () => {
     const d = await fresh();
     await seed(d);
-    // No permanentIds: the photo sits in the system trash (30 days).
     await reconcileExternallyRemoved(asExpo(d), [`${PRIMARY}/p1`], AT + 10, [PRIMARY, SD]);
     expect(
       count(d, 'SELECT COUNT(*) AS n FROM photo_embeddings WHERE asset_id = ?', `${PRIMARY}/p1`),
     ).toBe(0); // recomputable satellites still sweep
-    expect(count(d, 'SELECT COUNT(*) AS n FROM duels WHERE loser_id = ?', `${PRIMARY}/p1`)).toBe(1); // Compare history survives a possible restore
+    expect(count(d, 'SELECT COUNT(*) AS n FROM duels WHERE loser_id = ?', `${PRIMARY}/p1`)).toBe(1);
   });
 
   it('sweeps a PENDING copy match whichever endpoint departs (codex phase-4)', async () => {
@@ -229,7 +222,7 @@ describe('mechanism 2 — Forget this card', () => {
     expect(remaining).toEqual([]);
   });
 
-  it('erase: hard-deletes rows and satellites — all-time counts drop', async () => {
+  it('erase: hard-deletes rows and satellites; duels ANONYMIZE, never delete (v22)', async () => {
     const d = await fresh();
     await seed(d);
     await forgetVolume(asExpo(d), SD, 'erase', AT + 10);
@@ -237,9 +230,37 @@ describe('mechanism 2 — Forget this card', () => {
     expect(count(d, `SELECT COUNT(*) AS n FROM photo_actions WHERE photo_id LIKE '${SD}/%'`)).toBe(
       0,
     );
-    expect(count(d, `SELECT COUNT(*) AS n FROM duels WHERE winner_id LIKE '${SD}/%'`)).toBe(0);
+    // The erase promise is "no trace of the card's photos": the SD id is
+    // nulled out, the row and the lifetime Compare count survive, and
+    // the other endpoint keeps its identity.
+    const duel = d.raw.prepare('SELECT winner_id, loser_id FROM duels').get() as {
+      winner_id: string | null;
+      loser_id: string | null;
+    };
+    expect(duel).toEqual({ winner_id: null, loser_id: `${PRIMARY}/p1` });
     // Primary untouched, its group repaired to a single (partner gone).
     expect(count(d, 'SELECT COUNT(*) AS n FROM photos WHERE volume_name = ?', PRIMARY)).toBe(1);
+  });
+
+  it('keep: duels keep their ids — tombstoned photos are still history (v22)', async () => {
+    const d = await fresh();
+    await seed(d);
+    await forgetVolume(asExpo(d), SD, 'keep', AT + 10);
+    const duel = d.raw.prepare('SELECT winner_id, loser_id FROM duels').get() as {
+      winner_id: string | null;
+      loser_id: string | null;
+    };
+    expect(duel).toEqual({ winner_id: `${SD}/sd1`, loser_id: `${PRIMARY}/p1` });
+  });
+
+  it('erase sweeps the card "not related" pairs in both directions (v22)', async () => {
+    const d = await fresh();
+    await seed(d);
+    d.raw
+      .prepare('INSERT INTO not_related (ejected_id, partner_id, at) VALUES (?,?,?), (?,?,?)')
+      .run(`${SD}/sd1`, `${PRIMARY}/p1`, AT, `${PRIMARY}/p1`, `${SD}/sd2`, AT);
+    await forgetVolume(asExpo(d), SD, 'erase', AT + 10);
+    expect(count(d, 'SELECT COUNT(*) AS n FROM not_related')).toBe(0);
   });
 
   it('a forgotten (keep) card that RETURNS revives through the scan upsert', async () => {

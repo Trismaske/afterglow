@@ -17,7 +17,7 @@ import {
   applyRedecision,
   applyReviewDecisions,
   getNeedsEditAssets,
-  makePhotoSingles,
+  ejectNotRelated,
   readReviewQueue,
   restoreCarriedCull,
   unstageCullDirect,
@@ -464,14 +464,14 @@ describe('reviewPatch parity with db/store.ts', () => {
       d,
       before,
       { kind: 'makeSingle', assetId: id('2'), groupId: trio.groupId },
-      () => makePhotoSingles(asExpo(d), [id('2')], trio.groupId),
+      () => ejectNotRelated(asExpo(d), [id('2')], AT + 100, trio.groupId),
     );
     const pair = before.groups.find((g) => g.members.some((m) => m.asset_id === id('4')))!;
     await expectParity(
       d,
       before,
       { kind: 'makeSingle', assetId: id('4'), groupId: pair.groupId },
-      () => makePhotoSingles(asExpo(d), [id('4')], pair.groupId),
+      () => ejectNotRelated(asExpo(d), [id('4')], AT + 100, pair.groupId),
     );
   });
 

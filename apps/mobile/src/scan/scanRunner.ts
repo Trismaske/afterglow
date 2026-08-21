@@ -3,9 +3,8 @@
  * pure pieces: media paging (lib/media.ts via lib/progressPager.ts),
  * merge-window accumulation (lib/scanWindows.ts), embedding backfill
  * (lib/embeddings.ts), dHash floor (lib/similarityHashes.ts), the core
- * engine (@afterglow/core groupByEmbedding), the regroup boundary
- * (lib/regroupBoundary.ts), and durable writes (db/store.ts
- * writeContinuousGroups).
+ * engine (@afterglow/core groupByEmbedding), and durable writes
+ * (db/store.ts writeContinuousGroups).
  *
  * On app open (Home, once permission is granted) the scan pages the
  * configured sources newest→oldest; each closed merge window is embedded
@@ -14,6 +13,15 @@
  * open) and grouped, and its groups land in the durable 'continuous'
  * grouping run. One flight per process at a time; a finished run may be
  * started again (next app open / after a source change).
+ *
+ * GROUPS LAND AS TRUTH (v22, docs/Regroup_design.md): grouping is pure
+ * presentation — photos own their review state, and every pass rewrites
+ * membership freely, decided members included. The one durable user
+ * judgment about membership is the "not related" pair set, injected into
+ * the engine as cannot-link constraints and revalidated inside the write
+ * transaction. The in-transaction decision-write guards (store.ts)
+ * protect verdicts against stale renders; nothing protects membership,
+ * because membership is not state.
  *
  * Status is a tiny observable snapshot for the Home surfaces (gate 4
  * consumes it; until then it also feeds dev logging).
@@ -29,11 +37,11 @@ import {
   fetchPhotoPageDesc,
   getAssetDetails,
   getEditableContentUri,
+  loadPhotoById,
   type LoadedPhoto,
 } from '../lib/media';
 import { reconcileExternallyRemoved } from '../db/trashStore';
 import { createMergedDescendingPager, type PageFetcher } from '../lib/progressPager';
-import { reconcileWindowGroups, windowFreeze } from '../lib/regroupBoundary';
 import { createWindowAccumulator } from '../lib/scanWindows';
 import { resolveSources } from '../lib/sourceCatalog';
 import type { SourceRoot } from '../lib/sources';
@@ -45,6 +53,7 @@ import {
   scanFingerprint,
 } from '../lib/scanSkip';
 import {
+  getFavouriteImageIds,
   getImageCountsByVolume,
   getMediaChangedSince,
   getMediaGenerations,
@@ -65,7 +74,13 @@ import {
   volumesWithUntracedLoss,
   type VolumeCountRow,
 } from '../lib/volumeScan';
-import { coveredBy, describeDeltaPlan, deltaVerdict, planDeltaRanges } from '../lib/deltaScan';
+import {
+  coveredBy,
+  describeDeltaPlan,
+  deltaVerdict,
+  filterChangedToSources,
+  planDeltaRanges,
+} from '../lib/deltaScan';
 import { mapWithConcurrency } from '../lib/concurrency';
 import { waitForUserWrites } from '../lib/writePriority';
 import { fileSize } from '../lib/hash';
@@ -73,16 +88,13 @@ import { ensureEmbeddingModel } from '../db/embeddingStore';
 import {
   countPresentPhotos,
   countTrackedByVolume,
+  getNotRelatedPairsAmong,
   getPhotoTimestamps,
   getRescueBaselines,
   getTakenAtForAssets,
-  getGroupAssignments,
-  getGroupMembers,
-  getMetadataGroupIds,
   getPresentAssetIds,
   getSetting,
   setSetting,
-  getStatesForAssets,
   updatePhotoUri,
   writeContinuousGroups,
 } from '../db/store';
@@ -260,9 +272,17 @@ async function pageAndGroup(
      * volume outside the set is skipped fail-closed and counted, like an
      * unparseable one. */
     mountedVolumes: ReadonlySet<string>;
+    /** Pass-start IS_FAVORITE snapshot (F20); null = read failed. */
+    favourites: ReadonlySet<string> | null;
+    /** Changed UNDATED photos to land by DIRECT per-id fetch (F27): no
+     * DATE_TAKEN range can cover them, and the old fallback walked the
+     * whole corpus for each one. They join the undated batch and take
+     * the same rescue/window path a full pass gives them. Omit/empty for
+     * full passes (the unbounded walk already returns them). */
+    undatedIds?: readonly string[];
   },
 ): Promise<{ seenIds: Set<string>; skipped: number; exifFailed: number } | null> {
-  const { ranges, albumIds, baseThreshold, engine, superseded, mountedVolumes } = args;
+  const { ranges, albumIds, baseThreshold, engine, superseded, mountedVolumes, favourites } = args;
   // Fail-closed drops this pass: unparseable volumes (counted by the
   // adapter per page) plus parsed volumes outside the mounted set. Any
   // skip makes the pass ineligible to advance its baselines (finishPass).
@@ -321,7 +341,15 @@ async function pageAndGroup(
           stopped = true;
           return;
         }
-        await processWindow(db, window, engine, baseThreshold, superseded, mountedVolumes);
+        await processWindow(
+          db,
+          window,
+          engine,
+          baseThreshold,
+          superseded,
+          mountedVolumes,
+          favourites,
+        );
       }
     }
     for (const window of tail.flush()) {
@@ -329,7 +357,15 @@ async function pageAndGroup(
         stopped = true;
         return;
       }
-      await processWindow(db, window, engine, baseThreshold, superseded, mountedVolumes);
+      await processWindow(
+        db,
+        window,
+        engine,
+        baseThreshold,
+        superseded,
+        mountedVolumes,
+        favourites,
+      );
     }
   };
   for (;;) {
@@ -366,14 +402,42 @@ async function pageAndGroup(
       }
       for (const window of accumulator.feed(photo)) {
         if (superseded()) return null;
-        await processWindow(db, window, engine, baseThreshold, superseded, mountedVolumes);
+        await processWindow(
+          db,
+          window,
+          engine,
+          baseThreshold,
+          superseded,
+          mountedVolumes,
+          favourites,
+        );
       }
     }
   }
   if (superseded()) return null;
   for (const window of accumulator.flush()) {
     if (superseded()) return null;
-    await processWindow(db, window, engine, baseThreshold, superseded, mountedVolumes);
+    await processWindow(db, window, engine, baseThreshold, superseded, mountedVolumes, favourites);
+  }
+  // F27's direct landing: fetch each changed undated photo by id and
+  // feed it into the undated batch below. A fetch failure is a
+  // fail-closed skip — the pass keeps its results but withholds its
+  // baselines, so the next open retries the photo.
+  let fetched = 0;
+  for (const id of args.undatedIds ?? []) {
+    if (superseded()) return null;
+    const photo = await loadPhotoById(id);
+    if (photo === null) {
+      skipped += 1;
+      continue;
+    }
+    seenIds.add(photo.item.id);
+    undated.push(photo);
+    fetched += 1;
+  }
+  if (fetched > 0) {
+    update({ scanned: status.scanned + fetched });
+    console.log(`[scan] delta: ${fetched} undated changed photo(s) landed by direct fetch`);
   }
   await processUndatedBatch(undated.splice(0));
   return stopped ? null : { seenIds, skipped, exifFailed };
@@ -414,6 +478,9 @@ interface DeltaDecision {
    * mounted volumes contribute (their change queries are the source), so
    * a deletion is never concluded for an absent volume (invariant 6). */
   trashedIds: string[];
+  /** Changed UNDATED, non-trashed, in-source rows (F27): landed by
+   * direct per-id fetch — no range can cover them. */
+  undatedIds: string[];
   /** MediaStore's pass-START count PER VOLUME (m0.8.3 phase 2). The
    * post-delta agreement compares against THESE, pinned, so its
    * behaviour cannot depend on whether the pass outlived a query cache
@@ -456,6 +523,14 @@ async function mediaCountsByVolume(
  * existed. A forced rescan, a model swap, a missing baseline, an
  * unreadable change set or a cost model that says the delta is not a
  * decisive win all land here.
+ *
+ * INVARIANT (F27, m0.8.7): every fallback to a full pass logs its
+ * reason before returning; none returns silently. The one unlogged
+ * fallback (the undated bail, which ran AFTER the "DELTA wins" line
+ * printed) is exactly how every WhatsApp arrival silently cost a
+ * 5-minute corpus walk. The force-shaped reasons (forced rescan, model
+ * swap, weekly due, generation gap) are logged by scan() where they are
+ * decided.
  */
 async function planPass(
   db: SQLiteDatabase,
@@ -470,17 +545,23 @@ async function planPass(
   },
   force: boolean,
 ): Promise<DeltaDecision | null> {
-  if (force) return null;
+  if (force) return null; // reason logged by scan()
   const roots = sources.roots;
   try {
     const raw = await getSetting(db, SCAN_GENERATIONS_KEY);
-    if (raw === null) return null; // no baseline: the first pass must be full
+    if (raw === null) {
+      console.log('[scan] delta: no stored baseline — the first pass must be full');
+      return null;
+    }
     const previous = JSON.parse(raw) as Record<string, number>;
     const keys = Object.keys(filteredGenerations);
     // Mirror scanCanSkip's rule: an EMPTY generation map means the native
     // read FAILED (or no scope-relevant volume is mounted) — either way
     // there is nothing to prove a delta against.
-    if (keys.length === 0) return null;
+    if (keys.length === 0) {
+      console.log('[scan] delta: no generation evidence for any in-scope volume — full pass');
+      return null;
+    }
     // A scope-relevant volume the baseline never saw (a card inserted or
     // a folder on it newly selected) has no "since" to query from — only
     // a full pass can take it in (invariant 5; the picker save already
@@ -492,7 +573,7 @@ async function planPass(
       );
       return null;
     }
-    const changed: ChangedMediaRow[] = [];
+    const allChanged: ChangedMediaRow[] = [];
     for (const key of keys) {
       if (previous[key] === filteredGenerations[key]) continue;
       // Keys are "<volume>|<MediaStore version>" (the native module bakes
@@ -501,7 +582,18 @@ async function planPass(
       // generation counter is SHARED across external volumes, so a
       // per-volume "changed" can be a false positive from another
       // volume's writes — harmless (the change query returns nothing).
-      changed.push(...(await getMediaChangedSince(rawVolumeOfKey(key), previous[key])));
+      allChanged.push(...(await getMediaChangedSince(rawVolumeOfKey(key), previous[key])));
+    }
+    // F27 leg 1: the change query is volume-wide, but the scan is
+    // source-scoped everywhere else — an out-of-source change (the
+    // measured WhatsApp case) must plan nothing, exactly as it is
+    // invisible to every other read. Keyed on each row's CURRENT bucket;
+    // trashed rows always pass (see filterChangedToSources).
+    const changed = filterChangedToSources(allChanged, sources.albumIdsByVolume);
+    if (changed.length < allChanged.length) {
+      console.log(
+        `[scan] delta: ${allChanged.length - changed.length} out-of-source change(s) ignored`,
+      );
     }
     const timestamps = await getPhotoTimestamps(db, roots);
     // Canonical ids carry each row's REAL volume (m0.8.3 phase 2): the
@@ -599,12 +691,16 @@ async function planPass(
       corpus: timestamps.length,
     });
     console.log(`[scan] ${describeDeltaPlan(plan, verdict)}`);
-    // An UNDATED change (neither capture nor modification time) cannot be
-    // placed in any range, so no delta can cover it — fall back rather
-    // than silently leaving it ungrouped.
-    if (plan.undated > 0) return null;
-    if (!verdict.worthIt) return null;
-    return { ranges: plan.ranges, trashedIds, mediaByVolumeAtStart: mediaByVolume };
+    if (!verdict.worthIt) return null; // reason printed on the line above
+    // UNDATED changes (no DATE_TAKEN) cannot be placed in any range —
+    // they land by direct per-id fetch instead (F27; each one used to
+    // silently discard the whole delta AFTER "DELTA wins" printed,
+    // turning every WhatsApp arrival into a corpus walk). Trashed
+    // undated rows need no fetch: trashedIds reconciles them by id.
+    const undatedIds = changed
+      .filter((row) => !row.isTrashed && row.dateTakenMs === null)
+      .map((row) => canonicalPhotoId(row.volumeName, row.rawId));
+    return { ranges: plan.ranges, trashedIds, undatedIds, mediaByVolumeAtStart: mediaByVolume };
   } catch (error) {
     console.log(`[scan] delta unavailable, running a full pass: ${String(error)}`);
     return null;
@@ -706,7 +802,7 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   // last COMPLETE clean pass is OS-level proof the pass is a no-op.
   const generations = await getMediaGenerations().catch(() => ({}));
   // The mounted-volume set is REQUIRED (codex phase-2 round): the
-  // regroup freeze, the reconcile scope, and page validation must never
+  // reconcile scope and page validation must never
   // run blind — "unknown" aborting here (the throw fails the scan,
   // phase 'error', retried next open) is the only answer that cannot
   // treat an ejected card's photos as reachable. Independent of the
@@ -807,6 +903,12 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     new Set(scopeRelevantVolumes(mounted, passSources.roots ?? null)),
   );
 
+  // The remaining force reason gets its log line too (F27's invariant:
+  // no silent full pass) — the other three printed theirs above.
+  if (force && !model.cleared && !fullDue && !generationGap) {
+    console.log('[scan] full pass: forced rescan (settings change or reset)');
+  }
+
   // DELTA vs FULL (m0.8.2 phase 2). Both run the SAME grouping code
   // below, differing only in which time ranges they page — which is what
   // makes "a delta produces the groups a full pass would" a structural
@@ -828,6 +930,29 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   // the pass above.
   const mountedVolumes: ReadonlySet<string> = new Set(mounted);
 
+  // F20: the pass-start favourite snapshot — one indexed query per
+  // mounted volume, projected onto exactly the rows this pass walks. A
+  // failed read degrades to "project nothing this pass", loudly, once —
+  // an empty set would read as "nothing is favourited" and CLEAR every
+  // carried favourite, which a query failure must never claim.
+  let favourites: ReadonlySet<string> | null = null;
+  if (mediaStoreActionsAvailable()) {
+    try {
+      const flagged = new Set<string>();
+      for (const volume of mounted) {
+        for (const rawId of await getFavouriteImageIds(volume)) {
+          flagged.add(canonicalPhotoId(volume, rawId));
+        }
+      }
+      favourites = flagged;
+    } catch (error) {
+      console.warn(
+        '[scan] favourite flags unavailable this pass — carried favourites not reconciled:',
+        String(error),
+      );
+    }
+  }
+
   if (decision) {
     const deltaResult = await pageAndGroup(db, {
       ranges: decision.ranges,
@@ -836,6 +961,8 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
       engine,
       superseded,
       mountedVolumes,
+      favourites,
+      undatedIds: decision.undatedIds,
     });
     if (deltaResult === null) {
       console.log('[scan] superseded by a settings change — stopping for the queued rescan');
@@ -926,6 +1053,7 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     engine,
     superseded,
     mountedVolumes,
+    favourites,
   });
   if (fullResult === null) {
     console.log('[scan] superseded by a settings change — stopping for the queued rescan');
@@ -965,17 +1093,14 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     );
   }
   const gone: string[] = [];
-  // Quad-state 'absent' = permanently gone (no system-trash row): the
-  // one case whose duel history dies with the sweep (grilling Q13);
-  // 'trashed' is 30-day-restorable and keeps it.
-  const permanentlyGone = new Set<string>();
   let movedUris = 0;
   let unresolved = 0;
   for (const id of unseen.slice(0, RECONCILE_CAP)) {
     const presence = await checkMediaPresence(id);
     if (presence === 'trashed' || presence === 'absent') {
+      // Both converge the same way — duels are append-only (v22) and
+      // survive every removal, so 'absent' needs no separate marking.
       gone.push(id);
-      if (presence === 'absent') permanentlyGone.add(id);
     } else if (presence === 'present') {
       // Present but NOT enumerated: the photo moved (same MediaStore id,
       // new path — e.g. out of the selected source). Refresh its uri so
@@ -1007,7 +1132,7 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     // Fence + mounted-aware repair (codex phase-2), same as the delta's
     // trashed reconcile above.
     await assertMountedUnchanged(mountedVolumes);
-    await reconcileExternallyRemoved(db, gone, Date.now(), [...mountedVolumes], permanentlyGone);
+    await reconcileExternallyRemoved(db, gone, Date.now(), [...mountedVolumes]);
     console.log(`[scan] reconciled ${gone.length} externally removed photos`);
   }
 
@@ -1128,18 +1253,23 @@ async function applyExifDateRescue(db: SQLiteDatabase, batch: LoadedPhoto[]): Pr
   return failed;
 }
 
-/** Embed, group, reconcile, and persist one closed merge window. */
+/** Embed, group, and persist one closed merge window. */
 async function processWindow(
   db: SQLiteDatabase,
   window: LoadedPhoto[],
   engine: EngineHealth,
   baseThreshold: number,
   stale?: () => boolean,
-  /** Mounted volumes at pass start — feeds the regroup boundary's
-   * unreachable-member freeze (m0.8.3 phase 2): a group this pass can
-   * only half-see (a member's volume is out) is never rebuilt. */
+  /** Mounted volumes at pass start — the mid-pass mount fence, and the
+   * membership repair's dissolve deferral for groups still holding an
+   * unreachable member. */
   mountedVolumes?: ReadonlySet<string> | null,
+  /** Canonical ids MediaStore reported IS_FAVORITE=1 for at pass start
+   * (F20). Null = the read failed — the pass projects nothing. */
+  favourites?: ReadonlySet<string> | null,
 ): Promise<void> {
+  const favouriteOf = (id: string): boolean | null =>
+    favourites === null || favourites === undefined ? null : favourites.has(id);
   // WRITE PRIORITY (vetted): a pending user decision reaches SQLite
   // before this window's transactions.
   await waitForUserWrites();
@@ -1177,60 +1307,27 @@ async function processWindow(
     );
   }
 
+  // The user's cannot-link judgments among this window's photos, handed
+  // to the engine as constraints (docs/Regroup_design.md §4.2). The
+  // write transaction re-reads them — an eject landing between this read
+  // and the write must still win.
+  const cannotLink = await getNotRelatedPairsAmong(db, ids);
+
   const groups = groupByEmbedding(
     window.map((p) => p.item),
     (id) => vectors.get(id) ?? null,
     withHashes ? (id) => hashes.get(id) ?? null : undefined,
-    { baseThreshold },
+    { baseThreshold, cannotLink },
   );
-
-  // Regroup boundary (decision 5): freeze photos whose current group has
-  // been touched by review; states are fetched for the window AND every
-  // member of any group the window intersects.
-  const assignments = await getGroupAssignments(db, ids);
-  const touchedGroups = [
-    ...new Set(
-      [...assignments.values()].map((a) => a.groupId).filter((g): g is number => g !== null),
-    ),
-  ];
-  const members = await getGroupMembers(db, touchedGroups);
-  const stateIds = new Set(ids);
-  for (const memberIds of members.values()) for (const id of memberIds) stateIds.add(id);
-  const states = await getStatesForAssets(db, [...stateIds]);
-
-  const freeze = windowFreeze(ids, {
-    states,
-    assignments,
-    groupMembers: members,
-    metadataGroups: await getMetadataGroupIds(db, touchedGroups),
-    ...(mountedVolumes
-      ? { reachable: (photoId: string) => mountedVolumes.has(volumeOf(photoId)) }
-      : {}),
-  });
-  // Grow-only (Tristan, m0.8.3 grilling): a new photo the engine
-  // clusters with an unreachable-frozen group's reachable members joins
-  // that group instead of minting a neighboring unit.
-  const plan = reconcileWindowGroups(
-    groups.map((g) => ({
-      members: g.items.map((item) => item.id),
-      timeAttached: g.timeAttached,
-    })),
-    freeze.frozen,
-    freeze.growable,
-  );
-  for (const append of plan.appends) {
-    console.log(
-      `[scan] grow-only: +${append.members.length} photo(s) into frozen group ${append.groupId}`,
-    );
-  }
+  const multi = groups.filter((g) => g.items.length >= 2);
+  const singles = groups.filter((g) => g.items.length === 1).map((g) => g.items[0].id);
 
   // Re-check right before the write — a user write may have started
-  // while the embed/regroup reads above were running — and re-verify the
-  // MOUNTED SET (codex phase-2; ordered AFTER the user-write wait, final
-  // cycle round 2: the wait itself is a window): an eject after the
-  // pass-start snapshot silently empties merged paging while the
-  // snapshot-based freeze above still trusts the old world; the fence
-  // aborts before any write can act on that stale picture.
+  // while the embed phase above was running — and re-verify the MOUNTED
+  // SET (codex phase-2; ordered AFTER the user-write wait, final cycle
+  // round 2: the wait itself is a window): an eject after the pass-start
+  // snapshot silently empties merged paging, and the fence aborts before
+  // any write can act on that stale picture.
   await waitForUserWrites();
   if (mountedVolumes) await assertMountedUnchanged(mountedVolumes);
   await writeContinuousGroups(
@@ -1252,10 +1349,15 @@ async function processWindow(
         // NULL unless the D15 rescue completed a read this pass — the
         // upsert's COALESCE then retains any stored marker.
         exifCheckedModTime: p.exifCheckedModTime ?? null,
+        // F20: the pass-start favourite snapshot, projected as the
+        // carried favourite action; null = the read failed this pass.
+        favourite: favouriteOf(p.item.id),
       })),
-      groups: plan.groups,
-      singles: plan.singles,
-      appends: plan.appends,
+      groups: multi.map((g) => ({
+        members: g.items.map((item) => item.id),
+        timeAttached: g.timeAttached,
+      })),
+      singles,
     },
     Date.now(),
     // Checked INSIDE the exclusive transaction: a window superseded

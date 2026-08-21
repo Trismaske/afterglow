@@ -52,6 +52,7 @@ interface NativeApi {
   moveToRelativePath(uris: string[], relativePath: string): Promise<MoveResult[]>;
   readExifDateTimeOriginal(uris: string[]): Promise<ExifDateResult[]>;
   countImagesByVolume(volumes: string[]): Promise<Record<string, number>>;
+  listFavouriteImageIds(volume: string): Promise<string[]>;
   listMountedVolumes(): Promise<string[]>;
   addListener(event: 'volumesChanged', listener: () => void): { remove(): void };
   addListener(
@@ -75,6 +76,11 @@ export interface ChangedMediaRow {
   isTrashed: boolean;
   generationAdded: number;
   generationModified: number;
+  /** The row's CURRENT BUCKET_ID (m0.8.7, F27) — the delta planner's
+   * source-scope filter keys on it, so a move into a selected source
+   * registers as a change. Null when MediaStore has no bucket (rare:
+   * volume-root legacy media). */
+  bucketId: string | null;
 }
 
 type NativeChangedRow = ChangedMediaRow;
@@ -236,6 +242,15 @@ export async function getMediaChangedSince(
 ): Promise<ChangedMediaRow[]> {
   if (!available()) return [];
   return native!.mediaChangedSince(volume, since);
+}
+
+/** Raw ids of the volume's IS_FAVORITE=1 images (F20) — one indexed
+ * query per pass per volume. Throws rather than returning a partial set:
+ * a missing favourite would read as a CLEARED flag and un-carry it, so
+ * the scan degrades to "project nothing" on failure instead. */
+export async function getFavouriteImageIds(volume: string): Promise<string[]> {
+  if (!available()) return [];
+  return native!.listFavouriteImageIds(volume);
 }
 
 /** The volume-aware album catalog. ALL VOLUMES OR NONE, same rule and

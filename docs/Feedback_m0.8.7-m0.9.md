@@ -125,7 +125,8 @@ scripts/android-device.sh adb R5CW20KBA2W shell "pkill logcat; rm /data/local/tm
 
 Volume is a few KB/day (one app's JS log only), so no rotation is needed.
 First samples, 2026-08-21 11:07–11:13 (**measured**): a foreground delta whose tripwire read "nothing changed", then three foreground returns each hitting "library unchanged since last complete pass — skipped" — the differential design working as intended on those samples.
-The open question the weeks of capture must answer: how often, and for which logged reason, the S23 runs the long corpus-sized passes the tester reported.
+The phase-2 read-back (2026-08-21 14:41, **measured**) found a third same-day corpus walk (13:38–13:42, "2 undated" after "DELTA wins") — same undated leg, **no new cause**; three walks in one quiet-library day confirms the fix's priority.
+The open question the remaining capture must answer: whether any OTHER full-pass reason shows up before the m0.8.7 build (whose in-app sink retires this writer) lands on the device.
 
 ---
 

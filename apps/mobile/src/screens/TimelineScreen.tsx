@@ -78,7 +78,7 @@ import {
   TIMELINE_FILTERS,
   type TimelineFilter,
 } from '../lib/timelinePrefs';
-import { perfLog } from '../lib/perfLog';
+import { perfAggregate } from '../lib/perfLog';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Timeline'>;
 
@@ -284,7 +284,9 @@ export function TimelineScreen({ navigation }: Props) {
             }
             return;
           }
-          perfLog(() => `timeline browse page: ${items.length} items in ${Date.now() - started}ms`);
+          // Aggregated (m0.8.7): one line per scroll page flooded the
+          // diagnostics sink — the session summary carries the same data.
+          perfAggregate('timeline browse pages', Date.now() - started, items.length);
           if (gen !== genRef.current) return;
           for (const item of items) {
             if (item.kind === 'group')

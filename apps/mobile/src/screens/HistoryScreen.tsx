@@ -131,17 +131,14 @@ export function HistoryScreen(_props: Props) {
         photoIds.filter((_, i) => presences[i] === 'trashed' || presences[i] === 'absent'),
       );
       if (gone.size === 0) return pageRows;
-      // Quad-state 'absent' = permanently gone → duel history dies with
-      // the sweep; 'trashed' is restorable and keeps it (grilling Q13).
-      const permanentlyGone = new Set<string>(photoIds.filter((_, i) => presences[i] === 'absent'));
       // Mounted snapshot: the repair must defer a group still holding a
-      // member on an ejected card (final cycle P4, plan §5).
+      // member on an ejected card (final cycle P4, plan §5). Duels are
+      // append-only (v22) and survive every removal.
       const carriedFavourites = await reconcileExternallyRemoved(
         db,
         [...gone],
         Date.now(),
         await mountedVolumeSet(),
-        permanentlyGone,
       );
       // The removal may have dissolved a cached group or moved its
       // survivor to singles — the review queue must observe it.

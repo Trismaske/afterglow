@@ -225,13 +225,6 @@ async function applyRemovalCleanup(
   photoId: string,
   at: number,
   markCulled: boolean,
-  /** True only when the pixels are authoritatively GONE (quad-state
-   * 'absent', never 'trashed'): duel history is the one swept satellite
-   * that cannot be recomputed, so a 30-day-restorable trash keeps it —
-   * a restore must bring the photo's Compare history back with it
-   * (Tristan, grilling Q13). Embeddings/hashes are content-derived and
-   * sweep on every removal regardless. */
-  permanent: boolean,
 ): Promise<void> {
   // activity_at moves ONLY for an executed cull (markCulled): the trash
   // concluding is app activity, so its tombstone files at that moment.
@@ -282,12 +275,11 @@ async function applyRemovalCleanup(
   // DB (an embedding is ~5 KB/photo; a tombstone row is ~100 bytes).
   // A photo restored from system trash re-ingests through the scan's
   // restore transition (mod_time NULL → re-embed, re-hash) — the sweep
-  // costs a restore one re-analysis, never data.
+  // costs a restore one re-analysis, never data. Duels are deliberately
+  // NOT swept (v22, docs/Regroup_design.md §3): the append-only event
+  // log has no deleters — a departed endpoint's duel still counts.
   await txn.runAsync('DELETE FROM photo_embeddings WHERE asset_id = ?', photoId);
   await txn.runAsync('DELETE FROM photo_hashes WHERE asset_id = ?', photoId);
-  if (permanent) {
-    await txn.runAsync('DELETE FROM duels WHERE winner_id = ? OR loser_id = ?', photoId, photoId);
-  }
 }
 
 /**
@@ -325,11 +317,6 @@ export async function reconcileExternallyRemoved(
    * these so the membership repair DEFERS dissolving a group that still
    * holds an unreachable member (plan §5). User-driven callers omit. */
   mountedVolumes?: readonly string[] | null,
-  /** The subset whose quad-state presence was 'absent' — permanently
-   * gone, so their duel history dies too (grilling Q13). Ids not here
-   * are system-trashed (restorable): duels survive a possible restore.
-   * Omitted = none permanent (the conservative default). */
-  permanentIds?: ReadonlySet<string>,
 ): Promise<Set<string>> {
   const carriedFavourites = new Set<string>();
   if (photoIds.length === 0) return carriedFavourites;
@@ -338,7 +325,7 @@ export async function reconcileExternallyRemoved(
     // the whole-table repair costs ~12 ms even as a no-op).
     const affected = await groupsOfPhotos(txn, photoIds);
     for (const id of photoIds) {
-      await applyRemovalCleanup(txn, id, at, false, permanentIds?.has(id) ?? false);
+      await applyRemovalCleanup(txn, id, at, false);
     }
     // The post-cleanup favourite truth, for a caller projecting rows in
     // place (codex r8): the cleanup nulls `target` on resolved rows, so
@@ -451,10 +438,7 @@ export async function resolveTrashBatch(
       );
       if (outcome === 'trashed' || outcome === 'absent_after_interrupted_launch') {
         // C#7 transition contract, one transaction with the outcome.
-        // Never `permanent`: the app's own trash lands in the SYSTEM
-        // trash (30-day restorable), and the tri-state verify cannot
-        // distinguish trashed from gone — duels survive (Q13).
-        await applyRemovalCleanup(txn, member.photo_id, input.at, true, false);
+        await applyRemovalCleanup(txn, member.photo_id, input.at, true);
         if (outcome === 'trashed') creditedBytes += member.measured_bytes;
       }
       // 'still_present' / 'unknown': the reservation releases below; a

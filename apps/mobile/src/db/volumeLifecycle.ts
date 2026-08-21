@@ -6,11 +6,16 @@
  * - **keep**: every photo on the volume demotes to a TOMBSTONE — marked
  *   absent by user assertion with verdict/timestamps/day intact, so
  *   all-time counts, per-day charts and base rates survive; satellites
- *   are swept exactly like mechanism 1 (embeddings, hashes, duels,
- *   queued action rows; resolved rows stay). The Home banner clears
- *   because no present row remains unreachable.
+ *   are swept exactly like mechanism 1 (embeddings, hashes, queued
+ *   action rows; resolved rows stay). The Home banner clears because no
+ *   present row remains unreachable.
  * - **erase**: the rows and every satellite are hard-deleted — all-time
  *   counts VISIBLY drop, which the confirmation copy must say.
+ *
+ * Duels are append-only (v22, docs/Regroup_design.md §3) and are never
+ * deleted by either level. Erase ANONYMIZES instead: the volume's ids
+ * null out of the endpoint columns, honoring "no trace of the card's
+ * photos" while the lifetime Compare counts stay exact.
  *
  * Offered where the unreachable state is named: the Settings row and the
  * Home banner's press-through (both land in Settings).
@@ -106,11 +111,27 @@ export async function forgetVolume(
     const byVolume = 'SELECT asset_id FROM photos WHERE volume_name = ?';
     await txn.runAsync(`DELETE FROM photo_embeddings WHERE asset_id IN (${byVolume})`, volume);
     await txn.runAsync(`DELETE FROM photo_hashes WHERE asset_id IN (${byVolume})`, volume);
-    await txn.runAsync(
-      `DELETE FROM duels WHERE winner_id IN (${byVolume}) OR loser_id IN (${byVolume})`,
-      volume,
-      volume,
-    );
+    if (level === 'erase') {
+      // Anonymize, never delete (v22): the erase promise is "no trace of
+      // the card's photos", which the id null-out honors — the duel rows
+      // (and every lifetime Compare count) survive. A keep-level forget
+      // leaves the ids: tombstoned photos are still history.
+      await txn.runAsync(
+        `UPDATE duels SET winner_id = NULL WHERE winner_id IN (${byVolume})`,
+        volume,
+      );
+      await txn.runAsync(
+        `UPDATE duels SET loser_id = NULL WHERE loser_id IN (${byVolume})`,
+        volume,
+      );
+      // The card's "not related" pairs go with its rows: pair judgments
+      // about erased photos are meaningless to a re-ingested future.
+      await txn.runAsync(
+        `DELETE FROM not_related WHERE ejected_id IN (${byVolume}) OR partner_id IN (${byVolume})`,
+        volume,
+        volume,
+      );
+    }
     await txn.runAsync(
       `DELETE FROM edit_copy_matches
         WHERE state = 'pending' AND (original_id IN (${byVolume}) OR copy_id IN (${byVolume}))`,

@@ -44,7 +44,7 @@ Both removal affordances use the local `modules/media-store-actions` trash reque
 | mediaIdentity.ts                                       | Canonical `<volume>/<rawId>` photo ids, uri-path → volume parse                               |
 | mountedVolumes.ts                                      | Burst-cached mounted-volume set: "reachability is scope, not state"                           |
 | volumeScan.ts                                          | Per-volume scan-contract math: baselines, tripwires, invariants                               |
-| scanWindows.ts / regroupBoundary.ts                    | Merge-window accumulator / regroup freeze + window reconcile                                  |
+| scanWindows.ts                                         | Merge-window accumulator                                                                      |
 | deltaScan.ts                                           | Delta-scan range derivation + the delta-vs-full cost model                                    |
 | scanSkip.ts                                            | Unchanged-library scan-skip fingerprint                                                       |
 | embeddings.ts                                          | Embedding + dHash backfill (impure) over modules/image-embedder                               |
@@ -67,12 +67,13 @@ Both removal affordances use the local `modules/media-store-actions` trash reque
 | forecast.ts / forecastCopy.ts                          | The forward-looking math, refusals included / every sentence the forecast may say             |
 | comparePrefs.ts / zoomTarget.ts                        | Tri-state duel preference / double-tap zoom math (impure partner: `components/useDoubleTapZoom`) |
 | stripScroll.ts                                         | Keeping the deck's thumbnail strip on the current photo (F7)                                  |
+| diagLog.ts / diagShape.ts                              | On-device diagnostics: the console/crash hook wiring / its pure line shaping + suppressor     |
 | hash.ts / concurrency.ts / format.ts / toast.ts / accentTheme.ts | Content-hash fallback id, bounded-parallel map, formatting, toasts, accent tokens   |
 
 `src/db/`: `database.ts` (schema + the fresh-baseline destructive reset), `store.ts` (verdict writes + queue reads), `actions.ts` (the one four-action queue shape), `trashStore.ts`, `shareStore.ts`, `organizeStore.ts`, `embeddingStore.ts` (the model-SHA pin), `volumeLifecycle.ts` ("Forget this card").
 `src/scan/scanRunner.ts` is the continuous-scan orchestrator.
 Its header carries the whole scan contract: pipeline, unchanged-library skip, delta scan, per-volume rules, and the D15 EXIF date rescue.
-`modules/`: media-store-actions (trash/favourite/write requests, gate-0 probes, the EXIF header read), image-embedder (MediaPipe MobileNetV3-large, pinned `MODEL_SHA256`), material-you-accent.
+`modules/`: media-store-actions (trash/favourite/write requests, gate-0 probes, the EXIF header read), image-embedder (MediaPipe MobileNetV3-large, pinned `MODEL_SHA256`), material-you-accent, diag-log (the rotating on-device diagnostics sink).
 
 ## Gestures: virtual detectors only (Gesture Handler 3)
 
@@ -102,7 +103,7 @@ The screen file's header is the contract.
 - **Settings**: source, goals, accent, the Library scan row, forget-card, resets.
 - **SourcePicker**: volume-tagged rows. Saves trigger a rescan.
 
-Components: `MainTabBar`, `ActionChip`, `Ghost`, `GoalCelebration`, `AlbumPicker`, `QueueGrid` (the shared selection language), `UnitCard`, `QueueViewer` + `useQueueRows` (the queue-screen shell), `useDoubleTapZoom`, `useExternalRefresh` (foreground + volume-mount reloads), `PhotoViewer` (THE standard viewer, hosts the state editor), `DecisionBadge` + `BadgeCluster`, `GoalRing`, `ReDecideSheet`, `BigButton`, `StateProgressBar`, `EditDiagnosticsSheet`, `progress/*`.
+Components: `MainTabBar`, `ActionChip`, `DiagErrorBoundary`, `Ghost`, `GoalCelebration`, `AlbumPicker`, `QueueGrid` (the shared selection language), `UnitCard`, `QueueViewer` + `useQueueRows` (the queue-screen shell), `useDoubleTapZoom`, `useExternalRefresh` (foreground + volume-mount reloads), `PhotoViewer` (THE standard viewer, hosts the state editor), `DecisionBadge` + `BadgeCluster`, `GoalRing`, `ReDecideSheet`, `BigButton`, `StateProgressBar`, `EditDiagnosticsSheet`, `progress/*`.
 
 ## Verify
 
@@ -110,7 +111,9 @@ Components: `MainTabBar`, `ActionChip`, `Ghost`, `GoalCelebration`, `AlbumPicker
 `npm test -w afterglow-companion`.
 Bundle proof: `npx expo export --platform android` (from apps/mobile).
 Native proof: `npx expo prebuild --platform android --clean --no-install && cd android && ./gradlew :app:assembleDebug`.
-Field diagnostics, ON IN EVERY BUILD until v1: `[scan] done|delta done|library unchanged`, plus `[scan] delta: … cost N vs budget M` (the delta-vs-full decision), the two count-tripwire lines (plain `console.log`), and the `[perf]` lines (`source catalog`, `first queue refresh`, `stats tab …`, via `lib/perfLog.ts`).
+Field diagnostics, ON IN EVERY BUILD until v1: `[scan] done|delta done|library unchanged`, plus `[scan] delta: … cost N vs budget M` (the delta-vs-full decision), the count-tripwire lines (plain `console.log`), and the `[perf]` lines (`source catalog`, `first queue refresh`, `stats tab …`, via `lib/perfLog.ts`; the timeline per-page timing aggregates per session).
+Every console line ALSO persists to the on-device rotating sink (m0.8.7, `lib/diagLog.ts` over `modules/diag-log`): 50 MB as ten 5 MB segments under the app's external-files `diag/` dir, pullable with `adb pull /sdcard/Android/data/<pkg>/files/diag`.
+Console IS the diagnostics API — faults and timings only, never user behavior; a global error hook and the provider-stack `DiagErrorBoundary` record crashes that used to vanish.
 m0.8.2 ungated the `[perf]` lines: every on-device pass runs a RELEASE build (the UI gate needs one), and a timing from a dev bundle is not a claim about the app, so dev-only tripwires were armed in the build nobody ships.
 v1 re-gates or adds a Settings toggle (docs/TODO.md, "Re-gate the `[perf]` logs at v1").
 Pre-release UI gate: `node scripts/mobile-ui-gate.mjs` against an installed RELEASE build on a test device (docs/MOBILE_UI_GATE.md).

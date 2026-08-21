@@ -129,8 +129,8 @@ A sheet opened and dismissed leaves no record: the abandoned batch is discarded 
 | time-attached | joined its group by timestamp because its embedding was not ready | no — scan-quality internal; the scan rewrites these once embeddings land, and since m0.8.2 no surface draws it |
 
 **"Best of group" is retired** (m0.8.6 D6).
-The starred pick, its accent badge, its freeze role and its best-first orderings are gone; a triage duel's positive act is now a targeted keep (D7), and "this one is special" is what favourite is for.
-Recorded compares (duel rows) remain, as history and as the group-metadata freeze.
+The starred pick, its accent badge and its best-first orderings are gone; a triage duel's positive act is now a targeted keep (D7), and "this one is special" is what favourite is for.
+Recorded compares (duel rows) remain as an append-only event log (m0.8.7): written by Compare, deleted by nothing — endpoints outlive removals, and "Forget this card" erase anonymizes the ids instead of deleting the rows.
 
 **"In a group" is not a review state.**
 It answers "has the scan clustered this yet": a scan fact the user cannot act on differently, since grouped and ungrouped unreviewed photos are both simply undecided.
@@ -165,13 +165,24 @@ The user asked for exactly those rows and would have gotten the same result befo
 UNTARGETED bulk writes (keep-rest, share-all, queue clears, move/remove-all) bind to the rendered set intersected with a fresh reachable read.
 A re-read may SHRINK the write. It may never widen the write into photos the user never saw.
 Physical operations (share dispatch, album moves, trash) always bind to reachable, because they need the bytes.
-Groups frozen by an unreachable member still GROW: a new photo the engine clusters with their reachable members joins the group, and existing member rows stay byte-for-byte.
-Review-frozen groups (finished groups, groups carrying Compare history) never grow.
+An unreachable member's assignment row stays byte-for-byte: the membership repair defers dissolving its group, and a remount re-windows it through the normal scan.
 
-Since m0.8.6 (D4) the freeze follows CURRENT state with no member contagion: a group holding any unreviewed member is rebuildable whole — decided members included — while a FINISHED group (every member decided), a group carrying Compare history, and a user-ejected single stay frozen.
-Un-reviewing a member from the state editor is what returns a finished group to the scan's reach; the same act deletes the group's Compare history after its confirm names that cost (D5).
+## Grouping is presentation; "not related" is the one membership judgment (m0.8.7)
 
-The state is **named, never silent** (D5).
+Groups re-form freely on every scan pass — decided members included.
+Photos own their review state; membership is a scan fact, so nothing about a verdict pins it, and un-review is fully non-destructive (no confirm, no Compare-history loss).
+The in-transaction decision-write guards protect verdicts against stale renders; nothing protects membership, because membership is not state.
+
+The one durable user judgment about membership is the **"not related" pair**: ejecting a photo records a cannot-link pair against every present member of its group (hidden unreachable members included) and clears its assignment.
+Enforcement is symmetric — the pair never shares a group in either direction, at any strictness — in the grouping engine and again inside the scan's write transaction.
+Two lifecycle rules give the pairs their direction:
+
+- **Dissolution**: ejecting a photo first deletes every pair in which it is the *partner* — its own ejection revokes its standing as a proxy for the cluster it was ejected from, so photos ejected from the same group can reunite elsewhere.
+- **Un-eject** (state editor): deletes the pairs where the photo is the *ejected* side — its own judgments — never those naming it as a partner, then a targeted rescan re-places it.
+
+Pairs are membership constraints, never state: verdicts, actions and stats are untouched by recording or clearing them.
+
+The unreachable state is **named, never silent** (D5).
 Home carries "SD card not mounted — N photos waiting on it".
 The Settings source row carries a "not mounted" tag.
 The picker greys the root.

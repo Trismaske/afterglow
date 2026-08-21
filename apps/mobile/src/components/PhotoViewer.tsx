@@ -560,8 +560,13 @@ export function PhotoViewer({
     // time_attached is deliberately NOT surfaced (m0.8.2): internal scan
     // quality the user cannot act on; the scan rewrites it once
     // embeddings land (docs/STATE_MODEL.md).
-    if (facts.user_single === 1)
-      factLines.push({ icon: 'image-move', text: 'You marked it not related — it stays single.' });
+    if (facts.not_related_count > 0)
+      factLines.push({
+        icon: 'image-move',
+        text: `You marked it not related to ${facts.not_related_count} photo${
+          facts.not_related_count === 1 ? '' : 's'
+        } — it never groups with them.`,
+      });
   }
 
   if (!current) return null;

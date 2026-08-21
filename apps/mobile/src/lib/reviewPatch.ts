@@ -22,7 +22,7 @@
  * - restore         → restoreCarriedCull (culled → unreviewed; a queued
  *                     edit survives, like every other verdict write)
  * - duel            → applyReviewDecisions duel (compare)
- * - makeSingle      → makePhotoSingles (group member → singles feed)
+ * - makeSingle      → ejectNotRelated (group member → singles feed)
  * - keepMany        → applyReviewDecisions batch keeps (keep-rest/-all)
  *
  * Queue-shape parity: a group with no unreviewed member left leaves the
@@ -227,9 +227,9 @@ export function applyLocalAction(s: ReviewSnapshot, action: LocalAction): Review
       const member = group?.members.find((m) => m.asset_id === action.assetId);
       if (!group || !member) return s;
       // A group this ejection shrinks below 2 members DISSOLVES — the
-      // survivor becomes a durable single too (applyPhotoSingles +
-      // repairGroupMembership); everyone leaving a group drops its
-      // time-attached badge.
+      // repair leaves its last member a plain single (the recorded pair,
+      // not a flag, is what keeps the two apart, v22); everyone leaving
+      // a group drops its time-attached badge.
       const remaining = group.members.filter((m) => m.asset_id !== action.assetId);
       const ejected = remaining.length < 2 ? [member, ...remaining] : [member];
       const updated = s.groups.map((g) =>

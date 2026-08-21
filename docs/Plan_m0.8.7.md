@@ -33,7 +33,13 @@ Regroup_design §9 phase 1, verbatim, plus the stats sweep's schema rider:
 - F27's two-leg fix: the changed set filters to the source scope (keyed on each row's current path, so moves *into* a source still register), and in-source undated changes land without a corpus walk.
   Invariant landed with it: **every planner fallback logs its reason; none returns silently.**
   Read the capture log first — if it has named any further full-pass reason since 2026-08-21, fix it here too.
-- **In-app scan-log sink** (the field-diagnostics TODO's minimal trigger, Tristan 2026-08-21): the scan's reason lines also append to a size-capped file in the app's external-files directory — survives locks and reboots, readable by `adb pull`, no UI.
+- **In-app diagnostics log** (`diagLog` — the field-diagnostics TODO's first slice, Tristan 2026-08-21): a rotating file sink in the app's external-files directory (**50 MB total, ~ten 5 MB segments**, own timestamps per line) — survives locks and reboots, readable by `adb pull`, no UI, device-local only (never transmitted; export stays with the parked field-diagnostics design).
+  Routed in (per the 2026-08-21 log-site audit, all 85 sites reviewed — the app has no dev-noise logging at all): **every curated line routes** — all 28 `[scan]` kinds, all 7 `[perf]` sites, the source-resolution and keep-last query failures, the user-action outcomes, the correctness tripwires, and the four preference-save failures (a cluster of failing cheap writes is a storage-layer early warning).
+  Shape rules: root causes route unconditionally, screen-level echoes dedup, paging-loop classes rate-limit, the timeline perf line aggregates per session.
+  New lines this slice adds: the global JS error hook, an error boundary at the provider stack that logs before dying, and a `diagLog` call on the **decision-write failure path** (today alerted but never logged — the app's most important failure leaves no trace).
+  Privacy stance: no scrubbing in this slice — every routed line already prints to logcat, so the sink adds device-local persistence, not new exposure; scrub-or-disclose is a named gate of the parked field-diagnostics **export** design.
+  The ~44 silent `.catch(() => {})` swallows stay as-is, noted as a class the sink makes cheap to instrument case-by-case.
+  Behavioral/usage analytics is explicitly **not** this — diagnostics means faults and timings, never user actions (PLAN.md backlog holds the analytics trigger).
   The fragile adb logcat writer retires when this ships.
 - F20: the scan reads `IS_FAVORITE` on rows it already walks and projects it as a CARRIED favourite action; a cleared flag clears the carried action; **queued rows are never touched**.
 

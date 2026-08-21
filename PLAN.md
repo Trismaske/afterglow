@@ -509,6 +509,8 @@ No release target until then.
   Trigger: missing them once m0.9's looping full-view playback ships.
 - **Loop/boomerang export** — neither motion-photo container stores playback settings, so "make it loop" honestly means exporting a new video file with the effect baked in (Samsung Gallery's own model).
   Trigger: a user asks for it.
+- **Opt-in usage analytics** — assessed 2026-08-21 and deliberately not built: at tester scale, feedback rounds are behavioral data with reasons attached, and the generic event log will record Afterglow actions anyway (a stated-purpose substrate most usage questions can query locally). The `diagLog` diagnostics sink deliberately excludes user actions.
+  Trigger: a post-v1 user base too large for direct feedback rounds AND a named question the event log cannot answer — both, not either.
 - **GitLab releases** — deferred until further notice.
   GitHub Releases is the sole delivery path.
   Do not add GitLab CI or remotes without a new decision.

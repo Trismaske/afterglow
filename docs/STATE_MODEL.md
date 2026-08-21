@@ -220,7 +220,7 @@ Six rules. They apply to every surface that paints a state.
 3. **The accent means interaction only**: selection, links, chevrons, primary buttons, tab state.
    The user chooses it (Material You), so it can never carry meaning that must stay stable.
    No site breaks this any more: five (goal ring, Keeping-up bar, coverage markers, activity bars, milestone fills) were fixed in m0.8.5, and the sixth — the best star's accent badge — was retired with the star itself (m0.8.6 D6).
-   [Feedback_m0.8.x.md](Feedback_m0.8.x.md), "The accent must stop carrying meaning", carries the measurements that show why a curated accent picker cannot be the answer.
+   The m0.8.5 accent pass measured why a curated picker cannot be the answer: any user-chosen hue can collide with a data hue, so no palette guarantees the distinction — only the rule does.
 
    **A data series takes the hue of what it counts.** Heat over reviewing is keep-green. The reviewed series in a chart is keep-green.
    If the counted thing has no hue of its own, it takes **near-white** (`colors.text`), the one strong colour that means nothing else.

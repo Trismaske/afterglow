@@ -62,9 +62,7 @@ Work happens on branch `initial`.
 | docs/STATE_MODEL.md | **Read before touching any surface that shows photo state.** The three layers (verdict · actions · annotations) and the six visual rules. The contract every state surface is held to |
 | docs/TODO.md | Open questions parked for their own investigation |
 | docs/REVIEW_CLASSES.md | The recurring defect-class checklist. The self-review input before any `codex-review` round |
-| docs/Errors_design.md | The error-surfacing contract across the platform boundaries (three tiers; classify from facts we own, never from Android's error text). Decision-complete (§6 settled 2026-08-21); implements in **m0.8.7** |
-| docs/Regroup_design.md | Retiring the regroup freeze: groups re-form freely, append-only duels, pair-based "not related" exclusions. Decision-complete (grilled 2026-08-21); implements in **m0.8.7** |
 | docs/STATS_ACCURACY.md | **Read before touching any stat, deleter, or scope predicate.** Per-stat lifetime-true vs current-state verdicts, the ranked accuracy gaps with fix shapes, and the update discipline |
-| docs/Feedback_<version>.md / docs/Plan_<version>.md (e.g. `Plan_m0.8.md`) | Current tester feedback plus the release plan that answers it, named for the release they target (removed once shipped). A round that spans several releases is named for the LINE: `docs/Feedback_m0.8.x.md` organises the 2026-07-31 round into m0.8.5/6/7 |
+| docs/Feedback_<version>.md / docs/Plan_<version>.md (e.g. `Plan_m0.8.md`) | Current tester feedback plus the release plan that answers it, named for the release they target (removed once shipped). A round that spans several releases is named for the LINE (e.g. `docs/Feedback_m0.8.7-m0.9.md` for the 2026-08-20 round), and its shipped sections prune at each release close |
 | docs/grouping-study/ | Grouping regression labels (human-judged pairs) plus study tooling. Local-only data is gitignored (see its README) |
 | README.md | User and tester facing: formats, key bindings, install notes |

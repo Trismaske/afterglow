@@ -246,8 +246,8 @@ afterglow/
 ## Release roadmap
 
 Two trains.
-v0.1–v0.5 and m0.1–m0.8.6 have shipped.
-Next up: the desktop RAW pipeline (v0.6) and mobile m0.8.7.
+v0.1–v0.5 and m0.1–m0.8.7 have shipped.
+Next up: the desktop RAW pipeline (v0.6) and mobile m0.8.8.
 
 ### Desktop train
 
@@ -437,23 +437,22 @@ Auto-update (electron-updater) lands here too.
   Plus the rescued-date defect (a D15-rescued photo's real date now reaches the Progress scopes), the histogram keeping its selected month on screen, day labels with years, and the zoom walking pan anchored to touch position.
   Built through the closing grillings (11 + 3 questions), two full device passes, and a nine-round three-reviewer codex cycle (six to convergence on the release delta, three on the closing fixes; ~46 finding groups fixed, 3 refuted with evidence).
   848 tests; the UI gate passed on the final build.
+- **m0.8.7** — sources, badges, and the queues; groups land as truth.
+  **The regroup freeze retires.** Grouping is pure presentation: groups grow, shrink, and re-form freely under every scan, and photos own their state.
+  The one durable membership judgment is the **"not related" cannot-link pair** — eject records a pair against every present group member (directional storage so the dissolution rule and un-eject know whose judgment each row is; enforcement symmetric, in core, at merge time and re-checked in the write transaction), ejecting a photo dissolves pairs where it stood as partner (two photos ejected from one group can reunite elsewhere), and un-eject clears the photo's own pairs and lands its re-placement in seconds through a **targeted stampless rescan** on the scan's single-flight.
+  **Duels become an append-only event log** (schema v22 destructive rebuild): pair-keyed, written by Compare, deleted by nothing — forget-card erase anonymizes endpoint ids and keeps the row — so Compare's lifetime stats are exact and un-review is fully non-destructive (its last confirm dialog is gone).
+  **Source selection becomes the second scope axis** (F18), exactly like mount state: deselecting a folder writes nothing, and its photos leave every queue, count, grid, bulk binding, and the forecast pool until re-added (measured on the floor device: 3–32 ms scoped queue reads).
+  **Per-kind suspension** (F21): share and edit stay live on a staged cull — share-then-delete works end to end — while favourite and organize suspend; the cull confirm names unsent share/edit intents, and dispatching a share with a pending edit asks first.
+  **The error contract** ([docs/REVIEW_CLASSES.md](docs/REVIEW_CLASSES.md)-hardened, from the settled Errors design): every boundary where Android can refuse — favourite, trash, share, edit-launch, organize — answers with three tiers built from facts Afterglow owns (verified counts, pipeline stages, typed probe verdicts), never from parsing Android's text, which is quoted verbatim and last; `plural()` ends the hand-rolled agreement ternaries.
+  **F27's measured cause fixed**: the delta planner filters the changed set to the source scope by current bucket, in-source undated changes land by direct volume-qualified per-id fetch without a corpus walk, and every planner fallback logs its reason.
+  **Every console line persists** to a rotating on-device diagnostics sink (50 MB, adb-pullable) with a global error hook and a provider-stack error boundary — release crashes finally leave a trace.
+  **The stats-accuracy sweep**: culls classify by the lifetime `culled_at` stamp (external deletions never re-file a keep), `decided_first_at` makes day history immutable with the goal ring crediting only first decisions, one all-time streak definition, the intake chart's two series describe one population, and the scoping contract splits by purpose — achievement and habit stats read decision history unscoped on both axes, planning stats scope to the selected mounted library ([docs/STATS_ACCURACY.md](docs/STATS_ACCURACY.md) is the living contract); two figures retired until an event log can back them truthfully.
+  Also: gallery hearts project into the action vocabulary at scan time (F20), the badge family gains folder and SD annotations with one durable hide toggle (deck header + viewer), the queues share one destructive-styled removal affordance, the Progress grids hydrate full action glyphs, and the three source-picker defects were fixed from on-device measurement (F10/F11/F12).
+  Built through a 20-decision vetting grilling and a three-round three-reviewer codex cycle (31 finding groups fixed); 903 tests.
 
-**The m0.8.x feedback line (next).**
-The remaining tester items from the 2026-07-31 round, organised into subsystem-aligned releases so each gets one device pass and one review cycle.
-Items, evidence, and the settled decisions: [docs/Feedback_m0.8.x.md](docs/Feedback_m0.8.x.md).
-A second round (2026-08-20, F21–F30, settled in an 11-question grilling) spans m0.8.7 through m0.9: [docs/Feedback_m0.8.7-m0.9.md](docs/Feedback_m0.8.7-m0.9.md).
+**The 2026-08-20 feedback round (next).**
+F21–F30, settled in an 11-question grilling, spanning m0.8.8 and m0.9: [docs/Feedback_m0.8.7-m0.9.md](docs/Feedback_m0.8.7-m0.9.md).
 
-- **m0.8.7 — sources, badges, and the queues.**
-  Source selection becomes a scope axis exactly like mount state: deselecting a folder writes nothing, and its photos leave every queue, count, and grid until it is re-added.
-  Source-folder and SD-card badges join the shared vocabulary, with one control to hide badges.
-  The gallery's own favourites are read back at scan time.
-  The source picker stops shifting rows on selection.
-  A copy audit fixes singular strings in plural situations.
-  The four queue screens get one action language, plus full action hydration in the Progress grids.
-  Carries two more: the **error-surfacing contract** ([docs/Errors_design.md](docs/Errors_design.md) — one three-tier answer at every boundary where Android can refuse systematically, with its §6 to be settled before implementation) and the type-scale and token pass, whose evidence sits on this release's own screens.
-  Riders from the 2026-08-20 round: action suspension becomes per-kind so a staged cull can still be shared and edited, with a cull-confirm guard naming unsent intents (F21); a share-dispatch confirm when a queued edit is pending; the state editor keeps stale facts dimmed across writes instead of collapsing to "Loading…" (F30); and F27's measured cause — the delta planner's silent undated fallback, amplified by a volume-wide change query that lets out-of-source photos trigger scans — is fixed here: the changed set is filtered to the source scope, in-source undated changes land without a corpus walk, and every planner fallback logs its reason.
-  The S23 `[scan]` logcat capture (running since 2026-08-21, no app code) measures the fallback's frequency and watches for other full-pass reasons through the release cycle.
-  The **stats-accuracy sweep** ([docs/STATS_ACCURACY.md](docs/STATS_ACCURACY.md), from the 2026-08-21 audit) also rides: external deletions stop counting as culls, the intake chart's populations align, the frontier reads durable stamps, `decided_first_at` makes past days immutable (inside the v22 rebuild), the two "longest streak" definitions unify, and two figures retire until the event log can back them truthfully ("you keep 1 of X" and the favourites figure — stats track Afterglow actions, and both currently state library facts).
 - **m0.8.8 — the review deck** (the 2026-08-20 round's deck cluster).
   The post-decision advance goes to the nearest unreviewed photo — forward first, backward at the tail — in both deck kinds (F23+F24).
   "Not related" joins the verdict row (Keep · Compare · Not related · Cull, weighted widths, always present and disabled where inapplicable), reclaiming ~68 px of stage on groups and unifying the group/singles layout; heights and weights are device-pass tunables (F28).

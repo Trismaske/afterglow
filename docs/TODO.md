@@ -110,7 +110,7 @@ Numbers change whenever an item closes, so **cross-references from code or other
    Wanted: decide whether the native EXIF read should extend to dated-but-suspect rows (RAW mime types, or `datetaken == date_modified`).
    That extension would make this the same mechanism as the D15 rescue rather than a second one.
    The read-source half of the same family is related: "A D15-rescued photo's date does not reach the Progress library scope".
-   That item is designed and scheduled into m0.8.6 (docs/Feedback_m0.8.x.md).
+   That item was designed and shipped in m0.8.6.
 
 ## Waiting for a trigger
 
@@ -188,7 +188,7 @@ Same hygiene as above: promote on trigger, delete when answered.
   The cost is blurring the day-scoped run model.
   The shipped m0.8.2 plan's appendix 34 records the full trade (git history).
   **m0.8.6's Timeline is the likeliest trigger**: its "Everything" filter shows the completed one-photo days that the pending feed hides today.
-  That multiplies what a sparse stretch puts on screen (docs/Feedback_m0.8.x.md, F2).
+  That multiplies what a sparse stretch puts on screen (the 2026-07-31 round, F2).
 
 - **UI-gate scope configuration, and chart-interaction steps** (Tristan, 2026-08-19, m0.8.6 device pass).
   Two wants from one pass: histogram-interaction steps (tap a month, assert the chart holds still and the grid filters — the F8 class), and a way to run only the gate sections whose surfaces a release touched, since the full walk is slow and most releases touch a few screens.

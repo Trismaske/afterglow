@@ -120,6 +120,10 @@ Moving photos between albums (Organize) stays primary-storage-only this release,
 Ejecting the card never loses anything.
 Its photos leave the queues and counts while the card is out ("SD card not mounted — N photos waiting on it" on Home), and they return exactly as they were on remount.
 A card that is gone for good has a designed exit, **Settings → Forget this card**, with a choice between keeping your review history and erasing it.
+
+**Folder selection works the same way (0.8.7):** deselecting a folder in the photo-source picker changes nothing about your decisions — its photos just leave every queue, count, and grid until you re-add it, exactly like an ejected card.
+Photos also wear quiet folder-name and SD badges now, with one eye toggle (deck header or viewer) that hides all badges for a clean look; your daily-goal ring, streaks, and records always count everything you ever reviewed, whatever is currently selected or mounted.
+"Not related" on a group is remembered per photo pair — the group can re-form freely as the library changes, but photos you separated never regroup with each other, and the photo's own viewer page can undo it.
 Cards in **USB/OTG readers** and USB drives are not supported at all.
 Android never indexes them for gallery apps, so they are invisible to Afterglow.
 Use your file manager to copy them onto the phone first.
@@ -147,12 +151,11 @@ Flagging a photo for editing does not change the verdict.
 The photo is simply a keeper with an edit waiting, which is why the same photo can be kept, queued to edit AND queued to share at once.
 Culls stage into a durable global queue and stay **badged in the deck** until the final trash confirmation.
 Every decision is reversible until then.
-A staged cull quietly steps out of its other queues (you are about to delete it) and steps back in if you un-stage it.
+A staged cull steps out of the favourite and organize queues (you are about to delete it) and back in if you un-stage it — but its share and edit requests stay live (0.8.7): "delete it, but share it first" works, and the trash confirmation names any share or edit request that never went out.
 Photos deleted outside Afterglow drop out.
 Photos restored from the system trash re-enter review automatically.
 
-> **Pre-1.0 testers:** a 0.x upgrade resets the app's local database whenever the release changes the schema baseline (0.8, 0.8.2, and 0.8.3 all do).
-> A release that leaves the schema unchanged (0.8.4, 0.8.5) keeps your data.
+> **Pre-1.0 testers:** a 0.x upgrade resets the app's local database whenever the release changes the schema baseline — 0.8.7 does (review decisions, queues, and compare history start fresh; the release notes say when a release keeps data instead).
 > Your photos are never touched either way.
 
 ## Running it (dev build required — NOT Expo Go)

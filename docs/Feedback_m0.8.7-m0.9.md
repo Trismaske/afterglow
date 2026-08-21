@@ -1,6 +1,6 @@
 # Tester feedback — the 2026-08-20 round
 
-Round of 2026-08-20 (Tristan, S23 + S10e on shipped m0.8.6): ten items, **F21–F30**, continuing the numbering from [Feedback_m0.8.x.md](Feedback_m0.8.x.md).
+Round of 2026-08-20 (Tristan, S23 + S10e on shipped m0.8.6): ten items, **F21–F30**, continuing the 2026-07-31 round's numbering.
 Settled in an 11-question grilling (2026-08-20/21) with per-item code facts gathered before each decision.
 Organised into three releases — one subsystem, one device pass, one review cycle each (L1) — all landing **before** the accessibility pass, which moves to m0.9.1 so font scales are measured once the UI stops moving.
 This doc spans the releases, so it is named for the span.
@@ -15,7 +15,7 @@ Reproduce an item whose cause is only **read** before you write its fix.
 
 | | Release | What it is | Items |
 |---|---|---|---|
-| **m0.8.7** | sources, badges, and the queues | Existing scope ([Feedback_m0.8.x.md](Feedback_m0.8.x.md)) plus riders whose subsystem this already is | F21 F30 · **F27's undated-fallback fix** (pulled forward 2026-08-21, cause measured) · the share-before-edit dispatch confirm · scan-log capture step zero · the stats-accuracy sweep ([STATS_ACCURACY.md](STATS_ACCURACY.md)) |
+| **m0.8.7** | sources, badges, and the queues | **SHIPPED** — F21 F30, F27's undated-fallback fix, the share-before-edit confirm, and the stats-accuracy sweep; behavior recorded in PLAN.md's shipped entry | — |
 | **m0.8.8** | the review deck | The deck and Compare become one tighter loop; zoom becomes pixel-perfect | F22 F23 F24 F28 F29 |
 | **m0.9** | media kinds | Videos and motion photos enter; every kind wears its chip; the scan explains itself | F25 F26 · F27 (presentation) · plus m0.9's previously planned items, unchanged |
 
@@ -41,92 +41,10 @@ Reproduce an item whose cause is only **read** before you write its fix.
 
 ---
 
-## m0.8.7 riders — sources, badges, and the queues
+## m0.8.7 riders (shipped)
 
-The release's main scope lives in [Feedback_m0.8.x.md](Feedback_m0.8.x.md).
-These land here because queue semantics and the state editor are this release's subsystem.
-
-### F21 · "I want to delete this photo, but share it first"
-
-**Reported:** the tester wants to cull a photo and share it before it is trashed.
-**Read:** share-then-cull already half-works — the share row survives a cull, suspended ([actions.ts:54-59](../apps/mobile/src/db/actions.ts#L54-L59)); but the deck refuses cull-then-share ([DeckScreen.tsx:1869-1908](../apps/mobile/src/screens/DeckScreen.tsx#L1869-L1908)), dispatch silently drops culled photos from a batch ([ShareQueueScreen.tsx:184-211](../apps/mobile/src/screens/ShareQueueScreen.tsx#L184-L211)), and **trash-confirm silently deletes never-sent rows** ([trashStore.ts:256-260](../apps/mobile/src/db/trashStore.ts#L256-L260)).
-Found inconsistency: the state editor *does* offer "Add to share queue" on a staged cull, but the add lands invisibly (guard only on `is_present`, [shareStore.ts:74](../apps/mobile/src/db/shareStore.ts#L74)) and confirm deletes it.
-
-**Fix (G2), the four-point contract:**
-
-1. **Share and edit intents stay live on a staged cull** — visible in their queues (wearing the staged-cull badge), dispatchable, addable from deck and editor.
-2. **Favourite and organize stay suspended** and remain refused as additions on a staged cull.
-3. **Cull-confirm gains one guard**: members with never-sent share or edit intents are named in the dialog ("2 photos still have unsent share requests") with proceed (delete the intents knowingly) or cancel. Post-confirm cleanup is unchanged: unsent rows delete, sent ones keep their History proof.
-4. The suspension doctrine and its pinning tests ([shareStore.real.test.ts:182-222](../apps/mobile/src/db/shareStore.real.test.ts#L182-L222)) plus `docs/STATE_MODEL.md`'s suspension section are rewritten deliberately.
-   Deleted along the way: the un-stage resurface machinery ([shareStore.ts:209-219](../apps/mobile/src/db/shareStore.ts#L209-L219)), which exists only because shares hide today.
-
-### Rider · Share-dispatch confirm when an edit is pending
-
-Separate from F21 (applies to any photo, culled or not): dispatching a share for a photo whose edit intent is still queued sends the unedited file.
-One confirm at dispatch time when the batch contains such photos.
-Small; lives with the share-queue work.
-
-### F30 · The state-editor panel minimises on kept→unreviewed but not culled→unreviewed
-
-**Reported:** on Progress, un-reviewing a kept photo makes the panel collapse and return; a culled photo does not.
-**Read, cause located:** every write clears the sheet's facts and re-reads; while `facts === undefined` the body unmounts to "Loading…" ([StateEditorSheet.tsx:96](../apps/mobile/src/components/progress/StateEditorSheet.tsx#L96), gate at [:390-449](../apps/mobile/src/components/progress/StateEditorSheet.tsx#L390-L449); same pattern in [PhotoViewer.tsx:392](../apps/mobile/src/components/PhotoViewer.tsx#L392)).
-The asymmetry: kept→unreviewed re-enters the pending queue and triggers a delayed version-bump render burst; culled→unreviewed is already in the loaded queue, so its refresh commits nothing ([ReviewContext.tsx:495-558](../apps/mobile/src/review/ReviewContext.tsx#L495-L558), [store.ts:1186](../apps/mobile/src/db/store.ts#L1186)).
-
-**Fix (G11):** keep the previous facts rendered, dimmed under the existing `busy` treatment, during re-reads — both sites.
-No queue-layer change; the delayed burst is correct behavior the sheet becomes indifferent to.
-
-### F27 (fix) · "The app seems to do a random scan when opening it up"
-
-Pulled forward from m0.9 (Tristan, 2026-08-21) because the cause landed on day one of the log capture; the presentation half stays in m0.9.
-
-**Reported:** long, corpus-sized scans several times a day, mostly on the S23; sometimes a foreground return scans, sometimes not.
-**Cause located (measured, 2026-08-21, live on the S23):** the delta planner's **undated fallback** ([scanRunner.ts:602-605](../apps/mobile/src/scan/scanRunner.ts#L602-L605)).
-Any changed photo with neither capture nor modification time cannot be placed in a delta range, so `plan.undated > 0` silently discards the delta and runs a full pass — the **only unlogged fallback in the planner**, and it runs *after* the verdict line prints, so the log says "DELTA wins" while the corpus walk starts.
-Captured in the act: one new photo (27282 vs tracked 27281, "1 undated"), verdict "cost 4 vs budget 13641: DELTA wins", then Home showing "Scanning 53% · 14 400 of 27 282 photos" with no full-pass reason logged, ending "done: scanned 27282, embedded 1 fresh" — **4 min 50 s of corpus walk to land one photo** (measured, 11:39:51→11:44:41).
-So **every new undated photo — a WhatsApp image, a stripped-EXIF download — costs a full corpus scan**: several arrivals a day is "the app randomly scans everything, several times a day", and the unchanged-library skip explains the opens that stay quiet.
-**A second instance five minutes later (measured, 11:49:59) showed the compounding case:** another WhatsApp image arrived *during* the first pass, so the start-of-pass fingerprint correctly flagged it on the next open (counts equal, "1 changed, 1 undated", cost 1) — and the fallback launched full pass #2.
-With a ~5-minute pass and undated photos arriving independently, an active chat day can keep the corpus walking back-to-back.
-The triggers themselves were vindicated by the same capture (skips and deltas behaving as designed on the no-change samples), so **trigger redesign stays off the table**.
-
-**A second cause layer beneath it (Tristan's question, 2026-08-21; read + measured):** the WhatsApp folder is **not in the selected sources at all**.
-The scan is source-scoped everywhere — counts, paging, embedding — but `mediaChangedSince` is **volume-wide with no bucket or path filter** ([MediaStoreActionsModule.kt:273-287](../apps/mobile/modules/media-store-actions/android/src/main/java/expo/modules/mediastoreactions/MediaStoreActionsModule.kt#L273-L287)), so out-of-source photos leak into the delta's changed set.
-Measured proof, both directions: at 11:49:59 the source-scoped tripwire read **equal** (27282 = 27282 — nothing in the sources changed) while the volume-wide changed set still held the WhatsApp photo; and pass #2 ended "done: scanned 27282, **embedded 0 fresh**" (11:49:59→11:53:59) — a four-minute corpus walk that could not ingest the very photo that triggered it, because that photo is out of scope for ingestion.
-This is another missed predicate of exactly the class L3/F18 audits this release: source selection is a scope axis, and the changed-set read skipped it.
-
-**Fix (G8, point 1 — now two legs):**
-
-1. **The changed set is filtered to the source scope** before delta planning: an out-of-source change plans nothing and triggers nothing (it is already invisible to every other read). The filter must key on each changed row's *current* path, so a photo moved *into* a selected source still registers as a change.
-2. **The undated fallback stops walking the corpus** for in-source undated changes — they are fetched, EXIF-rescued, embedded, and landed as undated units directly (the D15 rescue and undated-batch machinery already exist in the full-pass path); if that proves unsafe in-build, the fallback at minimum logs itself and names itself in the UI.
-
-Plus one invariant, landed with the fix: **every planner fallback logs its reason; none returns silently.**
-The capture (below) keeps running to measure the fallback's real frequency and catch any *other* full-pass reasons before m0.9's presentation work.
-
-### Step zero · S23 scan-log capture (F27's evidence)
-
-**Running since 2026-08-21 11:13** (no app code involved).
-The shipped build logs its scan reason every run (**measured**: `[scan]` lines reach logcat under tag `ReactNativeJS`), and an on-device logcat writer records them across ADB disconnects for the whole release cycle.
-It caught F27's cause within the first half hour (the undated fallback, above); it stays running to measure that fallback's frequency and to catch any other full-pass reason before m0.9's presentation work.
-
-Mechanism (`logcat -f` writes nothing on this Samsung build — **measured**, use shell redirection):
-
-```bash
-# start (survives ADB disconnect; dies on phone reboot AND is reaped
-# spontaneously every hour or two — check `ps -A | grep logcat` on every pull
-# and at every phase boundary, restart if gone; the ring buffer bridges short
-# gaps for the sparse [scan] tag):
-scripts/android-device.sh adb R5CW20KBA2W shell \
-  "nohup setsid logcat -v time -s 'ReactNativeJS:*' >> /data/local/tmp/afterglow-scan.log 2>&1 &"
-# pull a snapshot:
-scripts/android-device.sh adb R5CW20KBA2W shell \
-  "grep -a '\[scan\]' /data/local/tmp/afterglow-scan.log"
-# stop when m0.9's diagnosis is done:
-scripts/android-device.sh adb R5CW20KBA2W shell "pkill logcat; rm /data/local/tmp/afterglow-scan.log"
-```
-
-Volume is a few KB/day (one app's JS log only), so no rotation is needed.
-First samples, 2026-08-21 11:07–11:13 (**measured**): a foreground delta whose tripwire read "nothing changed", then three foreground returns each hitting "library unchanged since last complete pass — skipped" — the differential design working as intended on those samples.
-The phase-2 read-back (2026-08-21 14:41, **measured**) found a third same-day corpus walk (13:38–13:42, "2 undated" after "DELTA wins") — same undated leg, **no new cause**; three walks in one quiet-library day confirms the fix's priority.
-The open question the remaining capture must answer: whether any OTHER full-pass reason shows up before the m0.8.7 build (whose in-app sink retires this writer) lands on the device.
+Shipped; the release's distilled record lives in PLAN.md's shipped entry, and the settled behavior in docs/STATE_MODEL.md and the code headers.
+The S23 adb scan-log capture retires when the m0.8.7 build (whose in-app diagnostics sink replaces it) lands on the device; m0.9's F27 presentation work reads full-pass reasons from the sink instead.
 
 ---
 

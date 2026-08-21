@@ -8,6 +8,8 @@ import type { RootStackParamList } from '../navigation';
 import { useReview } from '../review/ReviewContext';
 import { useSQLiteContext } from 'expo-sqlite';
 import { mountedVolumeSet } from '../lib/mountedVolumes';
+import { resolveSources } from '../lib/sourceCatalog';
+import { perfAggregate } from '../lib/perfLog';
 import { useExternalRefresh } from '../components/useExternalRefresh';
 import { getStagedCulls, type StagedCullRow } from '../db/store';
 import { BigButton } from '../components/BigButton';
@@ -53,8 +55,16 @@ export function CullListScreen({ navigation, route }: Props) {
   // snapshot cannot see.
   useEffect(() => {
     let cancelled = false;
-    mountedVolumeSet()
-      .then((mounted) => getStagedCulls(db, undefined, mounted))
+    const started = Date.now();
+    Promise.all([mountedVolumeSet(), resolveSources(db)])
+      // Both scope axes (m0.8.3 reachability; m0.8.7 F18 sources): the
+      // list IS the confirm flow's population, so it must show exactly
+      // the culls the badge counted.
+      .then(([mounted, sources]) => getStagedCulls(db, undefined, mounted, sources.roots ?? null))
+      .then((rows) => {
+        perfAggregate('queue read (cull)', Date.now() - started, rows.length);
+        return rows;
+      })
       .then(
         (rows) => {
           if (!cancelled) {

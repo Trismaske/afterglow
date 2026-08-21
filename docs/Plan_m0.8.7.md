@@ -125,3 +125,15 @@ Getting these human-vetted is a top priority; an approved entry is pruned per th
 5. **F20 projects through the existing action-row vocabulary.**
    A gallery heart lands as a resolved favourite action (`applied_target = '1'`), a cleared flag flips the carried direction to `'0'` (the row stays — it is history), queued/error rows are never touched, and `activity_at` is never stamped (an observation is not app activity — the forget-card O7 rule).
    The favourite set is ONE indexed `IS_FAVORITE = 1` query per mounted volume per pass; a failed read projects nothing that pass, loudly once — an empty set would read as "un-favourite everything".
+6. **F11's measured cause is the check glyph, not the outline.**
+   Pixel-diffed on the S10e (2026-08-21): the row border is 1 px in BOTH states (only its color changes), while selecting a row grew it ~20 px — the check icon's ~28 dp font line box exceeds the title line, and the width-only check container collapsed when empty.
+   Fix: a fixed 28 dp check box in both states.
+   Riding the same session: F10's tag now pins to the title line's right edge (`marginLeft: 'auto'` — inline placement after a variable-width name IS the reported misalignment; multi-SD-row comparison awaits a mounted card on the device pass), and F12's pre-catalog render was a confident "All folders · 0" row over a low-contrast loading line — loading is now the DEFAULT state (spinner + line, no other rows) per the plan's settled shape.
+7. **The badge annotations render quiet, last, and pill-gated; the eye lives in the deck header.**
+   Folder (F19) and SD (F14) are facts, so they always render at the carried weight after the action badges, in neutral dim-on-raised (rule 2 reserves the action hues).
+   The folder pill needs legible text, so it renders only in clusters ≥ 18 px (the deck stage) — thumbnail clusters keep the glyph badges alone.
+   The ONE hide control (durable, vetted) is an eye toggle in the Deck header (`headerRight` — review surfaces' shared chrome, and navigation-level so it cannot disturb the deck's gesture tree); it hides every BadgeCluster surface at once.
+   History keeps its rows untouched: its single-glyph state rows are the feed's meaning, not badge decoration.
+8. **The S10e queue-read measurement ships as instrumentation.**
+   The release build cannot be timed from outside, so the scoped reads carry a per-session aggregated `[perf] queue read (<kind>)` line (plus a 27k-corpus timing pin in queuePlan.real.test.ts as the desktop proxy); the device pass reads the real figures off the sink.
+   If they bite, `source_root` remains its own decision, per the plan.

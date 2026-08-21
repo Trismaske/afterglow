@@ -351,22 +351,31 @@ export function SourcePickerScreen({ navigation }: Props) {
           subfolders.
         </Text>
 
-        <Pressable
-          style={[styles.row, allFolders && { borderColor: theme.accent }]}
-          onPress={toggleAll}
-        >
-          <View style={styles.rowBody}>
-            <Text style={styles.rowTitle}>All folders</Text>
-            <Text style={styles.rowHint}>every photo on the device</Text>
-          </View>
-          <Text style={styles.rowCount}>{totalPhotos}</Text>
-          <View style={styles.check}>
-            {allFolders && <MaterialCommunityIcons name="check" size={22} color={theme.accent} />}
-          </View>
-        </Pressable>
-
+        {/* F12 (m0.8.7): LOADING IS THE DEFAULT STATE. Before the
+            catalog arrives nothing else renders — the old tree showed a
+            confident "All folders · 0" row over a low-contrast loading
+            line, which read as an empty picker. */}
         {rows === null && loadFailed === null && (
-          <Text style={styles.loading}>Listing photo folders…</Text>
+          <View style={styles.loadingState}>
+            <ActivityIndicator color={theme.accent} />
+            <Text style={styles.loading}>Listing photo folders…</Text>
+          </View>
+        )}
+
+        {rows !== null && (
+          <Pressable
+            style={[styles.row, allFolders && { borderColor: theme.accent }]}
+            onPress={toggleAll}
+          >
+            <View style={styles.rowBody}>
+              <Text style={styles.rowTitle}>All folders</Text>
+              <Text style={styles.rowHint}>every photo on the device</Text>
+            </View>
+            <Text style={styles.rowCount}>{totalPhotos}</Text>
+            <View style={styles.check}>
+              {allFolders && <MaterialCommunityIcons name="check" size={22} color={theme.accent} />}
+            </View>
+          </Pressable>
         )}
         {loadFailed !== null && (
           <View style={styles.loadFailed}>
@@ -457,6 +466,7 @@ const styles = StyleSheet.create({
   content: { padding: 16, gap: 10 },
   hint: { color: colors.textDim, fontSize: 14, lineHeight: 20, marginBottom: 4 },
   loading: { color: colors.textDim, fontSize: 14, padding: 8 },
+  loadingState: { alignItems: 'center', gap: 6, paddingVertical: 32 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -475,6 +485,9 @@ const styles = StyleSheet.create({
   // keeps its place; the data returns with the card.
   rowUnmounted: { opacity: 0.55 },
   rowTitleUnmounted: { color: colors.textDim },
+  // F10 (m0.8.7, measured on the S10e): marginLeft 'auto' pins every
+  // tag to the SAME x (the title line's right edge) — inline after a
+  // variable-width name, each row's tag sat somewhere else.
   rowTag: {
     color: colors.textDim,
     fontSize: 11,
@@ -485,10 +498,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5,
     paddingVertical: 1,
     overflow: 'hidden',
+    marginLeft: 'auto',
   },
   rowHint: { color: colors.textDim, fontSize: 12 },
   rowIncluded: { fontSize: 12 },
   rowCount: { color: colors.textDim, fontSize: 13 },
-  check: { width: 22, alignItems: 'center', justifyContent: 'center' },
+  // F11 (m0.8.7, measured on the S10e): a fixed 28dp box in BOTH
+  // states — the check glyph's font line box (~28dp > the title line)
+  // used to grow a row on selection and shift every row below it. The
+  // outline never moved anything: the border is 1px in both states.
+  check: { width: 22, height: 28, alignItems: 'center', justifyContent: 'center' },
   footer: { paddingHorizontal: 16, paddingTop: 8 },
 });

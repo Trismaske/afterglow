@@ -344,3 +344,77 @@ describe('target encoding', () => {
     expect(decodeOrganizeTarget(null)).toBeNull();
   });
 });
+
+describe('the source axis on queue reads (m0.8.7, F18)', () => {
+  const CAMERA = [{ volume: 'external_primary', dir: 'DCIM/Camera' }];
+
+  async function seedSourced(): Promise<TestDb> {
+    const d = await fresh([]);
+    const insert = d.raw.prepare(
+      "INSERT INTO photos (asset_id, uri, taken_at, state, volume_name, raw_id) VALUES (?, ?, ?, 'unreviewed', 'external_primary', ?)",
+    );
+    insert.run('c1', 'file:///storage/emulated/0/DCIM/Camera/c1.jpg', AT, 'c1');
+    insert.run('w1', 'file:///storage/emulated/0/WhatsApp/Media/w1.jpg', AT, 'w1');
+    await queueAction(asExpo(d), 'c1', 'edit', AT);
+    await queueAction(asExpo(d), 'w1', 'edit', AT + 1);
+    await queueAction(asExpo(d), 'w1', 'share', AT + 2);
+    return d;
+  }
+
+  it('getQueue lists only in-source photos under a dirs scope', async () => {
+    const d = await seedSourced();
+    const scoped = await getQueue(asExpo(d), 'edit', null, CAMERA);
+    expect(scoped.map((a) => a.photoId)).toEqual(['c1']);
+    // Null roots = All folders: both list, in queue order.
+    const all = await getQueue(asExpo(d), 'edit');
+    expect(all.map((a) => a.photoId)).toEqual(['c1', 'w1']);
+  });
+
+  it('countQueues counts exactly what the scoped lists show', async () => {
+    const d = await seedSourced();
+    expect(await countQueues(asExpo(d), null, CAMERA)).toEqual({
+      edit: 1,
+      favourite: 0,
+      organize: 0,
+      share: 0,
+    });
+    expect(await countQueues(asExpo(d))).toEqual({
+      edit: 2,
+      favourite: 0,
+      organize: 0,
+      share: 1,
+    });
+  });
+
+  it('the ACTION ROW survives scoping — re-selecting the folder restores it', async () => {
+    const d = await seedSourced();
+    expect((await getQueue(asExpo(d), 'edit', null, CAMERA)).map((a) => a.photoId)).toEqual(['c1']);
+    const restored = await getQueue(asExpo(d), 'edit', null, [
+      ...CAMERA,
+      { volume: 'external_primary', dir: 'WhatsApp/Media' },
+    ]);
+    expect(restored.map((a) => a.photoId)).toEqual(['c1', 'w1']);
+  });
+
+  it('both axes compose: unreachable AND out-of-source both hide', async () => {
+    const d = await fresh([]);
+    const insert = d.raw.prepare(
+      "INSERT INTO photos (asset_id, uri, taken_at, state, volume_name, raw_id) VALUES (?, ?, ?, 'unreviewed', ?, ?)",
+    );
+    insert.run('c1', 'file:///storage/emulated/0/DCIM/Camera/c1.jpg', AT, 'external_primary', 'c1');
+    insert.run('s1', 'file:///storage/0A91-E18D/DCIM/Camera/s1.jpg', AT, '0a91-e18d', 's1');
+    await queueAction(asExpo(d), 'c1', 'share', AT);
+    await queueAction(asExpo(d), 's1', 'share', AT + 1);
+    // SD unmounted: its queued share waits even though its dir matches.
+    const rows = await getQueue(
+      asExpo(d),
+      'share',
+      ['external_primary'],
+      [
+        { volume: 'external_primary', dir: 'DCIM/Camera' },
+        { volume: '0a91-e18d', dir: 'DCIM/Camera' },
+      ],
+    );
+    expect(rows.map((a) => a.photoId)).toEqual(['c1']);
+  });
+});

@@ -58,7 +58,8 @@ import { GoalCelebration } from '../components/GoalCelebration';
 import { BadgeCluster, DecisionBadge, DECISION_GLYPHS } from '../components/DecisionBadge';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { isFavouriteSelected } from '../lib/favouriteState';
-import { photoBadges, type PhotoBadge } from '../lib/photoBadges';
+import { folderNameOfUri, isSdPhoto, photoBadges, type PhotoBadge } from '../lib/photoBadges';
+import { badgesHidden, setBadgesHidden, subscribeBadgesHidden } from '../lib/badgePrefs';
 import { PhotoViewer } from '../components/PhotoViewer';
 import { useSQLiteContext } from 'expo-sqlite';
 import { addToShareQueue, removeFromShareQueue } from '../db/shareStore';
@@ -203,10 +204,30 @@ export function DeckScreen({ navigation, route }: DeckProps) {
   }, [paramKey, route.params]);
 
   // Per-unit title: one route now serves both kinds, so the screen names
-  // itself rather than the navigator naming it once.
+  // itself rather than the navigator naming it once. The header's eye is
+  // the ONE badge-visibility control (m0.8.7, F19/L6): durable, and it
+  // flips every badge surface at once through the badgePrefs observable.
+  const db = useSQLiteContext();
+  const [hideBadges, setHideBadges] = useState(badgesHidden);
+  useEffect(() => subscribeBadgesHidden(setHideBadges), []);
   useEffect(() => {
-    navigation.setOptions({ title: unit.kind === 'run' ? 'Singles review' : 'Group review' });
-  }, [navigation, unit.kind]);
+    navigation.setOptions({
+      title: unit.kind === 'run' ? 'Singles review' : 'Group review',
+      headerRight: () => (
+        <Pressable
+          onPress={() => void setBadgesHidden(db, !badgesHidden()).catch(() => {})}
+          hitSlop={12}
+          accessibilityLabel={hideBadges ? 'Show photo badges' : 'Hide photo badges'}
+        >
+          <MaterialCommunityIcons
+            name={hideBadges ? 'eye-off-outline' : 'eye-outline'}
+            size={22}
+            color={colors.textDim}
+          />
+        </Pressable>
+      ),
+    });
+  }, [navigation, unit.kind, db, hideBadges]);
 
   return <ReviewDeck navigation={navigation} unit={unit} advanceTo={advanceTo} />;
 }
@@ -1549,6 +1570,10 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     return photoBadges({
       state,
       ...actionWeights(item.id, state),
+      // The annotation badges (m0.8.7): the folder pill renders only at
+      // the stage cluster's size; the SD glyph everywhere.
+      folder: folderNameOfUri(item.uri),
+      sdCard: isSdPhoto(item.id),
     });
   };
 

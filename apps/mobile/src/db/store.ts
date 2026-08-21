@@ -207,11 +207,18 @@ export async function countStagedCulls(
   /** m0.8.3 §5: an unreachable staged cull is not confirmable work — its
    * file is on an absent card — so the queue badge excludes it. */
   mounted: readonly string[] | null = null,
+  /** m0.8.7 F18 (STATS_ACCURACY gap 10): source selection is the second
+   * scope axis — an out-of-source staged cull leaves the count with its
+   * folder and returns when the folder is re-selected. */
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<number> {
   const reach = reachClause(mounted);
+  const src = sourceClause(roots);
   const row = await db.getFirstAsync<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM photos WHERE state = 'culled' AND is_present = 1${reach.sql}`,
+    `SELECT COUNT(*) AS n FROM photos
+      WHERE state = 'culled' AND is_present = 1${reach.sql}${src.sql}`,
     ...reach.params,
+    ...src.params,
   );
   return row?.n ?? 0;
 }
@@ -234,13 +241,19 @@ export async function getStagedCulls(
   /** m0.8.3 §5: unreachable staged culls stay staged but leave the list
    * (and the confirm flow) until their card returns. */
   mounted: readonly string[] | null = null,
+  /** m0.8.7 F18 (gap 10): out-of-source staged culls leave the list and
+   * the confirm flow with their folder — the bulk confirm may only act
+   * on what the scoped list showed. */
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<StagedCullRow[]> {
   const reach = reachClause(mounted);
+  const src = sourceClause(roots);
   return db.getAllAsync<StagedCullRow>(
     `SELECT asset_id, uri, taken_at, day FROM photos
-     WHERE state = 'culled' AND is_present = 1${reach.sql}
+     WHERE state = 'culled' AND is_present = 1${reach.sql}${src.sql}
      ORDER BY taken_at ASC${limit === undefined ? '' : ' LIMIT ?'}`,
     ...reach.params,
+    ...src.params,
     ...(limit === undefined ? [] : [limit]),
   );
 }
@@ -1770,16 +1783,21 @@ export async function getStagedCullBytes(
    * as the mounted-scoped cull count beside it — and never stat files on
    * an absent card. */
   mounted: readonly string[] | null = null,
+  /** m0.8.7 F18 (gap 10): same rule for the source axis — the bytes
+   * figure describes exactly the scoped count beside it. */
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<{ scanned: number; unsized: string[] }> {
   const reach = reachClause(mounted);
+  const src = sourceClause(roots);
   // The SUM lives in SQL (m0.8.1): Home used to receive EVERY staged row
   // and blocking-stat each one on the JS thread, per focus. Only rows the
   // v14 scan never sized need a stat, and the caller caps those.
   const row = await db.getFirstAsync<{ total: number; unsized: number }>(
     `SELECT COALESCE(SUM(size_bytes), 0) AS total,
             SUM(CASE WHEN size_bytes IS NULL THEN 1 ELSE 0 END) AS unsized
-     FROM photos WHERE state = 'culled' AND is_present = 1${reach.sql}`,
+     FROM photos WHERE state = 'culled' AND is_present = 1${reach.sql}${src.sql}`,
     ...reach.params,
+    ...src.params,
   );
   const unsized =
     (row?.unsized ?? 0) === 0
@@ -1787,9 +1805,10 @@ export async function getStagedCullBytes(
       : (
           await db.getAllAsync<{ uri: string }>(
             `SELECT uri FROM photos
-             WHERE state = 'culled' AND is_present = 1 AND size_bytes IS NULL${reach.sql}
+             WHERE state = 'culled' AND is_present = 1 AND size_bytes IS NULL${reach.sql}${src.sql}
              LIMIT 200`,
             ...reach.params,
+            ...src.params,
           )
         ).map((r) => r.uri);
   return { scanned: Number(row?.total ?? 0), unsized };
@@ -2439,15 +2458,20 @@ export interface ToEditRow {
 export async function getToEditPhotos(
   db: SQLiteDatabase,
   mounted: readonly string[] | null = null,
+  /** m0.8.7 F18: the second scope axis — out-of-source queued edits wait
+   * with their folder. */
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<ToEditRow[]> {
   const reach = reachClause(mounted, 'p.volume_name');
+  const src = sourceClause(roots, 'p.uri');
   return db.getAllAsync<ToEditRow>(
     `SELECT p.asset_id, p.uri, p.taken_at, p.day FROM photos p
        JOIN photo_actions pa ON pa.photo_id = p.asset_id
       WHERE pa.kind = 'edit' AND pa.state IN ('queued', 'error')
-        AND ${livePhotoClause('p.asset_id')}${reach.sql}
+        AND ${livePhotoClause('p.asset_id')}${reach.sql}${src.sql}
       ORDER BY p.taken_at DESC`,
     ...reach.params,
+    ...src.params,
   );
 }
 

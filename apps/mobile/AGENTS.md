@@ -59,7 +59,7 @@ Both removal affordances use the local `modules/media-store-actions` trash reque
 | deckUnit.ts                                            | The deck's unit identity + the Deck route's param round trip (L4)                             |
 | progress.ts / progressPager.ts                         | Progress/state-bar logic + `groupedUnderlineRuns` / newest-first k-way merged pager           |
 | reviewPatch.ts                                         | Optimistic queue patches, SQL-parity tested                                                   |
-| photoBadges.ts                                         | The badge set a photo wears, each action at a live or carried weight                          |
+| photoBadges.ts / badgePrefs.ts                         | The badge set a photo wears (actions weighted; folder/SD annotations) / the one durable hide-all toggle |
 | dailyGoal.ts / coverageGoal.ts / groupingPrefs.ts      | The count goal / the independent coverage goal / grouping strictness                          |
 | stats.ts / statsLoad.ts                                | Stats chart geometry / ONE loader per Stats tab                                               |
 | habits.ts / habitsCopy.ts                              | The Habits tab's descriptive math / its sentences                                             |

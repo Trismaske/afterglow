@@ -31,6 +31,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
 import { invalidateMountedVolumes, mountedVolumeSet } from '../lib/mountedVolumes';
+import { resolveSources } from '../lib/sourceCatalog';
 import type { MainTabScreenProps } from '../navigation';
 import {
   clearShareQueue,
@@ -66,7 +67,17 @@ export function ShareQueueScreen(_props: Props) {
     failed,
     reload: reloadRows,
   } = useQueueRows<ShareQueueRow>(
-    useCallback(async () => getShareQueue(db, Date.now(), await mountedVolumeSet()), [db]),
+    useCallback(
+      async () =>
+        getShareQueue(
+          db,
+          Date.now(),
+          await mountedVolumeSet(),
+          (await resolveSources(db)).roots ?? null,
+        ),
+      [db],
+    ),
+    'share',
   );
   /** Every mutation here also moves the share BADGE on review surfaces
    * (deck, Groups) — the provider's membership map is their source. */
@@ -195,9 +206,14 @@ export function ShareQueueScreen(_props: Props) {
         // within the 5 s TTL a hot-ejected card's rows would otherwise
         // still ride into the dispatched batch.
         invalidateMountedVolumes();
-        const freshIds = (await getShareQueue(db, Date.now(), await mountedVolumeSet())).map(
-          (r) => r.photo_id,
-        );
+        const freshIds = (
+          await getShareQueue(
+            db,
+            Date.now(),
+            await mountedVolumeSet(),
+            (await resolveSources(db)).roots ?? null,
+          )
+        ).map((r) => r.photo_id);
         const freshSet = new Set(freshIds);
         // INTERSECTION in both modes (final cycle T1): the fresh read may
         // only SHRINK the batch — "Share all N" covers the N rendered

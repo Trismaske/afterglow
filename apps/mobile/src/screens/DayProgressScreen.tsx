@@ -23,7 +23,7 @@ import { resolveSources } from '../lib/sourceCatalog';
 import { ProgressView } from '../components/progress/ProgressView';
 import { useReview } from '../review/ReviewContext';
 import { BadgeCluster } from '../components/DecisionBadge';
-import { photoBadges, type PhotoBadge } from '../lib/photoBadges';
+import { isSdPhoto, photoBadges, type PhotoBadge } from '../lib/photoBadges';
 import { UnitCard } from '../components/UnitCard';
 import { BigButton } from '../components/BigButton';
 import { colors } from '../theme';
@@ -98,6 +98,9 @@ export function DayProgressScreen({ route, navigation }: Props) {
         ...weights,
         state: member.state,
         edit: weights.edit ?? (member.needs_edit === 1 ? (suspended ? 'carried' : 'live') : null),
+        // The SD annotation (m0.8.7, F14); thumbnail-size cluster, so no
+        // folder pill here.
+        sdCard: isSdPhoto(member.asset_id),
       });
     },
     [actionWeights],

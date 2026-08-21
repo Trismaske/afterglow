@@ -29,6 +29,7 @@
  */
 import type { PhotoState } from '@afterglow/core';
 import type { DecisionKind } from '../components/DecisionBadge';
+import { PRIMARY_VOLUME, volumeOf } from './mediaIdentity';
 
 /** Where an action sits: waiting for you, or done and carried. */
 export type BadgeWeight = 'live' | 'carried';
@@ -36,6 +37,8 @@ export type BadgeWeight = 'live' | 'carried';
 export interface PhotoBadge {
   kind: DecisionKind;
   weight: BadgeWeight;
+  /** Text for the folder pill (kind 'folder'); glyph badges carry none. */
+  label?: string;
 }
 
 export interface PhotoBadgeInput {
@@ -49,6 +52,30 @@ export interface PhotoBadgeInput {
   favourite: BadgeWeight | 'removing' | null;
   organize: BadgeWeight | null;
   share: BadgeWeight | null;
+  /** F19 (m0.8.7): the photo's parent-folder name — a quiet text pill
+   * AFTER the glyph badges (facts render last and always quiet).
+   * Null/absent = no folder badge. Derive with folderNameOfUri. */
+  folder?: string | null;
+  /** F14 (m0.8.7): the photo lives on a non-primary (SD) volume — the
+   * quiet micro-SD glyph. Derive with isSdPhoto. */
+  sdCard?: boolean;
+}
+
+/** The photo's parent-folder name from its uri (F19: "last folder name
+ * only") — the segment just above the filename; null when the uri has no
+ * usable directory (content:// uris, root files). */
+export function folderNameOfUri(uri: string | null | undefined): string | null {
+  if (!uri || !uri.startsWith('file://')) return null;
+  const segments = uri.slice('file://'.length).split('/').filter(Boolean);
+  // Need at least a folder AND a filename.
+  if (segments.length < 2) return null;
+  const folder = segments[segments.length - 2];
+  return folder.length > 0 ? decodeURIComponent(folder) : null;
+}
+
+/** Does this canonical id live on a non-primary (SD) volume? (F14). */
+export function isSdPhoto(assetId: string): boolean {
+  return volumeOf(assetId) !== PRIMARY_VOLUME;
 }
 
 export function photoBadges(input: PhotoBadgeInput): PhotoBadge[] {
@@ -65,5 +92,9 @@ export function photoBadges(input: PhotoBadgeInput): PhotoBadge[] {
   else if (input.favourite) badges.push({ kind: 'fav', weight: input.favourite });
   if (input.organize) badges.push({ kind: 'organize', weight: input.organize });
   if (input.share) badges.push({ kind: 'share', weight: input.share });
+  // Annotations LAST and always quiet (m0.8.7, F14/F19): facts about the
+  // photo, never chores — they must not compete with the to-do badges.
+  if (input.sdCard) badges.push({ kind: 'sd', weight: 'carried' });
+  if (input.folder) badges.push({ kind: 'folder', weight: 'carried', label: input.folder });
   return badges;
 }

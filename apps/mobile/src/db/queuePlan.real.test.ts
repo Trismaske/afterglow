@@ -228,3 +228,48 @@ describe('scoped repairGroupMembership (m0.8.1)', () => {
     expect(foreignKeyCheck(d)).toEqual([]);
   }, 60_000);
 });
+
+describe('source-scoped queue reads at scale (m0.8.7, F18)', () => {
+  it('the LIKE-backed scope stays cheap on a 27k corpus with big queues', async () => {
+    const d = await seedLarge();
+    const db = d as unknown as SQLiteDatabase;
+    // Give the corpus real folder shapes: every 9th photo lives in
+    // WhatsApp, the rest in DCIM/Camera (seedLarge wrote file:///dcim/).
+    d.raw.exec('BEGIN');
+    d.raw.exec(
+      `UPDATE photos SET uri = 'file:///storage/emulated/0/DCIM/Camera/' || raw_id || '.jpg'`,
+    );
+    d.raw.exec(
+      `UPDATE photos SET uri = 'file:///storage/emulated/0/WhatsApp/Media/' || raw_id || '.jpg'
+        WHERE CAST(raw_id AS INTEGER) % 9 = 0`,
+    );
+    // 3,000 staged culls and 500 queued edits — a heavy user's queues.
+    d.raw.exec(`UPDATE photos SET state = 'culled' WHERE CAST(raw_id AS INTEGER) < 3000`);
+    d.raw.exec(
+      `INSERT INTO photo_actions (photo_id, kind, state, queued_at)
+       SELECT asset_id, 'edit', 'queued', 1 FROM photos
+        WHERE CAST(raw_id AS INTEGER) >= 3000 AND CAST(raw_id AS INTEGER) < 3500`,
+    );
+    d.raw.exec('COMMIT');
+
+    const { countQueues, getQueue } = await import('./actions');
+    const { countStagedCulls, getStagedCulls } = await import('./store');
+    const CAMERA = [{ volume: 'external_primary', dir: 'DCIM/Camera' }];
+    const started = performance.now();
+    const counts = await countQueues(db, null, CAMERA);
+    const edits = await getQueue(db, 'edit', null, CAMERA);
+    const culls = await countStagedCulls(db, null, CAMERA);
+    const cullRows = await getStagedCulls(db, undefined, null, CAMERA);
+    const elapsed = performance.now() - started;
+    // Real values from the seeded shape: multiples of 9 fall out.
+    expect(counts.edit).toBe(edits.length);
+    expect(edits.length).toBe(500 - 55); // 3000..3499 holds 55 multiples of 9
+    expect(culls).toBe(cullRows.length);
+    expect(culls).toBe(3000 - 334); // 0..2999 holds 334 multiples of 9
+    // Generous tripwire (same discipline as the plan pins above): all
+    // four scoped reads together, on a desktop, in well under a second —
+    // only a per-corpus-row LIKE regression can trip this. The S10e
+    // device measurement rides the `[perf] queue read` lines.
+    expect(elapsed).toBeLessThan(1_000);
+  });
+});

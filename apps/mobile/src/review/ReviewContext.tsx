@@ -1739,8 +1739,16 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     for (;;) {
       // Read only what one batch can attempt (+ the rows this run has
       // already given up on, which the filter drops).
+      // Both scope axes (m0.8.7 F18): the loop may only attempt what the
+      // scoped cull list showed — an out-of-source staged cull is not
+      // part of the population the user confirmed.
       const rows = (
-        await getStagedCulls(db, TRASH_BATCH_LIMIT + unresolved.size, await mountedVolumeSet())
+        await getStagedCulls(
+          db,
+          TRASH_BATCH_LIMIT + unresolved.size,
+          await mountedVolumeSet(),
+          await scopedRoots(),
+        )
       ).filter((row) => !unresolved.has(row.asset_id));
       if (rows.length === 0) break;
       const attempt = await runTrashAttempt(
@@ -1757,7 +1765,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       creditedBytes += attempt.creditedBytes;
       if (attempt.status !== 'applied') break;
     }
-    const remaining = await countStagedCulls(db, await mountedVolumeSet());
+    const remaining = await countStagedCulls(db, await mountedVolumeSet(), await scopedRoots());
     await refresh().catch(() => {});
     return {
       status: outcome,
@@ -1767,7 +1775,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       remaining,
       unresolvedCount: ambiguous.size,
     };
-  }, [db, refresh]);
+  }, [db, refresh, scopedRoots]);
 
   const clearWriteError = useCallback(() => setWriteError(null), []);
 

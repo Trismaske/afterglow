@@ -439,3 +439,24 @@ describe('D10: share resolves on a chosen target; abandoned sheets evaporate', (
     expect(states).toEqual([{ id: launching, state: 'error' }]);
   });
 });
+
+describe('the source axis on the share queue (m0.8.7, F18)', () => {
+  it('list and never-shared count honor the roots filter', async () => {
+    const d = await fresh();
+    d.raw
+      .prepare(
+        `INSERT INTO photos (asset_id, uri, taken_at, day, is_present, volume_name, raw_id)
+         VALUES ('c1', 'file:///storage/emulated/0/DCIM/Camera/c1.jpg', ?, '2026-07-20', 1, 'external_primary', 'c1'),
+                ('w1', 'file:///storage/emulated/0/WhatsApp/Media/w1.jpg', ?, '2026-07-20', 1, 'external_primary', 'w1')`,
+      )
+      .run(AT, AT);
+    await addToShareQueue(asExpo(d), 'c1', AT);
+    await addToShareQueue(asExpo(d), 'w1', AT + 1);
+    const CAMERA = [{ volume: 'external_primary', dir: 'DCIM/Camera' }];
+    const scoped = await getShareQueue(asExpo(d), AT + 10, null, CAMERA);
+    expect(scoped.map((r) => r.photo_id)).toEqual(['c1']);
+    expect(await countNeverShared(asExpo(d), null, CAMERA)).toBe(1);
+    // All folders: both.
+    expect((await getShareQueue(asExpo(d), AT + 10)).map((r) => r.photo_id)).toEqual(['c1', 'w1']);
+  });
+});

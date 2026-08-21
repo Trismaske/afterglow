@@ -28,6 +28,7 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { withWriteTransaction } from './database';
 import { chunk, IN_CHUNK, type FavouriteState } from './store';
+import { sourceLikePattern, type SourceRoot } from '../lib/sources';
 
 /** The four pending actions. Order matches the tab bar. */
 export const ACTION_KINDS = ['edit', 'favourite', 'organize', 'share'] as const;
@@ -288,22 +289,47 @@ export function reachExists(
   };
 }
 
+/** Source half of the queue question (m0.8.7, F18/L3): source selection
+ * is the SECOND scope axis beside reachability — a queued action on an
+ * out-of-source photo is not work you asked to see, so queue lists,
+ * badges and bulk bindings exclude it (the ACTION ROW is untouched and
+ * returns when the folder is re-selected). Null/empty roots = "All
+ * folders", no filter. Keyed on the photo's current uri, exactly like
+ * every other source-scoped read. */
+export function sourceExists(
+  roots: readonly SourceRoot[] | null | undefined,
+  photoIdExpr: string,
+): { sql: string; params: string[] } {
+  if (!roots || roots.length === 0) return { sql: '', params: [] };
+  const terms = roots
+    .map(() => `(src_p.volume_name = ? AND src_p.uri LIKE ? ESCAPE '\\')`)
+    .join(' OR ');
+  return {
+    sql: ` AND EXISTS (SELECT 1 FROM photos src_p
+             WHERE src_p.asset_id = ${photoIdExpr} AND (${terms}))`,
+    params: roots.flatMap((root) => [root.volume, sourceLikePattern(root.dir)]),
+  };
+}
+
 /** Photos waiting in one queue, oldest first (the order they were asked
  * for is the order they should be worked). */
 export async function getQueue(
   db: SQLiteDatabase,
   kind: ActionKind,
   mounted: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<PhotoAction[]> {
   const reach = reachExists(mounted, 'photo_actions.photo_id');
+  const src = sourceExists(roots, 'photo_actions.photo_id');
   const rows = await db.getAllAsync<ActionRow>(
     `SELECT photo_id, kind, state, target, applied_target, queued_at, resolved_at
        FROM photo_actions
       WHERE kind = ? AND state IN ('queued', 'error')
-        AND ${livePhotoClause('photo_actions.photo_id')}${reach.sql}
+        AND ${livePhotoClause('photo_actions.photo_id')}${reach.sql}${src.sql}
       ORDER BY queued_at ASC`,
     kind,
     ...reach.params,
+    ...src.params,
   );
   return rows.map(toAction);
 }
@@ -313,14 +339,17 @@ export async function getQueue(
 export async function countQueues(
   db: SQLiteDatabase,
   mounted: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<Record<ActionKind, number>> {
   const reach = reachExists(mounted, 'photo_actions.photo_id');
+  const src = sourceExists(roots, 'photo_actions.photo_id');
   const rows = await db.getAllAsync<{ kind: ActionKind; n: number }>(
     `SELECT kind, COUNT(*) AS n FROM photo_actions
       WHERE state IN ('queued', 'error')
-        AND ${livePhotoClause('photo_actions.photo_id')}${reach.sql}
+        AND ${livePhotoClause('photo_actions.photo_id')}${reach.sql}${src.sql}
       GROUP BY kind`,
     ...reach.params,
+    ...src.params,
   );
   const counts: Record<ActionKind, number> = { edit: 0, favourite: 0, organize: 0, share: 0 };
   for (const row of rows) counts[row.kind] = Number(row.n);

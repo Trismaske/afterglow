@@ -32,7 +32,8 @@
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { withWriteTransaction } from './database';
-import { leaveQueue, livePhotoClause, reachExists } from './actions';
+import { leaveQueue, livePhotoClause, reachExists, sourceExists } from './actions';
+import type { SourceRoot } from '../lib/sources';
 import { chunk, IN_CHUNK } from './store';
 
 /** Soft warning threshold — many receivers degrade above this (R#7). */
@@ -155,6 +156,8 @@ export async function getShareQueue(
   db: SQLiteDatabase,
   at: number = Date.now(),
   mounted: readonly string[] | null = null,
+  /** m0.8.7 F18: out-of-source queued shares wait with their folder. */
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<ShareQueueRow[]> {
   // One transaction: deleting the final missing-media row and closing
   // the emptied cycle must land together, or a crash in between would
@@ -178,6 +181,7 @@ export async function getShareQueue(
   // m0.8.3 §5: an unmounted volume's queued shares wait for remount —
   // the rows survive; only the list hides them.
   const reach = reachExists(mounted, 'q.photo_id');
+  const src = sourceExists(roots, 'q.photo_id');
   return db.getAllAsync<ShareQueueRow>(
     `SELECT q.photo_id, p.uri, p.taken_at, p.day, q.queued_at,
        (SELECT COUNT(*) FROM share_batch_members m
@@ -189,9 +193,10 @@ export async function getShareQueue(
      -- v18: the queue is an action row, so the cycle comes from the ONE
      -- open cycle rather than a column repeated on every queued photo.
      WHERE q.kind = 'share' AND q.state IN ('queued', 'error')
-       AND ${livePhotoClause('q.photo_id')}${reach.sql}
+       AND ${livePhotoClause('q.photo_id')}${reach.sql}${src.sql}
      ORDER BY p.taken_at ASC`,
     ...reach.params,
+    ...src.params,
   );
 }
 
@@ -408,12 +413,14 @@ export interface ClearShareQueueResult {
 export async function countNeverShared(
   db: SQLiteDatabase,
   mounted: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<number> {
   const reach = reachExists(mounted, 'q.photo_id');
+  const src = sourceExists(roots, 'q.photo_id');
   const row = await db.getFirstAsync<{ n: number }>(
     `SELECT COUNT(*) AS n FROM photo_actions q
      WHERE q.kind = 'share' AND q.state IN ('queued', 'error')
-       AND ${livePhotoClause('q.photo_id')}${reach.sql}
+       AND ${livePhotoClause('q.photo_id')}${reach.sql}${src.sql}
        AND NOT EXISTS (
        SELECT 1 FROM share_batch_members m
          JOIN share_batches b ON b.id = m.batch_id
@@ -421,6 +428,7 @@ export async function countNeverShared(
          AND b.state = 'shared'
      )`,
     ...reach.params,
+    ...src.params,
   );
   return row?.n ?? 0;
 }

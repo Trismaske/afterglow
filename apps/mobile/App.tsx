@@ -10,7 +10,9 @@ import { createBottomTabNavigator, type BottomTabBarProps } from '@react-navigat
 import { useSQLiteContext } from 'expo-sqlite';
 import type { MainTabParamList, RootStackParamList } from './src/navigation';
 import { countQueues } from './src/db/actions';
+import { loadBadgePrefs } from './src/lib/badgePrefs';
 import { mountedVolumeSet, onVolumesChanged } from './src/lib/mountedVolumes';
+import { resolveSources } from './src/lib/sourceCatalog';
 import { DATABASE_NAME, migrateDatabase } from './src/db/database';
 import { installShareResolution } from './src/lib/shareResolution';
 import { ReviewProvider, useReview } from './src/review/ReviewContext';
@@ -68,7 +70,13 @@ function MainTabs() {
       // the next review mutation or foreground return retries anyway.
       let queues: Awaited<ReturnType<typeof countQueues>>;
       try {
-        queues = await countQueues(db, await mountedVolumeSet());
+        // Both scope axes (m0.8.7 F18): the badges must count exactly
+        // what the queue screens list.
+        queues = await countQueues(
+          db,
+          await mountedVolumeSet(),
+          (await resolveSources(db)).roots ?? null,
+        );
       } catch (error) {
         console.warn('[tabs] queue badge count failed — badges kept:', String(error));
         if (!cancelled && !retried) {
@@ -162,6 +170,11 @@ function ThemedNavigator() {
   // Share screen — a choice can land after it unmounted, and
   // abandonment is only visible on foreground return.
   useEffect(() => installShareResolution(db), [db]);
+  // The durable badge-visibility preference (m0.8.7, F19/L6) loads once —
+  // BadgeCluster subscribes to the observable it fills.
+  useEffect(() => {
+    void loadBadgePrefs(db);
+  }, [db]);
   useEffect(() => {
     if (!writeError) return;
     Alert.alert(

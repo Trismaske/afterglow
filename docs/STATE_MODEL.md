@@ -136,27 +136,28 @@ Recorded compares (duel rows) remain as an append-only event log (m0.8.7): writt
 It answers "has the scan clustered this yet": a scan fact the user cannot act on differently, since grouped and ungrouped unreviewed photos are both simply undecided.
 An earlier design drew it as a filled segment in the accent colour, which made unreviewed photos count visually as progress.
 
-## Reachability is scope, not state (m0.8.3)
+## Scope is two axes, never state (m0.8.3 reachability; m0.8.7 sources)
 
 A photo is **unreachable** if and only if its `volume_name` is not in the currently mounted volume set: an SD card ejected with its photos' rows intact.
-This is a **derived, query-time predicate** (`volume_name IN (mounted)` beside `is_present = 1` on every review-scope read), never a stored flag.
-Mount and unmount write **nothing**, so the three layers above survive an eject byte-for-byte: verdict, actions, annotations, group membership, embeddings.
-A remount restores them exactly, with no re-ingestion.
+A photo is **out of source** if and only if its current uri falls outside the selected source folders (`Settings → Photo source`; "All folders" scopes nothing).
+Both are **derived, query-time predicates** (`volume_name IN (mounted)` and the volume+uri source clause beside `is_present = 1` on every review-scope and queue read), never stored flags.
+Mounting, unmounting, and source edits write **nothing to photos**, so the three layers above survive both transitions byte-for-byte: verdict, actions, annotations, group membership, embeddings.
+A remount — or re-selecting the folder — restores every surface exactly, with no re-ingestion.
 
 `is_present` keeps its exact meaning: gone from MediaStore **while its volume was mounted**, a real deletion.
 The scan may only conclude deletions on mounted volumes.
 An unmounted volume is skipped whole (the m0.8.3 per-volume scan contract: lib/volumeScan.ts and the scanRunner headers carry its invariants).
 
-What the predicate scopes:
+What the two predicates scope (identically — m0.8.7's F18 audit brought the queue reads onto both axes):
 
 - review queues and the timeline
-- the four action queues and their badges (the action ROWS survive, only the lists hide them)
-- the cull queue and its confirm flow
+- the four action queues, their tab badges, and their bulk-action bindings (the action ROWS survive, only the lists hide them)
+- the cull queue, its badge, its reclaimable-bytes figure, and its confirm flow (the loop attempts only what the scoped list showed)
 - counts, coverage, and clear streaks (the Home banner's presence asterisks a "clear" day earned by an ejected card)
 - the forecast's remaining pool
 - the browse grids
 
-What it never touches: decision HISTORY and lifetime stats.
+What they never touch: decision HISTORY and lifetime stats.
 Completed work is fact, whichever volume it lives on now.
 
 **What a WRITE may touch while a card is out (the M5 rule, vetted m0.8.3):**

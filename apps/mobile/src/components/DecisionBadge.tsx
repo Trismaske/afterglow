@@ -1,7 +1,8 @@
-import React from 'react';
-import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors } from '../theme';
+import { badgesHidden, subscribeBadgesHidden } from '../lib/badgePrefs';
 import type { BadgeWeight, PhotoBadge } from '../lib/photoBadges';
 
 /**
@@ -40,8 +41,9 @@ import type { BadgeWeight, PhotoBadge } from '../lib/photoBadges';
  * their single state glyph, where a pencil means "in the edit queue"
  * rather than a flag beside a verdict.
  */
+// prettier-ignore
 export type DecisionKind =
-  'cull' | 'keep' | 'trashed' | 'edit' | 'fav' | 'fav_off' | 'share' | 'organize';
+  'cull' | 'keep' | 'trashed' | 'edit' | 'fav' | 'fav_off' | 'share' | 'organize' | 'sd' | 'folder';
 
 export const DECISION_GLYPHS: Record<
   DecisionKind,
@@ -58,6 +60,10 @@ export const DECISION_GLYPHS: Record<
   fav_off: 'heart-off',
   share: 'share-variant',
   organize: 'folder-move',
+  // The two ANNOTATION badges (m0.8.7, F14/F19): facts, not actions —
+  // neutral dim-on-raised, never an action hue (rule 2 reserves those).
+  sd: 'micro-sd',
+  folder: 'folder-outline',
 };
 
 const BADGE_COLORS: Record<DecisionKind, { fg: string; bg: string }> = {
@@ -72,6 +78,8 @@ const BADGE_COLORS: Record<DecisionKind, { fg: string; bg: string }> = {
   fav_off: { fg: colors.fav, bg: colors.favDim },
   share: { fg: colors.share, bg: colors.shareDim },
   organize: { fg: colors.organize, bg: colors.organizeDim },
+  sd: { fg: colors.textDim, bg: colors.surfaceRaised },
+  folder: { fg: colors.textDim, bg: colors.surfaceRaised },
 };
 
 /** Alpha suffix for a CARRIED glyph: the same hue, ~65% strength, over
@@ -116,11 +124,37 @@ export function DecisionBadge({
   );
 }
 
+/** The folder pill (F19): the parent-folder name as quiet text. Only
+ * legible at deck-stage sizes — small thumbnail clusters render the
+ * glyph badges alone (see BadgeCluster). */
+function FolderPill({ label, size }: { label: string; size: number }) {
+  return (
+    <View style={[styles.pill, { height: size, borderRadius: size / 2 }]}>
+      <Text style={[styles.pillText, { fontSize: Math.round(size * 0.55) }]} numberOfLines={1}>
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+/** The one hide-all control's read side (m0.8.7, F19/L6): a durable
+ * setting flips every cluster at once for an unobstructed photo. */
+function useBadgesHidden(): boolean {
+  const [hidden, setHidden] = useState(badgesHidden);
+  useEffect(() => subscribeBadgesHidden(setHidden), []);
+  return hidden;
+}
+
+/** Text pills are unreadable below this cluster size — smaller clusters
+ * keep the glyph badges and drop only the folder pill. */
+const MIN_PILL_SIZE = 18;
+
 /**
  * Every badge a photo carries, wrapped inside its anchor so none is
  * hidden: rows fill right-to-left from the anchor corner and stack
  * upward when the width runs out (a 52 px deck thumbnail fits three per
- * row at size 14). Renders nothing when `kinds` is empty.
+ * row at size 14). Renders nothing when `badges` is empty or the user
+ * hid badges (the one durable toggle, F19/L6).
  */
 export function BadgeCluster({
   badges,
@@ -131,18 +165,32 @@ export function BadgeCluster({
   size?: number;
   style?: StyleProp<ViewStyle>;
 }) {
-  if (badges.length === 0) return null;
+  const hidden = useBadgesHidden();
+  if (hidden || badges.length === 0) return null;
   return (
     <View style={[styles.cluster, style]} pointerEvents="none">
-      {badges.map((badge) => (
-        <DecisionBadge key={badge.kind} kind={badge.kind} size={size} weight={badge.weight} />
-      ))}
+      {badges.map((badge) =>
+        badge.kind === 'folder' ? (
+          size >= MIN_PILL_SIZE && badge.label ? (
+            <FolderPill key={badge.kind} label={badge.label} size={size} />
+          ) : null
+        ) : (
+          <DecisionBadge key={badge.kind} kind={badge.kind} size={size} weight={badge.weight} />
+        ),
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   badge: { alignItems: 'center', justifyContent: 'center' },
+  pill: {
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+    maxWidth: 96,
+    backgroundColor: colors.surfaceRaised,
+  },
+  pillText: { color: colors.textDim, fontWeight: '600' },
   cluster: {
     flexDirection: 'row',
     flexWrap: 'wrap-reverse',

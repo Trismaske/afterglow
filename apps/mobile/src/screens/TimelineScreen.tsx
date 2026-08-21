@@ -56,7 +56,7 @@ import {
   type TimelineUnit,
 } from '../lib/timeline';
 import { deckParamsFor } from '../lib/deckUnit';
-import { photoBadges, type PhotoBadge } from '../lib/photoBadges';
+import { isSdPhoto, photoBadges, type PhotoBadge } from '../lib/photoBadges';
 import {
   createMergedDescendingPager,
   type MergedPager,
@@ -610,6 +610,9 @@ export function TimelineScreen({ navigation }: Props) {
       return photoBadges({
         state,
         ...actionWeights(assetId, state),
+        // The SD annotation (m0.8.7, F14); the folder pill needs a stage-
+        // size cluster and card thumbnails render at 14, so none here.
+        sdCard: isSdPhoto(assetId),
       });
     },
     [actionWeights, stateOf],

@@ -19,6 +19,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
 import { invalidateMountedVolumes, mountedVolumeSet } from '../lib/mountedVolumes';
+import { resolveSources } from '../lib/sourceCatalog';
 import type { MainTabScreenProps } from '../navigation';
 import {
   commitOrganizeOutcomes,
@@ -75,7 +76,12 @@ export function OrganizeQueueScreen(_props: Props) {
     failed,
     reload: reloadRows,
   } = useQueueRows<OrganizeQueueRow>(
-    useCallback(async () => getOrganizeQueue(db, await mountedVolumeSet()), [db]),
+    useCallback(
+      async () =>
+        getOrganizeQueue(db, await mountedVolumeSet(), (await resolveSources(db)).roots ?? null),
+      [db],
+    ),
+    'organize',
   );
   /** Every mutation here also moves the organize BADGE on review
    * surfaces (deck, Groups) — the provider's membership map is their
@@ -171,7 +177,13 @@ export function OrganizeQueueScreen(_props: Props) {
       if (selected.size === 0) {
         invalidateMountedVolumes(); // LIVE mount state for a bulk write (V3)
         const fresh = new Set(
-          (await getOrganizeQueue(db, await mountedVolumeSet())).map((r) => r.photo_id),
+          (
+            await getOrganizeQueue(
+              db,
+              await mountedVolumeSet(),
+              (await resolveSources(db)).roots ?? null,
+            )
+          ).map((r) => r.photo_id),
         );
         bounded = targetIds.filter((id) => fresh.has(id));
       }
@@ -204,9 +216,13 @@ export function OrganizeQueueScreen(_props: Props) {
       // this screen never showed.
       const rendered = new Set((rows ?? []).map((r) => r.photo_id));
       invalidateMountedVolumes(); // LIVE mount state for a bulk write (V3)
-      const freshQueue = (await getOrganizeQueue(db, await mountedVolumeSet())).filter((r) =>
-        rendered.has(r.photo_id),
-      );
+      const freshQueue = (
+        await getOrganizeQueue(
+          db,
+          await mountedVolumeSet(),
+          (await resolveSources(db)).roots ?? null,
+        )
+      ).filter((r) => rendered.has(r.photo_id));
       const freshRows = freshQueue.filter(
         (row): row is OrganizeQueueRow & { organize_path: string; organize_volume: string } =>
           row.organize_path !== null && row.organize_volume !== null,

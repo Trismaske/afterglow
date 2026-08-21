@@ -13,6 +13,7 @@ import {
   applyRedecision,
   applyReviewDecisions,
   countReviewQueue,
+  countStagedCulls,
   countUndatedAlive,
   getCorpusStats,
   getCoverageByDay,
@@ -31,6 +32,7 @@ import {
   getReviewGroup,
   getStagedCullBytes,
   getStagedCulls,
+  getToEditPhotos,
   getStateCountsInScope,
   getUnreviewedDayRows,
   listGroupsForDay,
@@ -1242,6 +1244,62 @@ describe('source-scoped queue reads', () => {
     // Unfiltered (roots null): every member is in source by definition.
     const [unfiltered] = await listGroupsForDay(asExpo(d), '2026-07-20');
     expect(unfiltered.members.map((m) => m.in_source)).toEqual([1, 1]);
+  });
+});
+
+describe('staged-cull reads honor the source axis (m0.8.7, F18 / gap 10)', () => {
+  const CAMERA = [{ volume: 'external_primary', dir: 'DCIM/Camera' }];
+
+  async function seedCulls(d: TestDb): Promise<void> {
+    const photo = (rawId: string, folder: string) => ({
+      ...upsert(rawId),
+      uri: `file:///storage/emulated/0/${folder}/${rawId}.jpg`,
+      sizeBytes: 1_000,
+    });
+    await writeContinuousGroups(
+      asExpo(d),
+      {
+        photos: [photo('c1', 'DCIM/Camera'), photo('w1', 'WhatsApp/Media')],
+        groups: [],
+        singles: [id('c1'), id('w1')],
+      },
+      AT,
+    );
+    await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('c1'), 'culled'],
+        [id('w1'), 'culled'],
+      ],
+      AT + 1,
+    );
+  }
+
+  it('count, list and bytes all describe the same scoped set', async () => {
+    const d = await fresh();
+    await seedCulls(d);
+    expect(await countStagedCulls(asExpo(d), null, CAMERA)).toBe(1);
+    expect(
+      (await getStagedCulls(asExpo(d), undefined, null, CAMERA)).map((r) => r.asset_id),
+    ).toEqual([id('c1')]);
+    expect((await getStagedCullBytes(asExpo(d), null, CAMERA)).scanned).toBe(1_000);
+    // Null roots = All folders: both count.
+    expect(await countStagedCulls(asExpo(d))).toBe(2);
+    expect((await getStagedCullBytes(asExpo(d))).scanned).toBe(2_000);
+  });
+
+  it('getToEditPhotos honors the roots filter too', async () => {
+    const d = await fresh();
+    await seedCulls(d);
+    // Un-stage both so they are live work, then queue edits.
+    await unstageCullDirect(asExpo(d), id('c1'), AT + 10, true);
+    await unstageCullDirect(asExpo(d), id('w1'), AT + 10, true);
+    await setNeedsEdit(asExpo(d), id('c1'), true, AT + 20);
+    await setNeedsEdit(asExpo(d), id('w1'), true, AT + 20);
+    expect((await getToEditPhotos(asExpo(d), null, CAMERA)).map((r) => r.asset_id)).toEqual([
+      id('c1'),
+    ]);
+    expect(await getToEditPhotos(asExpo(d))).toHaveLength(2);
   });
 });
 

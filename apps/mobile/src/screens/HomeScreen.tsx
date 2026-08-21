@@ -575,26 +575,12 @@ export function HomeScreen({ navigation }: Props) {
         // cull counts, day summaries and unreviewed-day discovery must
         // describe the same mounted world within one render.
         const cullMounted = await mountedVolumeSet();
-        const stagedCulls = await countStagedCulls(db, cullMounted);
-        if (cancelled) return;
-        setStagedCullCount(stagedCulls);
-        if (stagedCulls > 0) {
-          const staged = await getStagedCullBytes(db, cullMounted);
-          if (cancelled) return;
-          // Scan-recorded sizes SUM in SQL; only rows the scan never
-          // sized get a (blocking) stat, bounded by the query's LIMIT.
-          // Home's line is an estimate ("~") — the trash flow measures
-          // exact bytes per photo at attempt time for the credit.
-          const statted = staged.unsized.reduce((sum, uri) => sum + (fileSizeOrNull(uri) ?? 0), 0);
-          setReclaimableBytes(staged.scanned + statted);
-        } else {
-          setReclaimableBytes(0);
-        }
 
         // FAIL CLOSED: a source-resolution error keeps the previous day
         // rows — null's store meaning is "all folders", and the
         // still-to-review discovery below must never silently broaden a
-        // narrowed source.
+        // narrowed source. Resolved BEFORE the cull reads (m0.8.7 F18):
+        // the cull count and its bytes are source-scoped now too.
         let src: { roots: SourceRoot[] | null; albumIds: string[] | null } | null = null;
         if (permission?.granted) {
           try {
@@ -606,6 +592,22 @@ export function HomeScreen({ navigation }: Props) {
           }
         }
         if (cancelled) return;
+
+        const stagedCulls = await countStagedCulls(db, cullMounted, src?.roots ?? null);
+        if (cancelled) return;
+        setStagedCullCount(stagedCulls);
+        if (stagedCulls > 0) {
+          const staged = await getStagedCullBytes(db, cullMounted, src?.roots ?? null);
+          if (cancelled) return;
+          // Scan-recorded sizes SUM in SQL; only rows the scan never
+          // sized get a (blocking) stat, bounded by the query's LIMIT.
+          // Home's line is an estimate ("~") — the trash flow measures
+          // exact bytes per photo at attempt time for the credit.
+          const statted = staged.unsized.reduce((sum, uri) => sum + (fileSizeOrNull(uri) ?? 0), 0);
+          setReclaimableBytes(staged.scanned + statted);
+        } else {
+          setReclaimableBytes(0);
+        }
         const toRow = (day: string, dbRow: DaySummaryRow | undefined, msTotal: number): DayRow => {
           // Trashed photos are gone from MediaStore, so the day's true
           // total is MediaStore + trashed rows (DB `done` includes them).

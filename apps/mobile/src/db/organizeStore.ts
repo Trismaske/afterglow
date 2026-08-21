@@ -25,7 +25,8 @@
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { withWriteTransaction } from './database';
-import { encodeOrganizeTarget, leaveQueue, livePhotoClause } from './actions';
+import { encodeOrganizeTarget, leaveQueue, livePhotoClause, sourceExists } from './actions';
+import type { SourceRoot } from '../lib/sources';
 import { chunk, IN_CHUNK } from './store';
 import { PRIMARY_VOLUME } from '../lib/mediaIdentity';
 
@@ -245,6 +246,8 @@ export async function getOrganizeQueue(
   db: SQLiteDatabase,
   /** m0.8.3 §5: an unmounted volume's queued moves wait for remount. */
   mounted: readonly string[] | null = null,
+  /** m0.8.7 F18: out-of-source queued moves wait with their folder. */
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<OrganizeQueueRow[]> {
   const reach =
     mounted === null
@@ -255,6 +258,7 @@ export async function getOrganizeQueue(
             sql: ` AND p.volume_name IN (${mounted.map(() => '?').join(',')})`,
             params: [...mounted],
           };
+  const src = sourceExists(roots, 'p.asset_id');
   // NULL-safe target projection: an untargeted row (m0.8.2) comes back
   // with NULL volume/path rather than substr() noise.
   return db.getAllAsync<OrganizeQueueRow>(
@@ -265,9 +269,10 @@ export async function getOrganizeQueue(
                  ELSE substr(pa.target, instr(pa.target, char(10)) + 1) END AS organize_path
      FROM photos p
      JOIN photo_actions pa ON pa.photo_id = p.asset_id AND pa.kind = 'organize'
-     WHERE pa.state IN ('queued', 'error') AND ${livePhotoClause('p.asset_id')}${reach.sql}
+     WHERE pa.state IN ('queued', 'error') AND ${livePhotoClause('p.asset_id')}${reach.sql}${src.sql}
      ORDER BY p.taken_at ASC`,
     ...reach.params,
+    ...src.params,
   );
 }
 

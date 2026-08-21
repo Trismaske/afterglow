@@ -462,3 +462,23 @@ describe('commitOrganizeOutcomes', () => {
     expect(queue[0].organize_path).toBe('Pictures/Trips/'); // target survived
   });
 });
+
+describe('the source axis on the organize queue (m0.8.7, F18)', () => {
+  it('the list honors the roots filter and keeps the hidden row', async () => {
+    const d = await fresh();
+    d.raw
+      .prepare(
+        `INSERT INTO photos (asset_id, uri, taken_at, day, volume_name, raw_id)
+         VALUES ('c1', 'file:///storage/emulated/0/DCIM/Camera/c1.jpg', ?, '2026-07-20', 'external_primary', 'c1'),
+                ('w1', 'file:///storage/emulated/0/WhatsApp/Media/w1.jpg', ?, '2026-07-20', 'external_primary', 'w1')`,
+      )
+      .run(AT, AT);
+    expect(await queueOrganize(asExpo(d), 'c1', AT)).toBeNull();
+    expect(await queueOrganize(asExpo(d), 'w1', AT + 1)).toBeNull();
+    const CAMERA = [{ volume: 'external_primary', dir: 'DCIM/Camera' }];
+    const scoped = await getOrganizeQueue(asExpo(d), null, CAMERA);
+    expect(scoped.map((r) => r.photo_id)).toEqual(['c1']);
+    // The hidden row is untouched — All folders lists both again.
+    expect((await getOrganizeQueue(asExpo(d))).map((r) => r.photo_id)).toEqual(['c1', 'w1']);
+  });
+});

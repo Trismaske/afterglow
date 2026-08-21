@@ -19,13 +19,21 @@
 import { useCallback, useRef, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import { useReview } from '../review/ReviewContext';
+import { perfAggregate } from '../lib/perfLog';
 import { useExternalRefresh } from './useExternalRefresh';
 
 /** The one quiet failure line every queue screen renders when `failed`
  * is set — stale rows stay on screen, this says why they might be. */
 export const QUEUE_REFRESH_FAILED = 'Could not refresh this queue just now.';
 
-export function useQueueRows<T>(load: () => Promise<T[]>): {
+export function useQueueRows<T>(
+  load: () => Promise<T[]>,
+  /** Names this queue in the aggregated `[perf] queue read (<label>)`
+   * line (m0.8.7 F18): the source-scoped reads lean on a leading-
+   * wildcard LIKE, and this timing is what decides whether the
+   * `source_root` column fix is ever needed. Omit to skip timing. */
+  perfLabel?: string,
+): {
   rows: T[] | null;
   failed: boolean;
   reload: () => Promise<void>;
@@ -48,8 +56,12 @@ export function useQueueRows<T>(load: () => Promise<T[]>): {
   const reload = useCallback(async () => {
     const myGen = ++reloadGen.current;
     let next: T[];
+    const started = Date.now();
     try {
       next = await load();
+      if (perfLabel !== undefined) {
+        perfAggregate(`queue read (${perfLabel})`, Date.now() - started, next.length);
+      }
     } catch {
       // codex r9: the read rejected — keep whatever the screen already
       // shows and mark the failure; reload itself never rejects, so the
@@ -62,7 +74,7 @@ export function useQueueRows<T>(load: () => Promise<T[]>): {
     setFailed(false);
     if (rendered.current !== null && rendered.current !== next.length) queuesChanged();
     rendered.current = next.length;
-  }, [load, queuesChanged]);
+  }, [load, queuesChanged, perfLabel]);
   useFocusEffect(
     useCallback(() => {
       void reload();

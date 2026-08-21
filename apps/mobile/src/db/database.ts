@@ -29,7 +29,7 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 export const DATABASE_NAME = 'afterglow.db';
 
 /** Bump on ANY schema change before v1 — the open path resets mismatches. */
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
 
 export const BASELINE_DDL = `
   CREATE TABLE photos (
@@ -49,10 +49,16 @@ export const BASELINE_DDL = `
     -- Powers the EXACT reclaimable-bytes sum (vetted: no estimates).
     size_bytes           INTEGER,
     reviewed_at          INTEGER,
-    -- Last verdict action (v15): RE-stamps on every keep/cull/to-edit,
-    -- unlike reviewed_at's first-stamp — the daily goal counts today's
-    -- reviewing WORK (re-decides included), not first-ever reviews.
+    -- Last verdict action (v15): RE-stamps on every keep/cull/to-edit.
+    -- Timing and ordering reads use THIS stamp (recent-decision pace,
+    -- History ordering) — re-decisions are real recent activity.
     decided_at           INTEGER,
+    -- First verdict ever (v22, docs/STATS_ACCURACY.md gap 8): stamps once,
+    -- never re-stamps, never clears. Day-bucketed decision stats (goal
+    -- ring, activity chart, streaks, personal bests, rhythm) read THIS
+    -- stamp, so re-deciding an old photo can no longer drain its original
+    -- day's history or inflate today's.
+    decided_first_at     INTEGER,
     culled_at            INTEGER,
 
     -- Canonical volume-qualified identity (P4#2). v20: NOT NULL — every
@@ -116,6 +122,9 @@ export const BASELINE_DDL = `
   -- and the planner still prefers idx_photos_present_state for every
   -- ORDER BY taken_at read, so it never pays for itself.)
   CREATE INDEX idx_photos_decided ON photos(decided_at) WHERE decided_at IS NOT NULL;
+  -- Day-bucketed stats range-scan the first stamp the same way (gap 8).
+  CREATE INDEX idx_photos_decided_first ON photos(decided_first_at)
+    WHERE decided_first_at IS NOT NULL;
 
   -- Compare history (m0.1+, mined by later features; m0.8: sessions are
   -- gone — a duel belongs to its group).
@@ -203,6 +212,29 @@ export const BASELINE_DDL = `
   CREATE INDEX idx_assignments_run_group ON photo_group_assignments(run_id, group_id);
   -- (idx_assignments_run is deliberately absent: run_id alone matches
   -- every row, so it only ever misled the planner.)
+
+  -- "NOT RELATED" cannot-link pairs (v22, docs/Regroup_design.md §4) —
+  -- the one durable user judgment about membership. Directional: the
+  -- user ejected 'ejected_id' from a group 'partner_id' belonged to.
+  -- Enforcement is symmetric (the pair never shares a group, either way);
+  -- direction exists for the two lifecycle rules:
+  --   dissolution — ejecting a photo first deletes every pair where it is
+  --   the PARTNER (its own ejection revokes its standing as a proxy for
+  --   the cluster it was ejected from), so photos ejected from the same
+  --   group may reunite elsewhere;
+  --   un-eject — the state editor deletes the pairs where the photo is
+  --   the EJECTED side (its own judgments), never those naming it as a
+  --   partner (other photos' judgments).
+  -- No FK to photos: a pair may outlive a tombstoned endpoint and simply
+  -- never matches again; forget-card erase sweeps its volume's ids.
+  CREATE TABLE not_related (
+    ejected_id TEXT NOT NULL,
+    partner_id TEXT NOT NULL,
+    at         INTEGER NOT NULL,
+    PRIMARY KEY (ejected_id, partner_id)
+  );
+  -- The dissolution rule's delete is WHERE partner_id = ?.
+  CREATE INDEX idx_not_related_partner ON not_related(partner_id);
 
   -- Scan-keyed day index with fence + coverage (N#4, P4#3, P5#5)
   CREATE TABLE day_index_scans (

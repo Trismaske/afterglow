@@ -484,10 +484,15 @@ export async function applyReviewDecisions(
                WHEN ? IN ('kept', 'culled') THEN COALESCE(reviewed_at, ?)
                ELSE reviewed_at
              END,
-             -- decided_at RE-stamps on every verdict (v15): the daily
-             -- goal counts today's reviewing work; a clear keeps the
-             -- stamp (the earlier decision still happened).
+             -- decided_at RE-stamps on every verdict (v15) — timing and
+             -- ordering reads; a clear keeps the stamp (the earlier
+             -- decision still happened). decided_first_at stamps ONCE
+             -- (v22, STATS_ACCURACY gap 8) — day-bucketed history reads.
              decided_at = CASE WHEN ? IN ('kept', 'culled') THEN ? ELSE decided_at END,
+             decided_first_at = CASE
+               WHEN ? IN ('kept', 'culled') THEN COALESCE(decided_first_at, ?)
+               ELSE decided_first_at
+             END,
              culled_at = CASE WHEN ? = 'culled' THEN COALESCE(culled_at, ?) ELSE culled_at END,
              activity_at = ?
          WHERE asset_id = ?
@@ -498,6 +503,8 @@ export async function applyReviewDecisions(
         verdict,
         verdict,
         verdict,
+        verdict,
+        at,
         verdict,
         at,
         verdict,
@@ -1513,8 +1520,10 @@ export async function applyRedecision(
       // applyReviewDecisions carries on its 'unreviewed' reset).
       const moved = await txn.runAsync(
         `UPDATE photos SET state = 'kept',
-           reviewed_at = COALESCE(reviewed_at, ?), decided_at = ?, activity_at = ?
+           reviewed_at = COALESCE(reviewed_at, ?), decided_at = ?,
+           decided_first_at = COALESCE(decided_first_at, ?), activity_at = ?
          WHERE asset_id = ? AND state IN ('culled', 'kept')`,
+        at,
         at,
         at,
         at,
@@ -1529,8 +1538,10 @@ export async function applyRedecision(
     } else {
       const moved = await txn.runAsync(
         `UPDATE photos SET state = 'kept', mod_time = NULL, content_hash = NULL,
-           reviewed_at = COALESCE(reviewed_at, ?), decided_at = ?, activity_at = ?
+           reviewed_at = COALESCE(reviewed_at, ?), decided_at = ?,
+           decided_first_at = COALESCE(decided_first_at, ?), activity_at = ?
          WHERE asset_id = ? AND state IN ('culled', 'kept')`,
+        at,
         at,
         at,
         at,
@@ -3363,8 +3374,10 @@ export async function unstageCullDirect(
            -- was never reviewed, and kept is a verdict.
            reviewed_at = COALESCE(reviewed_at, ?),
            decided_at = ?,
+           decided_first_at = COALESCE(decided_first_at, ?),
            activity_at = ?
        WHERE asset_id = ? AND state = 'culled'`,
+      at,
       at,
       at,
       at,

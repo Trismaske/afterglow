@@ -276,6 +276,169 @@ describe('groupByEmbedding', () => {
   });
 });
 
+describe('cannot-link constraints (docs/Regroup_design.md §4)', () => {
+  /** No final group may seat a forbidden pair — the design's invariant. */
+  function assertInvariant(groups: EmbedGroup[], pairs: ReadonlyArray<readonly [string, string]>) {
+    for (const g of groups) {
+      const ids = new Set(g.items.map((i) => i.id));
+      for (const [a, b] of pairs) {
+        expect(ids.has(a) && ids.has(b), `pair [${a}, ${b}] shares a group`).toBe(false);
+      }
+    }
+  }
+
+  it('keeps a forbidden pair apart despite identical embeddings', () => {
+    const pairs = [['a', 'b']] as const;
+    const groups = groupByEmbedding(
+      [item('a', 0), item('b', 5_000)],
+      lookup({ a: v(1, 0), b: v(1, 0) }),
+      undefined,
+      { cannotLink: pairs },
+    );
+    expect(memberIds(groups)).toEqual([['a'], ['b']]);
+    assertInvariant(groups, pairs);
+  });
+
+  it('joins the best ALLOWED group when the best match is forbidden', () => {
+    // c matches b (0.8) over a (0.6); the (c,b) pair redirects it to a.
+    const groups = groupByEmbedding(
+      [item('a', 0), item('b', 5_000), item('c', 10_000)],
+      lookup({ a: v(1, 0), b: v(0, 1), c: v(0.6, 0.8) }),
+      undefined,
+      { cannotLink: [['c', 'b']] },
+    );
+    expect(memberIds(groups)).toEqual([['a', 'c'], ['b']]);
+  });
+
+  it('outranks the dHash near-duplicate floor', () => {
+    // Identical hashes force-link by the floor; the pair forbids it, and
+    // neither lone single is badged time-attached by the burst collapse.
+    const pairs = [['a', 'b']] as const;
+    const groups = groupByEmbedding(
+      [item('a', 0), item('b', 5_000)],
+      lookup({}),
+      () => 'ffffffffffffffff',
+      { cannotLink: pairs },
+    );
+    expect(memberIds(groups)).toEqual([['a'], ['b']]);
+    expect(groups.flatMap((g) => g.timeAttached)).toEqual([]);
+  });
+
+  it('refuses a dHash union that would seat a forbidden pair transitively', () => {
+    // a~b and b~c are near dups; (a,c) forbidden. The union may join a+b
+    // but must stop before c joins them.
+    const pairs = [['a', 'c']] as const;
+    const groups = groupByEmbedding(
+      [item('a', 0), item('b', 5_000), item('c', 10_000)],
+      lookup({}),
+      () => '0000000000000000',
+      { cannotLink: pairs },
+    );
+    assertInvariant(groups, pairs);
+    const together = memberIds(groups).find((g) => g.includes('a'))!;
+    expect(together).toContain('b');
+    expect(together).not.toContain('c');
+  });
+
+  it('time-attaches an unembedded photo to the nearest ALLOWED group, else leaves it single', () => {
+    const vecs = { e1: v(1, 0), e2: v(0, 1) };
+    const items = [item('e1', 0), item('u', 5_000), item('e2', 20_000)];
+    const redirected = groupByEmbedding(items, lookup(vecs), undefined, {
+      cannotLink: [['u', 'e1']],
+    });
+    expect(memberIds(redirected)).toEqual([['e1'], ['u', 'e2']]);
+    expect(redirected.flatMap((g) => g.timeAttached)).toEqual(['u']);
+    const stranded = groupByEmbedding(items, lookup(vecs), undefined, {
+      cannotLink: [
+        ['u', 'e1'],
+        ['u', 'e2'],
+      ],
+    });
+    expect(memberIds(stranded)).toEqual([['e1'], ['u'], ['e2']]);
+    expect(stranded.flatMap((g) => g.timeAttached)).toEqual([]);
+  });
+
+  it('refuses an adjacent-burst merge across a forbidden pair', () => {
+    const vecs = { a1: v(1, 0), a2: v(1, 0), b1: v(1, 0), b2: v(1, 0) };
+    const items = [
+      item('a1', 0),
+      item('a2', 5_000),
+      item('b1', 10 * 60_000),
+      item('b2', 10 * 60_000 + 5_000),
+    ];
+    const merged = groupByEmbedding(items, lookup(vecs));
+    expect(memberIds(merged)).toEqual([['a1', 'a2', 'b1', 'b2']]);
+    const pairs = [['a1', 'b2']] as const;
+    const split = groupByEmbedding(items, lookup(vecs), undefined, { cannotLink: pairs });
+    expect(memberIds(split)).toEqual([
+      ['a1', 'a2'],
+      ['b1', 'b2'],
+    ]);
+  });
+
+  it('replays the A→B double-ejection scenario: dissolved pairs may reunite elsewhere', () => {
+    // P1 and P2 were ejected from cluster A ({p3,p4,p5}); the dissolution
+    // rule removed the (P1,P2) pair, so both may land in cluster B. Their
+    // surviving pairs still fence them off A's coherent core.
+    const pairs = [
+      ['P1', 'p3'],
+      ['P1', 'p4'],
+      ['P1', 'p5'],
+      ['P2', 'p3'],
+      ['P2', 'p4'],
+      ['P2', 'p5'],
+    ] as const;
+    const groups = groupByEmbedding(
+      [
+        item('p3', 0),
+        item('p4', 5_000),
+        item('p5', 10_000),
+        item('b1', 30_000),
+        item('b2', 35_000),
+        item('P1', 40_000),
+        item('P2', 45_000),
+      ],
+      lookup({
+        p3: v(1, 0),
+        p4: v(1, 0),
+        p5: v(1, 0),
+        b1: v(0, 1),
+        b2: v(0, 1),
+        P1: v(0, 1),
+        P2: v(0, 1),
+      }),
+      undefined,
+      { cannotLink: pairs },
+    );
+    assertInvariant(groups, pairs);
+    const bGroup = memberIds(groups).find((g) => g.includes('b1'))!;
+    expect(bGroup).toContain('P1');
+    expect(bGroup).toContain('P2');
+    expect(memberIds(groups).find((g) => g.includes('p3'))).toEqual(['p3', 'p4', 'p5']);
+  });
+
+  it('ignores pairs naming absent photos and rejects self-pairs', () => {
+    const groups = groupByEmbedding(
+      [item('a', 0), item('b', 5_000)],
+      lookup({ a: v(1, 0), b: v(1, 0) }),
+      undefined,
+      { cannotLink: [['zz', 'yy']] },
+    );
+    expect(memberIds(groups)).toEqual([['a', 'b']]);
+    expect(() =>
+      groupByEmbedding([item('a', 0)], lookup({}), undefined, { cannotLink: [['a', 'a']] }),
+    ).toThrow(/invalid cannotLink pair/);
+  });
+
+  it('an empty pair list changes nothing', () => {
+    const items = [item('a', 0), item('b', 5_000), item('c', 10_000)];
+    const vecs = { a: v(1, 0), b: v(0.96, 0.28), c: v(0, 1) };
+    const bare = groupByEmbedding(items, lookup(vecs));
+    const withEmpty = groupByEmbedding(items, lookup(vecs), undefined, { cannotLink: [] });
+    expect(memberIds(withEmpty)).toEqual(memberIds(bare));
+  });
+});
+
 /**
  * Grouping regression suite (Plan_m0.8.md): replays the engine at shipped
  * defaults over the frozen labels-v1 fixtures and pins the baseline.

@@ -48,6 +48,18 @@ import type { MediaItem } from './types.js';
  * attachment. 1-photo groups are singles — callers decide their own
  * "counts as a group" threshold, as with clusterByGap.
  *
+ * Cannot-link constraints (m0.8.7, docs/Regroup_design.md §4): callers
+ * may inject user judgments that two photos are NOT related
+ * (`options.cannotLink`, symmetric pairs). A forbidden pair never shares
+ * a final group — user judgment outranks every stage, the dHash floor
+ * included. Enforcement: stage-2 linkage skips conflicting groups,
+ * the dHash union refuses a union seating a forbidden pair, time
+ * attachment falls back to the nearest ALLOWED embedded neighbour (or
+ * leaves the photo single), the no-embedding burst collapse partitions
+ * into as few conflict-free groups as the pairs allow, and the
+ * adjacent-burst merge skips conflicting pairs. Ids not present in
+ * `items` are ignored; a self-pair is a caller bug and throws.
+ *
  * Quality is pinned by the committed regression suite
  * (`docs/grouping-study/labels-v1.json` replayed in
  * `test/grouping.test.ts`); threshold constants below were fitted against
@@ -101,6 +113,9 @@ export interface EmbedGroupingOptions {
   adjacentMergeMinInternal?: number;
   adjacentMergeMinCentroid?: number;
   nearDupMaxBits?: number;
+  /** User "not related" judgments: symmetric photo-id pairs that must
+   * never share a group (module header, "Cannot-link constraints"). */
+  cannotLink?: ReadonlyArray<readonly [string, string]>;
 }
 
 /** A near-duplicate pair annotation (dHash floor), `a` earlier than `b`. */
@@ -240,6 +255,22 @@ export function groupByEmbedding(
     }
   }
 
+  // Symmetric cannot-link lookup. Empty map = every check short-circuits,
+  // so the labels-v1 baseline path pays nothing.
+  const forbidden = new Map<string, Set<string>>();
+  for (const pair of options?.cannotLink ?? []) {
+    const [a, b] = pair;
+    if (typeof a !== 'string' || typeof b !== 'string' || a === b) {
+      throw new Error(`groupByEmbedding: invalid cannotLink pair [${String(a)}, ${String(b)}]`);
+    }
+    let setA = forbidden.get(a);
+    if (setA === undefined) forbidden.set(a, (setA = new Set()));
+    setA.add(b);
+    let setB = forbidden.get(b);
+    if (setB === undefined) forbidden.set(b, (setB = new Set()));
+    setB.add(a);
+  }
+
   const sorted = [...items].sort(
     (a, b) => a.timestamp - b.timestamp || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   );
@@ -256,6 +287,22 @@ export function groupByEmbedding(
     return vec;
   });
   const hashes: (string | null)[] = sorted.map((item) => hashOf?.(item.id) ?? null);
+
+  /** Would adding `idx` to `g` seat a forbidden pair? */
+  const conflictsWith = (g: WorkGroup, idx: number): boolean => {
+    if (forbidden.size === 0) return false;
+    const set = forbidden.get(sorted[idx].id);
+    if (set === undefined) return false;
+    return g.members.some((m) => set.has(sorted[m].id));
+  };
+  /** Would merging `ga` and `gb` seat a forbidden pair? */
+  const groupsConflict = (ga: WorkGroup, gb: WorkGroup): boolean => {
+    if (forbidden.size === 0) return false;
+    return ga.members.some((m) => {
+      const set = forbidden.get(sorted[m].id);
+      return set !== undefined && gb.members.some((n) => set.has(sorted[n].id));
+    });
+  };
 
   // Stage 1 — burst gate. clusterByGap re-sorts identically, so cluster
   // items map back to `sorted` indexes by identity.
@@ -276,6 +323,7 @@ export function groupByEmbedding(
       if (vec !== null) {
         let bestSim = -Infinity;
         for (const g of burstGroups) {
+          if (conflictsWith(g, idx)) continue;
           const centroid = centroidOf(g);
           if (centroid === null) continue;
           const sim = dot(vec, centroid);
@@ -295,6 +343,8 @@ export function groupByEmbedding(
         const hash = hashes[idx];
         if (hash !== null) {
           outer: for (const g of burstGroups) {
+            // Cannot-link outranks the dHash floor (user judgment wins).
+            if (conflictsWith(g, idx)) continue;
             for (const m of g.members) {
               const other = hashes[m];
               if (other !== null && hammingDistance(hash, other) <= nearDupMaxBits) {
@@ -332,6 +382,21 @@ export function groupByEmbedding(
         }
         return i;
       };
+      // Accumulated member-id sets per union root, so a union that would
+      // seat a forbidden pair can be refused with the sets in hand
+      // (cannot-link outranks the dHash floor).
+      const rootIds: Set<string>[] = burstGroups.map(
+        (g) => new Set(g.members.map((m) => sorted[m].id)),
+      );
+      const rootsConflict = (ra: number, rb: number): boolean => {
+        if (forbidden.size === 0) return false;
+        for (const id of rootIds[ra]) {
+          const set = forbidden.get(id);
+          if (set === undefined) continue;
+          for (const other of rootIds[rb]) if (set.has(other)) return true;
+        }
+        return false;
+      };
       const hashedIdx = bursts[burst].filter((i) => hashes[i] !== null);
       for (let a = 0; a < hashedIdx.length; a++) {
         for (let b = a + 1; b < hashedIdx.length; b++) {
@@ -340,7 +405,11 @@ export function groupByEmbedding(
           if (hammingDistance(hashes[ia]!, hashes[ib]!) > nearDupMaxBits) continue;
           const ra = find(groupOfIdx.get(ia)!);
           const rb = find(groupOfIdx.get(ib)!);
-          if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
+          if (ra === rb || rootsConflict(ra, rb)) continue;
+          const lo = Math.min(ra, rb);
+          const hi = Math.max(ra, rb);
+          parent[hi] = lo;
+          for (const id of rootIds[hi]) rootIds[lo].add(id);
         }
       }
       for (let gi = burstGroups.length - 1; gi >= 0; gi--) {
@@ -368,31 +437,52 @@ export function groupByEmbedding(
     const embeddedIdx = burstIdx.filter((i) => vecs[i] !== null);
     if (embeddedIdx.length === 0) {
       if (burstGroups.length > 1) {
-        // Badge only the photos whose GROUPING here is time-evidence-only:
-        // members of dHash-linked multi-photo groups have a real match and
-        // stay unbadged even as the burst collapses around them.
+        // Collapse into as FEW groups as the cannot-link pairs allow,
+        // greedy in group order (deterministic; one bucket when no pairs
+        // apply — the original whole-burst collapse). Badge only photos
+        // whose grouping here is time-evidence-only: singleton sources
+        // that actually merged with something; dHash-linked multi-photo
+        // groups have a real match and stay unbadged, and a singleton the
+        // constraints keep alone stays a real single.
+        const buckets: { g: WorkGroup; singles: number[]; sources: number }[] = [];
         for (const g of burstGroups) {
-          if (g.members.length === 1) timeAttachedIdx.add(g.members[0]);
+          const single = g.members.length === 1 ? g.members[0] : null;
+          const target = buckets.find((b) => !groupsConflict(b.g, g));
+          if (target === undefined) {
+            buckets.push({ g, singles: single !== null ? [single] : [], sources: 1 });
+          } else {
+            target.g.members.push(...g.members);
+            if (single !== null) target.singles.push(single);
+            target.sources++;
+          }
         }
-        const [first, ...rest] = burstGroups;
-        for (const g of rest) first.members.push(...g.members);
-        first.members.sort((a, b) => a - b);
-        burstGroups.length = 1;
+        for (const b of buckets) {
+          b.g.members.sort((x, y) => x - y);
+          if (b.sources > 1) for (const s of b.singles) timeAttachedIdx.add(s);
+        }
+        burstGroups.length = 0;
+        burstGroups.push(...buckets.map((b) => b.g));
       }
     } else {
       for (const g of [...burstGroups]) {
         if (g.members.length !== 1 || vecs[g.members[0]] !== null) continue;
         const idx = g.members[0];
-        let best = embeddedIdx[0];
-        let bestDist = Math.abs(sorted[best].timestamp - sorted[idx].timestamp);
-        for (const j of embeddedIdx) {
-          const d = Math.abs(sorted[j].timestamp - sorted[idx].timestamp);
-          if (d < bestDist || (d === bestDist && j < best)) {
-            bestDist = d;
-            best = j;
-          }
+        // Embedded neighbours by time distance (tie → earlier photo); the
+        // photo attaches to the nearest one whose group the cannot-link
+        // pairs allow, and stays a real single when none do.
+        const ranked = [...embeddedIdx].sort((a, b) => {
+          const da = Math.abs(sorted[a].timestamp - sorted[idx].timestamp);
+          const db = Math.abs(sorted[b].timestamp - sorted[idx].timestamp);
+          return da - db || a - b;
+        });
+        let target: WorkGroup | null = null;
+        for (const j of ranked) {
+          const candidate = burstGroups.find((bg) => bg.members.includes(j))!;
+          if (conflictsWith(candidate, idx)) continue;
+          target = candidate;
+          break;
         }
-        const target = burstGroups.find((bg) => bg.members.includes(best))!;
+        if (target === null) continue;
         target.members.push(idx);
         target.members.sort((a, b) => a - b);
         timeAttachedIdx.add(idx);
@@ -435,6 +525,7 @@ export function groupByEmbedding(
       for (let b = a + 1; b < groups.length; b++) {
         const gb = groups[b];
         if ([...gb.bursts].some((x) => ga.bursts.has(x))) continue;
+        if (groupsConflict(ga, gb)) continue;
         const gap = Math.max(startOf(ga), startOf(gb)) - Math.min(endOf(ga), endOf(gb));
         if (gap > mergeMaxGapMs) continue;
         if (weakestInternal(gb) < mergeMinInternal) continue;

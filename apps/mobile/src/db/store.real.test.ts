@@ -2026,7 +2026,9 @@ describe('exact reclaimable bytes', () => {
 
 function stateOf2(d: TestDb, rawId: string): Record<string, unknown> {
   return d.raw
-    .prepare('SELECT state, reviewed_at, decided_at FROM photos WHERE asset_id = ?')
+    .prepare(
+      'SELECT state, reviewed_at, decided_at, decided_first_at FROM photos WHERE asset_id = ?',
+    )
     .get(id(rawId)) as Record<string, unknown>;
 }
 
@@ -2035,16 +2037,27 @@ describe('decided_at (m0.8.1: the daily goal counts review ACTIONS)', () => {
     const d = await fresh();
     await seed(d, ['1']);
     await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100);
-    expect(stateOf2(d, '1')).toMatchObject({ reviewed_at: AT + 100, decided_at: AT + 100 });
-    // A next-day re-decide moves decided_at but NOT reviewed_at.
+    expect(stateOf2(d, '1')).toMatchObject({
+      reviewed_at: AT + 100,
+      decided_at: AT + 100,
+      decided_first_at: AT + 100,
+    });
+    // A next-day re-decide moves decided_at but NOT reviewed_at — and NOT
+    // decided_first_at (v22, STATS_ACCURACY gap 8): day-bucketed history
+    // reads the immutable first stamp, so re-deciding an old photo can
+    // never drain its original day.
     await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 90_000_000);
     expect(stateOf2(d, '1')).toMatchObject({
       reviewed_at: AT + 100,
       decided_at: AT + 90_000_000,
+      decided_first_at: AT + 100,
     });
-    // Clearing back to unreviewed keeps the stamp (the work happened).
+    // Clearing back to unreviewed keeps both stamps (the work happened).
     await applyReviewDecisions(asExpo(d), [[id('1'), 'unreviewed']], AT + 90_000_500);
-    expect(stateOf2(d, '1')).toMatchObject({ decided_at: AT + 90_000_000 });
+    expect(stateOf2(d, '1')).toMatchObject({
+      decided_at: AT + 90_000_000,
+      decided_first_at: AT + 100,
+    });
   });
 
   it('redecide and unstage paths re-stamp too, and the day counts follow decided_at', async () => {
@@ -2054,8 +2067,15 @@ describe('decided_at (m0.8.1: the daily goal counts review ACTIONS)', () => {
     await applyReviewDecisions(asExpo(d), [[id('2'), 'kept']], AT + 100);
     await unstageCullDirect(asExpo(d), id('1'), AT + 90_000_000, true);
     await applyRedecision(asExpo(d), id('2'), 'keep', AT + 90_000_000);
-    expect(stateOf2(d, '1')).toMatchObject({ decided_at: AT + 90_000_000 });
-    expect(stateOf2(d, '2')).toMatchObject({ decided_at: AT + 90_000_000 });
+    // decided_at moves; the first stamp holds on both re-decide paths.
+    expect(stateOf2(d, '1')).toMatchObject({
+      decided_at: AT + 90_000_000,
+      decided_first_at: AT + 100,
+    });
+    expect(stateOf2(d, '2')).toMatchObject({
+      decided_at: AT + 90_000_000,
+      decided_first_at: AT + 100,
+    });
     const counts = await getReviewedCountsByDay(asExpo(d), 0);
     // Both photos moved their stamps to the later day — the earlier day
     // holds no decided_at anymore (one row = its latest action day).

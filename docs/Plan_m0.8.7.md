@@ -21,9 +21,10 @@ Order is a dependency chain; the flags marked **(autonomous)** are the pre-imple
 
 ### Phase 1 — Foundations: schema v22 + core cannot-link
 
-Regroup_design §9 phase 1, verbatim, plus the stats sweep's schema rider:
+Regroup_design §9 phase 1, plus the stats sweep's schema rider:
 
-- v22 destructive rebuild: `duels` loses `group_id` (endpoints nullable, endpoint indexes); `not_related(ejected_id, partner_id, at)` with partner index; `photo_group_assignments.user_single` dropped; `photos.decided_first_at` added (immutable first-decision stamp, [STATS_ACCURACY.md](STATS_ACCURACY.md) gap 8).
+- Schema version 21 → **22**; this phase lands the ADDITIVE half: `not_related(ejected_id, partner_id, at)` with partner index, and `photos.decided_first_at` (immutable first-decision stamp, [STATS_ACCURACY.md](STATS_ACCURACY.md) gap 8) with its partial index and its live first-stamp writes at all three verdict-stamp sites.
+  The destructive half of v22 — `duels` losing `group_id` and `photo_group_assignments.user_single` dropping — lands with the phases that delete their reading code (2–3), at the same version number (appendix #1).
 - Cannot-link constraints in `@afterglow/core`'s embedding grouping (injected pair set; merge refusal; the A→B dissolution scenarios as unit tests).
 - `npm run build -w @afterglow/core` after every core edit.
 
@@ -107,4 +108,7 @@ Regroup_design §9 phases 4–5:
 Numbered as implemented; each entry names the call, the choice, and why.
 Getting these human-vetted is a top priority; an approved entry is pruned per the assumptions discipline.
 
-*(none yet)*
+1. **v22 lands incrementally across phases 1–3 at one version number.**
+   Dropping `duels.group_id` or `user_single` in phase 1 would break the store code that still reads them, so each destructive DDL change ships in the phase that deletes its readers; the version constant bumped once (21→22) in phase 1.
+   Cost: a test device that installed a mid-release build carries a stale v22 layout — wipe app data on phase installs (the devices hold only disposable test data).
+   Testers only ever see the final v22.

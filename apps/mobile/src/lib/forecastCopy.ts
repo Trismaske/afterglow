@@ -12,7 +12,7 @@
  * formatter never prints more precision than the estimate has.
  */
 import { etaPrecision, type FinishLine, type ForecastView } from './forecast';
-import { formatBytes } from './format';
+import { formatBytes, plural } from './format';
 
 /** Round-trips through the same locale helpers the rest of the app uses. */
 function dateAfter(days: number, at: number): Date {
@@ -41,7 +41,7 @@ function rate(perDay: number): string {
 }
 
 function photos(n: number): string {
-  return `${n.toLocaleString()} photo${n === 1 ? '' : 's'}`;
+  return `${plural(n, 'photo')}`;
 }
 
 /**

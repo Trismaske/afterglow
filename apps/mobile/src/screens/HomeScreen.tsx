@@ -61,7 +61,7 @@ import {
   unstageCullDirect,
 } from '../db/store';
 import { runTrashAttempt } from '../lib/trashFlow';
-import { formatBytes } from '../lib/format';
+import { formatBytes, plural } from '../lib/format';
 import { fileSize, fileSizeOrNull } from '../lib/hash';
 import { runEditDetection, type DetectedCopy } from '../lib/detect';
 import {
@@ -906,7 +906,7 @@ export function HomeScreen({ navigation }: Props) {
                       showing a wrong total. */}
                   {libraryTotal !== null && (
                     <Text style={styles.cardText}>
-                      {`${libraryTotal.toLocaleString()} picture${libraryTotal === 1 ? '' : 's'} total`}
+                      {`${plural(libraryTotal, 'picture')} total`}
                     </Text>
                   )}
                   {/* m0.8.3 §5 (D5): unmounted ≠ deleted, named with its
@@ -920,9 +920,7 @@ export function HomeScreen({ navigation }: Props) {
                       accessibilityLabel="SD card not mounted — open Settings"
                     >
                       <Text style={styles.unreachableLine}>
-                        {`SD card not mounted — ${entry.count.toLocaleString()} photo${
-                          entry.count === 1 ? '' : 's'
-                        } waiting on it`}
+                        {`SD card not mounted — ${plural(entry.count, 'photo')} waiting on it`}
                       </Text>
                     </Pressable>
                   ))}
@@ -958,16 +956,12 @@ export function HomeScreen({ navigation }: Props) {
                         <Text style={styles.cardText}>{`${queueTotal} to review`}</Text>
                         {review.queueCounts.grouped > 0 && (
                           <Text style={styles.queueBreakdown}>
-                            {`${review.queueCounts.grouped} in ${review.queueCounts.groups} group${
-                              review.queueCounts.groups === 1 ? '' : 's'
-                            }`}
+                            {`${review.queueCounts.grouped} in ${plural(review.queueCounts.groups, 'group')}`}
                           </Text>
                         )}
                         {review.queueCounts.singles > 0 && (
                           <Text style={styles.queueBreakdown}>
-                            {`${review.queueCounts.singles} single${
-                              review.queueCounts.singles === 1 ? '' : 's'
-                            }`}
+                            {plural(review.queueCounts.singles, 'single')}
                           </Text>
                         )}
                       </View>
@@ -1066,7 +1060,7 @@ export function HomeScreen({ navigation }: Props) {
                 describes (tester ask, round 4) — it used to trail the
                 scan line, where it read as a scan statistic. */}
             <Text style={styles.editQueueHint}>
-              {`${stagedCullCount} photo${stagedCullCount === 1 ? '' : 's'} staged to cull` +
+              {`${plural(stagedCullCount, 'photo')} staged to cull` +
                 (reclaimableBytes > 0 ? ` · ~${formatBytes(reclaimableBytes)} reclaimable` : '')}
             </Text>
           </View>
@@ -1179,8 +1173,7 @@ export function HomeScreen({ navigation }: Props) {
             <Pressable style={styles.olderRow} onPress={() => void expandOlderDays()}>
               <MaterialCommunityIcons name="calendar-clock" size={20} color={colors.textDim} />
               <Text style={styles.olderRowText}>
-                {olderDays.length} older day{olderDays.length === 1 ? '' : 's'} with photos to
-                review
+                {plural(olderDays.length, 'older day')} with photos to review
               </Text>
               <Text style={[styles.progressChevron, { color: theme.accent }]}>›</Text>
             </Pressable>

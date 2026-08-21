@@ -5,6 +5,7 @@
  * visible and retryable across restarts.
  */
 import React, { useCallback, useMemo, useState } from 'react';
+import { plural } from '../lib/format';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -15,6 +16,7 @@ import { getPhotoQueueFacts } from '../db/store';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {} from '../db/store';
 import { applyFavouriteBatch, FAVOURITE_BATCH_LIMIT } from '../lib/favourites';
+import { describeFavouriteFailure } from '../lib/favouriteFailures';
 import { BigButton } from '../components/BigButton';
 import { showToast } from '../lib/toast';
 import { colors, touch, useTheme } from '../theme';
@@ -131,10 +133,15 @@ export function FavouritesQueueScreen() {
             await failActions(db, batch, 'favourite', encodeFavouriteTarget(target)).catch(
               () => {},
             );
-            Alert.alert(
-              'Favourite changes need retry',
-              result.error ?? 'Android did not verify them.',
-            );
+            // The three-tier report (Errors_design D4): the partial-
+            // success counts from our own verify, then Android verbatim.
+            const report = describeFavouriteFailure({
+              batchSize: batch.length,
+              unverifiedCount: result.unverifiedIds.length || batch.length,
+              favourite: target,
+              error: result.error,
+            });
+            Alert.alert(report.title, report.body);
             break;
           } else if (result.status === 'unsupported') {
             Alert.alert(
@@ -253,7 +260,7 @@ export function FavouritesQueueScreen() {
       <View style={styles.actions}>
         {applyRows.length > 0 && (
           <BigButton
-            label={`Apply ${applyRows.length} favourite${applyRows.length === 1 ? '' : 's'}`}
+            label={`Apply ${plural(applyRows.length, 'favourite')}`}
             color={colors.fav}
             disabled={busyTarget !== null}
             onPress={() => void runBatch(true)}

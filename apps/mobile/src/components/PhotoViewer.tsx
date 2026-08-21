@@ -51,7 +51,7 @@ import { decodeOrganizeTarget } from '../db/actions';
 import { isInShareQueue } from '../db/shareStore';
 import { classifyPhotoState } from '../lib/progress';
 import { dayKey, labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
-import { formatClockSeconds } from '../lib/format';
+import { formatClockSeconds, plural } from '../lib/format';
 import { colors, useTheme } from '../theme';
 import { VERDICT_META } from './progress/stateMeta';
 import { StateEditorSheet } from './progress/StateEditorSheet';
@@ -567,9 +567,7 @@ export function PhotoViewer({
     if (facts.not_related_count > 0)
       factLines.push({
         icon: 'image-move',
-        text: `You marked it not related to ${facts.not_related_count} photo${
-          facts.not_related_count === 1 ? '' : 's'
-        } — it never groups with them.`,
+        text: `You marked it not related to ${plural(facts.not_related_count, 'photo')} — it never groups with them.`,
       });
   }
 

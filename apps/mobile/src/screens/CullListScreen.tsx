@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { plural } from '../lib/format';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -12,6 +13,7 @@ import { resolveSources } from '../lib/sourceCatalog';
 import { perfAggregate } from '../lib/perfLog';
 import { useExternalRefresh } from '../components/useExternalRefresh';
 import { countStagedCullsWithUnsentIntents, getStagedCulls, type StagedCullRow } from '../db/store';
+import { describeTrashFailure } from '../lib/trashFailures';
 import { BigButton } from '../components/BigButton';
 import { ReDecideSheet, type DecidedState } from '../components/ReDecideSheet';
 import { colors, touch } from '../theme';
@@ -131,9 +133,9 @@ export function CullListScreen({ navigation, route }: Props) {
               ? 'Nothing confirmed moved'
               : 'Cancelled — nothing moved',
           result.trashedCount > 0
-            ? `${result.trashedCount} photo${result.trashedCount === 1 ? '' : 's'} moved before the system confirmation was cancelled. ${result.remaining} remain staged.${ambiguity}`
+            ? `${plural(result.trashedCount, 'photo')} moved before the system confirmation was cancelled. ${result.remaining} remain staged.${ambiguity}`
             : result.unresolvedCount > 0
-              ? `The system confirmation was cancelled. ${result.unresolvedCount} earlier photo${result.unresolvedCount === 1 ? '' : 's'} could not be verified — they remain staged and may already be in the system trash.`
+              ? `The system confirmation was cancelled. ${plural(result.unresolvedCount, 'earlier photo')} could not be verified — they remain staged and may already be in the system trash.`
               : 'The system confirmation was cancelled. Your photos are untouched and still staged.',
         );
       } else if (result.status === 'unsupported') {
@@ -142,30 +144,23 @@ export function CullListScreen({ navigation, route }: Props) {
           "Afterglow's media module is not available in this build, so nothing was changed. Afterglow never permanently deletes photos — your culls are still staged and untouched.",
         );
       } else if (result.status === 'failed') {
-        // A later batch failing must not hide earlier verified moves —
-        // nor the ambiguity of members whose verification stayed unknown
-        // (a post-dispatch failure may have trashed them already).
-        const progress =
-          result.trashedCount > 0
-            ? `${result.trashedCount} photo${result.trashedCount === 1 ? '' : 's'} were already moved to trash; ${result.remaining} remain staged. `
-            : '';
-        const ambiguity =
-          result.unresolvedCount > 0
-            ? ` ${result.unresolvedCount} photo${result.unresolvedCount === 1 ? '' : 's'} could not be verified and may already be in the system trash.`
-            : '';
-        Alert.alert(
-          result.trashedCount > 0 ? 'Partly moved to trash' : 'Could not move photos to trash',
-          progress +
-            (result.error ??
-              'Android MediaStore returned an unexpected error. Your culls remain staged.') +
-            ambiguity,
-        );
+        // The three-tier report (Errors_design §4.1): the verified
+        // progress counts we own, the honest refusal line, the
+        // ambiguity, then Android's words verbatim and last — the old
+        // copy interpolated the platform error into our own sentence.
+        const report = describeTrashFailure({
+          trashedCount: result.trashedCount,
+          remaining: result.remaining,
+          unresolvedCount: result.unresolvedCount,
+          error: result.error,
+        });
+        Alert.alert(report.title, report.body);
       } else {
         // Dialog applied but photos could not be verified as trashed —
         // conservative: they stay staged rather than claiming success.
         Alert.alert(
           'Could not verify the move',
-          `${result.remaining} photo${result.remaining === 1 ? '' : 's'} could not be confirmed as trashed and remain staged.`,
+          `${plural(result.remaining, 'photo')} could not be confirmed as trashed and remain staged.`,
         );
       }
     } finally {
@@ -193,13 +188,12 @@ export function CullListScreen({ navigation, route }: Props) {
     } catch (error) {
       console.warn('[cull] unsent-intent count failed — confirm proceeds unnamed:', String(error));
     }
-    const plural = (n: number) => (n === 1 ? '' : 's');
     const warnings = [
       unsent.share > 0
-        ? `${unsent.share} photo${plural(unsent.share)} still ${unsent.share === 1 ? 'has' : 'have'} an unsent share request.`
+        ? `${plural(unsent.share, 'photo')} still ${unsent.share === 1 ? 'has' : 'have'} an unsent share request.`
         : null,
       unsent.edit > 0
-        ? `${unsent.edit} photo${plural(unsent.edit)} still ${unsent.edit === 1 ? 'has' : 'have'} an unsent edit request.`
+        ? `${plural(unsent.edit, 'photo')} still ${unsent.edit === 1 ? 'has' : 'have'} an unsent edit request.`
         : null,
     ].filter((line): line is string => line !== null);
     const intentWarning =
@@ -209,7 +203,7 @@ export function CullListScreen({ navigation, route }: Props) {
     // The app-level warning is followed by Android's MediaStore-owned
     // confirmation sheet. There is no permanent-delete fallback.
     Alert.alert(
-      `Move ${staged.length} photo${staged.length === 1 ? '' : 's'} to trash?`,
+      `Move ${plural(staged.length, 'photo')} to trash?`,
       `Android will ask you to confirm. Recovery duration is controlled by your system gallery.${intentWarning}`,
       [
         { text: 'Cancel', style: 'cancel' },
@@ -276,7 +270,7 @@ export function CullListScreen({ navigation, route }: Props) {
                 ? 'Loading…'
                 : staged.length === 0
                   ? 'Done'
-                  : `Trash ${staged.length} photo${staged.length === 1 ? '' : 's'}`
+                  : `Trash ${plural(staged.length, 'photo')}`
           }
           color={staged.length === 0 ? colors.keep : colors.cull}
           disabled={busy || loading}

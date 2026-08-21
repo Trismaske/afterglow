@@ -49,6 +49,7 @@ import {
 import { shareMediaUris, subscribeShareTargetChosen } from '../../modules/media-store-actions';
 import { getEditableContentUri } from '../lib/media';
 import { getActionsForPhotos } from '../db/actions';
+import { describeShareFailure } from '../lib/shareFailures';
 import { showToast } from '../lib/toast';
 import { colors, touch, useTheme } from '../theme';
 import { Chip, QueueGridCell } from '../components/QueueGrid';
@@ -235,6 +236,10 @@ export function ShareQueueScreen(_props: Props) {
         // `launching` until the next process restart's recovery.
         const batchId = await createShareBatch(db, ids, Date.now());
         let dispatch: Awaited<ReturnType<typeof shareMediaUris>>;
+        // The failure STAGE is our own fact (Errors_design §4.3): a
+        // rejection while WE resolve uris means Android never saw the
+        // batch — the classifier's one provable tier-1 cause here.
+        let failedStage: 'prepare' | 'dispatch' = 'prepare';
         try {
           // codex r9: URI preparation sits INSIDE the failure handling —
           // the batch is already durably `launching`, so a rejected
@@ -246,6 +251,7 @@ export function ShareQueueScreen(_props: Props) {
           // different set would send removed photos and record members
           // that never went out.
           const uris = await Promise.all(ids.map(getEditableContentUri));
+          failedStage = 'dispatch';
           // The batch id rides the chooser as the chosen-event token
           // (D10): app-root wiring resolves the batch to 'shared' when
           // the user picks a target app. ARMED BEFORE dispatch (codex
@@ -267,7 +273,15 @@ export function ShareQueueScreen(_props: Props) {
         } else {
           awaitingLabelRef.current = null;
           await failShareBatch(db, batchId);
-          Alert.alert('Share failed', dispatch.message);
+          // The three-tier report (Errors_design §4.3): our stage line,
+          // then the platform's words verbatim — the old alert was the
+          // raw message alone.
+          const report = describeShareFailure({
+            count: ids.length,
+            stage: failedStage,
+            error: dispatch.message,
+          });
+          Alert.alert(report.title, report.body);
         }
         await reload();
       } catch (error) {

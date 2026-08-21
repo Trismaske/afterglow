@@ -53,7 +53,7 @@ Both removal affordances use the local `modules/media-store-actions` trash reque
 | edit.ts / editActions.ts                               | Editor + viewer launches / intent constants + copy                                            |
 | editMatrix.ts                                          | Gate-0 editor-launch diagnostic matrix                                                        |
 | favourites.ts / favouriteState.ts                      | Batched native favourite apply + verification / intent transitions + badge weights            |
-| organizeFailures.ts                                    | Organize-failure classification: three tiers, from facts we own                               |
+| organizeFailures.ts / favouriteFailures.ts / trashFailures.ts / shareFailures.ts / editLaunchFailures.ts | The four-boundary failure classifiers: three tiers, from facts we own (Errors_design, m0.8.7) |
 | sources.ts / sourceCatalog.ts                          | Volume-qualified source roots / the native album catalog                                      |
 | timeline.ts                                            | The merged review timeline: units, truncation, pending-only routing                           |
 | deckUnit.ts                                            | The deck's unit identity + the Deck route's param round trip (L4)                             |

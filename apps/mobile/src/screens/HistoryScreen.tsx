@@ -34,7 +34,7 @@ import { reconcileExternallyRemoved } from '../db/trashStore';
 import { mountedVolumeSet } from '../lib/mountedVolumes';
 import { mapWithConcurrency } from '../lib/concurrency';
 import { checkMediaPresence } from '../lib/media';
-import { formatClock, formatDayClock } from '../lib/format';
+import { formatClock, formatDayClock, plural } from '../lib/format';
 import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { DecisionBadge } from '../components/DecisionBadge';
 import { demoteForState, photoBadges, type BadgeWeight, type PhotoBadge } from '../lib/photoBadges';
@@ -245,7 +245,7 @@ export function HistoryScreen(_props: Props) {
           </View>
           <View style={styles.rowBody}>
             <Text style={styles.rowTitle}>
-              Shared · {item.member_count} photo{item.member_count === 1 ? '' : 's'}
+              Shared · {plural(item.member_count, 'photo')}
               {item.label ? ` · “${item.label}”` : ''}
             </Text>
             <Text style={styles.rowTime}>{formatDayClock(item.chosen_at)}</Text>

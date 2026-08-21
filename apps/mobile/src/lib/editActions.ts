@@ -19,7 +19,3 @@
 
 export const ACTION_EDIT = 'android.intent.action.EDIT';
 export const ACTION_VIEW = 'android.intent.action.VIEW';
-
-export const NO_EDITOR_TITLE = 'Could not open the photo';
-export const NO_EDITOR_MESSAGE =
-  'No installed app accepted the request. Try the other button, or install a photo editor or gallery app and try again.';

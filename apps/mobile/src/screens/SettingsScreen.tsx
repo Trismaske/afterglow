@@ -8,6 +8,7 @@
  * persist in the m0.3.1 settings table.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { plural } from '../lib/format';
 import {
   ActivityIndicator,
   Alert,
@@ -184,8 +185,8 @@ export function SettingsScreen({ navigation }: Props) {
         }
         return;
       }
-      const present = `${counts.present.toLocaleString()} photo${counts.present === 1 ? '' : 's'}`;
-      const everything = `${counts.total.toLocaleString()} photo${counts.total === 1 ? '' : 's'}`;
+      const present = `${plural(counts.present, 'photo')}`;
+      const everything = `${plural(counts.total, 'photo')}`;
       const runForget = async (level: 'keep' | 'erase') => {
         try {
           // Final revalidation right before the destructive write — the
@@ -214,8 +215,8 @@ export function SettingsScreen({ navigation }: Props) {
           setAwayVolumes((prev) => prev.filter((v) => v.volume !== entry.volume));
           showToast(
             level === 'keep'
-              ? `Card forgotten — review history for ${result.photos.toLocaleString()} photo${result.photos === 1 ? '' : 's'} kept`
-              : `Card erased — ${result.rows.toLocaleString()} photo${result.rows === 1 ? '' : 's'} removed from your history`,
+              ? `Card forgotten — review history for ${plural(result.photos, 'photo')} kept`
+              : `Card erased — ${plural(result.rows, 'photo')} removed from your history`,
           );
           void refresh();
           // Forget rewrites scan OUTPUT without changing scan INPUT
@@ -322,9 +323,7 @@ export function SettingsScreen({ navigation }: Props) {
           if (!cancelled) setAwayVolumes(away);
           if (away.length > 0) {
             const count = away.reduce((sum, entry) => sum + entry.count, 0);
-            label = `${label} — SD card not mounted (${count.toLocaleString()} photo${
-              count === 1 ? '' : 's'
-            })`;
+            label = `${label} — SD card not mounted (${plural(count, 'photo')})`;
           }
         } else if (!cancelled) {
           setAwayVolumes([]);
@@ -623,9 +622,7 @@ export function SettingsScreen({ navigation }: Props) {
             <View style={styles.rowBody}>
               <Text style={styles.rowTitle}>Forget this card</Text>
               <Text style={styles.rowHint} numberOfLines={2}>
-                {`SD card not mounted — ${entry.count.toLocaleString()} photo${
-                  entry.count === 1 ? '' : 's'
-                } waiting on it. For a card that is never coming back.`}
+                {`SD card not mounted — ${plural(entry.count, 'photo')} waiting on it. For a card that is never coming back.`}
               </Text>
             </View>
             <Text style={[styles.chevron, { color: theme.accent }]}>›</Text>

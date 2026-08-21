@@ -14,6 +14,7 @@
  * said out loud, never silently skipped.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { plural } from '../lib/format';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -362,7 +363,7 @@ export function OrganizeQueueScreen(_props: Props) {
         showToast(
           declined
             ? `Moved ${moved} — the rest stay queued`
-            : `Moved ${moved} photo${moved === 1 ? '' : 's'}${skipped}`,
+            : `Moved ${plural(moved, 'photo')}${skipped}`,
         );
       }
       await reload();

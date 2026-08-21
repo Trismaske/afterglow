@@ -145,3 +145,11 @@ Getting these human-vetted is a top priority; an approved entry is pruned per th
     Share's bottom "Clear queue" button folded into the chip (its never-shared warning rides the confirm body); Organize's clear-all gained the confirm; Edit and Favourite gained the affordance, bound M5-style to rendered ∩ fresh scoped rows.
 11. **The F21 in-build calls.**
     The deck's browse-mode edit chip flag-toggles on a staged cull instead of re-deciding (queueing the edit must not silently rescue the cull); the editor refuses favourite/organize ADDITIONS on a staged cull with a named "Suspended while staged to delete" row while existing queued rows stay cancellable; `createShareBatch`'s cycle fallback shrank to a plain defensive first-use mint (the resurface case it existed for is gone); the trashed-photo path keeps full suspension everywhere.
+12. **`plural()` landed — the audit found 47 ternary sites, nine times D5's threshold.**
+    All mechanical count-noun ternaries converted (verb/pronoun agreements keep their explicit forms, per organizeFailures' own helpers); the audit's real finds were four NAKED plurals that read "1 photos" at n = 1 (ProgressView's reviewed lines, habitsCopy's median, scanSkip's corpus lines) — fixed.
+    F3's scanning copy re-checked and corrected at the 1-photo-library edge; F16's "Shared" rows verified (chosen-target only, now on `plural`).
+13. **Share's tier-1 cause is the failure STAGE.**
+    The pipeline resolves content uris BEFORE Android sees the batch, so a rejection there is provably ours ("could not be prepared — the sheet was never opened"); everything after handoff stays tiers 2+3, as designed.
+14. **The edit-launch classifier consumes one post-failure `probeLaunch`.**
+    D2's fact-source relationship, implemented: a dispatch failure runs a single read-only probe whose typed verdict ('no_handler', 'security' — our Kotlin's words) selects tier 1; resolve and write-request failures are stage facts needing no probe.
+    The caller-less `NO_EDITOR_*` constants swept — the classifier owns that copy now.

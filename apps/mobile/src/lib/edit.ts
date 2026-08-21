@@ -28,15 +28,21 @@ import { ACTION_EDIT, ACTION_VIEW } from './editActions';
 const FLAG_GRANT_READ_URI_PERMISSION = 0x00000001;
 const FLAG_GRANT_WRITE_URI_PERMISSION = 0x00000002;
 
+/** Where a launch failed — OUR pipeline stage, never a reading of the
+ * error text (Errors_design §4.4): 'resolve' = the asset had no content
+ * uri, 'write_request' = MediaStore refused write access before any
+ * editor was involved, 'dispatch' = the intent itself. */
+export type EditLaunchStage = 'resolve' | 'write_request' | 'dispatch';
+
 export type EditLaunchResult =
   | { outcome: 'returned'; writeGranted: boolean }
   | { outcome: 'unsupported' }
-  | { outcome: 'failed'; error: string; uri: string };
+  | { outcome: 'failed'; stage: EditLaunchStage; error: string; uri: string };
 
 export type ViewLaunchResult =
   | { outcome: 'returned' }
   | { outcome: 'unsupported' }
-  | { outcome: 'failed'; error: string; uri: string };
+  | { outcome: 'failed'; stage: EditLaunchStage; error: string; uri: string };
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -54,6 +60,7 @@ export async function launchEditor(
   if (!contentUri.startsWith('content://')) {
     return {
       outcome: 'failed',
+      stage: 'resolve',
       error: 'The selected asset did not resolve to a content URI.',
       uri: contentUri,
     };
@@ -69,7 +76,7 @@ export async function launchEditor(
     const { status } = await requestMediaWriteAccess([contentUri]);
     writeGranted = status === 'applied';
   } catch (error) {
-    return { outcome: 'failed', error: message(error), uri: contentUri };
+    return { outcome: 'failed', stage: 'write_request', error: message(error), uri: contentUri };
   }
   try {
     const pending = IntentLauncher.startActivityAsync(ACTION_EDIT, {
@@ -81,7 +88,7 @@ export async function launchEditor(
     await pending;
     return { outcome: 'returned', writeGranted };
   } catch (error) {
-    return { outcome: 'failed', error: message(error), uri: contentUri };
+    return { outcome: 'failed', stage: 'dispatch', error: message(error), uri: contentUri };
   }
 }
 
@@ -91,6 +98,7 @@ export async function launchViewer(contentUri: string): Promise<ViewLaunchResult
   if (!contentUri.startsWith('content://')) {
     return {
       outcome: 'failed',
+      stage: 'resolve',
       error: 'The selected asset did not resolve to a content URI.',
       uri: contentUri,
     };
@@ -103,6 +111,6 @@ export async function launchViewer(contentUri: string): Promise<ViewLaunchResult
     });
     return { outcome: 'returned' };
   } catch (error) {
-    return { outcome: 'failed', error: message(error), uri: contentUri };
+    return { outcome: 'failed', stage: 'dispatch', error: message(error), uri: contentUri };
   }
 }

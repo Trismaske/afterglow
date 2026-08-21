@@ -36,7 +36,7 @@ import { BigButton } from '../components/BigButton';
 import { UNIT_CARD_HEIGHT, UnitCard } from '../components/UnitCard';
 import { BadgeCluster } from '../components/DecisionBadge';
 import { colors, useTheme } from '../theme';
-import { formatClock } from '../lib/format';
+import { formatClock, plural } from '../lib/format';
 import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import {
   anchorIndexIn,
@@ -666,7 +666,7 @@ export function TimelineScreen({ navigation }: Props) {
     const pending = unit.members.filter((m) => m.state === 'unreviewed').length;
     return (
       <UnitCard
-        title={`Singles · ${unit.members.length} photo${unit.members.length === 1 ? '' : 's'} · ${labelForDayKey(unit.day)}`}
+        title={`Singles · ${plural(unit.members.length, 'photo')} · ${labelForDayKey(unit.day)}`}
         status={pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`}
         statusDone={pending === 0}
         members={unit.members}
@@ -719,9 +719,8 @@ export function TimelineScreen({ navigation }: Props) {
     // re-pad insets.top (m0.8.1 consistency sweep).
     <View style={[styles.root, { paddingTop: 12 }]}>
       <Text style={styles.subtitle}>
-        {total.toLocaleString()} photo{total === 1 ? '' : 's'} to review ·{' '}
-        {queueCounts.groups.toLocaleString()} group{queueCounts.groups === 1 ? '' : 's'} ·{' '}
-        {queueCounts.singles.toLocaleString()} single{queueCounts.singles === 1 ? '' : 's'}
+        {plural(total, 'photo')} to review · {plural(queueCounts.groups, 'group')} ·{' '}
+        {plural(queueCounts.singles, 'single')}
       </Text>
       <View style={styles.filterRow}>
         {TIMELINE_FILTERS.map(({ value, label }) => {

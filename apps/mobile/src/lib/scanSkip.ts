@@ -17,6 +17,8 @@
  * volumes) can prove nothing.
  */
 
+import { plural } from './format';
+
 /** Settings key: fingerprint of the last COMPLETE clean pass. Exported
  * (m0.8.3 final cycle P4) because "Forget this card" must durably defeat
  * the skip in ITS OWN transaction — the process-local forced rescan dies
@@ -107,22 +109,22 @@ export function scanStatusLine(args: {
     // percent Home shows; a delta shows the plain count.
     if (total !== null && total > 0) {
       const pct = Math.min(100, Math.round((scanned / total) * 100));
-      return `Scanning ${pct}% · ${Math.min(scanned, total).toLocaleString()} of ${total.toLocaleString()} photos`;
+      return `Scanning ${pct}% · ${Math.min(scanned, total).toLocaleString()} of ${plural(total, 'photo')}`;
     }
-    return `Scanning now · ${scanned.toLocaleString()} photos`;
+    return `Scanning now · ${plural(scanned, 'photo')}`;
   }
   if (args.verifiedAt === null) return 'Not checked yet';
   const ageMs = Math.max(0, (args.now ?? Date.now()) - args.verifiedAt);
-  return `Checked ${relativeAge(ageMs)} · ${args.corpus.toLocaleString()} photos`;
+  return `Checked ${relativeAge(ageMs)} · ${plural(args.corpus, 'photo')}`;
 }
 
 /** "just now" / "12 minutes ago" / "3 hours ago" / "2 days ago". */
 function relativeAge(ms: number): string {
   const minutes = Math.floor(ms / 60_000);
   if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  if (minutes < 60) return `${plural(minutes, 'minute')} ago`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  if (hours < 24) return `${plural(hours, 'hour')} ago`;
   const days = Math.floor(hours / 24);
-  return `${days} day${days === 1 ? '' : 's'} ago`;
+  return `${plural(days, 'day')} ago`;
 }

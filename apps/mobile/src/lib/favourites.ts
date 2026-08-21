@@ -4,6 +4,7 @@ import {
   type MediaStoreActionStatus,
 } from '../../modules/media-store-actions';
 import { getEditableContentUri } from './media';
+import { VERIFY_SENTINEL } from './favouriteFailures';
 
 /** Conservative app cap per MediaStore consent request (P5#4) — the
  * platform throws above 2000 URIs, which would error the whole queue with
@@ -45,11 +46,9 @@ export async function applyFavouriteBatch(
       .filter((_, index) => flags[index] !== favourite)
       .map((pair) => pair.id);
     if (unverifiedIds.length > 0) {
-      return {
-        status: 'failed',
-        unverifiedIds,
-        error: 'Android did not report the requested favourite state for every photo.',
-      };
+      // The classifier recognises this exact sentence (VERIFY_SENTINEL,
+      // lib/favouriteFailures.ts) so it is never quoted as Android's.
+      return { status: 'failed', unverifiedIds, error: VERIFY_SENTINEL };
     }
     return { status: 'applied', unverifiedIds: [] };
   } catch (error) {

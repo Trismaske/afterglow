@@ -14,7 +14,7 @@ import { resolveSources } from '../lib/sourceCatalog';
 import type { SourceRoot } from '../lib/sources';
 import { BigButton } from '../components/BigButton';
 import { colors, touch, useTheme } from '../theme';
-import { formatBytes } from '../lib/format';
+import { formatBytes, plural } from '../lib/format';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Summary'>;
 
@@ -117,8 +117,8 @@ export function SummaryScreen({ navigation }: Props) {
       )}
       {stats.staged > 0 && (
         <Text style={styles.warning}>
-          {stats.staged} photo{stats.staged === 1 ? '' : 's'} still staged (delete was skipped) —
-          they stay in the cull list until you confirm.
+          {plural(stats.staged, 'photo')} still staged (delete was skipped) — they stay in the cull
+          list until you confirm.
         </Text>
       )}
 

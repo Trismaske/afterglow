@@ -49,7 +49,7 @@ import {
   redundantFrames,
   type Histogram,
 } from '../../lib/libraryInsights';
-import { formatBytes } from '../../lib/format';
+import { formatBytes, plural } from '../../lib/format';
 import { labelForDayKey, rangeOfDayKey, UNDATED_DAY_KEY } from '../../lib/dates';
 import { countPhotosInRange } from '../../lib/media';
 import { resolveSources } from '../../lib/sourceCatalog';
@@ -142,8 +142,8 @@ function buildInsightLines(
     burst:
       burst.groups === 0
         ? null
-        : `${redundant.toLocaleString()} near-duplicate frame${redundant === 1 ? '' : 's'} in ` +
-          `${burst.groups.toLocaleString()} group${burst.groups === 1 ? '' : 's'}` +
+        : `${plural(redundant, 'near-duplicate frame')} in ` +
+          `${plural(burst.groups, 'group')}` +
           (keeps === null ? '' : ` · you keep 1 of ${keeps.toFixed(1)}`),
   };
 }
@@ -589,8 +589,8 @@ export function ProgressView({
           {b.total === 0
             ? 'No photos here.'
             : reviewed === b.total
-              ? `All ${b.total} photos reviewed`
-              : `${reviewed} of ${b.total} photos reviewed · ${pct}%`}
+              ? `All ${plural(b.total, 'photo')} reviewed`
+              : `${reviewed} of ${plural(b.total, 'photo')} reviewed · ${pct}%`}
         </Text>
 
         {/* A COMPOSITION bar, not a progress bar — the chips below carry

@@ -37,7 +37,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { goalProgress } from '../lib/dailyGoal';
 import { labelForDayKey } from '../lib/dates';
-import { formatBytes } from '../lib/format';
+import { formatBytes, plural } from '../lib/format';
 import { resolveSources } from '../lib/sourceCatalog';
 import {
   activityWindow,
@@ -316,7 +316,7 @@ function ActivityTab({ decisions }: { decisions: DecisionStats | null }) {
             <Text style={styles.cardText}>
               {reviewedToday === 0
                 ? 'No photos decided yet today.'
-                : `${reviewedToday} photo${reviewedToday === 1 ? '' : 's'} decided today` +
+                : `${plural(reviewedToday, 'photo')} decided today` +
                   (reviewedToday >= decisions.goal
                     ? ''
                     : ` · ${decisions.goal - reviewedToday} to go`)}
@@ -362,14 +362,10 @@ function ActivityTab({ decisions }: { decisions: DecisionStats | null }) {
         <Text style={styles.cardText}>
           {activity.total === 0
             ? `No decisions in the last ${ACTIVITY_WINDOW_DAYS} days.`
-            : `${activity.total} decided · ${activity.activeDays} active day${
-                activity.activeDays === 1 ? '' : 's'
-              } · best day ${activity.best}`}
+            : `${activity.total} decided · ${plural(activity.activeDays, 'active day')} · best day ${activity.best}`}
         </Text>
         <Text style={styles.cardHint}>
-          {`Grey line: the ${decisions.goal}/day goal · ${activity.goalDays} day${
-            activity.goalDays === 1 ? '' : 's'
-          } reached it`}
+          {`Grey line: the ${decisions.goal}/day goal · ${plural(activity.goalDays, 'day')} reached it`}
         </Text>
       </View>
 
@@ -391,9 +387,7 @@ function ActivityTab({ decisions }: { decisions: DecisionStats | null }) {
               ? `No photos captured in the last ${ACTIVITY_WINDOW_DAYS} days.`
               : // One family of words with Home's coverage streak (F1):
                 // both count DAYS WITH PHOTOS, and both say so.
-                `${coverageChart.clearedDays} of ${coverageChart.daysWithPhotos} day${
-                  coverageChart.daysWithPhotos === 1 ? '' : 's'
-                } with photos fully reviewed` +
+                `${coverageChart.clearedDays} of ${plural(coverageChart.daysWithPhotos, 'day')} with photos fully reviewed` +
                 (coverageChart.pending > 0 ? ` · ${coverageChart.pending} left over` : '')}
           </Text>
           <Text style={styles.cardText}>
@@ -723,9 +717,7 @@ function HabitsTab({
         </Text>
         {habits.duels.duels > 0 && (
           <Text style={styles.cardHint}>
-            {`${habits.duels.duels.toLocaleString()} head-to-head compare${
-              habits.duels.duels === 1 ? '' : 's'
-            }` +
+            {`${plural(habits.duels.duels, 'head-to-head compare')}` +
               // The percentage reads over DIALOG outcomes only: a triage
               // duel (3+ alive) decides nothing, and counting it as a
               // keep-both inflated the figure (v19).
@@ -764,8 +756,7 @@ function HabitsTab({
             days-since-goal guilt counter. */}
         {habits.records.longestStreak > 0 && (
           <Text style={styles.cardText}>
-            Longest goal streak · {habits.records.longestStreak} day
-            {habits.records.longestStreak === 1 ? '' : 's'}
+            Longest goal streak · {plural(habits.records.longestStreak, 'day')}
             {habits.records.bestDay
               ? ` · most in one day · ${habits.records.bestDay.count.toLocaleString()}`
               : ''}

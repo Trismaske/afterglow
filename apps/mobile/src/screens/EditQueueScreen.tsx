@@ -12,7 +12,10 @@ import { withUserWritePriority } from '../lib/writePriority';
 import { useReview } from '../review/ReviewContext';
 import { getEditableContentUri } from '../lib/media';
 import { launchEditor, launchViewer } from '../lib/edit';
-import { NO_EDITOR_MESSAGE, NO_EDITOR_TITLE } from '../lib/editActions';
+import { ACTION_EDIT, ACTION_VIEW } from '../lib/editActions';
+import { describeEditLaunchFailure } from '../lib/editLaunchFailures';
+import type { EditLaunchStage } from '../lib/edit';
+import { probeEditLaunch, type ProbeLaunchResult } from '../../modules/media-store-actions';
 import { EditDiagnosticsSheet } from '../components/EditDiagnosticsSheet';
 import { QueueViewer } from '../components/QueueViewer';
 import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
@@ -99,16 +102,41 @@ export function EditQueueScreen(_props: Props) {
     [markDone],
   );
 
+  /** The three-tier report (Errors_design §4.4/D2): after a DISPATCH
+   * failure, one probeLaunch supplies the classifier's typed fact (our
+   * Kotlin's verdict — 'no_handler', 'security', …); resolve and
+   * write-request failures are our own stage facts and need no probe.
+   * The matrix stays one tap away, exactly as before. */
   const failureAlert = useCallback(
-    (assetId: string, action: string, error: string, uri: string) => {
-      Alert.alert(
-        NO_EDITOR_TITLE,
-        `${NO_EDITOR_MESSAGE}\n\nDiagnostics\nURI: ${uri}\n${action}: ${error}`,
-        [
-          { text: 'Close', style: 'cancel' },
-          { text: 'Run permission matrix', onPress: () => setMatrixAssetId(assetId) },
-        ],
-      );
+    async (
+      assetId: string,
+      operation: 'edit' | 'view',
+      result: { stage: EditLaunchStage; error: string; uri: string },
+    ) => {
+      let probe: ProbeLaunchResult['result'] | undefined;
+      if (result.stage === 'dispatch') {
+        try {
+          probe = (
+            await probeEditLaunch(
+              result.uri,
+              operation === 'edit' ? ACTION_EDIT : ACTION_VIEW,
+              false,
+            )
+          ).result;
+        } catch (error) {
+          console.warn('[edit] post-failure probe unavailable:', String(error));
+        }
+      }
+      const report = describeEditLaunchFailure({
+        operation,
+        stage: result.stage,
+        probe,
+        error: result.error,
+      });
+      Alert.alert(report.title, report.body, [
+        { text: 'Close', style: 'cancel' },
+        { text: 'Run permission matrix', onPress: () => setMatrixAssetId(assetId) },
+      ]);
     },
     [],
   );
@@ -124,7 +152,7 @@ export function EditQueueScreen(_props: Props) {
           if (!writeGranted) showToast('Editing read-only — saves become a copy');
         });
         if (result.outcome === 'failed') {
-          failureAlert(row.asset_id, 'ACTION_EDIT', result.error, result.uri);
+          await failureAlert(row.asset_id, 'edit', result);
           return;
         }
         if (result.outcome === 'returned') askMarkDone(row.asset_id);
@@ -143,7 +171,7 @@ export function EditQueueScreen(_props: Props) {
         const contentUri = await getEditableContentUri(row.asset_id);
         const result = await launchViewer(contentUri);
         if (result.outcome === 'failed') {
-          failureAlert(row.asset_id, 'ACTION_VIEW', result.error, result.uri);
+          await failureAlert(row.asset_id, 'view', result);
           return;
         }
         if (result.outcome === 'returned') askMarkDone(row.asset_id);

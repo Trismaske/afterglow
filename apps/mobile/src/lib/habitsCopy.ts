@@ -7,6 +7,7 @@
  * the unit that matters ("2 days", "40 min", never "1.83 days"), and no
  * sentence states a rate the data cannot support.
  */
+import { plural } from './format';
 import type { Decisiveness, Milestone, RhythmGrid, SittingSummary, Turnaround } from './habits';
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -26,11 +27,11 @@ export function durationLabel(ms: number): string {
   const minutes = Math.round(ms / 60_000);
   if (minutes < 60) return `${minutes} min`;
   const hours = Math.round(ms / 3_600_000);
-  if (hours < 36) return `${hours} hour${hours === 1 ? '' : 's'}`;
+  if (hours < 36) return plural(hours, 'hour');
   const days = Math.round(ms / 86_400_000);
   if (days < 14) return `${days} days`;
   const weeks = Math.round(days / 7);
-  return `${weeks} week${weeks === 1 ? '' : 's'}`;
+  return plural(weeks, 'week');
 }
 
 /** "You review most on Sunday evenings", or null while it is noise. */
@@ -44,13 +45,13 @@ export function rhythmLine(grid: RhythmGrid): string | null {
 /** "12 sittings · typically 34 photos over 4 min", or null when empty. */
 export function sittingLine(summary: SittingSummary): string | null {
   if (summary.count === 0) return null;
-  const head = `${summary.count} sitting${summary.count === 1 ? '' : 's'} in your recent history · `;
+  const head = `${plural(summary.count, 'sitting')} in your recent history · `;
   // A one-photo median means most sittings are a single isolated decision
   // (splitSittings keeps them since the singleton fix). Their span is
   // 0 ms, so appending a duration would print "over under a minute" —
   // a figure dressed around nothing.
   if (summary.medianPhotos <= 1) return `${head}typically a single photo at a time`;
-  return `${head}typically ${summary.medianPhotos} photos over ${durationLabel(summary.medianDurationMs)}`;
+  return `${head}typically ${plural(summary.medianPhotos, 'photo')} over ${durationLabel(summary.medianDurationMs)}`;
 }
 
 /** The turnaround half of a queue row: what happens to work you queue. */

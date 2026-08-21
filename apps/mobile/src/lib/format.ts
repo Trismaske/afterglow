@@ -1,6 +1,14 @@
 /** Formatting helpers — pure, platform-free. */
 
 /** "1.2 GB", "340 MB", "12 kB", "0 B". */
+/** Count-noun agreement (m0.8.7, Errors_design D5 — landed by F15's
+ * copy audit, which found 47 hand-rolled ternaries): "1 photo",
+ * "3 photos". Locale-formats the number so large counts keep their
+ * thousands separators; irregular nouns pass their own plural. */
+export function plural(n: number, noun: string, pluralForm = `${noun}s`): string {
+  return `${n.toLocaleString()} ${n === 1 ? noun : pluralForm}`;
+}
+
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   const units = ['B', 'kB', 'MB', 'GB', 'TB'];

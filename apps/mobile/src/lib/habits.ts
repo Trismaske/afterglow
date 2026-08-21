@@ -19,6 +19,7 @@
  * - describe a rhythm from a handful of decisions, where the "peak hour"
  *   is just the hour you happened to open the app.
  */
+import { longestGoalRun } from './dailyGoal';
 import { median } from './forecast';
 import { dayKey } from './dates';
 
@@ -223,18 +224,12 @@ export interface PersonalRecords {
   bestDay: { day: string; count: number } | null;
 }
 
-/** The day key after `key` (local calendar; Date normalises overflow). */
-function nextDayKey(key: string): string {
-  const [y, m, d] = key.split('-').map(Number);
-  return dayKey(new Date(y, m - 1, d + 1).getTime());
-}
-
 /**
- * All-time bests over the decision-day counts (the same map the charts
- * and streaks read — decision days, so a re-decide re-stamps like
- * everywhere else). The streak definition matches goalStreaks': a run
- * of CONSECUTIVE calendar days each reaching the goal — but unbounded,
- * where the Home/Activity streak window is 120 days. Records only:
+ * All-time bests over the FIRST-decision-day counts (gap 8: the map
+ * reads decided_first_at, so a re-decide can no longer erode a
+ * historical best or fire "new personal best" because history shrank).
+ * The streak IS goalStreaks' longest (gap 9: longestGoalRun, one
+ * definition) — Home and this record can never disagree. Records only:
  * there is deliberately NO days-since-goal guilt counter.
  */
 export function personalRecords(
@@ -248,17 +243,5 @@ export function personalRecords(
       bestDay = { day, count };
     }
   }
-  const reached = [...reviewedByDay]
-    .filter(([, count]) => count >= goal)
-    .map(([day]) => day)
-    .sort();
-  let longest = 0;
-  let run = 0;
-  let previous: string | null = null;
-  for (const day of reached) {
-    run = previous !== null && nextDayKey(previous) === day ? run + 1 : 1;
-    previous = day;
-    if (run > longest) longest = run;
-  }
-  return { longestStreak: longest, bestDay };
+  return { longestStreak: longestGoalRun(reviewedByDay, goal), bestDay };
 }

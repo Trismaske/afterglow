@@ -232,18 +232,3 @@ export function frontierLine(
 export function redundantFrames(stats: { photosInGroups: number; groups: number }): number {
   return Math.max(0, stats.photosInGroups - stats.groups);
 }
-
-/**
- * "You keep 1 of N" over fully decided groups, or null when too little
- * has been decided to mean anything.
- *
- * Null when nothing was kept, too: dividing by zero kept photos would
- * report an infinite ratio from a user who culled one whole group.
- */
-export function keepsPerGroup(stats: {
-  decidedMembers: number;
-  decidedKept: number;
-}): number | null {
-  if (stats.decidedMembers === 0 || stats.decidedKept === 0) return null;
-  return stats.decidedMembers / stats.decidedKept;
-}

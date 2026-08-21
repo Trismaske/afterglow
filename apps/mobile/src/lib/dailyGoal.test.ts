@@ -14,6 +14,7 @@ import {
   serializeDailyGoal,
   shouldCelebrateGoal,
   visibleArcRange,
+  longestGoalRun,
 } from './dailyGoal';
 
 describe('parseDailyGoal', () => {
@@ -59,27 +60,60 @@ describe('goalProgress', () => {
 
 describe('goalStreaks', () => {
   const days = (counts: Record<string, number>) => new Map(Object.entries(counts));
-  // Calendar sequence ending at "today" (d5), newest LAST.
-  const keys = ['d1', 'd2', 'd3', 'd4', 'd5'];
+  // Calendar sequence ending at "today" (jan 05), newest LAST — REAL day
+  // keys since gap 9: `longest` walks the calendar over the whole map.
+  const keys = ['2026-01-01', '2026-01-02', '2026-01-03', '2026-01-04', '2026-01-05'];
 
   it('counts current and longest runs over the calendar, gaps as zero', () => {
-    const s = goalStreaks(days({ d1: 50, d2: 60, d4: 55, d5: 70 }), keys, 50);
+    const s = goalStreaks(
+      days({ '2026-01-01': 50, '2026-01-02': 60, '2026-01-04': 55, '2026-01-05': 70 }),
+      keys,
+      50,
+    );
     expect(s).toEqual({ current: 2, longest: 2 });
   });
 
   it('an unfinished today defers to yesterday without breaking the streak', () => {
-    const s = goalStreaks(days({ d3: 50, d4: 50, d5: 10 }), keys, 50);
+    const s = goalStreaks(days({ '2026-01-03': 50, '2026-01-04': 50, '2026-01-05': 10 }), keys, 50);
     expect(s).toEqual({ current: 2, longest: 2 });
   });
 
   it('a missed yesterday ends the current streak even mid-today', () => {
-    const s = goalStreaks(days({ d1: 50, d2: 50, d5: 10 }), keys, 50);
+    const s = goalStreaks(days({ '2026-01-01': 50, '2026-01-02': 50, '2026-01-05': 10 }), keys, 50);
     expect(s).toEqual({ current: 0, longest: 2 });
   });
 
   it('a reached today extends the run', () => {
-    const s = goalStreaks(days({ d4: 50, d5: 50 }), keys, 50);
+    const s = goalStreaks(days({ '2026-01-04': 50, '2026-01-05': 50 }), keys, 50);
     expect(s).toEqual({ current: 2, longest: 2 });
+  });
+
+  it('longest is ALL-TIME (gap 9): a run outside the display window still counts', () => {
+    // Five goal days in 2025 — outside `keys` entirely — beat the
+    // current two-day run; Stats' record and Home's "longest" agree by
+    // construction because both read this number.
+    const s = goalStreaks(
+      days({
+        '2025-03-01': 50,
+        '2025-03-02': 50,
+        '2025-03-03': 50,
+        '2025-03-04': 50,
+        '2025-03-05': 50,
+        '2026-01-04': 50,
+        '2026-01-05': 50,
+      }),
+      keys,
+      50,
+    );
+    expect(s).toEqual({ current: 2, longest: 5 });
+  });
+
+  it('a month boundary does not break a consecutive run', () => {
+    expect(longestGoalRun(days({ '2026-01-31': 50, '2026-02-01': 50 }), 50)).toBe(2);
+  });
+
+  it('is empty on an empty map', () => {
+    expect(goalStreaks(days({}), keys, 50)).toEqual({ current: 0, longest: 0 });
   });
 });
 

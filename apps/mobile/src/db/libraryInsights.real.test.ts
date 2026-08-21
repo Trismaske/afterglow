@@ -216,37 +216,9 @@ describe('getLifetimeStats', () => {
     );
     // "Ever completed", which is why it survives the queue being emptied.
     expect(stats.editsCompleted).toBe(resolved('edit'));
-    // DIRECTIONAL: a verified un-favourite resolves too, but it is not a
-    // favourite (the fixture points a tenth of them the other way for
-    // exactly this assertion).
-    expect(stats.favouritesApplied).toBe(
-      history.photos.filter((photo) =>
-        photo.actions.some(
-          (action) =>
-            action.kind === 'favourite' && action.resolvedAt !== null && action.target === '1',
-        ),
-      ).length,
-    );
+    // The favourites figure is retired (m0.8.7, gap 2) — a library fact
+    // under an all-time heading; the event log revives the true count.
     expect(stats.reclaimedBytes).toBe(4096);
-  });
-
-  it('favouritesApplied follows the VERIFIED direction, not a queued intent', async () => {
-    // A queued reversal has not changed what the gallery holds: applied
-    // '1' + queued '0' still counts; only the VERIFIED removal drops it.
-    const history = buildReviewHistory();
-    const d = await fresh();
-    seed(d, history.photos.slice(0, 1));
-    const photoId = history.photos[0].assetId;
-    d.raw.prepare('DELETE FROM photo_actions').run();
-    d.raw
-      .prepare(
-        `INSERT INTO photo_actions (photo_id, kind, state, target, applied_target, queued_at, resolved_at)
-         VALUES (?, 'favourite', 'queued', '0', '1', 100, 50)`,
-      )
-      .run(photoId);
-    expect((await getLifetimeStats(asExpo(d))).favouritesApplied).toBe(1);
-    d.raw.prepare("UPDATE photo_actions SET state = 'applied', applied_target = '0'").run();
-    expect((await getLifetimeStats(asExpo(d))).favouritesApplied).toBe(0);
   });
 
   it('normalizes an empty database to zeroes', async () => {
@@ -255,7 +227,6 @@ describe('getLifetimeStats', () => {
       reviewed: 0,
       culled: 0,
       editsCompleted: 0,
-      favouritesApplied: 0,
       reclaimedBytes: 0,
     });
   });
@@ -276,31 +247,6 @@ describe('getBurstStats', () => {
     expect(stats.groups).toBe(2);
   });
 
-  it('measures the keep rate over FULLY decided groups only', async () => {
-    const history = buildReviewHistory();
-    const pool = history.photos.filter((p) => p.state !== 'trashed').slice(0, 12);
-    const d = await fresh();
-    // Group A: all decided (2 kept, 2 culled). Group B: one still pending.
-    const decidedGroup = pool.slice(0, 4).map((photo, i) => ({
-      ...photo,
-      state: (i < 2 ? 'kept' : 'culled') as FixturePhoto['state'],
-      decidedAt: photo.takenAt + 1000,
-    }));
-    const mixedGroup = pool.slice(4, 7).map((photo, i) => ({
-      ...photo,
-      state: (i === 0 ? 'unreviewed' : 'kept') as FixturePhoto['state'],
-      decidedAt: i === 0 ? null : photo.takenAt + 1000,
-    }));
-    seed(d, [...decidedGroup, ...mixedGroup]);
-    seedGroups(d, [decidedGroup.map((p) => p.assetId), mixedGroup.map((p) => p.assetId)]);
-
-    const stats = await getBurstStats(asExpo(d), null);
-    // Only group A counts: a half-reviewed group would report a keep
-    // rate for work that has not happened.
-    expect(stats.decidedMembers).toBe(4);
-    expect(stats.decidedKept).toBe(2);
-  });
-
   it('is empty when nothing is grouped', async () => {
     const history = buildReviewHistory();
     const d = await fresh();
@@ -308,8 +254,6 @@ describe('getBurstStats', () => {
     expect(await getBurstStats(asExpo(d), null)).toEqual({
       photosInGroups: 0,
       groups: 0,
-      decidedMembers: 0,
-      decidedKept: 0,
     });
   });
 });

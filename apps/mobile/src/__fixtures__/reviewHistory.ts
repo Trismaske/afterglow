@@ -317,8 +317,9 @@ export function seedReviewHistory(
   const photo = raw.prepare(
     `INSERT INTO photos
        (asset_id, uri, taken_at, day, state, size_bytes,
-        reviewed_at, decided_at, culled_at, is_present, volume_name, raw_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'external_primary', ?)`,
+        reviewed_at, decided_at, decided_first_at, culled_at, is_present,
+        volume_name, raw_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'external_primary', ?)`,
   );
   const action = raw.prepare(
     `INSERT INTO photo_actions
@@ -335,6 +336,9 @@ export function seedReviewHistory(
       row.state,
       row.sizeBytes,
       row.decidedAt,
+      row.decidedAt,
+      // The immutable first stamp (v22, gap 8): the fixture's decisions
+      // are all first decisions, so the two stamps agree here.
       row.decidedAt,
       // The lifetime cull marker stamps once, when the photo was staged.
       row.state === 'culled' || row.state === 'trashed' ? row.decidedAt : null,

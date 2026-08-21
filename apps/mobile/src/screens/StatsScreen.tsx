@@ -294,7 +294,11 @@ function ActivityTab({ decisions }: { decisions: DecisionStats | null }) {
     (coverageChart?.markers ?? []).map((marker) => [marker.day, marker.total]),
   );
   const intake =
-    coverageChart === null ? null : intakeWindow(captured, decisions.reviewedByDay, plottedDays);
+    coverageChart === null
+      ? null
+      : // Both series reach+source scoped (m0.8.7, gap 6): the captured
+        // map already is, and this decided map matches it.
+        intakeWindow(captured, decisions.intakeReviewedByDay, plottedDays);
 
   return (
     <>
@@ -762,9 +766,12 @@ function HabitsTab({
               : ''}
           </Text>
         )}
+        {/* The favourites figure retired here (m0.8.7, gap 2): a
+            current-state count under an all-time heading was a library
+            fact posing as an Afterglow-actions stat — the favourite
+            event log revives the true count. */}
         <Text style={styles.cardHint}>
-          {formatBytes(habits.lifetime.reclaimedBytes)} reclaimed all-time ·{' '}
-          {habits.lifetime.favouritesApplied.toLocaleString()} favourites applied
+          {formatBytes(habits.lifetime.reclaimedBytes)} reclaimed all-time
         </Text>
       </View>
     </>

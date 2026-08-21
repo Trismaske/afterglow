@@ -56,7 +56,11 @@ Numbers change whenever an item closes, so **cross-references from code or other
    Until then the directional predicates (FAVOURITE_HELD, the lifetime COALESCE(applied_target, target) read, the heart-off 'removing' badge) are settled behavior.
    Decide it with "History event streams for actions" above: one feed, one design.
 
-6. **Capture-time truth: DST-normalized times, and photos shot in another timezone** (Tristan, m0.8.3 grilling Q2).
+6. **Type-scale and token pass** (returned from m0.8.7, which ran long — its plan's own lift-out rider).
+   The measured drift: headings 28 or 24; subtitles 12–16; thumbnail radii 8, 9 and 10; chip radii 10–20; scrim opacities 0.55–0.7; root paddings 12–20.
+   One pass over the type scale and spacing tokens, with before/after screenshots from a device pass; Summary's blank loading view and the UnitCard thumbnail-size question (Tristan leans "probably okay as is") ride it.
+
+7. **Capture-time truth: DST-normalized times, and photos shot in another timezone** (Tristan, m0.8.3 grilling Q2).
    EXIF `DateTimeOriginal` is a ZONELESS wall time.
    Every consumer, Android's own `DATE_TAKEN` extraction and our D15 rescue alike, reads it in whatever zone applies at read time.
    Two consequences follow, both currently silent.

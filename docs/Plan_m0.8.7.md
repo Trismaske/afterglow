@@ -157,3 +157,17 @@ Getting these human-vetted is a top priority; an approved entry is pruned per th
     `requestTargetedRescan` queues targets that the next flight drains as a stampless pass (no fingerprint, no baselines, no reconciliation — re-placement is presentation repair); targets arriving mid-flight drain in a follow-up pass, and a FORCED rescan drops them (its full pass covers everything).
     A day-NULL photo has no rangeable DATE_TAKEN, so its re-placement reuses the delta's direct per-id fetch; eject and un-eject both hand their anchors back from the same transaction that wrote the pairs.
     R8's strictness confirm re-copy landed back in phase 2 (appendix #2); the source picker's save keeps no confirm — its save button is itself the deliberate act.
+16. **Gap 4's in-build call: an externally-deleted decided photo counts as what was DECIDED.**
+    `culled` is exactly `culled_at IS NOT NULL` (the stamp survives staging, execution, and even a later rescue — the decision happened); a trashed row without the stamp files under the keep the user actually made; unreviewed-then-removed counts as nothing.
+    The forecast's chunk CTE now projects the stamp; the day tiles classify by current verdict with the stamp deciding the trashed split.
+17. **Gap 8's in-build reader split, and the freshness contract it re-bases.**
+    Day-bucketed reads (`getReviewedCountsByDay`, the day tiles) take `decided_first_at`; timing/ordering reads (recent stamps, decisiveness window, forecast chunk ordering, History) keep `decided_at`.
+    Consequence, deliberately accepted: `freshDecisions` (the ring credit) is now "the photo's FIRST decision ever" — the m0.8.5 A3 rule that re-decides count as fresh goal work is superseded, because it was exactly the mutable-history defect gap 8 closes; the old pins are rewritten to say so.
+18. **Gap 6 scopes ONE extra map, not every decided read.**
+    The intake chart gets its own reach+source-scoped decided series beside the captured one; the ring/streak/record map stays reach-unscoped (decision history is never reach-scoped — STATE_MODEL's rule and gap 5's own closing rationale).
+    Riding along: Stats' library loader passes roots to its queue reads (an F18 site the audit sweep missed).
+19. **Gap 9 unifies on the ALL-TIME run.**
+    `longestGoalRun` is the one streak definition — Home's "longest" suffix and Stats' record read the same number by construction; the windowed variant is gone (a 120-day cap on a *record* was a display accident, and PLAN.md's all-time framing already recorded the intent).
+    Goal-relativity stays: runs are judged against the CURRENT goal, as PLAN.md decided.
+20. **The type-scale and token pass lifts back out.**
+    The plan's own rider ("lift the pass back out if the release runs long: nothing else depends on it") applies — seven phases in, the release is long; the entry returns to docs/TODO.md with its measured drift list intact, and the release keeps its screenshot obligations out of the device pass.

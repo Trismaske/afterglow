@@ -44,7 +44,6 @@ import {
   HISTOGRAM_PAD,
   HISTOGRAM_UNDATED_GAP,
   histogramScrollX,
-  keepsPerGroup,
   rangeOfMonth,
   redundantFrames,
   type Histogram,
@@ -121,7 +120,6 @@ function buildInsightLines(
   burst: BurstStats,
 ): LibraryInsightLines {
   const libraryBytes = storage.bytes.kept + storage.bytes.staged + storage.bytes.unreviewed;
-  const keeps = keepsPerGroup(burst);
   const redundant = redundantFrames(burst);
   return {
     histogram: buildHistogram(buckets),
@@ -139,12 +137,13 @@ function buildInsightLines(
           // Sizes land with the scan, so an in-progress library would
           // otherwise present a partial total as the whole truth.
           (storage.unsized > 0 ? ` · ${storage.unsized} not yet sized` : ''),
+    // The redundancy half alone (m0.8.7, gap 1): "you keep 1 of X" over
+    // current-state rows destroyed itself as culls confirmed — the
+    // durable behavior figure waits for the event log.
     burst:
       burst.groups === 0
         ? null
-        : `${plural(redundant, 'near-duplicate frame')} in ` +
-          `${plural(burst.groups, 'group')}` +
-          (keeps === null ? '' : ` · you keep 1 of ${keeps.toFixed(1)}`),
+        : `${plural(redundant, 'near-duplicate frame')} in ${plural(burst.groups, 'group')}`,
   };
 }
 

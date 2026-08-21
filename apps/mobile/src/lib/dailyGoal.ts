@@ -113,29 +113,54 @@ export interface GoalStreaks {
    * today's goal is not yet reached — an in-progress day never breaks
    * the streak it is about to extend). */
   current: number;
+  /** ALL-TIME longest run (m0.8.7, STATS_ACCURACY gap 9): ONE streak
+   * definition everywhere — Home's "longest" and Stats' record are the
+   * same number by construction (both call longestGoalRun). The old
+   * 120-day-window variant silently disagreed with the record. */
   longest: number;
+}
+
+/** The day after `key`, as a day key (local calendar). */
+function nextDayKey(key: string): string {
+  const [y, m, d] = key.split('-').map(Number);
+  const next = new Date(y, m - 1, d + 1);
+  const mm = String(next.getMonth() + 1).padStart(2, '0');
+  const dd = String(next.getDate()).padStart(2, '0');
+  return `${next.getFullYear()}-${mm}-${dd}`;
+}
+
+/**
+ * The single longest run of CONSECUTIVE calendar days each reaching the
+ * goal, over the WHOLE map (gap 9's one definition) — the map's day
+ * coverage, not a display window, bounds it.
+ */
+export function longestGoalRun(days: ReadonlyMap<string, number>, goal: number): number {
+  const reached = [...days]
+    .filter(([, count]) => count >= goal)
+    .map(([day]) => day)
+    .sort();
+  let longest = 0;
+  let run = 0;
+  let previous: string | null = null;
+  for (const day of reached) {
+    run = previous !== null && nextDayKey(previous) === day ? run + 1 : 1;
+    previous = day;
+    if (run > longest) longest = run;
+  }
+  return longest;
 }
 
 /**
  * Streaks over per-day reviewed counts. `days` maps "YYYY-MM-DD" → count;
  * `dayKeys` must be the calendar sequence ending at today (newest LAST),
- * e.g. from dates.recentDayKeys reversed — gaps count as zero.
+ * e.g. from dates.recentDayKeys reversed — gaps count as zero. `current`
+ * walks that calendar; `longest` is all-time over the map (gap 9).
  */
 export function goalStreaks(
   days: ReadonlyMap<string, number>,
   dayKeys: readonly string[],
   goal: number,
 ): GoalStreaks {
-  let longest = 0;
-  let run = 0;
-  for (const key of dayKeys) {
-    if ((days.get(key) ?? 0) >= goal) {
-      run += 1;
-      if (run > longest) longest = run;
-    } else {
-      run = 0;
-    }
-  }
   // Current streak counts back from today; an unfinished today defers to
   // yesterday's streak.
   let current = 0;
@@ -145,7 +170,7 @@ export function goalStreaks(
     if (reached) current += 1;
     else break;
   }
-  return { current, longest };
+  return { current, longest: longestGoalRun(days, goal) };
 }
 
 // ------------------------------------------------------------------

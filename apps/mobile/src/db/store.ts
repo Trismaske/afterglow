@@ -462,37 +462,26 @@ export async function applyReviewDecisions(
         throw new Error('This photo is no longer available — it was removed outside Afterglow.');
       }
     }
-    // Each row's prior decided_at, read INSIDE the transaction (m0.8.5,
-    // A3). The daily goal counts today's reviewing WORK, and that
-    // judgment must come from the write's own view of the rows, never
-    // from what a screen rendered: every caller used to compute it from
-    // a cached member list, and every caller that forgot simply did not
-    // count (the state editor, History re-decides).
-    //
-    // decided_at, not the prior verdict, is what makes a decision
-    // "fresh", because that is exactly what `getReviewedCountsByDay`
-    // counts — one row per photo whose LATEST stamp falls in the day. A
-    // photo already stamped today therefore adds nothing however often
-    // it is re-decided, cleared and decided again included (clearing
-    // deliberately keeps the stamp). A photo stamped on an earlier day
-    // does count: its row moves into today's bucket. Judging on the
-    // verdict alone drifted from the number the ring shows, which is how
-    // a celebration fires before the goal is visibly reached.
+    // Each row's prior FIRST stamp, read INSIDE the transaction (m0.8.5
+    // A3's write-owns-the-judgment rule, re-based by m0.8.7's gap 8):
+    // the goal ring counts FIRST decisions (`getReviewedCountsByDay`
+    // reads the immutable decided_first_at), so a decision is "fresh"
+    // exactly when this write is the photo's first ever — a re-decide,
+    // however many days later, moves no bar and credits no ring.
     //
     // Chunked to stay clear of SQLite's variable limit; one query per
     // 400 rows, against a loop that already runs one UPDATE per row.
-    const priorDecidedAt = new Map<string, number | null>();
+    const priorFirstAt = new Map<string, number | null>();
     for (let i = 0; i < changes.length; i += 400) {
       const slice = changes.slice(i, i + 400);
-      const rows = await txn.getAllAsync<{ asset_id: string; decided_at: number | null }>(
-        `SELECT asset_id, decided_at FROM photos WHERE asset_id IN (${slice
+      const rows = await txn.getAllAsync<{ asset_id: string; decided_first_at: number | null }>(
+        `SELECT asset_id, decided_first_at FROM photos WHERE asset_id IN (${slice
           .map(() => '?')
           .join(',')})`,
         ...slice.map(([assetId]) => assetId),
       );
-      for (const row of rows) priorDecidedAt.set(row.asset_id, row.decided_at);
+      for (const row of rows) priorFirstAt.set(row.asset_id, row.decided_first_at);
     }
-    const today = dayKey(at);
     let staleChanges = 0;
     for (const [assetId, verdict] of changes) {
       const applied = await txn.runAsync(
@@ -548,13 +537,9 @@ export async function applyReviewDecisions(
         continue;
       }
       appliedIds.push(assetId);
-      // Fresh work only: a clear writes no stamp, and a row already
-      // stamped today is already inside the number the goal ring shows.
-      const stamp = priorDecidedAt.get(assetId) ?? null;
-      if (
-        (verdict === 'kept' || verdict === 'culled') &&
-        (stamp === null || dayKey(stamp) !== today)
-      )
+      // Fresh work only (gap 8): the photo's FIRST decision ever — a
+      // clear keeps the first stamp, so decide→clear→decide is one.
+      if ((verdict === 'kept' || verdict === 'culled') && priorFirstAt.get(assetId) == null)
         freshDecisions += 1;
     }
     if (staleChanges > 0) {
@@ -1572,10 +1557,10 @@ export async function applyRedecision(
 ): Promise<ReviewDecisionResult> {
   const result: ReviewDecisionResult = { appliedIds: [], freshDecisions: 0 };
   await withWriteTransaction(db, async (txn) => {
-    // The prior stamp is read BEFORE the update writes decided_at = at —
-    // the freshness rule compares the day of the decision being replaced.
-    const prior = await txn.getFirstAsync<{ decided_at: number | null }>(
-      'SELECT decided_at FROM photos WHERE asset_id = ?',
+    // The prior FIRST stamp is read BEFORE the update can set it —
+    // fresh = this write is the photo's first decision ever (gap 8).
+    const prior = await txn.getFirstAsync<{ decided_first_at: number | null }>(
+      'SELECT decided_first_at FROM photos WHERE asset_id = ?',
       assetId,
     );
     if (target === 'keep') {
@@ -1636,10 +1621,9 @@ export async function applyRedecision(
       assetId,
     );
     result.appliedIds.push(assetId);
-    // Same rule as applyReviewDecisions: a row already stamped today is
-    // already inside the number the goal ring shows.
-    const stamp = prior?.decided_at ?? null;
-    if (stamp === null || dayKey(stamp) !== dayKey(at)) result.freshDecisions = 1;
+    // Same rule as applyReviewDecisions (gap 8): fresh = the photo's
+    // FIRST decision ever — and a re-decide, by definition, never is.
+    if ((prior?.decided_first_at ?? null) === null) result.freshDecisions = 1;
   });
   return result;
 }
@@ -1759,15 +1743,16 @@ export async function getCoverageByDay(
   return rows.map((r) => ({ day: r.day, total: Number(r.total), pending: Number(r.pending) }));
 }
 
-/** Review-ACTION counts per local day (the daily goal ring and streaks).
- * m0.8.1 (tester decision): the goal is today's reviewing WORK — a photo
- * decided today counts regardless of when it was first reviewed, so this
- * reads the re-stamping decided_at, not reviewed_at's first-stamp
- * (which stays the lifetime-stats truth). One photo decided twice in a
- * day still counts once (the column holds only the latest stamp). */
+/** FIRST-decision counts per local day (the daily goal ring, streaks,
+ * 30-day chart, personal bests — every day-bucketed decision history).
+ * m0.8.7 (STATS_ACCURACY gap 8, vetted): these read the IMMUTABLE
+ * `decided_first_at`, so past days never move — a re-decide can neither
+ * drain the original day's bar nor inflate today's. Timing and ordering
+ * reads (recent pace, sittings, History) keep the re-stamping
+ * `decided_at`: re-decisions are real recent activity. */
 export async function getReviewedCountsByDay(
   db: SQLiteDatabase,
-  /** Epoch ms lower bound — NOT a day key: bounding on decided_at keeps
+  /** Epoch ms lower bound — NOT a day key: bounding on the stamp keeps
    * the filter indexable and, critically, avoids the alias trap below. */
   sinceMs: number,
   /** SOURCE-SCOPED (m0.8.2): the ring, the streaks, the 30-day chart and
@@ -1775,8 +1760,14 @@ export async function getReviewedCountsByDay(
    * about the library you selected. See statsLoad.ts for where the line
    * between "your library now" and "what you did" is drawn. */
   roots: readonly SourceRoot[] | null = null,
+  /** REACH-SCOPED only for the intake chart's decided series (gap 6,
+   * vetted: both intake series reach+source scoped — a comparison must
+   * describe one population). Every other consumer omits it: decision
+   * HISTORY is never reach-scoped (docs/STATE_MODEL.md). */
+  mounted: readonly string[] | null = null,
 ): Promise<Map<string, number>> {
   const src = sourceClause(roots);
+  const reach = reachClause(mounted);
   // `AS decided_day`, never `AS day`: `day` is a REAL COLUMN on photos
   // (the capture day), and SQLite resolves a bare name in GROUP BY /
   // HAVING to the COLUMN, not to the output alias. The old
@@ -1785,41 +1776,38 @@ export async function getReviewedCountsByDay(
   // the window but decided today, which is exactly the semantics the
   // daily goal promises (proven in store.real.test.ts).
   const rows = await db.getAllAsync<{ decided_day: string; n: number }>(
-    `SELECT date(decided_at / 1000, 'unixepoch', 'localtime') AS decided_day, COUNT(*) AS n
-     FROM photos WHERE decided_at IS NOT NULL AND decided_at >= ?${src.sql}
+    `SELECT date(decided_first_at / 1000, 'unixepoch', 'localtime') AS decided_day, COUNT(*) AS n
+     FROM photos
+     WHERE decided_first_at IS NOT NULL AND decided_first_at >= ?${src.sql}${reach.sql}
      GROUP BY decided_day`,
     sinceMs,
     ...src.params,
+    ...reach.params,
   );
   return new Map(rows.map((r) => [r.decided_day, r.n]));
 }
 
-/** Home corpus stats: groups found + rows with a CURRENT verdict (a
- * cleared verdict returns to the pending pool even though reviewed_at
- * stays first-stamped for lifetime stats). */
+/** Home corpus stats: rows with a CURRENT verdict (a cleared verdict
+ * returns to the pending pool even though reviewed_at stays
+ * first-stamped for lifetime stats). The groups-found figure is gone
+ * (m0.8.7, gap 11): queried on every Home focus, rendered nowhere. */
 export async function getCorpusStats(
   db: SQLiteDatabase,
   roots: readonly SourceRoot[] | null = null,
   mounted: readonly string[] | null = null,
-): Promise<{ groupsFound: number; reviewed: number }> {
+): Promise<{ reviewed: number }> {
   const src = sourceClause(roots, 'p.uri');
   const reach = reachClause(mounted, 'p.volume_name');
-  const row = await db.getFirstAsync<{ groups: number; reviewed: number }>(
-    `SELECT
-       (SELECT COUNT(DISTINCT a.group_id) FROM photo_group_assignments a
-        JOIN photos p ON p.asset_id = a.photo_id
-        WHERE a.group_id IS NOT NULL AND p.is_present = 1${src.sql}${reach.sql}) AS groups,
-       (SELECT COUNT(*) FROM photos p
-        -- Home's denominator is the current MediaStore corpus — count
-        -- only verdicts on PRESENT photos (trashed/removed rows left it).
-        WHERE p.state IN ('kept', 'culled')
-          AND p.is_present = 1${src.sql}${reach.sql}) AS reviewed`,
-    ...src.params,
-    ...reach.params,
+  const row = await db.getFirstAsync<{ reviewed: number }>(
+    `SELECT COUNT(*) AS reviewed FROM photos p
+      -- Home's denominator is the current MediaStore corpus — count
+      -- only verdicts on PRESENT photos (trashed/removed rows left it).
+      WHERE p.state IN ('kept', 'culled')
+        AND p.is_present = 1${src.sql}${reach.sql}`,
     ...src.params,
     ...reach.params,
   );
-  return { groupsFound: row?.groups ?? 0, reviewed: row?.reviewed ?? 0 };
+  return { reviewed: row?.reviewed ?? 0 };
 }
 
 /**
@@ -3346,8 +3334,8 @@ export async function unstageCullDirect(
   // earlier the same day, so the day rule yields 0 by construction.
   const result: ReviewDecisionResult = { appliedIds: [], freshDecisions: 0 };
   await withWriteTransaction(db, async (txn) => {
-    const prior = await txn.getFirstAsync<{ decided_at: number | null }>(
-      'SELECT decided_at FROM photos WHERE asset_id = ?',
+    const prior = await txn.getFirstAsync<{ decided_first_at: number | null }>(
+      'SELECT decided_first_at FROM photos WHERE asset_id = ?',
       assetId,
     );
     const moved = await txn.runAsync(
@@ -3372,8 +3360,9 @@ export async function unstageCullDirect(
     // same bug applyRedecision's guard prevents.
     if (Number(moved.changes) === 0) return;
     result.appliedIds.push(assetId);
-    const stamp = prior?.decided_at ?? null;
-    if (stamp === null || dayKey(stamp) !== dayKey(at)) result.freshDecisions = 1;
+    // Gap 8: fresh = the photo's FIRST decision ever (a cull staged
+    // straight from the edited-copy prompt can be exactly that).
+    if ((prior?.decided_first_at ?? null) === null) result.freshDecisions = 1;
     if (resolveCopyMatches) {
       await txn.runAsync(
         "UPDATE edit_copy_matches SET state = 'resolved' WHERE original_id = ? AND state = 'pending'",
@@ -3464,12 +3453,18 @@ export async function getDayReviewSummary(
     staged: number;
     trashed: number;
   }>(
+    // Stamps-only classification (m0.8.7, gap 4): an EXTERNAL deletion
+    // never re-files a keep as a cull — app-staged culls stamp
+    // culled_at, external removals never do, so a trashed row without
+    // the stamp still counts under the KEEP the user actually decided.
     `SELECT COUNT(*) AS reviewed,
-            SUM(CASE WHEN state = 'kept' THEN 1 ELSE 0 END) AS kept,
+            SUM(CASE WHEN state = 'kept'
+                       OR (state = 'trashed' AND culled_at IS NULL) THEN 1 ELSE 0 END) AS kept,
             SUM(CASE WHEN state = 'culled' THEN 1 ELSE 0 END) AS staged,
-            SUM(CASE WHEN state = 'trashed' THEN 1 ELSE 0 END) AS trashed
+            SUM(CASE WHEN state = 'trashed' AND culled_at IS NOT NULL THEN 1 ELSE 0 END)
+              AS trashed
      FROM photos
-     WHERE decided_at BETWEEN ? AND ?${src.sql}`,
+     WHERE decided_first_at BETWEEN ? AND ?${src.sql}`,
     range.startMs,
     range.endMs,
     ...src.params,
@@ -3807,14 +3802,16 @@ export async function getForecastBaseRates(
     organized: number;
   }>(
     `WITH decided AS (
-       SELECT asset_id, state,
+       SELECT asset_id, state, culled_at,
               NTILE(?) OVER (ORDER BY decided_at) AS chunk
        FROM photos
        WHERE decided_at IS NOT NULL${src.sql}
      )
      SELECT chunk,
             COUNT(*) AS total,
-            SUM(CASE WHEN state IN ('culled', 'trashed') THEN 1 ELSE 0 END) AS culled,
+            -- Stamps-only (gap 4): a cull DECISION is the lifetime
+            -- culled_at mark; external deletions never inflate the rate.
+            SUM(CASE WHEN culled_at IS NOT NULL THEN 1 ELSE 0 END) AS culled,
             SUM(CASE WHEN EXISTS (SELECT 1 FROM photo_actions pa_edit WHERE pa_edit.photo_id = decided.asset_id AND pa_edit.kind = 'edit' AND pa_edit.state IN ('queued', 'error')) OR EXISTS (SELECT 1 FROM photo_actions pv_edit WHERE pv_edit.photo_id = decided.asset_id AND pv_edit.kind = 'edit' AND pv_edit.resolved_at IS NOT NULL) THEN 1 ELSE 0 END) AS toEdit,
             -- Direction matters here where it does not elsewhere: an
             -- un-favourite is an action, but it is not a favourite, and
@@ -4065,8 +4062,10 @@ export async function getDecisionOutcomesSince(
 ): Promise<{ decided: number; culled: number }> {
   const src = sourceClause(roots);
   const row = await db.getFirstAsync<{ decided: number; culled: number }>(
+    // Stamps-only (gap 4): gallery cleanups no longer read as "culling
+    // harder lately".
     `SELECT COUNT(*) AS decided,
-            SUM(CASE WHEN state IN ('culled', 'trashed') THEN 1 ELSE 0 END) AS culled
+            SUM(CASE WHEN culled_at IS NOT NULL THEN 1 ELSE 0 END) AS culled
      FROM photos
      WHERE decided_at IS NOT NULL AND decided_at >= ?${src.sql}`,
     sinceMs,
@@ -4108,10 +4107,12 @@ export async function getCaptureHistogram(
   const src = sourceClause(roots);
   const reach = reachClause(mounted);
   const rows = await db.getAllAsync<{ month: string | null; total: number; reviewed: number }>(
+    // No 'trashed' arm (m0.8.7, gap 11): is_present = 1 makes it
+    // unreachable — the chart describes the CURRENT library, and a dead
+    // arm reads as intent it never had.
     `SELECT substr(day, 1, 7) AS month,
             COUNT(*) AS total,
-            SUM(CASE WHEN state IN ('kept', 'culled', 'trashed')
-                     THEN 1 ELSE 0 END) AS reviewed
+            SUM(CASE WHEN state IN ('kept', 'culled') THEN 1 ELSE 0 END) AS reviewed
      FROM photos
      WHERE is_present = 1${src.sql}${reach.sql}
      GROUP BY month
@@ -4148,14 +4149,23 @@ export async function getBacklogFrontier(
     oldestUnreviewedDay: string | null;
     undatedPending: number;
   }>(
+    // reviewedBackTo reads the DURABLE first stamp over ALL rows —
+    // tombstones included (m0.8.7, gap 7): deleting your oldest reviewed
+    // photos must not walk the frontier forward; the review HAPPENED.
+    // The pending arms stay presence+reach-scoped: pending is
+    // current-state work.
     `SELECT
-       MIN(CASE WHEN state IN ('kept', 'culled', 'trashed') THEN day END)
-         AS reviewedBackTo,
-       MIN(CASE WHEN state = 'unreviewed' THEN day END) AS oldestUnreviewedDay,
-       SUM(CASE WHEN state = 'unreviewed' AND day IS NULL THEN 1 ELSE 0 END) AS undatedPending
-     FROM photos WHERE is_present = 1${src.sql}${reach.sql}`,
+       (SELECT MIN(day) FROM photos
+         WHERE decided_first_at IS NOT NULL AND day IS NOT NULL${src.sql}) AS reviewedBackTo,
+       MIN(CASE WHEN state = 'unreviewed' AND is_present = 1${reach.sql} THEN day END)
+         AS oldestUnreviewedDay,
+       SUM(CASE WHEN state = 'unreviewed' AND day IS NULL AND is_present = 1${reach.sql}
+                THEN 1 ELSE 0 END) AS undatedPending
+     FROM photos WHERE 1=1${src.sql}`,
     ...src.params,
     ...reach.params,
+    ...reach.params,
+    ...src.params,
   );
   return {
     reviewedBackTo: row?.reviewedBackTo ?? null,
@@ -4187,9 +4197,11 @@ export async function getStorageBreakdown(
     staged: number;
     unreviewed: number;
   }>(
+    // No 'trashed' arm in kept (m0.8.7, gap 11): is_present = 1 makes
+    // it unreachable, and trashed bytes are not on-device storage.
     `SELECT COUNT(size_bytes) AS sized,
             SUM(CASE WHEN size_bytes IS NULL THEN 1 ELSE 0 END) AS unsized,
-            COALESCE(SUM(CASE WHEN state IN ('kept', 'trashed') THEN size_bytes END), 0) AS kept,
+            COALESCE(SUM(CASE WHEN state = 'kept' THEN size_bytes END), 0) AS kept,
             COALESCE(SUM(CASE WHEN state = 'culled' THEN size_bytes END), 0)
               AS staged,
             COALESCE(SUM(CASE WHEN state = 'unreviewed' THEN size_bytes END), 0) AS unreviewed
@@ -4208,23 +4220,17 @@ export async function getStorageBreakdown(
   };
 }
 
-/** Similarity-group shape — the app's reason for existing, in numbers. */
+/** Similarity-group shape — the app's reason for existing, in numbers.
+ * The decided-members/kept pair is GONE (m0.8.7, STATS_ACCURACY gap 1):
+ * "you keep 1 of X" over current-state rows destroys itself as culls
+ * confirm — the durable version waits for the event log. */
 export interface BurstStats {
   /** Present photos sitting in a similarity group. */
   photosInGroups: number;
   /** Groups holding them. */
   groups: number;
-  /** Members of groups where EVERY member has been decided. */
-  decidedMembers: number;
-  /** Of those, the ones kept (done or to-edit). */
-  decidedKept: number;
 }
 
-/**
- * Burst statistics. `decidedMembers / decidedKept` is the "you keep 1 of
- * N" figure, and it counts only FULLY decided groups: a half-reviewed
- * group would report a keep rate for work not yet done.
- */
 export async function getBurstStats(
   db: SQLiteDatabase,
   roots: readonly SourceRoot[] | null = null,
@@ -4232,12 +4238,6 @@ export async function getBurstStats(
 ): Promise<BurstStats> {
   const src = sourceClause(roots, 'p.uri');
   const reach = reachClause(mounted, 'p.volume_name');
-  // The fully-decided test runs over the SAME scoped population as the
-  // outer counts (codex phase-3 + final cycle M8): a hidden unreviewed
-  // member — ejected, tombstoned, or out of the selected source — must
-  // not block a group whose measured members are all decided.
-  const subReach = reachClause(mounted, 'p2.volume_name');
-  const subSrc = sourceClause(roots, 'p2.uri');
   const row = await db.getFirstAsync<{ photosInGroups: number; groups: number }>(
     `SELECT COUNT(*) AS photosInGroups, COUNT(DISTINCT a.group_id) AS groups
      FROM photo_group_assignments a
@@ -4246,28 +4246,9 @@ export async function getBurstStats(
     ...src.params,
     ...reach.params,
   );
-  const decided = await db.getFirstAsync<{ members: number; kept: number }>(
-    `SELECT COUNT(*) AS members,
-            SUM(CASE WHEN p.state = 'kept' THEN 1 ELSE 0 END) AS kept
-     FROM photo_group_assignments a
-     JOIN photos p ON p.asset_id = a.photo_id
-     WHERE a.group_id IS NOT NULL AND p.is_present = 1${src.sql}${reach.sql}
-       AND a.group_id NOT IN (
-         SELECT a2.group_id FROM photo_group_assignments a2
-         JOIN photos p2 ON p2.asset_id = a2.photo_id
-         WHERE a2.group_id IS NOT NULL AND p2.state = 'unreviewed'
-           AND p2.is_present = 1${subSrc.sql}${subReach.sql}
-       )`,
-    ...src.params,
-    ...reach.params,
-    ...subSrc.params,
-    ...subReach.params,
-  );
   return {
     photosInGroups: Number(row?.photosInGroups ?? 0),
     groups: Number(row?.groups ?? 0),
-    decidedMembers: Number(decided?.members ?? 0),
-    decidedKept: Number(decided?.kept ?? 0),
   };
 }
 
@@ -4282,38 +4263,31 @@ export interface LifetimeStats {
   reviewed: number;
   culled: number;
   editsCompleted: number;
-  favouritesApplied: number;
   reclaimedBytes: number;
 }
 
+/** The favourites figure is GONE (m0.8.7, STATS_ACCURACY gap 2): a
+ * current-state count of the gallery's hearts under an "all-time"
+ * heading was a library fact posing as an Afterglow-actions stat —
+ * doubly so now the scan projects gallery hearts (F20). The true
+ * applied-count revives with the favourite event log. */
 export async function getLifetimeStats(db: SQLiteDatabase): Promise<LifetimeStats> {
   const photo = await db.getFirstAsync<{
     reviewed: number;
     culled: number;
     editsCompleted: number;
-    favouritesApplied: number;
   }>(
     `SELECT
        SUM(CASE WHEN reviewed_at IS NOT NULL THEN 1 ELSE 0 END) AS reviewed,
        SUM(CASE WHEN culled_at IS NOT NULL THEN 1 ELSE 0 END) AS culled,
        (SELECT COUNT(*) FROM photo_actions
-         WHERE kind = 'edit' AND resolved_at IS NOT NULL) AS editsCompleted,
-       (SELECT COUNT(*) FROM photo_actions
-         -- Directional AND verified (STATE_MODEL.md): a verified
-         -- un-favourite resolves too, but it is not a favourite. The
-         -- VERIFIED direction (applied_target) outranks the current
-         -- intent (target) here, unlike the heart/forecast predicates:
-         -- "applied" is a statement about what the gallery holds, and a
-         -- merely QUEUED reversal has not changed that yet (codex r4).
-         WHERE kind = 'favourite' AND resolved_at IS NOT NULL
-           AND COALESCE(applied_target, target) = '1') AS favouritesApplied
+         WHERE kind = 'edit' AND resolved_at IS NOT NULL) AS editsCompleted
      FROM photos`,
   );
   return {
     reviewed: photo?.reviewed ?? 0,
     culled: photo?.culled ?? 0,
     editsCompleted: photo?.editsCompleted ?? 0,
-    favouritesApplied: photo?.favouritesApplied ?? 0,
     reclaimedBytes: await lifetimeReclaimedBytes(db),
   };
 }

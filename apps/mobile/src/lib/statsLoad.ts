@@ -115,6 +115,8 @@ export interface DecisionStats {
    * needs the personal best); the charts and streaks keep reading only
    * their own window's keys out of it. */
   reviewedByDay: Map<string, number>;
+  /** The intake chart's decided series — reach+source scoped (gap 6). */
+  intakeReviewedByDay: Map<string, number>;
   /** All-time bests (m0.8.2, F13): the Activity header's reference to
    * beat, computed over the same map. */
   records: PersonalRecords;
@@ -146,30 +148,37 @@ export async function loadDecisionStats(
   // One mounted-set read per burst (m0.8.3 §5): coverage and pool
   // numbers exclude unreachable photos; decision HISTORY stays whole.
   const mounted = await mountedVolumeSet();
-  const [rawGoal, rawCoverage, reviewedByDay, lifetime, todaySummary, coverageRows] =
-    await Promise.all([
-      getSetting(db, DAILY_GOAL_KEY),
-      getSetting(db, COVERAGE_GOAL_KEY),
-      // UNBOUNDED since m0.8.2 (F13): the personal records need every
-      // decision day, and the grouped read over all of them is one
-      // indexed aggregate; windowed consumers keep reading their own
-      // keys out of the map.
-      getReviewedCountsByDay(db, 0, sources?.roots ?? null),
-      // All-time totals deliberately ignore the source (see the header).
-      getLifetimeStats(db),
-      // Decision-day summary: older photos reviewed today count too.
-      getDayReviewSummary(db, today, sources?.roots ?? null),
-      // Capture-day coverage over the SAME window the charts plot, in the
-      // SAME source scope as every other corpus number (m0.8.2 fix).
-      sources === null
-        ? Promise.resolve(null)
-        : getCoverageByDay(
-            db,
-            newestFirst[newestFirst.length - 1] ?? today,
-            sources.roots,
-            mounted,
-          ),
-    ]);
+  const [
+    rawGoal,
+    rawCoverage,
+    reviewedByDay,
+    intakeReviewedByDay,
+    lifetime,
+    todaySummary,
+    coverageRows,
+  ] = await Promise.all([
+    getSetting(db, DAILY_GOAL_KEY),
+    getSetting(db, COVERAGE_GOAL_KEY),
+    // UNBOUNDED since m0.8.2 (F13): the personal records need every
+    // decision day, and the grouped read over all of them is one
+    // indexed aggregate; windowed consumers keep reading their own
+    // keys out of the map.
+    getReviewedCountsByDay(db, 0, sources?.roots ?? null),
+    // The INTAKE chart's decided series (m0.8.7, gap 6): reach+source
+    // scoped like its captured partner — a comparison must describe
+    // one population. Every other decided read stays reach-unscoped
+    // (decision history is never reach-scoped, STATE_MODEL).
+    getReviewedCountsByDay(db, 0, sources?.roots ?? null, mounted),
+    // All-time totals deliberately ignore the source (see the header).
+    getLifetimeStats(db),
+    // Decision-day summary: older photos reviewed today count too.
+    getDayReviewSummary(db, today, sources?.roots ?? null),
+    // Capture-day coverage over the SAME window the charts plot, in the
+    // SAME source scope as every other corpus number (m0.8.2 fix).
+    sources === null
+      ? Promise.resolve(null)
+      : getCoverageByDay(db, newestFirst[newestFirst.length - 1] ?? today, sources.roots, mounted),
+  ]);
   const goal = parseDailyGoal(rawGoal);
   const dayKeys = [...newestFirst].reverse();
   return {
@@ -181,6 +190,7 @@ export async function loadDecisionStats(
     // math as the Home ring).
     streaks: goalStreaks(reviewedByDay, dayKeys, goal),
     reviewedByDay,
+    intakeReviewedByDay,
     records: personalRecords(reviewedByDay, goal),
     dayKeys,
     coverageGoal: parseCoverageGoal(rawCoverage),
@@ -347,8 +357,6 @@ export async function loadHabitStats(
 export interface LibraryStats {
   /** Whole-corpus state breakdown (MediaStore total + tracked rows). */
   breakdown: StateBreakdown;
-  /** Photos the scan has grouped into similarity groups. */
-  groupsFound: number;
   /** Photos already gone to system trash (a subset of `breakdown.done`). */
   trashed: number;
   /** EXACT bytes the staged culls would free (live stats, recorded size
@@ -377,14 +385,16 @@ export async function loadLibraryStats(
       mounted,
     ),
     getCorpusStats(db, sources.roots, mounted),
-    countStagedCulls(db, mounted),
+    countStagedCulls(db, mounted, sources.roots),
     // v18: one grouped query instead of four bespoke count functions.
-    countQueues(db, mounted),
+    // Both scope axes (m0.8.7, F18) — Stats' queue rows must equal the
+    // tab badges and the screens they describe.
+    countQueues(db, mounted, sources.roots),
   ]);
-  const staged = cull > 0 ? await getStagedCullBytes(db, mounted) : { scanned: 0, unsized: [] };
+  const staged =
+    cull > 0 ? await getStagedCullBytes(db, mounted, sources.roots) : { scanned: 0, unsized: [] };
   return {
     breakdown: computeBreakdown(total, counts),
-    groupsFound: corpus.groupsFound,
     trashed: counts.trashed,
     // Scan-recorded sizes are summed in SQL; only rows the scan never
     // sized cost a (blocking) stat, bounded by the query's LIMIT.

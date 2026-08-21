@@ -133,7 +133,6 @@ export function HomeScreen({ navigation }: Props) {
   const [finish, setFinish] = useState<FinishLine | null>(null);
   const [corpus, setCorpus] = useState<{
     total: number;
-    groupsFound: number;
     reviewed: number;
   } | null>(null);
   const [stagedCullCount, setStagedCullCount] = useState(0);
@@ -373,8 +372,7 @@ export function HomeScreen({ navigation }: Props) {
         setCoverage(coverageGoal);
         if (nextCoverageStatus !== undefined) setCoverageStatus(nextCoverageStatus);
         if (nextFinish !== undefined) setFinish(nextFinish);
-        if (stats && total !== null)
-          setCorpus({ total, groupsFound: stats.groupsFound, reviewed: stats.reviewed });
+        if (stats && total !== null) setCorpus({ total, reviewed: stats.reviewed });
         // The §5 naming surface: which in-scope volumes are out, with the
         // tracked photos waiting on them. Unknowable mounted set (legacy)
         // = no claims, banner absent.

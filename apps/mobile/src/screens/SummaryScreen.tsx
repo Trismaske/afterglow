@@ -106,7 +106,6 @@ export function SummaryScreen({ navigation }: Props) {
             <LifetimeStat value={lifetime.reviewed} label="reviewed" />
             <LifetimeStat value={lifetime.culled} label="culled" />
             <LifetimeStat value={lifetime.editsCompleted} label="edits completed" />
-            <LifetimeStat value={lifetime.favouritesApplied} label="favourites applied" />
             <LifetimeStat value={lifetime.currentStreak} label="goal streak (days)" />
             <LifetimeStat value={lifetime.longestStreak} label="longest goal streak" />
           </View>

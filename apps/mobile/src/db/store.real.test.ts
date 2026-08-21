@@ -166,16 +166,18 @@ describe("freshDecisions — the write counts the day's own work (m0.8.5, A3)", 
     expect(byDay.get(dayKey(AT))).toBe(1);
   });
 
-  it('counts a photo decided on an EARLIER day again today', async () => {
-    // Its row moves into today's bucket, so today's count does rise.
+  it('a photo decided on an EARLIER day is NOT fresh again today (gap 8)', async () => {
+    // History is immutable: the first decision keeps its original day —
+    // a re-decide moves no bar and credits no ring.
     const d = await fresh();
     await seed(d, ['1']);
     const yesterday = AT - 86_400_000;
     await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], yesterday);
     const again = await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT);
-    expect(again.freshDecisions).toBe(1);
+    expect(again.freshDecisions).toBe(0);
     const byDay = await getReviewedCountsByDay(asExpo(d), rangeOfDayKey(dayKey(yesterday)).startMs);
-    expect(byDay.get(dayKey(AT))).toBe(1);
+    expect(byDay.get(dayKey(yesterday))).toBe(1);
+    expect(byDay.get(dayKey(AT))).toBeUndefined();
   });
 
   it('counts only the rows that committed in a mixed batch', async () => {
@@ -227,33 +229,31 @@ describe("freshDecisions — the write counts the day's own work (m0.8.5, A3)", 
     expect(first.freshDecisions + second.freshDecisions).toBe(byDay.get(dayKey(AT)) ?? 0);
   });
 
-  it('counts a redecision rescuing an EARLIER day’s staged cull (§10 check 13)', async () => {
-    // The cull-list sheet's keep is a verdict write like any other: the
-    // photo's row moves into today's bucket, so it is fresh goal work.
-    // This path used to return nothing, so the ring never moved.
+  it('a redecision rescuing an EARLIER day’s staged cull is applied but never fresh (gap 8)', async () => {
+    // The rescue commits (appliedIds says so), but the photo's FIRST
+    // decision happened yesterday — its history stays there.
     const d = await fresh();
     await seed(d, ['1']);
     const yesterday = AT - 86_400_000;
     await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], yesterday);
     const rescued = await applyRedecision(asExpo(d), id('1'), 'keep', AT);
-    expect(rescued.freshDecisions).toBe(1);
+    expect(rescued.freshDecisions).toBe(0);
     expect(rescued.appliedIds).toEqual([id('1')]);
-    const byDay = await getReviewedCountsByDay(asExpo(d), rangeOfDayKey(dayKey(AT)).startMs);
-    expect(byDay.get(dayKey(AT))).toBe(1);
+    const byDay = await getReviewedCountsByDay(asExpo(d), rangeOfDayKey(dayKey(yesterday)).startMs);
+    expect(byDay.get(dayKey(yesterday))).toBe(1);
   });
 
-  it('counts an un-stage exactly like the redecision it mirrors', async () => {
+  it('counts an un-stage exactly like the redecision it mirrors (never fresh, gap 8)', async () => {
     // unstageCullDirect is the same culled → kept transition on another
-    // path (state editor, trash rollback) — it moves decided_at into
-    // today, so it must report the same fresh work or the ring and the
-    // celebration disagree.
+    // path (state editor, trash rollback) — both photos already carry
+    // their first stamps, so neither re-transition is fresh work.
     const d = await fresh();
     await seed(d, ['1', '2']);
     const yesterday = AT - 86_400_000;
     await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], yesterday);
     await applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 50);
     const laterDay = await unstageCullDirect(asExpo(d), id('1'), AT, true);
-    expect(laterDay.freshDecisions).toBe(1);
+    expect(laterDay.freshDecisions).toBe(0);
     expect(laterDay.appliedIds).toEqual([id('1')]);
     const sameDay = await unstageCullDirect(asExpo(d), id('2'), AT + 100, true);
     expect(sameDay.freshDecisions).toBe(0);
@@ -1486,11 +1486,8 @@ describe('corpus stats honor the source scope', () => {
     );
     expect(
       await getCorpusStats(asExpo(d), [{ volume: 'external_primary', dir: 'DCIM/Camera' }]),
-    ).toEqual({
-      groupsFound: 1,
-      reviewed: 1,
-    });
-    expect(await getCorpusStats(asExpo(d))).toEqual({ groupsFound: 2, reviewed: 2 });
+    ).toEqual({ reviewed: 1 });
+    expect(await getCorpusStats(asExpo(d))).toEqual({ reviewed: 2 });
   });
 });
 
@@ -2276,24 +2273,30 @@ describe('getReviewedCountsByDay counts DECIDED-day, not capture-day (m0.8.1)', 
   });
 });
 
-describe('getDayReviewSummary keys on decided_at (m0.8.1)', () => {
-  it('counts a photo re-decided today and matches the ring', async () => {
+describe('getDayReviewSummary keys on the FIRST stamp (m0.8.7, gap 8)', () => {
+  it('a re-decided photo stays on its ORIGINAL day; today counts first decisions only', async () => {
     const d = await fresh();
     await seed(d, ['1', '2']);
     const dayStart = rangeOfDayKey(dayKey(AT)).startMs;
-    // Photo 1: first reviewed long before today, re-decided today.
+    // Photo 1: first decided five days ago, re-decided today — its
+    // history stays on the original day (immutable first stamp).
     await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], dayStart - 5 * 86_400_000);
     await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT);
     // Photo 2: decided today for the first time.
     await applyReviewDecisions(asExpo(d), [[id('2'), 'kept']], AT);
     const summary = await getDayReviewSummary(asExpo(d), dayKey(AT));
-    // BOTH count — the old reviewed_at keying missed photo 1 entirely.
-    expect(summary.reviewed).toBe(2);
+    expect(summary.reviewed).toBe(1);
     expect(summary.kept).toBe(1);
-    expect(summary.staged).toBe(1);
-    // ...and the ring's per-day counts agree for the same day.
+    expect(summary.staged).toBe(0);
+    // Photo 1's day: the summary classifies by CURRENT verdict, so its
+    // bucket follows the re-decide even though its DAY never moves.
+    const earlier = await getDayReviewSummary(asExpo(d), dayKey(dayStart - 5 * 86_400_000));
+    expect(earlier.reviewed).toBe(1);
+    expect(earlier.staged).toBe(1);
+    // ...and the ring's per-day counts agree for both days.
     const counts = await getReviewedCountsByDay(asExpo(d), 0);
-    expect(counts.get(dayKey(AT))).toBe(2);
+    expect(counts.get(dayKey(AT))).toBe(1);
+    expect(counts.get(dayKey(dayStart - 5 * 86_400_000))).toBe(1);
   });
 
   it('includes the last millisecond of the day', async () => {

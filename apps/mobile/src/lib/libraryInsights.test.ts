@@ -8,7 +8,6 @@ import {
   buildHistogram,
   frontierLine,
   histogramScrollX,
-  keepsPerGroup,
   monthRange,
   rangeOfMonth,
   redundantFrames,
@@ -201,16 +200,6 @@ describe('the burst tax', () => {
 
   it('never goes negative on inconsistent input', () => {
     expect(redundantFrames({ photosInGroups: 0, groups: 3 })).toBe(0);
-  });
-
-  it('reports keeps per group over fully decided groups', () => {
-    expect(keepsPerGroup({ decidedMembers: 34, decidedKept: 10 })).toBeCloseTo(3.4, 10);
-  });
-
-  it('refuses when nothing is decided, or nothing was kept', () => {
-    // A user who culled one whole group must not be told they keep 1 of ∞.
-    expect(keepsPerGroup({ decidedMembers: 0, decidedKept: 0 })).toBeNull();
-    expect(keepsPerGroup({ decidedMembers: 5, decidedKept: 0 })).toBeNull();
   });
 });
 

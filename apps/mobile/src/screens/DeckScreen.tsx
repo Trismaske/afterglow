@@ -205,8 +205,9 @@ export function DeckScreen({ navigation, route }: DeckProps) {
 
   // Per-unit title: one route now serves both kinds, so the screen names
   // itself rather than the navigator naming it once. The header's eye is
-  // the ONE badge-visibility control (m0.8.7, F19/L6): durable, and it
-  // flips every badge surface at once through the badgePrefs observable.
+  // the badge-visibility control (m0.8.7, F19/L6; the PhotoViewer top
+  // bar mirrors it): one durable setting, flipping every badge surface
+  // at once through the badgePrefs observable.
   const db = useSQLiteContext();
   const [hideBadges, setHideBadges] = useState(badgesHidden);
   useEffect(() => subscribeBadgesHidden(setHideBadges), []);
@@ -215,7 +216,7 @@ export function DeckScreen({ navigation, route }: DeckProps) {
       title: unit.kind === 'run' ? 'Singles review' : 'Group review',
       headerRight: () => (
         <Pressable
-          onPress={() => void setBadgesHidden(db, !badgesHidden()).catch(() => {})}
+          onPress={() => void setBadgesHidden(db, !badgesHidden())}
           hitSlop={12}
           accessibilityLabel={hideBadges ? 'Show photo badges' : 'Hide photo badges'}
         >

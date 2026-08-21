@@ -117,7 +117,6 @@ import {
   getReviewedCountsByDay,
   getSetting,
   setSetting,
-  countStagedCulls,
   getStagedCulls,
   getReviewGroup,
   listSinglesForDeck,
@@ -141,9 +140,15 @@ export type RedecideTarget = 'keep' | 'cull' | 'to_edit';
 
 export interface ConfirmResult {
   status: 'applied' | 'cancelled' | 'unsupported' | 'failed';
+  /** The failed attempt's pipeline stage (lib/trashFlow.ts) — feeds the
+   * three-tier report's attribution. */
+  stage?: 'prepare' | 'dispatch' | 'bookkeeping';
   error?: string;
   trashedCount: number;
   creditedBytes: number;
+  /** The CONFIRMED set's remainder — confirmed rows not verified moved
+   * this run (still staged, cancelled, ambiguous, or out of scope).
+   * Deliberately NOT the live queue count (codex m0.8.7 r2). */
   remaining: number;
   unresolvedCount: number;
 }
@@ -296,7 +301,9 @@ interface ReviewContextValue {
    * through the trash-attempt lifecycle in bounded batches — one system
    * dialog each — until every row was attempted or the user declines.
    */
-  confirmStagedCulls: () => Promise<ConfirmResult>;
+  /** Trash every confirmed staged cull. `confirmedIds` is the rendered
+   * set the user's dialog named — the loop may only shrink it. */
+  confirmStagedCulls: (confirmedIds: readonly string[]) => Promise<ConfirmResult>;
   /** F14 (amended by Tristan): fresh decisions landed — bump today's
    * counter and arm the once-per-day goal moment at the CROSSING.
    * Exported ONLY for the one surface that writes verdicts outside the
@@ -1739,58 +1746,71 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     [db, write, scopedRoots],
   );
 
-  const confirmStagedCulls = useCallback(async (): Promise<ConfirmResult> => {
-    let trashedCount = 0;
-    let creditedBytes = 0;
-    let outcome: ConfirmResult['status'] = 'applied';
-    let error: string | undefined;
-    // m0.7 item H (P7#4/P8#3/P8#4): each attempt is DURABLE before native
-    // dispatch (lib/trashFlow.ts). Batches are bounded per OS consent
-    // request, so the GLOBAL queue loops — one dialog per batch — until
-    // every non-excluded row was attempted or the user declines. Members
-    // whose verification stayed inconclusive get ONE dialog per run.
-    const unresolved = new Set<string>();
-    const ambiguous = new Set<string>();
-    for (;;) {
-      // Read only what one batch can attempt (+ the rows this run has
-      // already given up on, which the filter drops).
-      // Both scope axes (m0.8.7 F18): the loop may only attempt what the
-      // scoped cull list showed — an out-of-source staged cull is not
-      // part of the population the user confirmed.
-      const rows = (
-        await getStagedCulls(
-          db,
-          TRASH_BATCH_LIMIT + unresolved.size,
-          await mountedVolumeSet(),
-          await scopedRoots(),
+  const confirmStagedCulls = useCallback(
+    async (confirmedIds: readonly string[]): Promise<ConfirmResult> => {
+      let trashedCount = 0;
+      let creditedBytes = 0;
+      let outcome: ConfirmResult['status'] = 'applied';
+      let stage: ConfirmResult['stage'];
+      let error: string | undefined;
+      // m0.7 item H (P7#4/P8#3/P8#4): each attempt is DURABLE before native
+      // dispatch (lib/trashFlow.ts). Batches are bounded per OS consent
+      // request, so the GLOBAL queue loops — one dialog per batch — until
+      // every non-excluded row was attempted or the user declines. Members
+      // whose verification stayed inconclusive get ONE dialog per run.
+      //
+      // BOUND TO THE CONFIRMED SET (codex m0.8.7 r1): the dialog named
+      // exactly the rendered rows, and a card mounting or the scope
+      // widening mid-loop must not enlist photos the user never saw.
+      // Each fresh scoped read may only SHRINK that set (the M5 rule
+      // across the whole multi-dialog operation).
+      const confirmed = new Set(confirmedIds);
+      const unresolved = new Set<string>();
+      const ambiguous = new Set<string>();
+      for (;;) {
+        // Both scope axes (m0.8.7 F18): the loop may only attempt what
+        // the scoped cull list showed — an out-of-source staged cull is
+        // not part of the population the user confirmed. The batch slice
+        // happens BEFORE the per-file size stats, so the stats stay
+        // bounded per batch (the m0.8.1 rule).
+        const rows = (
+          await getStagedCulls(db, undefined, await mountedVolumeSet(), await scopedRoots())
         )
-      ).filter((row) => !unresolved.has(row.asset_id));
-      if (rows.length === 0) break;
-      const attempt = await runTrashAttempt(
-        db,
-        rows.map((row) => ({ photoId: row.asset_id, measuredBytes: fileSize(row.uri) })),
-      );
-      if (attempt.status === 'skipped') break; // every row held by a live attempt
-      const gone = new Set(attempt.trashedIds);
-      for (const id of attempt.attemptedIds) if (!gone.has(id)) unresolved.add(id);
-      for (const id of attempt.unknownIds) ambiguous.add(id);
-      outcome = attempt.status;
-      error = attempt.error;
-      trashedCount += attempt.trashedIds.length;
-      creditedBytes += attempt.creditedBytes;
-      if (attempt.status !== 'applied') break;
-    }
-    const remaining = await countStagedCulls(db, await mountedVolumeSet(), await scopedRoots());
-    await refresh().catch(() => {});
-    return {
-      status: outcome,
-      error,
-      trashedCount,
-      creditedBytes,
-      remaining,
-      unresolvedCount: ambiguous.size,
-    };
-  }, [db, refresh, scopedRoots]);
+          .filter((row) => confirmed.has(row.asset_id) && !unresolved.has(row.asset_id))
+          .slice(0, TRASH_BATCH_LIMIT);
+        if (rows.length === 0) break;
+        const attempt = await runTrashAttempt(
+          db,
+          rows.map((row) => ({ photoId: row.asset_id, measuredBytes: fileSize(row.uri) })),
+        );
+        if (attempt.status === 'skipped') break; // every row held by a live attempt
+        const gone = new Set(attempt.trashedIds);
+        for (const id of attempt.attemptedIds) if (!gone.has(id)) unresolved.add(id);
+        for (const id of attempt.unknownIds) ambiguous.add(id);
+        outcome = attempt.status;
+        stage = attempt.stage;
+        error = attempt.error;
+        trashedCount += attempt.trashedIds.length;
+        creditedBytes += attempt.creditedBytes;
+        if (attempt.status !== 'applied') break;
+      }
+      await refresh().catch(() => {});
+      return {
+        status: outcome,
+        stage,
+        error,
+        trashedCount,
+        creditedBytes,
+        // The CONFIRMED set's remainder, not the live queue count (codex
+        // m0.8.7 r2): a card mounting mid-operation surfaces staged culls
+        // this run never attempted, and counting them here would report
+        // photos the user never confirmed as "could not be verified".
+        remaining: Math.max(0, confirmed.size - trashedCount),
+        unresolvedCount: ambiguous.size,
+      };
+    },
+    [db, refresh, scopedRoots],
+  );
 
   const clearWriteError = useCallback(() => setWriteError(null), []);
 

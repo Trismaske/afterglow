@@ -15,7 +15,10 @@ A number that cannot yet be stated truthfully under that principle rests until i
 | **T3 — live-row recompute** | any query with `is_present = 1`, `reachClause`, or `sourceClause` | nothing — it is a snapshot | every deleter, every unmount, every source change |
 
 Two silent scope shrinkers: `reachClause` ([store.ts:168-178](../apps/mobile/src/db/store.ts#L168-L178), mounted volumes) and `sourceClause` ([store.ts:141-157](../apps/mobile/src/db/store.ts#L141-L157), selected folders).
-Deliberately **unscoped** ("what you DID", [statsLoad.ts:11-25](../apps/mobile/src/lib/statsLoad.ts#L11-L25)): `getLifetimeStats`, `lifetimeReclaimedBytes`, `getDuelSummary`, the finished half of `getQueueTurnaround`, the History feed.
+Deliberately **unscoped** ("what you DID", [statsLoad.ts](../apps/mobile/src/lib/statsLoad.ts)): `getLifetimeStats`, `lifetimeReclaimedBytes`, `getDuelSummary`, the finished half of `getQueueTurnaround`, the History feed.
+**The scoping contract (vetted 2026-08-21), split by purpose:** achievement and habit stats — the goal ring, streaks, records, the activity chart, the today summary, rhythm, sittings, decisiveness, decision pace — read decision history **unscoped on both axes**: neither an unmounted card nor a narrowed folder selection can rewrite what you did.
+Planning and coverage stats — forecast base rates and floor, backlog frontier, corpus coverage, the intake chart (both series, gap 6) — scope to the selected, mounted library they describe.
+The habit readers (`getDayReviewSummary`, `getDecisionRhythm`, `getRecentDecisionStamps`, `getDecisionOutcomesSince`) take no scope parameters at all; `getReviewedCountsByDay` keeps its scope parameters for the planning readers — the intake chart's decided series and the forecast/finish-line pace maps — while its unscoped calls feed the achievement surfaces.
 
 ## Per-surface verdicts
 
@@ -25,39 +28,39 @@ Full query citations live in the audit rows below; "moves on" lists only non-rev
 
 | Stat | Feed | Verdict | Moves on |
 |---|---|---|---|
-| Goal ring "N of M today" | `getReviewedCountsByDay` ([store.ts:1690-1717](../apps/mobile/src/db/store.ts#L1690-L1717)) | T1 for today | re-deciding old photos re-stamps `decided_at` into today ([store.ts:483-491](../apps/mobile/src/db/store.ts#L483-L491)); source deselection; erase |
-| Goal streak / longest (120-day window) | `goalStreaks` ([dailyGoal.ts:124-149](../apps/mobile/src/lib/dailyGoal.ts#L124-L149)) | T1, window-truncated, judged vs CURRENT goal | goal changes re-colour history; disagrees with Stats' unbounded "longest" (gap 9) |
+| Goal ring "N of M today" | `getReviewedCountsByDay` | T1 first stamps (gap 8), unscoped on both axes (vetted 2026-08-21: achievement stats never scope) | erase |
+| Goal streak / longest | `goalStreaks` + `longestGoalRun` (one definition, gap 9) | T1, judged vs CURRENT goal | goal changes re-colour history; erase |
 | "N pictures total" | MediaStore count | T3 by design | deletion, unmount, source change |
 | "To review · in M groups · singles" | `countReviewQueueIn` ([store.ts:1579-1597](../apps/mobile/src/db/store.ts#L1579-L1597)) | T3 | deletion, unmount, source change, regroup |
-| Cull row "N staged · ~X reclaimable" | `countStagedCulls`/`getStagedCullBytes` | T3; **ignores the source filter** (gap 10) | unmount; external deletion |
-| Keeping-up bar | `getCoverageByDay` ([store.ts:1655-1682](../apps/mobile/src/db/store.ts#L1655-L1682)) | T3 | deleting/unmounting unreviewed photos "clears" days (gap 5) |
+| Cull row "N staged · ~X reclaimable" | `countStagedCulls`/`getStagedCullBytes` | T3, both scope axes (gap 10) | unmount; external deletion; source change |
+| Keeping-up bar | `getCoverageByDay` ([store.ts](../apps/mobile/src/db/store.ts)) | T3 | deleting/unmounting unreviewed photos "clears" days (gap 5: closed as designed — coverage describes the visible library) |
 | Coverage streak "most recent N days…" | `coverageStreak` ([coverageGoal.ts:153-163](../apps/mobile/src/lib/coverageGoal.ts#L153-L163)) | T3, **non-monotonic** | emptied days are *skipped*, so deletion/unmount can join streaks (gap 5) |
 | Recent-day rows "R/T · P%" | `getDaySummariesForDays` ([store.ts:3509-3552](../apps/mobile/src/db/store.ts#L3509-L3552)) | mixed: trashed half T1, live half T3 | unmount shrinks totals but keeps trashed → % jumps |
-| Forecast headline | `finishLine` over MediaStore − `getCorpusStats.reviewed` | T3 both sides | housekeeping moves the ETA; mixed populations (gap 6) |
+| Forecast headline | `finishLine` over MediaStore − `getCorpusStats.reviewed` | T3 both sides, one population (gap 6) | housekeeping moves the ETA |
 
 ### Summary
 
 | Stat | Feed | Verdict | Moves on |
 |---|---|---|---|
-| Today tiles (reviewed/keepers/staged/culled) | `getDayReviewSummary` ([store.ts:3457-3486](../apps/mobile/src/db/store.ts#L3457-L3486)) | T1 population, **T3 classification** | deleting a kept photo externally re-files it under "culled to trash" (gap 4) |
+| Today tiles (reviewed/keepers/staged/culled) | `getDayReviewSummary` ([store.ts](../apps/mobile/src/db/store.ts)) | T1 population, stamps-only classification (gap 4), unscoped (achievement) | erase |
 | All-time "reviewed" | `getLifetimeStats` ([store.ts:4292-4314](../apps/mobile/src/db/store.ts#L4292-L4314)) | **T1 — genuinely lifetime** | erase, reset only |
 | All-time "culled" | same, `culled_at IS NOT NULL` | T1, label over-claims | first-stamps at *staging*; restore never clears it — means "ever staged" |
 | All-time "edits completed" | resolved `photo_actions` count | T2 | one row per photo (five edits count once); erase cascade |
-| All-time **"favourites applied"** | [store.ts:4304-4312](../apps/mobile/src/db/store.ts#L4304-L4312) | **current-state wearing an all-time label** | a verified un-favourite decrements it (gap 2) |
+| All-time "favourites applied" | — | **retired m0.8.7** (gap 2): current-state truth cannot wear an all-time label; returns if a lifetime feed ever exists | — |
 | "Reclaimed all-time" | `lifetimeReclaimedBytes` ([trashStore.ts:564-569](../apps/mobile/src/db/trashStore.ts#L564-L569)) | **T2 — lifetime-true** | erase, reset only |
 
 ### Stats (Activity · Forecast · Habits)
 
 | Stat | Feed | Verdict | Moves on |
 |---|---|---|---|
-| Decided today / 30-day chart / rhythm / sittings | decision maps ([statsLoad.ts:139-189](../apps/mobile/src/lib/statsLoad.ts#L139-L189)) | T1 | `decided_at` re-stamps drain old bars (gap 8); source deselection |
-| Personal best day / "new personal best" | `personalRecords` ([habits.ts:240-263](../apps/mobile/src/lib/habits.ts#L240-L263)) | T1 | re-stamps erode a historical best; a "new best" can fire because history shrank (gap 8) |
+| Decided today / 30-day chart / rhythm / sittings | decision maps ([statsLoad.ts](../apps/mobile/src/lib/statsLoad.ts)) | T1 first stamps for day buckets, `decided_at` for timing (gap 8), unscoped (habit stats) | erase |
+| Personal best day / "new personal best" | `personalRecords` ([habits.ts](../apps/mobile/src/lib/habits.ts)) | T1 first stamps (gap 8): immutable once earned | erase |
 | "goalDays reached it" + streaks | `activityWindow` | T1, judged vs CURRENT goal | raising the goal un-reaches past days |
 | Coverage chart | `getCoverageByDay` | T3 | as Home (gap 5) |
-| Shooting vs reviewing | `intakeWindow` ([stats.ts:105-126](../apps/mobile/src/lib/stats.ts#L105-L126)) | **mixed populations** | captured is reach-scoped, decided is not — unmount reads as "suddenly ahead" (gap 6) |
-| Forecast projections | `getForecastBaseRates` ([store.ts:3797-3855](../apps/mobile/src/db/store.ts#L3797-L3855)) | T1 population, T3 classification | external deletions inflate the projected cull rate (gap 4); erase cascades thin shared/edit history |
-| "N head-to-head compares · kept both P%" | `getDuelSummary` ([store.ts:4048-4059](../apps/mobile/src/db/store.ts#L4048-L4059)) | T2 with four deleters today | **fixed by Regroup_design R3** (gap 3) |
-| Decisiveness "cull X% lately vs Y% all-time" | `getDecisionOutcomesSince` ([store.ts:4064-4078](../apps/mobile/src/db/store.ts#L4064-L4078)) | T1 population, T3 classification | gallery cleanups read as "culling harder lately" (gap 4) |
+| Shooting vs reviewing | `intakeWindow` ([stats.ts](../apps/mobile/src/lib/stats.ts)) | one population: BOTH series reach+source scoped (gap 6) — the one scoped decided read | deletion, unmount, source change (by design: it describes the visible library) |
+| Forecast projections | `getForecastBaseRates` ([store.ts](../apps/mobile/src/db/store.ts)) | T1 population, stamps-only classification (gap 4) | erase cascades thin shared/edit history |
+| "N head-to-head compares · kept both P%" | `getDuelSummary` ([store.ts](../apps/mobile/src/db/store.ts)) | **T2 lifetime** — append-only event log, no deleters (gap 3, R3); forget-erase anonymizes endpoints | erase |
+| Decisiveness "cull X% lately vs Y% all-time" | `getDecisionOutcomesSince` ([store.ts](../apps/mobile/src/db/store.ts)) | T1 population, stamps-only classification (gap 4), unscoped (habit) | erase |
 | Queue "waiting" / "finished · median" | `getQueueTurnaround` ([store.ts:3986-4018](../apps/mobile/src/db/store.ts#L3986-L4018)) | waiting T3 (deliberate), finished **T2 lifetime** | erase cascade only |
 
 ### Progress / DayProgress

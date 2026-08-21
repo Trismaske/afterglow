@@ -137,9 +137,28 @@ export function OrganizeQueueScreen(_props: Props) {
     async (relativePath: string) => {
       if (busyRef.current || targetIds.length === 0) return;
       try {
+        // The untargeted "choose for all" is an F18 bulk binding like
+        // removeQueued's (codex m0.8.7 r1): rendered rows retained
+        // across a failed refresh must not have their album intents
+        // rewritten after leaving the source. An explicit selection
+        // stays targeted (the M5 rule).
+        let bounded: readonly string[] = targetIds;
+        if (selected.size === 0) {
+          invalidateMountedVolumes();
+          const fresh = new Set(
+            (
+              await getOrganizeQueue(
+                db,
+                await mountedVolumeSet(),
+                (await resolveSources(db)).roots ?? null,
+              )
+            ).map((r) => r.photo_id),
+          );
+          bounded = targetIds.filter((id) => fresh.has(id));
+        }
         const error = await setOrganizeTargets(
           db,
-          targetIds,
+          bounded,
           { volumeName: PRIMARY_VOLUME, relativePath },
           Date.now(),
         );
@@ -161,7 +180,7 @@ export function OrganizeQueueScreen(_props: Props) {
         await reload().catch(() => {});
       }
     },
-    [db, targetIds, reload],
+    [db, targetIds, selected.size, reload],
   );
 
   /** Remove from the queue: the selection, else EVERYONE — the same

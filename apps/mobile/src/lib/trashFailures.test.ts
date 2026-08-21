@@ -55,4 +55,61 @@ describe('describeTrashFailure', () => {
     });
     expect(report.body).not.toContain('Android said');
   });
+
+  it("a PREPARE failure is ours: Android was never asked, and its words are never quoted as Android's", () => {
+    // The stage is our own pipeline fact (codex m0.8.7 r1) — an
+    // Afterglow preparation error must not wear Android's name.
+    const report = describeTrashFailure({
+      trashedCount: 0,
+      remaining: 3,
+      unresolvedCount: 0,
+      stage: 'prepare',
+      error: 'SQLITE_BUSY: database is locked',
+    });
+    expect(report.body).toContain('Android was never asked');
+    expect(report.body).not.toContain('Android refused');
+    expect(report.body).not.toContain('Android said');
+    expect(report.body).toContain('Details:\n• SQLITE_BUSY: database is locked');
+  });
+
+  it('a BOOKKEEPING failure says the recording failed, not that Android refused', () => {
+    const report = describeTrashFailure({
+      trashedCount: 2,
+      remaining: 1,
+      unresolvedCount: 1,
+      stage: 'bookkeeping',
+      error: 'disk I/O error',
+    });
+    expect(report.body).toContain('could not record the outcome');
+    expect(report.body).not.toContain('Android refused');
+    expect(report.body).not.toContain('Android said');
+    // Tier order holds: verified counts before the stage line.
+    expect(report.body.indexOf('already moved')).toBeLessThan(
+      report.body.indexOf('could not record'),
+    );
+  });
+
+  it('stillStaged: false drops every "remain staged" claim (the rolled-back edited-copy path)', () => {
+    const report = describeTrashFailure({
+      trashedCount: 0,
+      remaining: 0,
+      unresolvedCount: 0,
+      stage: 'dispatch',
+      error: 'refused',
+      stillStaged: false,
+    });
+    expect(report.body).not.toContain('staged');
+    expect(report.body).toContain('Android refused');
+  });
+
+  it('an absent stage keeps the historical dispatch shape', () => {
+    const report = describeTrashFailure({
+      trashedCount: 0,
+      remaining: 2,
+      unresolvedCount: 0,
+      error: 'XyZZy quantum flux error 0xDEAD (unrecognisable)',
+    });
+    expect(report.body).toContain('Android refused');
+    expect(report.body).toContain('Android said:\n• XyZZy quantum flux error 0xDEAD');
+  });
 });

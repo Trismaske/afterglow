@@ -43,7 +43,7 @@ describe('getDecisionRhythm', () => {
     const d = await fresh();
     seedReviewHistory(d.raw, history.photos, { shareBatches: false });
 
-    const cells = await getDecisionRhythm(asExpo(d), null);
+    const cells = await getDecisionRhythm(asExpo(d));
     // Independent derivation with the JS Date the app itself uses; if
     // SQLite's 'localtime' disagreed with it, the grid would silently
     // describe a different day than the rest of the app.
@@ -73,7 +73,7 @@ describe('getDecisionRhythm', () => {
       })),
       { shareBatches: false },
     );
-    expect(await getDecisionRhythm(asExpo(d), null)).toEqual([]);
+    expect(await getDecisionRhythm(asExpo(d))).toEqual([]);
   });
 });
 
@@ -179,7 +179,7 @@ describe('getDecisionOutcomesSince', () => {
     const inWindow = history.photos.filter(
       (photo) => photo.decidedAt !== null && photo.decidedAt >= sinceMs,
     );
-    const result = await getDecisionOutcomesSince(asExpo(d), sinceMs, null);
+    const result = await getDecisionOutcomesSince(asExpo(d), sinceMs);
     expect(result.decided).toBe(inWindow.length);
     // Culled = staged OR already trashed, exactly as the base rates read it.
     expect(result.culled).toBe(
@@ -191,7 +191,7 @@ describe('getDecisionOutcomesSince', () => {
     const history = buildReviewHistory();
     const d = await fresh();
     seedReviewHistory(d.raw, history.photos, { shareBatches: false });
-    expect(await getDecisionOutcomesSince(asExpo(d), history.todayMs + 86_400_000, null)).toEqual({
+    expect(await getDecisionOutcomesSince(asExpo(d), history.todayMs + 86_400_000)).toEqual({
       decided: 0,
       culled: 0,
     });

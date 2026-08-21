@@ -369,6 +369,65 @@ class MediaStoreActionsModule : Module() {
     }
 
     /**
+     * One image row by (volume, raw id) — the F27 direct fetch's
+     * volume-QUALIFIED read (codex m0.8.7 r1). Raw MediaStore ids can
+     * collide across volumes, and a merged-collection lookup then
+     * answers for the wrong volume, permanently fail-closing the
+     * changed undated photo it was meant to land. Null when the row is
+     * absent on that volume; DATA carries the file path the app's
+     * path-based volume identity needs.
+     */
+    AsyncFunction("loadImageById") { volume: String, rawId: String ->
+      val context = appContext.reactContext
+        ?: throw IllegalStateException("Android context unavailable")
+      val uri = MediaStore.Images.Media.getContentUri(volume)
+      var out: Map<String, Any?>? = null
+      try {
+        context.contentResolver.query(
+          uri,
+          arrayOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DATA,
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.DATE_TAKEN,
+            MediaStore.MediaColumns.DATE_MODIFIED,
+            MediaStore.MediaColumns.WIDTH,
+            MediaStore.MediaColumns.HEIGHT,
+          ),
+          "${MediaStore.MediaColumns._ID} = ?",
+          arrayOf(rawId),
+          null,
+        )?.use { cursor ->
+          if (cursor.moveToFirst()) {
+            val takenCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_TAKEN)
+            out = mapOf(
+              "rawId" to cursor.getLong(
+                cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID),
+              ).toString(),
+              "dataPath" to cursor.getString(
+                cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA),
+              ),
+              "displayName" to cursor.getString(
+                cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME),
+              ),
+              "dateTakenMs" to if (cursor.isNull(takenCol)) null else cursor.getLong(takenCol),
+              "dateModifiedSec" to cursor.getLong(
+                cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED),
+              ),
+              "width" to cursor.getInt(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.WIDTH)),
+              "height" to cursor.getInt(
+                cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.HEIGHT),
+              ),
+            )
+          }
+        } ?: throw IllegalStateException("null cursor for volume $volume")
+      } catch (error: Exception) {
+        throw IllegalStateException("image lookup failed for $volume/$rawId", error)
+      }
+      out
+    }
+
+    /**
      * The mounted volume set (m0.8.3 phase 2, codex): reachability
      * decisions must never run blind, so the scan REQUIRES this and
      * aborts when it throws. MediaStore names every mounted volume

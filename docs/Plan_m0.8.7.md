@@ -94,80 +94,15 @@ Regroup_design §9 phases 4–5:
 
 ## Device pass (both phones; the release-specific gate list)
 
-1. F18: deselect a folder — its photos leave every queue, count, grid, and the forecast pool; re-add restores byte-for-byte. Measure the S10e queue-read timings (phase 3).
+1. F18: deselect a folder — its photos leave every queue, count, grid, and the forecast pool; re-add restores byte-for-byte. (S10e queue-read timings already measured 2026-08-22: 3–32 ms scoped, no fallback needed.)
 2. F21: share-then-cull end-to-end (queue shows the staged cull badged; dispatch works; confirm names unsent intents; History proof survives).
 3. F27: with the fix installed, drop a WhatsApp image (out-of-source) and a stripped-EXIF file (in-source) — neither may trigger a corpus walk; the capture log shows the reasons.
 4. Regroup: the A→B double-ejection scenario on device; un-eject and watch the regroup land; mid-review re-mint walk (Regroup_design §7); the strictness confirm's full pass completes with decisions intact.
 5. Errors: force one failure per boundary (the m0.8.4 WhatsApp-photo method) — tier order and n=1 copy verified on screen.
 6. Badges: both new badges on every surface; the hide control; F10/F11/F12 verified fixed on the S10e.
-7. Stats: after confirming culls, the histogram/frontier/summary figures move only as STATS_ACCURACY says they should; "favourites applied" wears its new label.
-8. Screenshots for the type-scale before/after set.
-
+7. Stats: after confirming culls, the histogram/frontier/summary figures move only as STATS_ACCURACY says they should; the "favourites applied" figure is gone (retired, gap 2).
 ## Autonomous decisions (appendix)
 
-Numbered as implemented; each entry names the call, the choice, and why.
-Getting these human-vetted is a top priority; an approved entry is pruned per the assumptions discipline.
-
-1. **v22 lands incrementally across phases 1–3 at one version number.**
-   Dropping `duels.group_id` or `user_single` in phase 1 would break the store code that still reads them, so each destructive DDL change ships in the phase that deletes its readers; the version constant bumped once (21→22) in phase 1.
-   Cost: a test device that installed a mid-release build carries a stale v22 layout — wipe app data on phase installs (the devices hold only disposable test data).
-   Testers only ever see the final v22.
-2. **Eject writes pairs from phase 2, not phase 6.**
-   Phase 2 drops `user_single` (its reading code — the freeze — dies here), and an eject that recorded nothing would silently lose its durability until phase 6; so the pair-recording store half of Regroup_design §9 phase 4 (dissolve-then-insert, present members, assignment clear) landed with the drop.
-   Phase 6 keeps the un-eject editor row, the targeted window rescan (until then an ejected photo re-places on the next natural pass), and the viewer copy.
-   Riding along for the same docs-describe-now reason: the Settings strictness confirm already wears R8's new copy (the old "reviewed groups are never touched" promise became false the moment the freeze died), and docs/TODO.md's "group a detected copy with its original" entry is deleted — its blocker WAS the freeze.
-3. **diagLog routes every site through ONE console hook, not 85 rewrites.**
-   The audit's own finding — all 85 emissions are curated, zero dev noise — means hooking console.log/warn/error routes exactly the audited set with no per-site churn, keeps logcat behavior identical, and auto-routes future lines (console is the diagnostics API; the contract lives in `lib/diagLog.ts`'s header).
-   The shape rules land as a generic identical-line suppressor with summary counts (covers the echo and paging-loop classes) plus the timeline aggregation in `lib/perfLog.ts`; root causes are distinct strings and never mask each other.
-4. **F27's undated direct-land windows among the delta's own fetched batch.**
-   A full pass windows undated photos among batch-mates too (the documented batch-boundary approximation), so the delta fetching only the changed undated rows and windowing them together is the same approximation class, coarser — accepted over re-deriving rescued-date ranges.
-   Fail-safes: a fetch failure counts as a fail-closed skip (baselines withheld, next open retries), and TRASHED rows always pass the new source filter (a filtered-out trash could hide a real deletion; an untracked one is a cheap no-op).
-5. **F20 projects through the existing action-row vocabulary.**
-   A gallery heart lands as a resolved favourite action (`applied_target = '1'`), a cleared flag flips the carried direction to `'0'` (the row stays — it is history), queued/error rows are never touched, and `activity_at` is never stamped (an observation is not app activity — the forget-card O7 rule).
-   The favourite set is ONE indexed `IS_FAVORITE = 1` query per mounted volume per pass; a failed read projects nothing that pass, loudly once — an empty set would read as "un-favourite everything".
-6. **F11's measured cause is the check glyph, not the outline.**
-   Pixel-diffed on the S10e (2026-08-21): the row border is 1 px in BOTH states (only its color changes), while selecting a row grew it ~20 px — the check icon's ~28 dp font line box exceeds the title line, and the width-only check container collapsed when empty.
-   Fix: a fixed 28 dp check box in both states.
-   Riding the same session: F10's tag now pins to the title line's right edge (`marginLeft: 'auto'` — inline placement after a variable-width name IS the reported misalignment; multi-SD-row comparison awaits a mounted card on the device pass), and F12's pre-catalog render was a confident "All folders · 0" row over a low-contrast loading line — loading is now the DEFAULT state (spinner + line, no other rows) per the plan's settled shape.
-7. **The badge annotations render quiet, last, and pill-gated; the eye lives in the deck header.**
-   Folder (F19) and SD (F14) are facts, so they always render at the carried weight after the action badges, in neutral dim-on-raised (rule 2 reserves the action hues).
-   The folder pill needs legible text, so it renders only in clusters ≥ 18 px (the deck stage) — thumbnail clusters keep the glyph badges alone.
-   The ONE hide control (durable, vetted) is an eye toggle in the Deck header (`headerRight` — review surfaces' shared chrome, and navigation-level so it cannot disturb the deck's gesture tree); it hides every BadgeCluster surface at once.
-   History keeps its rows untouched: its single-glyph state rows are the feed's meaning, not badge decoration.
-8. **The S10e queue-read measurement ships as instrumentation.**
-   The release build cannot be timed from outside, so the scoped reads carry a per-session aggregated `[perf] queue read (<kind>)` line (plus a 27k-corpus timing pin in queuePlan.real.test.ts as the desktop proxy); the device pass reads the real figures off the sink.
-   If they bite, `source_root` remains its own decision, per the plan.
-9. **The dot scale retires for actions; glyphs carry the grid.**
-   Grid tiles keep the verdict dot (the grid's primary state signal, outside the F19 hide toggle — a Progress grid whose state marks hide defeats the screen) and render the weighted actions as mini `DecisionBadge` glyphs at 13 px — the heart-off, carried-vs-live, and the SD glyph all read at that size where a dot could carry none of them.
-   Hydration is two chunked reads per page on BOTH engines, demoted through the new one-place `demoteForState` (which History's badges now share; the deck's provider keeps its ref-integrated twin with a pointer).
-10. **One removal semantic for the four queues (`QueueRemoveChip`).**
-    Removing an explicit SELECTION acts directly (a targeted act needs no second question); clearing ALL always confirms with the count and the forget/keep rule.
-    Share's bottom "Clear queue" button folded into the chip (its never-shared warning rides the confirm body); Organize's clear-all gained the confirm; Edit and Favourite gained the affordance, bound M5-style to rendered ∩ fresh scoped rows.
-11. **The F21 in-build calls.**
-    The deck's browse-mode edit chip flag-toggles on a staged cull instead of re-deciding (queueing the edit must not silently rescue the cull); the editor refuses favourite/organize ADDITIONS on a staged cull with a named "Suspended while staged to delete" row while existing queued rows stay cancellable; `createShareBatch`'s cycle fallback shrank to a plain defensive first-use mint (the resurface case it existed for is gone); the trashed-photo path keeps full suspension everywhere.
-12. **`plural()` landed — the audit found 47 ternary sites, nine times D5's threshold.**
-    All mechanical count-noun ternaries converted (verb/pronoun agreements keep their explicit forms, per organizeFailures' own helpers); the audit's real finds were four NAKED plurals that read "1 photos" at n = 1 (ProgressView's reviewed lines, habitsCopy's median, scanSkip's corpus lines) — fixed.
-    F3's scanning copy re-checked and corrected at the 1-photo-library edge; F16's "Shared" rows verified (chosen-target only, now on `plural`).
-13. **Share's tier-1 cause is the failure STAGE.**
-    The pipeline resolves content uris BEFORE Android sees the batch, so a rejection there is provably ours ("could not be prepared — the sheet was never opened"); everything after handoff stays tiers 2+3, as designed.
-14. **The edit-launch classifier consumes one post-failure `probeLaunch`.**
-    D2's fact-source relationship, implemented: a dispatch failure runs a single read-only probe whose typed verdict ('no_handler', 'security' — our Kotlin's words) selects tier 1; resolve and write-request failures are stage facts needing no probe.
-    The caller-less `NO_EDITOR_*` constants swept — the classifier owns that copy now.
-15. **The targeted rescan rides the single-flight as a pass KIND, and undated targets take the F27 direct fetch.**
-    `requestTargetedRescan` queues targets that the next flight drains as a stampless pass (no fingerprint, no baselines, no reconciliation — re-placement is presentation repair); targets arriving mid-flight drain in a follow-up pass, and a FORCED rescan drops them (its full pass covers everything).
-    A day-NULL photo has no rangeable DATE_TAKEN, so its re-placement reuses the delta's direct per-id fetch; eject and un-eject both hand their anchors back from the same transaction that wrote the pairs.
-    R8's strictness confirm re-copy landed back in phase 2 (appendix #2); the source picker's save keeps no confirm — its save button is itself the deliberate act.
-16. **Gap 4's in-build call: an externally-deleted decided photo counts as what was DECIDED.**
-    `culled` is exactly `culled_at IS NOT NULL` (the stamp survives staging, execution, and even a later rescue — the decision happened); a trashed row without the stamp files under the keep the user actually made; unreviewed-then-removed counts as nothing.
-    The forecast's chunk CTE now projects the stamp; the day tiles classify by current verdict with the stamp deciding the trashed split.
-17. **Gap 8's in-build reader split, and the freshness contract it re-bases.**
-    Day-bucketed reads (`getReviewedCountsByDay`, the day tiles) take `decided_first_at`; timing/ordering reads (recent stamps, decisiveness window, forecast chunk ordering, History) keep `decided_at`.
-    Consequence, deliberately accepted: `freshDecisions` (the ring credit) is now "the photo's FIRST decision ever" — the m0.8.5 A3 rule that re-decides count as fresh goal work is superseded, because it was exactly the mutable-history defect gap 8 closes; the old pins are rewritten to say so.
-18. **Gap 6 scopes ONE extra map, not every decided read.**
-    The intake chart gets its own reach+source-scoped decided series beside the captured one; the ring/streak/record map stays reach-unscoped (decision history is never reach-scoped — STATE_MODEL's rule and gap 5's own closing rationale).
-    Riding along: Stats' library loader passes roots to its queue reads (an F18 site the audit sweep missed).
-19. **Gap 9 unifies on the ALL-TIME run.**
-    `longestGoalRun` is the one streak definition — Home's "longest" suffix and Stats' record read the same number by construction; the windowed variant is gone (a 120-day cap on a *record* was a display accident, and PLAN.md's all-time framing already recorded the intent).
-    Goal-relativity stays: runs are judged against the CURRENT goal, as PLAN.md decided.
-20. **The type-scale and token pass lifts back out.**
-    The plan's own rider ("lift the pass back out if the release runs long: nothing else depends on it") applies — seven phases in, the release is long; the entry returns to docs/TODO.md with its measured drift list intact, and the release keeps its screenshot obligations out of the device pass.
+All 20 entries human-vetted and pruned (grilling, 2026-08-21/22).
+The one rejection (#8, "measure queue-read cost later") was resolved by measuring immediately: on the S10e with its full 5 813-photo scanned corpus, the F18-scoped queue reads run 3–32 ms (worst single sample 111 ms), two orders of magnitude inside the 27k desktop pin's budgets — the `source_root` denormalization stays unneeded.
+Rework the vetting added: the badge eye mirrored into the PhotoViewer top bar, the remove chip wears the cull red, the per-destructive-phase schema-version rule (database.ts header), and the stats scoping contract split by purpose (STATS_ACCURACY).

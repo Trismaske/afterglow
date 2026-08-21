@@ -2201,12 +2201,15 @@ describe('decided_at (m0.8.1: the daily goal counts review ACTIONS)', () => {
   });
 });
 
-describe('decision counts honour the source selection (m0.8.2)', () => {
-  it("the ring, the streaks and today's tiles count only your folders", async () => {
-    // The review queue is itself source-scoped, so a decision count over
-    // a WIDER set than the queue can serve is simply wrong — it would
-    // credit you for work on photos you cannot reach. The History feed
-    // and the all-time totals deliberately do NOT scope (statsLoad.ts).
+describe('decision-history scoping (vetted 2026-08-21)', () => {
+  it('the map KEEPS a source scope for the intake chart; the habit readers are unscoped-only', async () => {
+    // The contract split by purpose: achievement/habit stats (ring,
+    // streaks, records, rhythm, sittings, decisiveness, the day summary)
+    // read decision history UNSCOPED on both axes — narrowing a folder
+    // selection or unmounting a card never rewrites what you did.
+    // getReviewedCountsByDay keeps its roots parameter for exactly ONE
+    // caller: the intake chart's decided series (gap 6), which must
+    // describe the same population as its captured partner.
     const d = await fresh();
     const inSource = { ...upsert('c1'), uri: 'file:///storage/emulated/0/DCIM/Camera/c1.jpg' };
     const outSource = { ...upsert('w1'), uri: 'file:///storage/emulated/0/WhatsApp/Media/w1.jpg' };
@@ -2229,12 +2232,13 @@ describe('decision counts honour the source selection (m0.8.2)', () => {
     expect([...scoped.values()].reduce((a, b) => a + b, 0)).toBe(1);
     expect([...unscoped.values()].reduce((a, b) => a + b, 0)).toBe(2);
 
+    // The habit readers take no scope at all — the whole library is the
+    // only population they can describe.
     const day = dayKey(AT);
-    expect((await getDayReviewSummary(asExpo(d), day, roots)).reviewed).toBe(1);
     expect((await getDayReviewSummary(asExpo(d), day)).reviewed).toBe(2);
-    expect(await getRecentDecisionStamps(asExpo(d), 2000, roots)).toHaveLength(1);
+    expect(await getRecentDecisionStamps(asExpo(d), 2000)).toHaveLength(2);
 
-    // ...while the all-time record stays whole: narrowing your sources
+    // ...and the all-time record stays whole: narrowing your sources
     // must not rewrite work you actually finished.
     expect((await getLifetimeStats(asExpo(d))).reviewed).toBe(2);
   });

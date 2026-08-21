@@ -105,9 +105,12 @@ export function CullListScreen({ navigation, route }: Props) {
     if (busy) return;
     setBusy(true);
     try {
-      // The review context owns the durable trash lifecycle; it loops the
-      // whole global queue in bounded batches (one system dialog each).
-      const result = await confirmStagedCulls();
+      // The review context owns the durable trash lifecycle; it loops in
+      // bounded batches (one system dialog each), BOUND to the rendered
+      // rows this screen showed — the set the user's confirm named
+      // (codex m0.8.7 r1: a mid-loop remount or scope change must not
+      // enlist unseen photos).
+      const result = await confirmStagedCulls(staged.map((item) => item.id));
       if (result.status === 'applied' && result.remaining === 0) {
         if (!fromHome) navigation.replace('Summary');
         else navigation.goBack();
@@ -152,6 +155,7 @@ export function CullListScreen({ navigation, route }: Props) {
           trashedCount: result.trashedCount,
           remaining: result.remaining,
           unresolvedCount: result.unresolvedCount,
+          stage: result.stage,
           error: result.error,
         });
         Alert.alert(report.title, report.body);
@@ -166,7 +170,7 @@ export function CullListScreen({ navigation, route }: Props) {
     } finally {
       setBusy(false);
     }
-  }, [busy, confirmStagedCulls, navigation, fromHome]);
+  }, [busy, staged, confirmStagedCulls, navigation, fromHome]);
 
   const onConfirmPress = useCallback(async () => {
     if (staged.length === 0) {
@@ -175,10 +179,11 @@ export function CullListScreen({ navigation, route }: Props) {
       return;
     }
     // F21 point 3: name the never-sent share/edit intents the cleanup
-    // would delete, so proceeding is a KNOWING choice. A failed count
-    // must not silently skip the warning — fall back loudly to zero
-    // counts only after logging (the confirm itself still runs).
-    let unsent = { share: 0, edit: 0 };
+    // would delete, so proceeding is a KNOWING choice. FAIL CLOSED
+    // (codex m0.8.7 r1): a knowing choice cannot be made on a failed
+    // count — a confident zero would delete pending work unnamed, and
+    // the read is knowable before any side effect leaves the system.
+    let unsent: { share: number; edit: number };
     try {
       unsent = await countStagedCullsWithUnsentIntents(
         db,
@@ -186,7 +191,12 @@ export function CullListScreen({ navigation, route }: Props) {
         (await resolveSources(db)).roots ?? null,
       );
     } catch (error) {
-      console.warn('[cull] unsent-intent count failed — confirm proceeds unnamed:', String(error));
+      console.warn('[cull] unsent-intent count failed — confirm blocked:', String(error));
+      Alert.alert(
+        'Could not check pending requests',
+        'Afterglow could not verify whether any of these photos still have unsent share or edit requests. Nothing was moved — try again.',
+      );
+      return;
     }
     const warnings = [
       unsent.share > 0

@@ -56,6 +56,7 @@ export function QueueRemoveChip({
   return (
     <Chip
       label={selectedCount > 0 ? `Remove ${selectedCount}` : `Remove all ${count}`}
+      destructive
       onPress={press}
     />
   );

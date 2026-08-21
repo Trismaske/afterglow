@@ -28,7 +28,10 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 
 export const DATABASE_NAME = 'afterglow.db';
 
-/** Bump on ANY schema change before v1 — the open path resets mismatches. */
+/** Bump on ANY schema change before v1 — the open path resets mismatches.
+ * When one release's destructive DDL lands across multiple phases, bump
+ * once PER destructive phase (not once per release), so a mid-release
+ * install self-heals by rebuild instead of by a manual data wipe. */
 export const SCHEMA_VERSION = 22;
 
 export const BASELINE_DDL = `

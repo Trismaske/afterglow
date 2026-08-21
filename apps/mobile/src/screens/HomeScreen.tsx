@@ -61,6 +61,8 @@ import {
   unstageCullDirect,
 } from '../db/store';
 import { runTrashAttempt } from '../lib/trashFlow';
+import { requeueEditAfterRollback } from '../db/trashStore';
+import { describeTrashFailure } from '../lib/trashFailures';
 import { formatBytes, plural } from '../lib/format';
 import { fileSize, fileSizeOrNull } from '../lib/hash';
 import { runEditDetection, type DetectedCopy } from '../lib/detect';
@@ -258,12 +260,9 @@ export function HomeScreen({ navigation }: Props) {
       invalidateMountedVolumes();
       void (async () => {
         const today = dayKey(Date.now());
-        const since = recentDayKeys(120)[119] ?? today;
         // ONE mounted snapshot for this whole burst (final cycle N5):
         // corpus, coverage and the banner must describe the same world.
         const burstMounted = await mountedVolumeSet();
-        // decided_at bound in epoch ms (see getReviewedCountsByDay).
-        const sinceMs = rangeOfDayKey(since).startMs;
         // Corpus stats share the queue's source scope: the MediaStore
         // denominator and the verdict/group numerators must count the
         // same photos. FAIL CLOSED: a resolution error keeps the last
@@ -279,31 +278,49 @@ export function HomeScreen({ navigation }: Props) {
         }
         // KEEP-LAST on resolution failure (Tristan, grilling Q3): the
         // store reads null roots as ALL FOLDERS, so a failed translation
-        // of the selected source must not broaden the ring/streaks to
-        // the whole library. The unresolved reads are skipped, the last
-        // rendered values stand, and the retrying resolution
-        // (sourceCatalog) recovers on the next load. Without permission
-        // src is legitimately null and the unscoped reads proceed.
+        // of the selected source must not broaden the SCOPED reads
+        // (totals, corpus, coverage) to the whole library. Those are
+        // skipped, the last rendered values stand, and the retrying
+        // resolution (sourceCatalog) recovers on the next load. The ring
+        // map is exempt: it is unscoped BY CONTRACT (vetted 2026-08-21,
+        // achievement stats), so there is no scope to lose.
         const resolutionFailed = (permission?.granted ?? false) && src === null;
-        const [rawGoal, rawCoverage, reviewedByDay, totals, stats, total] = await Promise.all([
-          getSetting(db, DAILY_GOAL_KEY),
-          getSetting(db, COVERAGE_GOAL_KEY),
-          // Source-scoped like everything else about the current library
-          // (statsLoad.ts header).
-          resolutionFailed ? null : getReviewedCountsByDay(db, sinceMs, src?.roots ?? null),
-          // m0.8.2: the forecast's decision floor and pace denominator —
-          // one indexed aggregate, not the full base-rate pass.
-          resolutionFailed ? null : getDecisionTotals(db, src?.roots ?? null),
-          permission?.granted && src ? getCorpusStats(db, src.roots, burstMounted) : null,
-          // null = the MediaStore count FAILED — keep the last rendered
-          // stats rather than presenting an authoritative-looking zero.
-          permission?.granted && src
-            ? countPhotosInRange(0, Number.POSITIVE_INFINITY, src.albumIds).catch((error): null => {
-                console.warn('[home] corpus count failed — stats kept:', String(error));
-                return null;
-              })
-            : 0,
-        ]);
+        // The finish line's pace map is a PLANNING input (codex m0.8.7
+        // r2): the ETA over the selected, mounted library must not run
+        // at a pace earned in excluded folders, so it gets its own
+        // scoped windowed read beside the unscoped achievement map.
+        const planSinceMs = rangeOfDayKey(recentDayKeys(120)[119] ?? dayKey(Date.now())).startMs;
+        const [rawGoal, rawCoverage, reviewedByDay, planReviewedByDay, totals, stats, total] =
+          await Promise.all([
+            getSetting(db, DAILY_GOAL_KEY),
+            getSetting(db, COVERAGE_GOAL_KEY),
+            // The ring/streak map: achievement stats read decision history
+            // UNSCOPED on both axes — a narrowed selection or an unmounted
+            // card never rewrites what you did (STATE_MODEL; the same map
+            // the review celebration baseline reads). UNBOUNDED (gap 9,
+            // codex m0.8.7 r1): goalStreaks' longest is the ALL-TIME
+            // record, and a 120-day read would silently drop an older best
+            // that Stats (unbounded) still reports.
+            getReviewedCountsByDay(db, 0),
+            resolutionFailed
+              ? null
+              : getReviewedCountsByDay(db, planSinceMs, src?.roots ?? null, burstMounted),
+            // m0.8.2: the forecast's decision floor and pace denominator —
+            // one indexed aggregate, not the full base-rate pass. Both
+            // planning axes (codex m0.8.7 r2).
+            resolutionFailed ? null : getDecisionTotals(db, src?.roots ?? null, burstMounted),
+            permission?.granted && src ? getCorpusStats(db, src.roots, burstMounted) : null,
+            // null = the MediaStore count FAILED — keep the last rendered
+            // stats rather than presenting an authoritative-looking zero.
+            permission?.granted && src
+              ? countPhotosInRange(0, Number.POSITIVE_INFINITY, src.albumIds).catch(
+                  (error): null => {
+                    console.warn('[home] corpus count failed — stats kept:', String(error));
+                    return null;
+                  },
+                )
+              : 0,
+          ]);
         if (cancelled) return;
         const currentGoal = parseDailyGoal(rawGoal);
         const keys = [...recentDayKeys(120)].reverse();
@@ -342,11 +359,14 @@ export function HomeScreen({ navigation }: Props) {
           const captured = new Map<string, number>();
           for (const row of rows) if (row.day !== null) captured.set(row.day, row.total);
           nextFinish =
-            remaining === null || reviewedByDay === null || totals === null
+            remaining === null || totals === null || planReviewedByDay === null
               ? null
               : finishLine({
                   remaining,
-                  reviewedByDay,
+                  // The scoped planning map, NOT the achievement map
+                  // (codex m0.8.7 r2): pace over the population the ETA
+                  // is about.
+                  reviewedByDay: planReviewedByDay,
                   capturedByDay: captured,
                   dayKeys: keys,
                   decisions: totals.decisions,
@@ -361,14 +381,9 @@ export function HomeScreen({ navigation }: Props) {
         // repaints. (This effect used to commit twice, split by the
         // coverage await above.)
         setGoal(currentGoal);
-        // Keep-last: a skipped (failed-resolution) read leaves the ring,
-        // streaks and the loaded latch exactly as they were — on a cold
-        // start that means the "–" placeholder, never a wrong number.
-        if (reviewedByDay !== null) {
-          setReviewedToday(reviewedByDay.get(today) ?? 0);
-          setStreaks(goalStreaks(reviewedByDay, keys, currentGoal));
-          setGoalLoaded(true);
-        }
+        setReviewedToday(reviewedByDay.get(today) ?? 0);
+        setStreaks(goalStreaks(reviewedByDay, keys, currentGoal));
+        setGoalLoaded(true);
         setCoverage(coverageGoal);
         if (nextCoverageStatus !== undefined) setCoverageStatus(nextCoverageStatus);
         if (nextFinish !== undefined) setFinish(nextFinish);
@@ -468,6 +483,11 @@ export function HomeScreen({ navigation }: Props) {
                     Date.now(),
                     false,
                   );
+                  // The staging flipped the queued edit to 'applied'
+                  // inside prepareTrashBatch; without this compensating
+                  // re-queue the pending match could never re-emit and
+                  // "asks again" would be a lie (codex m0.8.7 r3).
+                  await requeueEditAfterRollback(db, head.originalAssetId);
                   noteDecisions(rollback.freshDecisions);
                   await reviewRefresh().catch(() => {});
                   if (attempt.status === 'unsupported') {
@@ -476,9 +496,24 @@ export function HomeScreen({ navigation }: Props) {
                       "Afterglow's media module is not available in this build, so nothing was changed. Afterglow never permanently deletes photos — your culls are still staged and untouched.",
                     );
                   } else if (attempt.status === 'failed') {
+                    // The three-tier contract at this boundary too (codex
+                    // m0.8.7 r1): stage fact first, Android verbatim last
+                    // — plus this path's own truth, that the verdict was
+                    // rolled back.
+                    const report = describeTrashFailure({
+                      trashedCount: attempt.trashedIds.length,
+                      remaining: 0,
+                      unresolvedCount: attempt.unknownIds.length,
+                      stage: attempt.stage,
+                      error: attempt.error,
+                      // The rollback above already un-staged the verdict
+                      // — "remains staged" would be a lie here (codex
+                      // m0.8.7 r2); the appended line carries the truth.
+                      stillStaged: false,
+                    });
                     Alert.alert(
-                      'Could not move photo to trash',
-                      attempt.error ?? 'Unknown MediaStore error.',
+                      report.title,
+                      `${report.body}\n\nThe original is back to its previous state — the prompt will ask again on the next check.`,
                     );
                   }
                 }

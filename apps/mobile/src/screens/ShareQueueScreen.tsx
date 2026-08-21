@@ -316,8 +316,10 @@ export function ShareQueueScreen(_props: Props) {
     };
     // Share-before-edit confirm (m0.8.7 rider): a photo whose edit
     // intent is still queued shares the UNEDITED file — name it at
-    // dispatch time, once per batch. A failed read must not silently
-    // block the dispatch — logged, and the size gate proceeds as before.
+    // dispatch time, once per batch. FAIL CLOSED (codex m0.8.7 r1): the
+    // promise is that nothing unedited leaves without the warning, and a
+    // failed read cannot honour it — stop before the external side
+    // effect rather than dispatch on a confident zero.
     let pendingEdits = 0;
     try {
       const actions = await getActionsForPhotos(db, shareIds);
@@ -326,7 +328,12 @@ export function ShareQueueScreen(_props: Props) {
           pendingEdits += 1;
       }
     } catch (error) {
-      console.warn('[share] pending-edit check failed — dispatch proceeds:', String(error));
+      console.warn('[share] pending-edit check failed — dispatch blocked:', String(error));
+      Alert.alert(
+        'Could not check pending edits',
+        'Afterglow could not verify whether any of these photos still have an unsent edit request. Nothing was shared — try again.',
+      );
+      return;
     }
     if (pendingEdits > 0) {
       Alert.alert(
@@ -368,13 +375,22 @@ export function ShareQueueScreen(_props: Props) {
       // re-reads LIVE mount state so a now-unreachable row's pending
       // share survives byte-for-byte (plan §5), AND it is bounded to
       // the rows the dialog described — a remount may only shrink the
-      // clear, never add unseen rows to it.
+      // clear, never add unseen rows to it. BOTH axes (codex m0.8.7
+      // r1): the rendered rows can be retained from before a source
+      // change (useQueueRows keeps them across a failed refresh), so the
+      // candidates intersect a fresh source-scoped queue read too.
       invalidateMountedVolumes();
+      const mounted = await mountedVolumeSet();
+      const inScope = new Set(
+        (
+          await getShareQueue(db, Date.now(), mounted, (await resolveSources(db)).roots ?? null)
+        ).map((r) => r.photo_id),
+      );
       await clearShareQueue(
         db,
         Date.now(),
-        await mountedVolumeSet(),
-        (rows ?? []).map((r) => r.photo_id),
+        mounted,
+        (rows ?? []).map((r) => r.photo_id).filter((id) => inScope.has(id)),
       );
       setSelected(new Set());
     } catch (error) {

@@ -22,6 +22,7 @@ import {
   leaveQueue,
   livePhotoClause,
   queuedClause,
+  sourceExists,
   type ActionKind,
 } from './actions';
 import type { LoadedPhoto } from '../lib/media';
@@ -3443,10 +3444,8 @@ function presentOrTrashedClause(reach: { sql: string; params: string[] }): {
 export async function getDayReviewSummary(
   db: SQLiteDatabase,
   day: string,
-  roots: readonly SourceRoot[] | null = null,
 ): Promise<{ reviewed: number; kept: number; staged: number; trashed: number }> {
   const range = rangeOfDayKey(day);
-  const src = sourceClause(roots);
   const row = await db.getFirstAsync<{
     reviewed: number;
     kept: number;
@@ -3464,10 +3463,9 @@ export async function getDayReviewSummary(
             SUM(CASE WHEN state = 'trashed' AND culled_at IS NOT NULL THEN 1 ELSE 0 END)
               AS trashed
      FROM photos
-     WHERE decided_first_at BETWEEN ? AND ?${src.sql}`,
+     WHERE decided_first_at BETWEEN ? AND ?`,
     range.startMs,
     range.endMs,
-    ...src.params,
   );
   return {
     reviewed: row?.reviewed ?? 0,
@@ -3761,12 +3759,18 @@ export interface ForecastBaseRates extends DecisionTotals {
 export async function getDecisionTotals(
   db: SQLiteDatabase,
   roots: readonly SourceRoot[] | null = null,
+  /** Planning stats scope on BOTH axes (codex m0.8.7 r2): an ejected
+   * card's decisions must leave the floor and pace denominator together
+   * with its remaining pool. */
+  mounted: readonly string[] | null = null,
 ): Promise<DecisionTotals> {
   const src = sourceClause(roots);
+  const reach = reachClause(mounted);
   const row = await db.getFirstAsync<{ decisions: number; firstDecidedAt: number | null }>(
     `SELECT COUNT(*) AS decisions, MIN(decided_at) AS firstDecidedAt
-     FROM photos WHERE decided_at IS NOT NULL${src.sql}`,
+     FROM photos WHERE decided_at IS NOT NULL${src.sql}${reach.sql}`,
     ...src.params,
+    ...reach.params,
   );
   return { decisions: Number(row?.decisions ?? 0), firstDecidedAt: row?.firstDecidedAt ?? null };
 }
@@ -3789,9 +3793,12 @@ export async function getDecisionTotals(
 export async function getForecastBaseRates(
   db: SQLiteDatabase,
   roots: readonly SourceRoot[] | null = null,
+  /** Both axes for planning (codex m0.8.7 r2) — see getDecisionTotals. */
+  mounted: readonly string[] | null = null,
   chunks = 5,
 ): Promise<ForecastBaseRates> {
   const src = sourceClause(roots);
+  const reach = reachClause(mounted);
   const rows = await db.getAllAsync<{
     chunk: number;
     total: number;
@@ -3805,7 +3812,7 @@ export async function getForecastBaseRates(
        SELECT asset_id, state, culled_at,
               NTILE(?) OVER (ORDER BY decided_at) AS chunk
        FROM photos
-       WHERE decided_at IS NOT NULL${src.sql}
+       WHERE decided_at IS NOT NULL${src.sql}${reach.sql}
      )
      SELECT chunk,
             COUNT(*) AS total,
@@ -3832,8 +3839,9 @@ export async function getForecastBaseRates(
      ORDER BY chunk`,
     chunks,
     ...src.params,
+    ...reach.params,
   );
-  const totals = await getDecisionTotals(db, roots);
+  const totals = await getDecisionTotals(db, roots, mounted);
   return {
     chunks: rows.map((row) => ({
       chunk: Number(row.chunk),
@@ -3853,18 +3861,12 @@ export async function getForecastBaseRates(
  * median. Bounded because the estimate needs a rhythm, not a biography —
  * and the bound keeps this on `idx_photos_decided` instead of the table.
  */
-export async function getRecentDecisionStamps(
-  db: SQLiteDatabase,
-  limit = 2000,
-  roots: readonly SourceRoot[] | null = null,
-): Promise<number[]> {
-  const src = sourceClause(roots);
+export async function getRecentDecisionStamps(db: SQLiteDatabase, limit = 2000): Promise<number[]> {
   const rows = await db.getAllAsync<{ decided_at: number }>(
     `SELECT decided_at FROM photos
-     WHERE decided_at IS NOT NULL${src.sql}
+     WHERE decided_at IS NOT NULL
      ORDER BY decided_at DESC
      LIMIT ?`,
-    ...src.params,
     limit,
   );
   return rows.map((row) => Number(row.decided_at));
@@ -3918,19 +3920,14 @@ export interface RhythmCell {
  *
  * Empty cells are simply absent; the caller fills the grid.
  */
-export async function getDecisionRhythm(
-  db: SQLiteDatabase,
-  roots: readonly SourceRoot[] | null = null,
-): Promise<RhythmCell[]> {
-  const src = sourceClause(roots);
+export async function getDecisionRhythm(db: SQLiteDatabase): Promise<RhythmCell[]> {
   const rows = await db.getAllAsync<{ weekday: string; hour: string; n: number }>(
     `SELECT strftime('%w', decided_at / 1000, 'unixepoch', 'localtime') AS weekday,
             strftime('%H', decided_at / 1000, 'unixepoch', 'localtime') AS hour,
             COUNT(*) AS n
      FROM photos
-     WHERE decided_at IS NOT NULL${src.sql}
+     WHERE decided_at IS NOT NULL
      GROUP BY weekday, hour`,
-    ...src.params,
   );
   return rows.map((row) => ({
     weekday: Number(row.weekday),
@@ -3976,18 +3973,28 @@ export async function getQueueTurnaround(
    * unreachable photos; the finished counts and turnaround gaps stay
    * unscoped — they are history. */
   mounted: readonly string[] | null = null,
+  /** F18 (codex m0.8.7 r1): the waiting half matches the tab badge on
+   * the SOURCE axis too — countQueues' exact predicate set. */
+  roots: readonly SourceRoot[] | null = null,
 ): Promise<QueueTurnaround[]> {
   const reach = reachClause(mounted, 'live_p.volume_name');
+  const src = sourceExists(roots, 'photo_actions.photo_id');
   const [waiting, finished, gaps] = await Promise.all([
     db.getAllAsync<{ kind: ActionKind; n: number; oldest: number | null }>(
+      // Per-kind suspension (F21), kind as a column — the same live
+      // predicate as countQueues, or Habits' waiting disagrees with the
+      // badge it claims to mirror.
       `SELECT kind, COUNT(*) AS n, MIN(queued_at) AS oldest FROM photo_actions
         WHERE state IN ('queued', 'error')
           AND EXISTS (SELECT 1 FROM photos live_p
                        WHERE live_p.asset_id = photo_actions.photo_id
                          AND live_p.is_present = 1
-                         AND live_p.state NOT IN ('culled', 'trashed')${reach.sql})
+                         AND live_p.state <> 'trashed'
+                         AND (photo_actions.kind IN ('share', 'edit')
+                              OR live_p.state <> 'culled')${reach.sql})${src.sql}
         GROUP BY kind`,
       ...reach.params,
+      ...src.params,
     ),
     db.getAllAsync<{ kind: ActionKind; n: number }>(
       `SELECT kind, COUNT(*) AS n FROM photo_actions
@@ -4058,18 +4065,15 @@ export async function getDuelSummary(db: SQLiteDatabase): Promise<DuelSummary> {
 export async function getDecisionOutcomesSince(
   db: SQLiteDatabase,
   sinceMs: number,
-  roots: readonly SourceRoot[] | null = null,
 ): Promise<{ decided: number; culled: number }> {
-  const src = sourceClause(roots);
   const row = await db.getFirstAsync<{ decided: number; culled: number }>(
     // Stamps-only (gap 4): gallery cleanups no longer read as "culling
     // harder lately".
     `SELECT COUNT(*) AS decided,
             SUM(CASE WHEN culled_at IS NOT NULL THEN 1 ELSE 0 END) AS culled
      FROM photos
-     WHERE decided_at IS NOT NULL AND decided_at >= ?${src.sql}`,
+     WHERE decided_at IS NOT NULL AND decided_at >= ?`,
     sinceMs,
-    ...src.params,
   );
   return { decided: Number(row?.decided ?? 0), culled: Number(row?.culled ?? 0) };
 }

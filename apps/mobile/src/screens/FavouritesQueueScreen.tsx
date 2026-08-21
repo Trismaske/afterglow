@@ -10,7 +10,7 @@ import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSQLiteContext } from 'expo-sqlite';
-import { mountedVolumeSet } from '../lib/mountedVolumes';
+import { invalidateMountedVolumes, mountedVolumeSet } from '../lib/mountedVolumes';
 import { resolveSources } from '../lib/sourceCatalog';
 import { getPhotoQueueFacts } from '../db/store';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -94,10 +94,44 @@ export function FavouritesQueueScreen() {
   const runBatch = useCallback(
     async (target: boolean) => {
       if (busyTarget !== null) return;
-      const all = (target ? applyRows : removeRows).map((row) => row.asset_id);
-      if (all.length === 0) return;
+      const rendered = (target ? applyRows : removeRows).map((row) => row.asset_id);
+      if (rendered.length === 0) return;
       setBusyTarget(target);
       try {
+        // M5/F18 (codex m0.8.7 r1): rendered ∩ fresh two-axis read.
+        // useQueueRows deliberately retains rows across a failed
+        // refresh, so the render alone can be stale after a source or
+        // mount change — the physical MediaStore batch binds to what the
+        // user saw AND the current scope still holds, in the CURRENT
+        // direction (a photo re-toggled while on screen leaves the
+        // batch). Fail closed: no fresh read, no physical write.
+        let all: string[];
+        try {
+          invalidateMountedVolumes();
+          const fresh = await getQueue(
+            db,
+            'favourite',
+            await mountedVolumeSet(),
+            (await resolveSources(db)).roots ?? null,
+          );
+          const live = new Set(
+            fresh
+              .filter((action) => (decodeFavouriteTarget(action.target) === false) !== target)
+              .map((action) => action.photoId),
+          );
+          all = rendered.filter((id) => live.has(id));
+        } catch (error) {
+          console.warn('[favourites] fresh scope read failed — apply blocked:', String(error));
+          Alert.alert(
+            'Could not verify the queue',
+            'Afterglow could not re-check which photos are still in the selected folders. Nothing was changed — try again.',
+          );
+          return;
+        }
+        if (all.length === 0) {
+          await reload();
+          return;
+        }
         // Bounded per OS consent request (P5#4; the platform throws above
         // 2000 URIs, which would error the whole queue unrecoverably):
         // loop batches — one dialog each — until drained or declined.
@@ -126,13 +160,43 @@ export function FavouritesQueueScreen() {
               break;
             }
           } else if (result.status === 'failed') {
+            // Partial success commits the VERIFIED subset (codex m0.8.7
+            // r1): the classifier's copy promises "the unconfirmed ones
+            // stay queued and retry", so the confirmed rows must resolve
+            // — leaving them in error re-applies work Android already
+            // verified and falsifies the alert.
+            const unverified = new Set(result.unverifiedIds);
+            const confirmed =
+              result.unverifiedIds.length > 0 && result.unverifiedIds.length < batch.length
+                ? batch.filter((id) => !unverified.has(id))
+                : [];
+            const executed = encodeFavouriteTarget(target);
+            if (confirmed.length > 0) {
+              try {
+                await resolveActions(db, confirmed, 'favourite', Date.now(), executed, executed);
+              } catch {
+                // The verified subset could not be RECORDED (codex m0.8.7
+                // r2): the gallery change is real, but the rows stay
+                // queued and would re-apply — the partial-success report
+                // below would falsely claim only the unconfirmed retry.
+                // Same handling as the all-applied branch: say so, stop.
+                Alert.alert(
+                  'Applied, but not recorded',
+                  `Android confirmed ${plural(confirmed.length, 'favourite change')}, but Afterglow could not record ${confirmed.length === 1 ? 'it' : 'them'} — ${confirmed.length === 1 ? 'it' : 'they'} will retry next time. ${plural(result.unverifiedIds.length, 'photo')} also went unconfirmed and ${result.unverifiedIds.length === 1 ? 'retries' : 'retry'} as well.`,
+                );
+                break;
+              }
+            }
             // codex r9: the durable error mark is bookkeeping too — if it
             // rejects, the retry alert must still fire and the run still
             // stop; the row stays 'queued', which retries on the next
             // apply just the same as 'error'.
-            await failActions(db, batch, 'favourite', encodeFavouriteTarget(target)).catch(
-              () => {},
-            );
+            await failActions(
+              db,
+              confirmed.length > 0 ? batch.filter((id) => unverified.has(id)) : batch,
+              'favourite',
+              executed,
+            ).catch(() => {});
             // The three-tier report (Errors_design D4): the partial-
             // success counts from our own verify, then Android verbatim.
             const report = describeFavouriteFailure({

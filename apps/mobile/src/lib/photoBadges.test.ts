@@ -105,6 +105,14 @@ describe('folderNameOfUri (F19: last folder name only)', () => {
     expect(folderNameOfUri(null)).toBeNull();
   });
 
+  it('a literal % in a folder name never throws — raw segment fallback (codex m0.8.7 r1)', () => {
+    // "100% Photos" is a malformed escape to decodeURIComponent; a
+    // URIError here would crash the deck over a badge label.
+    expect(folderNameOfUri('file:///storage/emulated/0/100% Photos/IMG.jpg')).toBe('100% Photos');
+    // Valid escapes still decode.
+    expect(folderNameOfUri('file:///storage/emulated/0/My%20Trip/IMG.jpg')).toBe('My Trip');
+  });
+
   it('decodes percent-escapes so the pill shows the real name', () => {
     expect(folderNameOfUri('file:///storage/emulated/0/My%20Photos/x.jpg')).toBe('My Photos');
   });

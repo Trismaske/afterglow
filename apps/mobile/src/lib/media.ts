@@ -24,6 +24,7 @@ import type { MediaItem } from '@afterglow/core';
 import {
   getMediaPresence,
   getMountedVolumes,
+  loadImageByVolumeId,
   mediaStoreActionsAvailable,
   queryImageDetailsByUri,
   trashMedia,
@@ -343,18 +344,49 @@ export async function getAssetDetails(assetId: string): Promise<AssetDetails | n
 
 /**
  * Load one photo by canonical id in the scan's LoadedPhoto shape (F27:
- * the delta's direct landing of changed undated photos). Null when the
- * asset is gone, its uri volume mismatches the canonical id (cross-volume
- * raw-id collision — fail closed), or the lookup fails; the scan counts
- * that as a fail-closed skip and withholds its baselines.
+ * the delta's direct landing of changed undated photos). The read is
+ * volume-QUALIFIED (codex m0.8.7 r1): raw MediaStore ids can collide
+ * across volumes, and the merged-collection lookup then answers for the
+ * wrong volume — permanently fail-closing exactly the photo this fetch
+ * exists to land. Null when the row is absent on its volume or the
+ * lookup fails; the scan counts that as a fail-closed skip and withholds
+ * its baselines. A build without the native module (stale dev client)
+ * falls back to the merged read plus the volume check — logged once.
  */
+let warnedMergedFallback = false;
 export async function loadPhotoById(assetId: string): Promise<LoadedPhoto | null> {
   try {
-    const info = await MediaLibrary.getAssetInfoAsync(rawIdOf(assetId));
-    if (!info) return null;
-    const photo = toLoadedPhoto(info);
-    if (photo === null || photo.item.id !== assetId) return null;
-    return photo;
+    const row = await loadImageByVolumeId(volumeOf(assetId), rawIdOf(assetId));
+    if (row === 'module-absent') {
+      if (!warnedMergedFallback) {
+        warnedMergedFallback = true;
+        console.warn(
+          '[media] native module absent — direct fetches use the merged collection (raw-id collisions fail closed)',
+        );
+      }
+      const info = await MediaLibrary.getAssetInfoAsync(rawIdOf(assetId));
+      if (!info) return null;
+      const photo = toLoadedPhoto(info);
+      if (photo === null || photo.item.id !== assetId) return null;
+      return photo;
+    }
+    if (row === null || row.dataPath === null) return null;
+    const uri = `file://${row.dataPath}`;
+    return {
+      item: {
+        id: assetId,
+        timestamp: row.dateTakenMs ?? row.dateModifiedSec * 1000,
+        uri,
+        kind: 'photo',
+      },
+      rawId: row.rawId,
+      volumeName: volumeOf(assetId),
+      filename: row.displayName ?? row.dataPath.slice(row.dataPath.lastIndexOf('/') + 1),
+      modTime: row.dateModifiedSec * 1000,
+      undated: row.dateTakenMs === null,
+      width: row.width,
+      height: row.height,
+    };
   } catch {
     return null;
   }
@@ -494,6 +526,10 @@ export async function checkMediaPresence(
 
 export interface TrashAssetsResult {
   status: MediaStoreActionStatus | 'failed';
+  /** Where a 'failed' result failed (codex m0.8.7 r2): 'prepare' =
+   * resolving content uris, BEFORE any native call — Android was never
+   * asked; 'dispatch' = the native trash request itself. */
+  stage?: 'prepare' | 'dispatch';
   error?: string;
 }
 
@@ -506,12 +542,26 @@ export interface TrashAssetsResult {
  */
 export async function trashAssets(assetIds: readonly string[]): Promise<TrashAssetsResult> {
   if (assetIds.length === 0) return { status: 'applied' };
+  // Two tries, because the stage is the classifier's tier-1 fact (codex
+  // m0.8.7 r2): a uri-resolution failure must not wear Android's name.
+  let uris: string[];
   try {
-    const uris = await Promise.all(assetIds.map(getEditableContentUri));
+    uris = await Promise.all(assetIds.map(getEditableContentUri));
+  } catch (error) {
+    return {
+      status: 'failed',
+      stage: 'prepare',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  try {
+    // trashMedia reports failures by THROWING (its status union has no
+    // 'failed'), so a returned result needs no stage.
     return await trashMedia(uris);
   } catch (error) {
     return {
       status: 'failed',
+      stage: 'dispatch',
       error: error instanceof Error ? error.message : String(error),
     };
   }

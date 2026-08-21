@@ -52,6 +52,7 @@ import { isInShareQueue } from '../db/shareStore';
 import { classifyPhotoState } from '../lib/progress';
 import { dayKey, labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { formatClockSeconds, plural } from '../lib/format';
+import { badgesHidden, setBadgesHidden, subscribeBadgesHidden } from '../lib/badgePrefs';
 import { colors, useTheme } from '../theme';
 import { VERDICT_META } from './progress/stateMeta';
 import { StateEditorSheet } from './progress/StateEditorSheet';
@@ -118,6 +119,11 @@ export function PhotoViewer({
   const [shareQueued, setShareQueued] = useState(false);
   const [editing, setEditing] = useState<GridPhoto | null>(null);
   const [factsTick, setFactsTick] = useState(0);
+  // The Deck header's eye, mirrored (vetted 2026-08-21): the viewer is
+  // the other surface where badges visually compete with the photo, so
+  // it carries a second access point to the SAME durable toggle.
+  const [hideBadges, setHideBadges] = useState(badgesHidden);
+  useEffect(() => subscribeBadgesHidden(setHideBadges), []);
   const listRef = useRef<FlatList<ViewerItem>>(null);
 
   const current: ViewerItem | null = items[cursor] ?? null;
@@ -680,6 +686,18 @@ export function PhotoViewer({
               return `${labelForDayKey(day ?? dayKey(at))} · ${formatClockSeconds(at)}`;
             })()}
           </Text>
+          <Pressable
+            style={styles.closeButton}
+            hitSlop={8}
+            onPress={() => void setBadgesHidden(db, !badgesHidden())}
+            accessibilityLabel={hideBadges ? 'Show photo badges' : 'Hide photo badges'}
+          >
+            <MaterialCommunityIcons
+              name={hideBadges ? 'eye-off-outline' : 'eye-outline'}
+              size={22}
+              color={colors.textDim}
+            />
+          </Pressable>
           <Text style={styles.topIndex}>
             {cursor + 1}/{items.length}
           </Text>
@@ -692,7 +710,10 @@ export function PhotoViewer({
           {meta && facts ? (
             // F30: dimmed while a re-read is in flight — the previous
             // facts stay mounted instead of collapsing to "Loading…".
-            <View style={factsStale ? styles.factsStale : null}>
+            // A FAILED re-read keeps them too, but visibly stale and
+            // non-interactive (codex m0.8.7 r1): editing against facts
+            // the read could not confirm would write on stale truth.
+            <View style={factsStale || factsFailed ? styles.factsStale : null}>
               <View style={styles.stateLine}>
                 <View style={[styles.swatch, { backgroundColor: meta.color }]} />
                 <Text style={styles.stateLabel}>{meta.label}</Text>
@@ -703,22 +724,32 @@ export function PhotoViewer({
                   <Text style={styles.factText}>{line.text}</Text>
                 </View>
               ))}
-              <Pressable
-                style={styles.editState}
-                onPress={() =>
-                  setEditing({
-                    id: facts.asset_id,
-                    uri: facts.uri,
-                    takenAt: facts.taken_at,
-                    day: facts.day,
-                    effective: classifyPhotoState({ state: facts.state }),
-                    dbState: facts.state,
-                  })
-                }
-              >
-                <MaterialCommunityIcons name="pencil-outline" size={18} color={theme.accent} />
-                <Text style={[styles.editStateText, { color: theme.accent }]}>Change decision</Text>
-              </Pressable>
+              {factsFailed ? (
+                <Pressable onPress={() => setFactsTick((t) => t + 1)}>
+                  <Text style={styles.factText}>
+                    Could not refresh this photo's details — shown as last read. Tap to retry.
+                  </Text>
+                </Pressable>
+              ) : (
+                <Pressable
+                  style={styles.editState}
+                  onPress={() =>
+                    setEditing({
+                      id: facts.asset_id,
+                      uri: facts.uri,
+                      takenAt: facts.taken_at,
+                      day: facts.day,
+                      effective: classifyPhotoState({ state: facts.state }),
+                      dbState: facts.state,
+                    })
+                  }
+                >
+                  <MaterialCommunityIcons name="pencil-outline" size={18} color={theme.accent} />
+                  <Text style={[styles.editStateText, { color: theme.accent }]}>
+                    Change decision
+                  </Text>
+                </Pressable>
+              )}
             </View>
           ) : factsFailed ? (
             <Pressable onPress={() => setFactsTick((t) => t + 1)}>

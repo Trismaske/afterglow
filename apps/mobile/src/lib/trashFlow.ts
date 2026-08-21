@@ -20,6 +20,12 @@ import { mountedVolumeSet } from './mountedVolumes';
 
 export interface TrashAttemptResult {
   status: 'applied' | 'cancelled' | 'unsupported' | 'failed' | 'skipped';
+  /** Where a 'failed' run failed — OUR pipeline fact, not a reading of
+   * the error (Errors_design D2; codex m0.8.7 r1): 'prepare' failed
+   * before Android was asked (nothing dispatched), 'dispatch' is the
+   * native request itself, 'bookkeeping' failed AFTER the dialog (the
+   * moves may be real; Afterglow could not record them). */
+  stage?: 'prepare' | 'dispatch' | 'bookkeeping';
   error?: string;
   /** Every member this attempt actually reserved and dispatched. */
   attemptedIds: string[];
@@ -50,6 +56,7 @@ export async function runTrashAttempt(
     // continue).
     return {
       status: 'failed',
+      stage: 'prepare',
       error: error instanceof Error ? error.message : String(error),
       attemptedIds: [],
       trashedIds: [],
@@ -69,9 +76,18 @@ export async function runTrashAttempt(
     };
   }
   const ids = batch.members.map((m) => m.photoId);
+  // Whether the native request was actually invoked — the outer catch's
+  // stage must not claim "after the system dialog" for a failure that
+  // happened before Android was asked (codex m0.8.7 r2/r3): a rejected
+  // launch marker, a uri-resolution failure, or an absent module are all
+  // pre-dispatch facts, even when a LATER resolution step also rejects.
+  let dispatched = false;
   try {
     await markBatchLaunching(db, batch.batchId, Date.now());
     const dialog = await trashAssets(ids);
+    dispatched =
+      dialog.status !== 'unsupported' &&
+      !(dialog.status === 'failed' && dialog.stage === 'prepare');
     const status =
       dialog.status === 'applied'
         ? ('applied' as const)
@@ -109,6 +125,7 @@ export async function runTrashAttempt(
           });
     return {
       status,
+      stage: dialog.status === 'failed' ? (dialog.stage ?? 'dispatch') : undefined,
       error: dialog.status === 'failed' ? dialog.error : undefined,
       attemptedIds: ids,
       trashedIds: ids.filter(
@@ -142,6 +159,7 @@ export async function runTrashAttempt(
       });
       return {
         status: 'failed',
+        stage: dispatched ? 'bookkeeping' : 'prepare',
         error: message,
         attemptedIds: ids,
         trashedIds: ids.filter(
@@ -158,6 +176,7 @@ export async function runTrashAttempt(
       // everything stays maximally ambiguous.
       return {
         status: 'failed',
+        stage: dispatched ? 'bookkeeping' : 'prepare',
         error: message,
         attemptedIds: ids,
         trashedIds: [],

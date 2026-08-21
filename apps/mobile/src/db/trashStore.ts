@@ -27,7 +27,6 @@
  * re-trash legitimately counts the next generation (P8#4).
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
-import { dayKey } from '../lib/dates';
 import { withWriteTransaction } from './database';
 import { closeShareCycleIfQueueEmpty } from './shareStore';
 // Runtime-only circular edge (store also imports a trashStore helper):
@@ -95,24 +94,26 @@ export async function prepareTrashBatch(
     let freshDecisions = 0;
     if (options.stageToEditMembers) {
       for (const member of eligible) {
-        // The prior stamp is read BEFORE the update writes decided_at —
-        // the freshness rule compares the day of the decision being
-        // replaced (same as applyReviewDecisions).
-        const prior = await txn.getFirstAsync<{ decided_at: number | null }>(
-          'SELECT decided_at FROM photos WHERE asset_id = ?',
+        // The prior FIRST stamp is read BEFORE the update writes it —
+        // the freshness rule is gap 8's (same as applyReviewDecisions):
+        // the ring credits only the photo's first decision ever.
+        const prior = await txn.getFirstAsync<{ decided_first_at: number | null }>(
+          'SELECT decided_first_at FROM photos WHERE asset_id = ?',
           member.photoId,
         );
         const staged = await txn.runAsync(
           `UPDATE photos SET state = 'culled', culled_at = COALESCE(culled_at, ?),
              -- A staged cull is a VERDICT, and this path can reach an
              -- unreviewed photo (flagging to edit does not decide) — so
-             -- it stamps like every other verdict write: reviewed_at
-             -- first-stamps, decided_at re-stamps.
-             reviewed_at = COALESCE(reviewed_at, ?), decided_at = ?, activity_at = ?
+             -- it stamps like every other verdict write: reviewed_at and
+             -- decided_first_at first-stamp, decided_at re-stamps.
+             reviewed_at = COALESCE(reviewed_at, ?), decided_at = ?,
+             decided_first_at = COALESCE(decided_first_at, ?), activity_at = ?
            WHERE asset_id = ? AND state IN ('unreviewed', 'kept')
              AND EXISTS (SELECT 1 FROM photo_actions pa
                           WHERE pa.photo_id = photos.asset_id AND pa.kind = 'edit'
                             AND pa.state IN ('queued', 'error'))`,
+          at,
           at,
           at,
           at,
@@ -140,10 +141,8 @@ export async function prepareTrashBatch(
         // A stale prompt whose original left the edit queue stages
         // NOTHING (the empty batch returns null).
         if (Number(staged.changes) === 0) continue;
-        // Fresh work only (the once-per-day rule): a row already
-        // stamped today is already inside the number the ring shows.
-        const stamp = prior?.decided_at ?? null;
-        if (stamp === null || dayKey(stamp) !== dayKey(at)) freshDecisions += 1;
+        // Fresh work only (gap 8): the photo's FIRST decision ever.
+        if ((prior?.decided_first_at ?? null) === null) freshDecisions += 1;
       }
     }
     const batch = await txn.runAsync(
@@ -184,6 +183,27 @@ export async function prepareTrashBatch(
     result = out;
   });
   return result;
+}
+
+/**
+ * Compensate `stageToEditMembers`' edit-completion mark after a
+ * ROLLED-BACK attempt (codex m0.8.7 r3). The staging guard only accepts
+ * photos whose edit is queued/error, and prepareTrashBatch flips exactly
+ * that row (PK photo_id+kind) to 'applied' in its own transaction — so
+ * when the cull is rolled back (cancel/failure), the edit must return to
+ * the queue too, or the pending copy match can never re-emit and the
+ * prompt's open question is silently consumed. Only the edited-copy
+ * rollback path calls this; a normal un-stage keeps completed edits.
+ * `resolved_at` is KEPT (the actions doctrine: it is permanent, and the
+ * edit genuinely completed — the copy exists); state alone gates the
+ * queue, the staging guard, and detection's re-emit.
+ */
+export async function requeueEditAfterRollback(db: SQLiteDatabase, photoId: string): Promise<void> {
+  await db.runAsync(
+    `UPDATE photo_actions SET state = 'queued'
+      WHERE photo_id = ? AND kind = 'edit' AND state = 'applied'`,
+    photoId,
+  );
 }
 
 /** The consent dialog is about to show — record durable dispatch intent. */

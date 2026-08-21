@@ -55,20 +55,29 @@ export function Chip({
   label,
   onPress,
   disabled = false,
+  destructive = false,
   style,
 }: {
   label: string;
   onPress: () => void;
   disabled?: boolean;
+  /** Destructive acts wear the cull red (vetted 2026-08-21): the remove
+   * chip must not camouflage among its neutral row-mates. */
+  destructive?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
   return (
     <Pressable
-      style={[styles.chip, disabled && styles.disabled, style]}
+      style={[
+        styles.chip,
+        destructive && styles.chipDestructive,
+        disabled && styles.disabled,
+        style,
+      ]}
       disabled={disabled}
       onPress={onPress}
     >
-      <Text style={styles.chipText}>{label}</Text>
+      <Text style={[styles.chipText, destructive && styles.chipTextDestructive]}>{label}</Text>
     </Pressable>
   );
 }
@@ -94,5 +103,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   chipText: { color: colors.text, fontSize: 13, fontWeight: '600' },
+  chipDestructive: { borderColor: colors.cullDim },
+  chipTextDestructive: { color: colors.cull },
   disabled: { opacity: 0.5 },
 });

@@ -165,7 +165,8 @@ What the two predicates scope (identically — m0.8.7's F18 audit brought the qu
 - the browse grids
 
 What they never touch: decision HISTORY and lifetime stats.
-Completed work is fact, whichever volume it lives on now.
+Completed work is fact, whichever volume it lives on now, and whatever folders are currently selected: achievement and habit stats (the goal ring, streaks, records, activity, rhythm, sittings, decisiveness) read decision history unscoped on BOTH axes (vetted 2026-08-21).
+The one scoped decided read is the intake chart's decided series, which must describe the same population as its captured partner (STATS_ACCURACY gap 6).
 
 **What a WRITE may touch while a card is out (the M5 rule, vetted m0.8.3):**
 Explicitly targeted actions (deck verdicts, viewer edits, selected queue removals) act on their targets regardless of mount state.

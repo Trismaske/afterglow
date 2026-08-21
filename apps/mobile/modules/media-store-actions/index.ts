@@ -53,6 +53,7 @@ interface NativeApi {
   readExifDateTimeOriginal(uris: string[]): Promise<ExifDateResult[]>;
   countImagesByVolume(volumes: string[]): Promise<Record<string, number>>;
   listFavouriteImageIds(volume: string): Promise<string[]>;
+  loadImageById(volume: string, rawId: string): Promise<NativeImageRow | null>;
   listMountedVolumes(): Promise<string[]>;
   addListener(event: 'volumesChanged', listener: () => void): { remove(): void };
   addListener(
@@ -251,6 +252,27 @@ export async function getMediaChangedSince(
 export async function getFavouriteImageIds(volume: string): Promise<string[]> {
   if (!available()) return [];
   return native!.listFavouriteImageIds(volume);
+}
+
+/** One image row by (volume, rawId), or null when absent there — the F27
+ * direct fetch's volume-qualified read (codex m0.8.7 r1: merged-collection
+ * lookups answer for the wrong volume when raw ids collide). Null also
+ * when the module is absent — the caller falls back to the merged read. */
+export interface NativeImageRow {
+  rawId: string;
+  dataPath: string | null;
+  displayName: string | null;
+  dateTakenMs: number | null;
+  dateModifiedSec: number;
+  width: number;
+  height: number;
+}
+export async function loadImageByVolumeId(
+  volume: string,
+  rawId: string,
+): Promise<NativeImageRow | null | 'module-absent'> {
+  if (!available()) return 'module-absent';
+  return native!.loadImageById(volume, rawId);
 }
 
 /** The volume-aware album catalog. ALL VOLUMES OR NONE, same rule and

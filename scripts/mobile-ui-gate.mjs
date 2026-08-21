@@ -1002,54 +1002,61 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
     },
   );
 
-  await dependentStep('back home: the badges tell both halves of the v18 rule', null, async () => {
-    for (let i = 0; i < 4; i += 1) {
-      if (findNode(dumpUi(), /^Daily goal/)) break;
-      shell('input keyevent KEYCODE_BACK');
-      await new Promise((r) => setTimeout(r, 700));
-    }
-    await waitFor(/^Cull list$/, 20000, 'cull list row');
-    // THE LIVE RULE, and the only place it is observable: the first photo
-    // was favourited and shared and THEN staged to cull, so both badges
-    // must be back exactly where they started — a photo you are about to
-    // delete is not work waiting for you. Its action rows still exist
-    // (un-staging restores them); they just stop counting.
-    // Badges recount asynchronously after navigation, so this polls.
-    // The EDIT badge is deliberately absent from this equality: the deck
-    // chips are TOGGLES, so across repeat gate runs the edit deltas of
-    // the culled and the surviving photo can legitimately sum to zero —
-    // the edit wiring is asserted by the "completing an edit updates its
-    // tab badge" step instead.
-    const deadline = Date.now() + 25000;
-    for (;;) {
-      const after = dumpUi();
-      // Equality only counts on a dump that actually contains both tab
-      // anchors — badgeOf reads 0 for a missing anchor, and two synthetic
-      // zeroes on a failed dump would pass this vacuously (codex r50).
-      const anchored =
-        after.length > 0 &&
-        hasTab(after, 'Favourite') &&
-        hasTab(after, 'Organize') &&
-        hasTab(after, 'Share');
-      const favourite = badgeOf(after, 'Favourite');
-      const organize = badgeOf(after, 'Organize');
-      const share = badgeOf(after, 'Share');
-      if (
-        anchored &&
-        favourite === before.favourite &&
-        organize === before.organize &&
-        share === before.share
-      )
-        return;
-      if (Date.now() > deadline)
-        throw new Error(
-          `staged cull still counted: favourite ${favourite} (expected ${before.favourite}), ` +
-            `organize ${organize} (expected ${before.organize}), ` +
-            `share ${share} (expected ${before.share})`,
-        );
-      await new Promise((r) => setTimeout(r, 500));
-    }
-  });
+  await dependentStep(
+    'back home: the badges tell the per-kind suspension rule (F21)',
+    null,
+    async () => {
+      for (let i = 0; i < 4; i += 1) {
+        if (findNode(dumpUi(), /^Daily goal/)) break;
+        shell('input keyevent KEYCODE_BACK');
+        await new Promise((r) => setTimeout(r, 700));
+      }
+      await waitFor(/^Cull list$/, 20000, 'cull list row');
+      // THE LIVE RULE, and the only place it is observable: the first photo
+      // was favourited and shared and THEN staged to cull. Per-kind
+      // suspension (m0.8.7, F21): favourite and organize SUSPEND — those
+      // badges land back where they started, because decorating or filing
+      // a photo you are about to delete makes no sense — while share stays
+      // LIVE (+1): share-then-delete is a real flow, so the pending share
+      // keeps counting right up to the trash. Suspended rows still exist
+      // (un-staging restores them); they just stop counting.
+      // Badges recount asynchronously after navigation, so this polls.
+      // The EDIT badge is deliberately absent from this equality: the deck
+      // chips are TOGGLES, so across repeat gate runs the edit deltas of
+      // the culled and the surviving photo can legitimately sum to zero —
+      // the edit wiring is asserted by the "completing an edit updates its
+      // tab badge" step instead.
+      const deadline = Date.now() + 25000;
+      for (;;) {
+        const after = dumpUi();
+        // Equality only counts on a dump that actually contains both tab
+        // anchors — badgeOf reads 0 for a missing anchor, and two synthetic
+        // zeroes on a failed dump would pass this vacuously (codex r50).
+        const anchored =
+          after.length > 0 &&
+          hasTab(after, 'Favourite') &&
+          hasTab(after, 'Organize') &&
+          hasTab(after, 'Share');
+        const favourite = badgeOf(after, 'Favourite');
+        const organize = badgeOf(after, 'Organize');
+        const share = badgeOf(after, 'Share');
+        if (
+          anchored &&
+          favourite === before.favourite &&
+          organize === before.organize &&
+          share === before.share + 1
+        )
+          return;
+        if (Date.now() > deadline)
+          throw new Error(
+            `per-kind suspension (F21) not observed: favourite ${favourite} (expected ${before.favourite}), ` +
+              `organize ${organize} (expected ${before.organize}), ` +
+              `share ${share} (expected ${before.share + 1} — share stays live on a staged cull)`,
+          );
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    },
+  );
 
   // Completing work from a QUEUE SCREEN must move its tab badge. The
   // review-queue refresh cannot deliver that on its own — it commits

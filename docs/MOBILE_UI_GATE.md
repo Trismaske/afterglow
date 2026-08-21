@@ -87,6 +87,8 @@ Caveat in a failure: an all-black photo (pocket shot) inside the transition can 
   The gate relaunches the app through the launcher intent, which a dev client answers with its "connect to a development server" screen rather than the app.
 - A photo corpus with unreviewed photos (the deck steps hard-fail without one).
   Physical test phones qualify as-is.
+- A **fresh app state** (`adb shell pm clear`, re-grant permission, let the scan finish).
+  The deck chips are toggles and the F21 badge step asserts exact deltas from the run's start, so a photo carrying queued actions from an earlier run flips chips OFF and inverts the arithmetic — repeat runs on used state fail the step against a healthy app (observed 2026-08-21).
   To seed the bundled emulator (`scripts/run-emulator.sh`):
 
   ```bash

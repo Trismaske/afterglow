@@ -8,21 +8,22 @@
  * picture only the Stats page renders — it costs a MediaStore count and
  * per-file size stats, so the Summary deliberately does not pay it.
  *
- * WHERE SOURCE SCOPING STOPS (Tristan, 2026-07-28). Two different
- * questions, two different answers, and the split is deliberate:
- * - "your library and your pace RIGHT NOW" obeys the source selection —
- *   the goal ring, streaks, the 30-day chart, today's tiles, coverage,
- *   the corpus breakdown, the forecast's pace and remaining pool, and
- *   the habit stamps. The review queue is itself scoped, so a number
- *   counted over a wider set than the queue can serve is simply wrong.
- * - "what you DID" ignores it — the History feed and the all-time
- *   totals. Narrowing your sources must not rewrite the record of work
- *   you actually finished. All-time belongs on this side by its own
- *   nature: it counts trashed photos that live in no folder any more,
- *   and `lifetimeReclaimedBytes` sums verified trash-batch rows that
- *   carry no folder information at all, so scoping the rest of that card
- *   would leave one number silently unable to obey.
- * Do not "fix" the inconsistency by scoping the second group.
+ * THE SCOPING CONTRACT (vetted 2026-08-21), split by what a stat is
+ * ABOUT. Two different questions, two different answers:
+ * - "what you DID" is unscoped on both axes — achievement and habit
+ *   stats: the goal ring, streaks, records, the activity chart, today's
+ *   tiles, rhythm, sittings, decisiveness, the decision-pace stamps,
+ *   the History feed, and the all-time totals. Neither an unmounted
+ *   card nor a narrowed folder selection can rewrite the record of work
+ *   you actually finished. (All-time also belongs here by its own
+ *   nature: it counts trashed photos that live in no folder any more.)
+ * - "the library in front of you" obeys the selection — the corpus
+ *   breakdown, coverage, the forecast's base rates, decision floor and
+ *   remaining pool, the backlog frontier, the forecast/finish-line
+ *   pace maps, and the intake chart (BOTH its series, gap 6: a
+ *   comparison must describe one population).
+ * The contract's home is docs/STATS_ACCURACY.md; STATE_MODEL's two-axis
+ * section states the achievement half.
  *
  * ONE LOADER PER STATS TAB (m0.8.2): `loadDecisionStats` for Activity,
  * `loadForecastStats` for Forecast, `loadHabitStats` for Habits. They are
@@ -162,17 +163,22 @@ export async function loadDecisionStats(
     // UNBOUNDED since m0.8.2 (F13): the personal records need every
     // decision day, and the grouped read over all of them is one
     // indexed aggregate; windowed consumers keep reading their own
-    // keys out of the map.
-    getReviewedCountsByDay(db, 0, sources?.roots ?? null),
+    // keys out of the map. UNSCOPED on both axes (vetted 2026-08-21):
+    // achievement stats — ring, streaks, records, the activity chart —
+    // describe what you DID, and neither an unmounted card nor a
+    // narrowed folder selection can rewrite that.
+    getReviewedCountsByDay(db, 0),
     // The INTAKE chart's decided series (m0.8.7, gap 6): reach+source
     // scoped like its captured partner — a comparison must describe
-    // one population. Every other decided read stays reach-unscoped
-    // (decision history is never reach-scoped, STATE_MODEL).
+    // one population. Scoped decided reads exist ONLY for planning
+    // (this one and the forecast pace maps); every achievement/habit
+    // read is unscoped on both axes (STATE_MODEL).
     getReviewedCountsByDay(db, 0, sources?.roots ?? null, mounted),
     // All-time totals deliberately ignore the source (see the header).
     getLifetimeStats(db),
     // Decision-day summary: older photos reviewed today count too.
-    getDayReviewSummary(db, today, sources?.roots ?? null),
+    // Unscoped like the ring it sits beside.
+    getDayReviewSummary(db, today),
     // Capture-day coverage over the SAME window the charts plot, in the
     // SAME source scope as every other corpus number (m0.8.2 fix).
     sources === null
@@ -217,11 +223,22 @@ export interface ForecastInputs {
 export async function loadForecastInputs(
   db: SQLiteDatabase,
   sources: StatsSources,
+  /** The caller's snapshot (codex m0.8.7 r3): a live mount change
+   * between two reads would hand the forecast two different populations
+   * — exactly the mix the r2 fix removed. Omit only when no outer
+   * snapshot exists. */
+  mountedSnapshot?: readonly string[] | null,
 ): Promise<ForecastInputs> {
-  const mounted = await mountedVolumeSet();
+  const mounted = mountedSnapshot !== undefined ? mountedSnapshot : await mountedVolumeSet();
   const [baseRates, stamps, pool] = await Promise.all([
-    getForecastBaseRates(db, sources.roots),
-    getRecentDecisionStamps(db, undefined, sources.roots),
+    // Both axes (codex m0.8.7 r2): an ejected card's decisions leave the
+    // floor and rates together with its remaining pool.
+    getForecastBaseRates(db, sources.roots, mounted),
+    // Pace is a HABIT fact (vetted 2026-08-21): your reviewing rhythm
+    // does not change when you narrow the selection, and Habits'
+    // sittings read the same unscoped stamps so the two can never
+    // describe different sittings.
+    getRecentDecisionStamps(db),
     getRemainingPoolSize(db, sources.roots, mounted),
   ]);
   return { baseRates, stamps, pool };
@@ -256,8 +273,12 @@ export async function loadForecastStats(
   const mounted = await mountedVolumeSet();
   const [rawGoal, reviewedByDay, inputs, coverageRows, corpus, total] = await Promise.all([
     getSetting(db, DAILY_GOAL_KEY),
-    getReviewedCountsByDay(db, sinceMs, sources.roots),
-    loadForecastInputs(db, sources),
+    // The forecast's PACE map is a PLANNING input (codex m0.8.7 r2): it
+    // must describe the same selected, mounted population as the intake,
+    // backlog, floor and base rates beside it — the unscoped achievement
+    // map belongs to the ring/streaks, not to an ETA over this library.
+    getReviewedCountsByDay(db, sinceMs, sources.roots, mounted),
+    loadForecastInputs(db, sources, mounted),
     // The SAME rows the coverage chart plots — so the intake behind the
     // ETA and the intake drawn on the Activity tab cannot disagree.
     getCoverageByDay(db, oldest, sources.roots, mounted),
@@ -311,22 +332,30 @@ export interface HabitStats {
 
 export async function loadHabitStats(
   db: SQLiteDatabase,
+  /** For the queue turnarounds' WAITING half only — it mirrors the tab
+   * badges, which live on both scope axes (codex m0.8.7 r1). Everything
+   * else here is decision history and reads unscoped. */
   sources: StatsSources,
   at: number = Date.now(),
 ): Promise<HabitStats> {
   const sinceMs = at - DECISIVENESS_WINDOW_DAYS * 86_400_000;
+  // Habit stats read decision history UNSCOPED on both axes (vetted
+  // 2026-08-21): when you review, in what bursts, and how your standards
+  // move are facts about YOU, not about the currently selected folders.
   const [cells, stamps, queues, duels, recent, baseRates, lifetime, rawGoal, reviewedByDay] =
     await Promise.all([
-      getDecisionRhythm(db, sources.roots),
-      getRecentDecisionStamps(db, undefined, sources.roots),
-      getQueueTurnaround(db, await mountedVolumeSet()),
+      getDecisionRhythm(db),
+      getRecentDecisionStamps(db),
+      getQueueTurnaround(db, await mountedVolumeSet(), sources.roots),
       getDuelSummary(db),
-      getDecisionOutcomesSince(db, sinceMs, sources.roots),
-      getForecastBaseRates(db, sources.roots),
+      getDecisionOutcomesSince(db, sinceMs),
+      // Unscoped too: decisiveness compares the recent rate with the
+      // all-time one, and both arms must count the same population.
+      getForecastBaseRates(db, null),
       getLifetimeStats(db),
       getSetting(db, DAILY_GOAL_KEY),
       // Unbounded — the records need every decision day (F13).
-      getReviewedCountsByDay(db, 0, sources.roots),
+      getReviewedCountsByDay(db, 0),
     ]);
   // The all-time cull rate rides on the base rates already computed for
   // the projections — one definition of "culled", two readers.

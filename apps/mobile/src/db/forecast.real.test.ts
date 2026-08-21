@@ -56,7 +56,7 @@ describe('getForecastBaseRates', () => {
     const d = await fresh();
     seedWithShares(d, history.photos, history.todayMs);
 
-    const rates = await getForecastBaseRates(asExpo(d), null, 5);
+    const rates = await getForecastBaseRates(asExpo(d), null, null, 5);
     const expected = outcomeChunks(history, 5);
 
     expect(rates.decisions).toBe(history.decisionStamps.length);
@@ -84,7 +84,7 @@ describe('getForecastBaseRates', () => {
     const history = buildReviewHistory();
     const d = await fresh();
     seed(d, history.photos);
-    const rates = await getForecastBaseRates(asExpo(d), null, 5);
+    const rates = await getForecastBaseRates(asExpo(d), null, null, 5);
     const first = rates.chunks[0];
     const last = rates.chunks[rates.chunks.length - 1];
     // Cull rate climbs 0.20 -> 0.36 across the simulated history, which is
@@ -101,7 +101,7 @@ describe('getForecastBaseRates', () => {
         .slice(0, 20)
         .map((photo) => ({ ...photo, decidedAt: null, state: 'unreviewed' as const })),
     );
-    const rates = await getForecastBaseRates(asExpo(d), null, 5);
+    const rates = await getForecastBaseRates(asExpo(d), null, null, 5);
     expect(rates.decisions).toBe(0);
     expect(rates.firstDecidedAt).toBeNull();
     expect(rates.chunks).toEqual([]);
@@ -123,10 +123,11 @@ describe('getForecastBaseRates', () => {
     const scoped = await getForecastBaseRates(
       asExpo(d),
       [{ volume: 'external_primary', dir: 'DCIM/Camera' }],
+      null,
       5,
     );
     expect(scoped.decisions).toBe(20);
-    const unscoped = await getForecastBaseRates(asExpo(d), null, 5);
+    const unscoped = await getForecastBaseRates(asExpo(d), null, null, 5);
     expect(unscoped.decisions).toBe(40);
   });
 });
@@ -139,7 +140,7 @@ describe('the share proxy', () => {
       .slice(0, 4);
     const d = await fresh();
     seedWithShares(d, [{ ...decided[0], shared: true }, ...decided.slice(1)], history.todayMs);
-    const rates = await getForecastBaseRates(asExpo(d), null, 1);
+    const rates = await getForecastBaseRates(asExpo(d), null, null, 1);
     expect(rates.chunks[0].shared).toBe(1);
   });
 
@@ -178,7 +179,7 @@ describe('the share proxy', () => {
       .prepare('INSERT INTO share_batch_members (batch_id, photo_id) VALUES (1, ?)')
       .run(decided[0].assetId);
 
-    const rates = await getForecastBaseRates(asExpo(d), null, 1);
+    const rates = await getForecastBaseRates(asExpo(d), null, null, 1);
     expect(rates.chunks[0].shared).toBe(0);
   });
 });

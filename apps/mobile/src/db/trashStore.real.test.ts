@@ -409,24 +409,26 @@ describe('prepareTrashBatch stageToEditMembers (edited-copy cull)', () => {
     expect(actionsOf(d, 'e1')).toEqual({ edit: 'applied' });
   });
 
-  it('reports fresh goal work under the once-per-day rule (codex round 3)', async () => {
-    // The staging is a verdict write that moves decided_at into the
-    // day of `at` — it must report fresh work exactly like
-    // applyReviewDecisions, or the ring moves without the celebration
-    // counter (the m0.8.5 uncredited-path defect class). Unreviewed and
-    // earlier-day rows count; a row already stamped in `at`'s day does
-    // not.
+  it('reports fresh goal work under the FIRST-stamp rule, and first-stamps decided_first_at (gap 8, codex m0.8.7 r1)', async () => {
+    // The staging is a verdict write — it must credit and stamp exactly
+    // like applyReviewDecisions (the m0.8.5 uncredited-path defect
+    // class, re-based by gap 8): only a photo's first decision EVER
+    // counts, and decided_first_at first-stamps so the day-bucketed
+    // history sees the cull. A photo first-decided on ANY earlier day —
+    // or earlier today — is already inside the history.
     const d = await fresh();
     insertPhoto(d, 'never', 'unreviewed');
     attach(d, 'never', 'edit', 'queued');
     insertPhoto(d, 'earlier', 'kept');
     attach(d, 'earlier', 'edit', 'queued');
     d.raw
-      .prepare('UPDATE photos SET decided_at = ? WHERE asset_id = ?')
-      .run(AT - 86_400_000, 'earlier');
+      .prepare('UPDATE photos SET decided_at = ?, decided_first_at = ? WHERE asset_id = ?')
+      .run(AT - 86_400_000, AT - 86_400_000, 'earlier');
     insertPhoto(d, 'sameDay', 'kept');
     attach(d, 'sameDay', 'edit', 'queued');
-    d.raw.prepare('UPDATE photos SET decided_at = ? WHERE asset_id = ?').run(AT - 1000, 'sameDay');
+    d.raw
+      .prepare('UPDATE photos SET decided_at = ?, decided_first_at = ? WHERE asset_id = ?')
+      .run(AT - 1000, AT - 1000, 'sameDay');
     const batch = await prepareTrashBatch(
       asExpo(d),
       [
@@ -438,7 +440,18 @@ describe('prepareTrashBatch stageToEditMembers (edited-copy cull)', () => {
       { stageToEditMembers: true },
     );
     expect(batch!.members).toHaveLength(3);
-    expect(batch!.freshDecisions).toBe(2);
+    expect(batch!.freshDecisions).toBe(1);
+    // The first-ever decision lands in day history; existing first
+    // stamps hold (immutable).
+    const firstOf = (id: string) =>
+      (
+        d.raw.prepare('SELECT decided_first_at AS v FROM photos WHERE asset_id = ?').get(id) as {
+          v: number | null;
+        }
+      ).v;
+    expect(firstOf('never')).toBe(AT);
+    expect(firstOf('earlier')).toBe(AT - 86_400_000);
+    expect(firstOf('sameDay')).toBe(AT - 1000);
   });
 
   it('reserving already-staged culls reports no fresh work', async () => {

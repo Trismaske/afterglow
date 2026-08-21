@@ -96,7 +96,16 @@ export function folderNameOfUri(uri: string | null | undefined): string | null {
   // Need at least a folder AND a filename.
   if (segments.length < 2) return null;
   const folder = segments[segments.length - 2];
-  return folder.length > 0 ? decodeURIComponent(folder) : null;
+  if (folder.length === 0) return null;
+  // Defensive decode (codex m0.8.7 r1): a literal '%' in a folder name
+  // ("100% Photos") is a malformed escape to decodeURIComponent, and a
+  // URIError here would take the whole deck into the crash boundary over
+  // a badge label. The raw segment is the honest fallback.
+  try {
+    return decodeURIComponent(folder);
+  } catch {
+    return folder;
+  }
 }
 
 /** Does this canonical id live on a non-primary (SD) volume? (F14). */

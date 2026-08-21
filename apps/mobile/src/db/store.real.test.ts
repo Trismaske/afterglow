@@ -1303,6 +1303,32 @@ describe('staged-cull reads honor the source axis (m0.8.7, F18 / gap 10)', () =>
   });
 });
 
+describe('countStagedCullsWithUnsentIntents (F21 point 3)', () => {
+  it('counts photos whose queued share/edit rows would die with the confirm', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3']);
+    const { queueAction, resolveActions } = await import('./actions');
+    // 1: unsent share + unsent edit. 2: share SENT (resolved) then still
+    // queued — not "unsent". 3: no intents.
+    await queueAction(asExpo(d), id('1'), 'share', AT);
+    await queueAction(asExpo(d), id('1'), 'edit', AT);
+    await queueAction(asExpo(d), id('2'), 'share', AT);
+    await resolveActions(asExpo(d), [id('2')], 'share', AT + 1);
+    await queueAction(asExpo(d), id('2'), 'share', AT + 2); // re-queued, has proof
+    await applyReviewDecisions(
+      asExpo(d),
+      [
+        [id('1'), 'culled'],
+        [id('2'), 'culled'],
+        [id('3'), 'culled'],
+      ],
+      AT + 10,
+    );
+    const { countStagedCullsWithUnsentIntents } = await import('./store');
+    expect(await countStagedCullsWithUnsentIntents(asExpo(d))).toEqual({ share: 1, edit: 1 });
+  });
+});
+
 describe('atomic compare verdicts', () => {
   it('duel and loser verdict land in one write', async () => {
     const d = await fresh();

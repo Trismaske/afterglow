@@ -95,20 +95,27 @@ The third row is where every mistake in this area has come from.
 
 | Question | Predicate | Who asks |
 |---|---|---|
-| *What is waiting for me?* | `state IN ('queued','error')` **and** live (`livePhotoClause`) | tab badges, queue screens, the deck's action buttons |
+| *What is waiting for me?* | `state IN ('queued','error')` **and** live for its kind (`livePhotoClause`) | tab badges, queue screens, the deck's action buttons |
 | *What does this photo carry?* | the above, **or** `resolved_at IS NOT NULL` | per-photo badges only |
 | *What is in this grid?* | `state IN ('queued','error')` and the photo is not trashed | Progress action chips **and** the grid they filter |
 
-The first is a to-do count, so it excludes a photo you are about to delete. That photo is not work that waits for you.
-The second describes the photo itself, which is why a staged cull still shows the edit it kept.
+The first is a to-do count, and since m0.8.7 (F21) its suspension is **per kind**:
+
+- **Share and edit stay live on a staged cull.** "Delete it, but share it first" is a real flow, and an edit you asked for is still wanted while the photo waits in the cull queue — they list, count, dispatch, and stay addable from the deck and the state editor.
+- **Favourite and organize suspend on a staged cull.** Decorating or filing a photo you are about to delete makes no sense; the rows survive (un-staging restores them), the lists hide them, and additions are refused.
+- **A trashed photo suspends everything** — the file is the OS's now.
+
+The cull confirm names the never-sent share and edit intents its cleanup would delete ("N photos still have an unsent share request"), so proceeding is a knowing choice; sent intents keep their History proof either way.
+Dispatching a share whose photo still has a queued edit gets its own confirm — the unedited file is about to go out.
+The second question describes the photo itself, which is why a suspended favourite still badges the heart it kept.
 To *carry* an action and to *wait* on one are different things, and a cancelled trash attempt restores the photo to exactly that.
 The third exists because **a filter's number must equal what a tap on it shows**.
 Progress is a browse surface that deliberately lists staged culls under their own verdict chip.
 If its "To edit · 8" chip used the queue rule while the grid below used the browse rule, the page would contradict itself one tap apart.
 The chip and `GRID_FILTER_SQL` therefore share one predicate, by construction.
 
-The consequence to expect, not to fix: **Progress's "To edit" and the Edit tab badge can differ**, by exactly the photos you have staged to cull.
-That is two surfaces that answer two different questions, which is correct.
+Since m0.8.7 the Edit tab and Progress's "To edit" agree again — edit is live on a staged cull, so both count it.
+The gap that remains is favourite/organize: their Progress chips include staged culls (browse rule) while their queues do not (suspension), which is two surfaces answering two different questions, correctly.
 A filter that did not describe its own grid would not be.
 
 Counts never answer question two. A to-do number that only grows is not a to-do.
@@ -226,9 +233,9 @@ Six rules. They apply to every surface that paints a state.
    Loud badges are your to-do list. Quiet ones are the photo's history.
    Never desaturate toward grey: a greyed action reads as disabled.
    A queued un-favourite says "switching off" with the heart-off *glyph*, never with grey.
-   **Suspension demotes to quiet:** a staged cull's retained actions are off every to-do list, so their would-be live badges render carried.
+   **Suspension demotes to quiet, per kind (F21):** a staged cull's suspended favourite/organize render carried; its share and edit stay LIVE — they are dispatchable work.
    A suspended queued removal shows the carried heart: the gallery favourite still stands.
-   The deck's action chips disable entirely on a staged cull. Its retained rows are exactly what an un-stage restores.
+   The deck's favourite and organize chips disable on a staged cull; edit and share stay active (the browse-mode edit chip flag-toggles there, so queueing the edit never silently rescues the cull).
    Verdicts have no lifecycle and always render at full strength.
 
 ### What this means per surface
@@ -238,10 +245,9 @@ Six rules. They apply to every surface that paints a state.
 - **Progress chips** — two rows: verdicts (Unreviewed · Kept · Staged cull), then actions (Edit · Favourite · Organize · Share).
   They answer the **grid** question (third row of the table above), never the queue one.
   Their count is the grid's population by construction, so a tapped chip always shows exactly the number it printed.
-- **Grid dots and badges** — verdict first, then actions, in the one order `photoBadges.ts` defines.
-  Annotations draw no badge (time-attachment is internal, below).
-  Badges answer "what does this photo carry".
-  That is why they show a staged cull's pending edit even though the queues do not, and why a finished edit keeps its pencil at the `carried` weight.
+- **Grid dots and badges** — verdict first, then actions, then the two quiet annotations (folder pill, SD glyph — m0.8.7), in the one order `photoBadges.ts` defines.
+  Time-attachment stays internal and draws nothing.
+  Badges answer "what does this photo carry", and a finished edit keeps its pencil at the `carried` weight.
   To *carry* an action and to *wait* on one are different questions.
   The deck's action **buttons** are not badges. They offer work, so they light on waiting only.
 - **Histogram** — the reviewed share is shaded per month. The selected month is outlined, not filled.

@@ -387,24 +387,38 @@ export function PhotoViewer({
   }, [currentId, resetZoom]);
 
   // ------------------------------------------------------ facts panel
+  // F30 (m0.8.7): a RE-READ of the same photo keeps the previous facts
+  // rendered, dimmed (`factsStale` on the panel) — clearing them here
+  // unmounted the panel to "Loading…" and it visibly collapsed and
+  // returned on every state-editor write. Only a photo CHANGE clears.
+  const lastFactsIdRef = useRef<string | null>(null);
+  const [factsStale, setFactsStale] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    setFacts(undefined);
+    if (currentId !== lastFactsIdRef.current) {
+      lastFactsIdRef.current = currentId;
+      setFacts(undefined);
+      setShareQueued(false);
+    }
     setFactsFailed(false);
-    setShareQueued(false);
     if (currentId) {
+      setFactsStale(true);
       void Promise.all([getPhotoFacts(db, currentId), isInShareQueue(db, currentId)]).then(
         ([f, queued]) => {
           if (cancelled) return;
           setFacts(f);
           setShareQueued(queued);
+          setFactsStale(false);
         },
         (error: unknown) => {
           // FAIL CLOSED with a retry (codex r10): an unhandled rejection
           // left the panel on "Loading…" forever with "Change decision"
           // unreachable. Tapping the failure line retries via factsTick.
           console.warn('[viewer] facts read failed:', String(error));
-          if (!cancelled) setFactsFailed(true);
+          if (!cancelled) {
+            setFactsFailed(true);
+            setFactsStale(false);
+          }
         },
       );
     }
@@ -502,23 +516,13 @@ export function PhotoViewer({
     else if (facts.favourite_applied === 1)
       factLines.push({ icon: 'heart', text: 'Favourited in your gallery.' });
     if (facts.needs_edit === 1)
-      factLines.push({
-        icon: 'pencil-outline',
-        text: queued(
-          'In the edit queue.',
-          'Edit request rides along — back in the queue if the photo is un-staged.',
-        ),
-      });
+      // Edit stays IN its queue on a staged cull (m0.8.7, F21 point 1).
+      factLines.push({ icon: 'pencil-outline', text: 'In the edit queue.' });
     if (facts.edit_completed_at != null)
       factLines.push({ icon: 'pencil', text: 'Was edited via the edit queue.' });
     if (shareQueued)
-      factLines.push({
-        icon: 'share-variant',
-        text: queued(
-          'In the share queue.',
-          'Share request rides along — back in the queue if the photo is un-staged.',
-        ),
-      });
+      // Share stays IN its queue on a staged cull (m0.8.7, F21 point 1).
+      factLines.push({ icon: 'share-variant', text: 'In the share queue.' });
     // Carried share (codex r7): mirrors the edit pair above — the queued
     // line while the queue holds it, the resolved fact once it let go.
     else if (facts.share_carried === 1)
@@ -688,7 +692,9 @@ export function PhotoViewer({
           animatedProps={panelProps}
         >
           {meta && facts ? (
-            <>
+            // F30: dimmed while a re-read is in flight — the previous
+            // facts stay mounted instead of collapsing to "Loading…".
+            <View style={factsStale ? styles.factsStale : null}>
               <View style={styles.stateLine}>
                 <View style={[styles.swatch, { backgroundColor: meta.color }]} />
                 <Text style={styles.stateLabel}>{meta.label}</Text>
@@ -709,20 +715,13 @@ export function PhotoViewer({
                     day: facts.day,
                     effective: classifyPhotoState({ state: facts.state }),
                     dbState: facts.state,
-                    // Layer 2 has to travel with layer 1: without it the
-                    // sheet offers "send to the edit queue" for a photo
-                    // ALREADY in it, and taking that offer re-queues the
-                    // row and wipes mod_time/content_hash — destroying
-                    // the live cycle's detection baseline instead of
-                    // completing it.
-                    editPending: facts.needs_edit === 1,
                   })
                 }
               >
                 <MaterialCommunityIcons name="pencil-outline" size={18} color={theme.accent} />
                 <Text style={[styles.editStateText, { color: theme.accent }]}>Change decision</Text>
               </Pressable>
-            </>
+            </View>
           ) : factsFailed ? (
             <Pressable onPress={() => setFactsTick((t) => t + 1)}>
               <Text style={styles.factText}>
@@ -804,6 +803,7 @@ const styles = StyleSheet.create({
   stateHint: { color: colors.textDim, fontSize: 12, flexShrink: 1 },
   factLine: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
   factText: { color: colors.textDim, fontSize: 13, lineHeight: 18, flexShrink: 1 },
+  factsStale: { opacity: 0.5 },
   editState: {
     flexDirection: 'row',
     alignItems: 'center',

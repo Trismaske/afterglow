@@ -41,17 +41,43 @@ export interface PhotoBadge {
   label?: string;
 }
 
-export interface PhotoBadgeInput {
-  /** Durable review state; 'unreviewed' contributes no verdict badge. */
-  state: PhotoState;
-  /** Per-action weight, or null when the photo carries no such action. */
+/** The weighted per-kind action set a surface hydrates for its badges.
+ * `favourite` adds a third state (grilling Q5): 'removing' renders the
+ * heart-off glyph at the live weight — a queued switch-off is waiting
+ * work, and it must read apart from queued-apply and applied. */
+export interface WeightedActionSet {
   edit: BadgeWeight | null;
-  /** Favourite adds a third state (grilling Q5): 'removing' renders the
-   * heart-off glyph at the live weight — a queued switch-off is waiting
-   * work, and it must read apart from queued-apply and applied. */
   favourite: BadgeWeight | 'removing' | null;
   organize: BadgeWeight | null;
   share: BadgeWeight | null;
+}
+
+/** Demote a hydrated weight set for its photo's verdict — the per-kind
+ * suspension rule (m0.8.7, F21) in ONE place: share and edit stay live
+ * on a staged cull (dispatchable work); favourite and organize demote
+ * to carried there; a trashed photo demotes everything. */
+export function demoteForState(
+  state: PhotoState | null | undefined,
+  set: WeightedActionSet,
+): WeightedActionSet {
+  const trashed = state === 'trashed';
+  const suspended = state === 'culled' || trashed;
+  const demote = (
+    weight: BadgeWeight | 'removing' | null,
+    demoted: boolean,
+  ): BadgeWeight | 'removing' | null =>
+    demoted && (weight === 'live' || weight === 'removing') ? 'carried' : weight;
+  return {
+    edit: demote(set.edit, trashed) as BadgeWeight | null,
+    favourite: demote(set.favourite, suspended),
+    organize: demote(set.organize, suspended) as BadgeWeight | null,
+    share: demote(set.share, trashed) as BadgeWeight | null,
+  };
+}
+
+export interface PhotoBadgeInput extends WeightedActionSet {
+  /** Durable review state; 'unreviewed' contributes no verdict badge. */
+  state: PhotoState;
   /** F19 (m0.8.7): the photo's parent-folder name — a quiet text pill
    * AFTER the glyph badges (facts render last and always quiet).
    * Null/absent = no folder badge. Derive with folderNameOfUri. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { folderNameOfUri, isSdPhoto, photoBadges } from './photoBadges';
+import { demoteForState, folderNameOfUri, isSdPhoto, photoBadges } from './photoBadges';
 
 const NONE = {
   state: 'unreviewed',
@@ -114,5 +114,43 @@ describe('isSdPhoto (F14)', () => {
   it('is true exactly for non-primary volumes', () => {
     expect(isSdPhoto('external_primary/123')).toBe(false);
     expect(isSdPhoto('0a91-e18d/123')).toBe(true);
+  });
+});
+
+describe('demoteForState (F21: per-kind suspension in one place)', () => {
+  const all: import('./photoBadges').WeightedActionSet = {
+    edit: 'live',
+    favourite: 'removing',
+    organize: 'live',
+    share: 'live',
+  };
+
+  it('a staged cull keeps share and edit LIVE; favourite/organize demote', () => {
+    expect(demoteForState('culled', all)).toEqual({
+      edit: 'live',
+      favourite: 'carried',
+      organize: 'carried',
+      share: 'live',
+    });
+  });
+
+  it('a trashed photo demotes everything', () => {
+    expect(demoteForState('trashed', all)).toEqual({
+      edit: 'carried',
+      favourite: 'carried',
+      organize: 'carried',
+      share: 'carried',
+    });
+  });
+
+  it('live states pass through untouched otherwise; carried and null are never promoted', () => {
+    expect(demoteForState('kept', all)).toEqual(all);
+    const quiet: import('./photoBadges').WeightedActionSet = {
+      edit: 'carried',
+      favourite: null,
+      organize: 'carried',
+      share: null,
+    };
+    expect(demoteForState('culled', quiet)).toEqual(quiet);
   });
 });

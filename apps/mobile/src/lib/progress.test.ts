@@ -186,8 +186,8 @@ describe('editorOffer (F9: the state model made touchable)', () => {
     organizeQueued: false,
   };
 
-  it('every verdict state gets the full offer — verdict control plus all four action rows', () => {
-    for (const state of ['unreviewed', 'kept', 'culled'] as const) {
+  it('undecided and kept photos get the full offer — all four rows addable', () => {
+    for (const state of ['unreviewed', 'kept'] as const) {
       const offer = editorOffer({ ...base, state });
       expect(offer.readOnly).toBeNull();
       expect(offer.verdict).toBe(state);
@@ -196,6 +196,27 @@ describe('editorOffer (F9: the state model made touchable)', () => {
       expect(offer.share).toBe('add');
       expect(offer.organize).toBe('add');
     }
+  });
+
+  it('a STAGED cull suspends per kind (F21): share/edit addable, favourite/organize refused', () => {
+    const offer = editorOffer({ ...base, state: 'culled' });
+    expect(offer.readOnly).toBeNull();
+    expect(offer.verdict).toBe('culled');
+    expect(offer.edit).toBe('add');
+    expect(offer.share).toBe('add');
+    expect(offer.favourite).toBe('suspended');
+    expect(offer.organize).toBe('suspended');
+  });
+
+  it('EXISTING queued work on a staged cull stays cancellable — removing work is always safe', () => {
+    const offer = editorOffer({
+      ...base,
+      state: 'culled',
+      favouriteQueued: 1,
+      organizeQueued: true,
+    });
+    expect(offer.favourite).toBe('cancel_add');
+    expect(offer.organize).toBe('remove');
   });
 
   it('queued work flips each row to its removal', () => {

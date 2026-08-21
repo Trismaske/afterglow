@@ -1894,19 +1894,22 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       <View style={styles.secondaryRow}>
         {/* The Edit chip is the block's ONE per-mode behaviour fork:
             live is a FLAG toggle (the verdict layer untouched); browse
-            RE-DECIDES (kept + fresh edit cycle, the state-aware path).
-            All four chips disable on a staged cull: its retained action
-            rows are what un-staging restores, and a toggle here would
-            silently destroy them — a photo you are about to delete is
-            not actionable work (codex r3). */}
+            RE-DECIDES (kept + fresh edit cycle, the state-aware path) —
+            EXCEPT on a staged cull, where it flag-toggles too: queueing
+            the edit must not silently rescue the cull.
+            Per-kind suspension (m0.8.7, F21): edit and share stay
+            actionable on a staged cull — "delete it, but share it
+            first" is the flow; favourite and organize stay disabled
+            (decorating a photo you are deleting makes no sense). */}
         <ActionChip
           kind="edit"
           active={flagged}
-          disabled={busy || inert || currentState === 'culled'}
-          dimmed={currentState === 'culled'}
+          disabled={busy || inert}
           onPress={() =>
             void run(() =>
-              view.browseControls ? decideCurrent('to_edit') : toggleNeedsEdit(current.id),
+              view.browseControls && currentState !== 'culled'
+                ? decideCurrent('to_edit')
+                : toggleNeedsEdit(current.id),
             )
           }
         />
@@ -1927,8 +1930,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
         <ActionChip
           kind="share"
           active={shareQueued}
-          disabled={busy || inert || currentState === 'culled'}
-          dimmed={currentState === 'culled'}
+          disabled={busy || inert}
           onPress={() => void run(toggleShare)}
         />
       </View>

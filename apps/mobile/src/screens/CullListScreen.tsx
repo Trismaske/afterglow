@@ -11,7 +11,7 @@ import { mountedVolumeSet } from '../lib/mountedVolumes';
 import { resolveSources } from '../lib/sourceCatalog';
 import { perfAggregate } from '../lib/perfLog';
 import { useExternalRefresh } from '../components/useExternalRefresh';
-import { getStagedCulls, type StagedCullRow } from '../db/store';
+import { countStagedCullsWithUnsentIntents, getStagedCulls, type StagedCullRow } from '../db/store';
 import { BigButton } from '../components/BigButton';
 import { ReDecideSheet, type DecidedState } from '../components/ReDecideSheet';
 import { colors, touch } from '../theme';
@@ -173,23 +173,50 @@ export function CullListScreen({ navigation, route }: Props) {
     }
   }, [busy, confirmStagedCulls, navigation, fromHome]);
 
-  const onConfirmPress = useCallback(() => {
+  const onConfirmPress = useCallback(async () => {
     if (staged.length === 0) {
       if (!fromHome) navigation.replace('Summary');
       else navigation.goBack();
       return;
     }
+    // F21 point 3: name the never-sent share/edit intents the cleanup
+    // would delete, so proceeding is a KNOWING choice. A failed count
+    // must not silently skip the warning — fall back loudly to zero
+    // counts only after logging (the confirm itself still runs).
+    let unsent = { share: 0, edit: 0 };
+    try {
+      unsent = await countStagedCullsWithUnsentIntents(
+        db,
+        await mountedVolumeSet(),
+        (await resolveSources(db)).roots ?? null,
+      );
+    } catch (error) {
+      console.warn('[cull] unsent-intent count failed — confirm proceeds unnamed:', String(error));
+    }
+    const plural = (n: number) => (n === 1 ? '' : 's');
+    const warnings = [
+      unsent.share > 0
+        ? `${unsent.share} photo${plural(unsent.share)} still ${unsent.share === 1 ? 'has' : 'have'} an unsent share request.`
+        : null,
+      unsent.edit > 0
+        ? `${unsent.edit} photo${plural(unsent.edit)} still ${unsent.edit === 1 ? 'has' : 'have'} an unsent edit request.`
+        : null,
+    ].filter((line): line is string => line !== null);
+    const intentWarning =
+      warnings.length > 0
+        ? `\n\n${warnings.join(' ')} Moving to trash deletes these requests.`
+        : '';
     // The app-level warning is followed by Android's MediaStore-owned
     // confirmation sheet. There is no permanent-delete fallback.
     Alert.alert(
       `Move ${staged.length} photo${staged.length === 1 ? '' : 's'} to trash?`,
-      'Android will ask you to confirm. Recovery duration is controlled by your system gallery.',
+      `Android will ask you to confirm. Recovery duration is controlled by your system gallery.${intentWarning}`,
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Move to trash', style: 'destructive', onPress: () => void runConfirm() },
       ],
     );
-  }, [staged.length, navigation, runConfirm, fromHome]);
+  }, [staged.length, navigation, runConfirm, fromHome, db]);
 
   // Every staged row IS the durable truth; the sheet re-decides directly.
   const currentOf = useCallback((_id: string): DecidedState => 'culled', []);
@@ -253,7 +280,7 @@ export function CullListScreen({ navigation, route }: Props) {
           }
           color={staged.length === 0 ? colors.keep : colors.cull}
           disabled={busy || loading}
-          onPress={onConfirmPress}
+          onPress={() => void onConfirmPress()}
         />
       </View>
       {redecideItem && (

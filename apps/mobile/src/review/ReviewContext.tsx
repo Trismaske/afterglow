@@ -896,10 +896,14 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       organize: BadgeWeight | null;
       share: BadgeWeight | null;
     } => {
-      const suspended = state === 'culled' || state === 'trashed';
-      const weigh = (live: boolean, kind: BadgeActionKind): BadgeWeight | null =>
+      // Per-kind suspension (m0.8.7, F21): share and edit stay LIVE on a
+      // staged cull — they are dispatchable work — while favourite and
+      // organize demote to carried; a trashed photo demotes everything.
+      const trashed = state === 'trashed';
+      const suspended = state === 'culled' || trashed;
+      const weigh = (live: boolean, kind: BadgeActionKind, demoted: boolean): BadgeWeight | null =>
         live
-          ? suspended
+          ? demoted
             ? 'carried'
             : 'live'
           : carriedRef.current[kind].has(assetId)
@@ -907,14 +911,14 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
             : null;
       const favourite = favouriteBadgeWeight(favouriteRef.current.get(assetId) ?? NO_FAVOURITE);
       return {
-        edit: weigh(needsEditRef.current.has(assetId), 'edit'),
+        edit: weigh(needsEditRef.current.has(assetId), 'edit', trashed),
         // Suspended photos demote loud states to carried (rule 6): a
         // suspended queued REMOVAL shows the carried heart — truthful,
         // the gallery favourite still stands while the switch-off waits.
         favourite:
           suspended && (favourite === 'live' || favourite === 'removing') ? 'carried' : favourite,
-        organize: weigh(queuedForRef.current.organize.has(assetId), 'organize'),
-        share: weigh(queuedForRef.current.share.has(assetId), 'share'),
+        organize: weigh(queuedForRef.current.organize.has(assetId), 'organize', suspended),
+        share: weigh(queuedForRef.current.share.has(assetId), 'share', trashed),
       };
     },
     [],

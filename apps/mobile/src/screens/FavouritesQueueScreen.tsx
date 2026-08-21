@@ -26,8 +26,11 @@ import {
   failActions,
   getQueue,
   resolveActions,
+  unqueueAction,
 } from '../db/actions';
 import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
+import { withUserWritePriority } from '../lib/writePriority';
+import { QueueRemoveChip } from '../components/QueueRemoveChip';
 
 /** The row shape this screen renders (was a store type). */
 interface FavouriteQueueRow {
@@ -155,12 +158,52 @@ export function FavouritesQueueScreen() {
     [applyRows, busyTarget, db, reload, refreshFavouriteStates, removeRows],
   );
 
+  /** Confirmed clear-all (m0.8.7 shared bar): bound to the rendered rows
+   * intersected with a fresh scoped read (the M5 rule). Cancelling a
+   * queued intent restores the known gallery state — nothing physical
+   * runs here. */
+  const removeAll = useCallback(async () => {
+    try {
+      const rendered = new Set((rows ?? []).map((r) => r.asset_id));
+      const fresh = (
+        await getQueue(
+          db,
+          'favourite',
+          await mountedVolumeSet(),
+          (await resolveSources(db)).roots ?? null,
+        )
+      ).filter((a) => rendered.has(a.photoId));
+      for (const action of fresh) {
+        await withUserWritePriority(() => unqueueAction(db, action.photoId, 'favourite'));
+      }
+      await reload();
+      await refreshFavouriteStates().catch(() => {});
+    } catch (error) {
+      console.warn('[favourite] queue clear failed:', String(error));
+      Alert.alert('Could not clear the queue', 'The list below shows what actually stands.');
+      await reload().catch(() => {});
+    }
+  }, [db, rows, reload, refreshFavouriteStates]);
+
   return (
     <View style={[styles.root, { paddingTop: insets.top + 12, paddingBottom: 12 }]}>
       <Text style={styles.heading}>Favourite queue</Text>
       <Text style={styles.intro}>
         Apply queued hearts to the system gallery. Android shows one confirmation for each batch.
       </Text>
+      {rows !== null && rows.length > 0 ? (
+        <View style={styles.chips}>
+          {/* The shared removal affordance (m0.8.7): this queue had none.
+              Removing a queued intent cancels it — the known gallery
+              state stands; nothing is un-favourited by a cancel. */}
+          <QueueRemoveChip
+            queueLabel="favourite"
+            count={rows.length}
+            selectedCount={0}
+            onRemove={() => void removeAll()}
+          />
+        </View>
+      ) : null}
       {failed && rows !== null ? (
         // codex r9: the reload kept the last rows on a failed read — the
         // list may be stale, and it has to say so.
@@ -236,6 +279,7 @@ const styles = StyleSheet.create({
   heading: { color: colors.text, fontSize: 24, fontWeight: '800', marginBottom: 2 },
   root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 16 },
   intro: { color: colors.textDim, fontSize: 14, lineHeight: 20, marginBottom: 10 },
+  chips: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   list: { gap: 10, paddingBottom: 12, flexGrow: 1 },
   empty: { color: colors.textDim, fontSize: 14, textAlign: 'center', marginTop: 40 },
   // codex r9: quiet stale-rows notice — dim like every read-failure line.

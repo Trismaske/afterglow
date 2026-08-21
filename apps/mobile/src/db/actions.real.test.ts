@@ -205,23 +205,26 @@ describe('queue membership is LIVE work only', () => {
     d.raw.prepare('UPDATE photos SET state = ? WHERE asset_id = ?').run(state, photoId);
   }
 
-  it('a staged cull leaves every queue, and its actions come back with it', async () => {
+  it('a staged cull suspends PER KIND (F21): share/edit stay live, favourite/organize wait', async () => {
     const d = await fresh();
     for (const kind of ACTION_KINDS) await queueAction(asExpo(d), 'p1', kind, AT);
     await queueAction(asExpo(d), 'p2', 'edit', AT);
     expect(await countQueues(asExpo(d))).toEqual({ edit: 2, favourite: 1, organize: 1, share: 1 });
 
-    // Staging p1 to cull: you are about to delete it, so it is not work
-    // waiting for you — in ANY of the four queues.
+    // Staging p1 to cull: "delete it, but share it first" — its share
+    // and edit stay dispatchable work; decorating/filing it does not.
     verdict(d, 'p1', 'culled');
-    expect(await countQueues(asExpo(d))).toEqual({ edit: 1, favourite: 0, organize: 0, share: 0 });
-    expect((await getQueue(asExpo(d), 'edit')).map((a) => a.photoId)).toEqual(['p2']);
-    // The rows themselves are UNTOUCHED — that is what makes it reversible.
+    expect(await countQueues(asExpo(d))).toEqual({ edit: 2, favourite: 0, organize: 0, share: 1 });
+    expect((await getQueue(asExpo(d), 'edit')).map((a) => a.photoId).sort()).toEqual(['p1', 'p2']);
+    expect((await getQueue(asExpo(d), 'share')).map((a) => a.photoId)).toEqual(['p1']);
+    expect(await getQueue(asExpo(d), 'favourite')).toEqual([]);
+    expect(await getQueue(asExpo(d), 'organize')).toEqual([]);
+    // The suspended rows are UNTOUCHED — that is what makes it reversible.
     expect((await getPhotoActions(asExpo(d), 'p1')).map((a) => a.kind).sort()).toEqual(
       [...ACTION_KINDS].sort(),
     );
 
-    // Un-staging restores every one of them, with their original stamps.
+    // Un-staging restores the suspended pair, with their original stamps.
     verdict(d, 'p1', 'kept');
     expect(await countQueues(asExpo(d))).toEqual({ edit: 2, favourite: 1, organize: 1, share: 1 });
     expect((await getPhotoActions(asExpo(d), 'p1')).every((a) => a.queuedAt === AT)).toBe(true);

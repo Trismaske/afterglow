@@ -187,14 +187,18 @@ export interface EditorOffer {
   edit: 'add' | 'queued' | null;
   /** Favourite row, tri-state honest (docs/STATE_MODEL.md): what one
    * tap does next. `remove_applied` queues the un-favourite — an
-   * APPLIED favourite is removable (the heart-off badge models it). */
-  favourite: 'add' | 'cancel_add' | 'remove_applied' | 'cancel_remove' | null;
+   * APPLIED favourite is removable (the heart-off badge models it).
+   * `suspended` (m0.8.7, F21 point 2): on a STAGED cull with nothing
+   * queued, the addition is refused — the row says why, offers nothing. */
+  favourite: 'add' | 'cancel_add' | 'remove_applied' | 'cancel_remove' | 'suspended' | null;
   /** Share row: a queued pass is removable; a resolved one is fact —
-   * only a NEW pass can be added (nothing recalls a sent share). */
+   * only a NEW pass can be added (nothing recalls a sent share). Share
+   * stays fully offerable on a staged cull (F21 point 1). */
   share: 'add' | 'remove' | null;
   /** Organize row: a queued move is removable; an APPLIED move is fact
-   * (the album line names it) — a new move stays addable. */
-  organize: 'add' | 'remove' | null;
+   * (the album line names it) — a new move stays addable, except on a
+   * staged cull (`suspended`, F21 point 2). */
+  organize: 'add' | 'remove' | 'suspended' | null;
 }
 
 /** The facts slice the offer derives from (a projection of PhotoFacts +
@@ -220,6 +224,11 @@ export function editorOffer(facts: EditorFacts): EditorOffer {
       organize: null,
     };
   }
+  // F21 (m0.8.7): on a STAGED cull, share and edit stay fully offerable
+  // (point 1 — "delete it, but share it first"), while favourite and
+  // organize refuse ADDITIONS (point 2). Existing queued rows stay
+  // cancellable — removing work is always safe.
+  const staged = facts.state === 'culled';
   return {
     readOnly: null,
     verdict: facts.state,
@@ -229,10 +238,12 @@ export function editorOffer(facts: EditorFacts): EditorOffer {
         ? 'cancel_add'
         : facts.favouriteQueued === 0
           ? 'cancel_remove'
-          : facts.favouriteApplied
-            ? 'remove_applied'
-            : 'add',
+          : staged
+            ? 'suspended'
+            : facts.favouriteApplied
+              ? 'remove_applied'
+              : 'add',
     share: facts.shareQueued ? 'remove' : 'add',
-    organize: facts.organizeQueued ? 'remove' : 'add',
+    organize: facts.organizeQueued ? 'remove' : staged ? 'suspended' : 'add',
   };
 }

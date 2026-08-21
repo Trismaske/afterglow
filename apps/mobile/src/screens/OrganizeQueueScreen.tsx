@@ -41,6 +41,7 @@ import { colors, touch, useTheme } from '../theme';
 import { AlbumPicker } from '../components/AlbumPicker';
 import { Chip, QueueGridCell } from '../components/QueueGrid';
 import { QueueViewer } from '../components/QueueViewer';
+import { QueueRemoveChip } from '../components/QueueRemoveChip';
 import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
 import { useReview } from '../review/ReviewContext';
 import { requestRescan } from '../scan/scanRunner';
@@ -448,9 +449,13 @@ export function OrganizeQueueScreen(_props: Props) {
           />
           <Chip label="None" onPress={() => setSelected(new Set())} />
           {untargetedCount > 0 ? <Chip label="No album" onPress={selectUntargeted} /> : null}
-          <Chip
-            label={selectionMode ? 'Remove' : `Remove all ${count}`}
-            onPress={() => void removeQueued()}
+          {/* The shared removal affordance (m0.8.7): clear-all now
+              confirms like every queue's; a selection acts directly. */}
+          <QueueRemoveChip
+            queueLabel="organize"
+            count={count}
+            selectedCount={selected.size}
+            onRemove={() => void removeQueued()}
           />
         </View>
       ) : null}

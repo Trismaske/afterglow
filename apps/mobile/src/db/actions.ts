@@ -37,35 +37,41 @@ export type ActionKind = (typeof ACTION_KINDS)[number];
 export type ActionState = 'queued' | 'applied' | 'error';
 
 /**
- * SQL: is this photo still LIVE WORK?
+ * SQL: is this photo still LIVE WORK for `kind`?
  *
- * Queue membership is `state IN ('queued', 'error')` AND this. A photo staged for
- * deletion or already trashed is not waiting for you, however many
- * actions are attached to it — showing it in the Edit tab next to its own
- * row in the cull list is two answers to one question. Before v18 the
- * edit queue got this for free, because 'to_edit' was a verdict and
- * staging a cull overwrote it; the other three queues each solved it
- * their own way, or not at all.
+ * Queue membership is `state IN ('queued', 'error')` AND this. The
+ * suspension doctrine is PER-KIND since m0.8.7 (F21's four-point
+ * contract):
+ *
+ * - **share and edit stay live on a STAGED cull** — "delete it, but
+ *   share it first" is the tester's whole flow, and an edit you asked
+ *   for is still wanted while the photo waits in the cull queue. They
+ *   list, count, and dispatch like any other work.
+ * - **favourite and organize suspend on a staged cull** — decorating or
+ *   filing a photo you are about to delete makes no sense; the rows
+ *   survive (un-staging restores them), only the lists hide them and
+ *   additions are refused.
+ * - A TRASHED photo suspends everything: the file is the OS's now.
  *
  * This is deliberately NOT applied to per-photo BADGE reads: "what does
  * this photo carry" is a different question from "what is waiting for
- * you", and a staged cull must still show the edit flag it kept — that is
- * exactly what a cancelled trash attempt restores it to.
+ * you".
  */
-export function livePhotoClause(photoIdExpr: string): string {
+export function livePhotoClause(photoIdExpr: string, kind: ActionKind): string {
+  const states = kind === 'share' || kind === 'edit' ? `('trashed')` : `('culled', 'trashed')`;
   return `EXISTS (SELECT 1 FROM photos live_p
                    WHERE live_p.asset_id = ${photoIdExpr}
                      AND live_p.is_present = 1
-                     AND live_p.state NOT IN ('culled', 'trashed'))`;
+                     AND live_p.state NOT IN ${states})`;
 }
 
-/** SQL: this photo has `kind` waiting in its queue AND is live work.
- * Parenthesised, so it composes safely inside an OR. */
+/** SQL: this photo has `kind` waiting in its queue AND is live work for
+ * that kind. Parenthesised, so it composes safely inside an OR. */
 export function queuedClause(kind: ActionKind, photoIdExpr: string): string {
   return `(EXISTS (SELECT 1 FROM photo_actions qa
                     WHERE qa.photo_id = ${photoIdExpr} AND qa.kind = '${kind}'
                       AND qa.state IN ('queued', 'error'))
-           AND ${livePhotoClause(photoIdExpr)})`;
+           AND ${livePhotoClause(photoIdExpr, kind)})`;
 }
 
 export interface PhotoAction {
@@ -325,7 +331,7 @@ export async function getQueue(
     `SELECT photo_id, kind, state, target, applied_target, queued_at, resolved_at
        FROM photo_actions
       WHERE kind = ? AND state IN ('queued', 'error')
-        AND ${livePhotoClause('photo_actions.photo_id')}${reach.sql}${src.sql}
+        AND ${livePhotoClause('photo_actions.photo_id', kind)}${reach.sql}${src.sql}
       ORDER BY queued_at ASC`,
     kind,
     ...reach.params,
@@ -343,10 +349,17 @@ export async function countQueues(
 ): Promise<Record<ActionKind, number>> {
   const reach = reachExists(mounted, 'photo_actions.photo_id');
   const src = sourceExists(roots, 'photo_actions.photo_id');
+  // The per-kind suspension doctrine, with `kind` as a column: share and
+  // edit stay live on a staged cull; favourite and organize do not.
   const rows = await db.getAllAsync<{ kind: ActionKind; n: number }>(
     `SELECT kind, COUNT(*) AS n FROM photo_actions
       WHERE state IN ('queued', 'error')
-        AND ${livePhotoClause('photo_actions.photo_id')}${reach.sql}${src.sql}
+        AND EXISTS (SELECT 1 FROM photos live_p
+                     WHERE live_p.asset_id = photo_actions.photo_id
+                       AND live_p.is_present = 1
+                       AND live_p.state <> 'trashed'
+                       AND (photo_actions.kind IN ('share', 'edit')
+                            OR live_p.state <> 'culled'))${reach.sql}${src.sql}
       GROUP BY kind`,
     ...reach.params,
     ...src.params,

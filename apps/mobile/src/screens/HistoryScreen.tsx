@@ -37,7 +37,7 @@ import { checkMediaPresence } from '../lib/media';
 import { formatClock, formatDayClock } from '../lib/format';
 import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { DecisionBadge } from '../components/DecisionBadge';
-import { photoBadges, type BadgeWeight, type PhotoBadge } from '../lib/photoBadges';
+import { demoteForState, photoBadges, type BadgeWeight, type PhotoBadge } from '../lib/photoBadges';
 import { PhotoViewer } from '../components/PhotoViewer';
 import { useReview } from '../review/ReviewContext';
 import { colors, touch, useTheme } from '../theme';
@@ -62,26 +62,26 @@ const FILTERS: { key: HistoryFilter; label: string }[] = [
  * order, each loud while it WAITS and quiet once merely CARRIED
  * (STATE_MODEL rule 6) — the same badges the grid and deck draw. Live
  * wins over carried per kind, so a superseding queued action renders
- * loud over its earlier applied one; a staged cull's live actions demote
- * to quiet, because they are off every to-do list (livePhotoClause). */
+ * loud over its earlier applied one; demotion is per-kind (F21). */
 function badgesOf(row: Extract<HistoryRow, { kind: 'photo' }>): PhotoBadge[] {
-  const suspended = row.state === 'culled' || row.state === 'trashed';
   const weigh = (live: number, carried: boolean): BadgeWeight | null =>
-    live === 1 ? (suspended ? 'carried' : 'live') : carried ? 'carried' : null;
+    live === 1 ? 'live' : carried ? 'carried' : null;
+  // Per-kind suspension in ONE place (m0.8.7, F21): demoteForState keeps
+  // share/edit live on a staged cull and demotes the rest.
   return photoBadges({
     state: row.state,
-    edit: weigh(row.needs_edit, row.edit_applied === 1),
-    // A queued REMOVAL wears the heart-off badge (grilling Q5); when
-    // suspended it demotes to the carried heart — the gallery favourite
-    // still stands while the switch-off waits.
-    favourite:
-      row.favourite_removing === 1
-        ? suspended
-          ? 'carried'
-          : 'removing'
-        : weigh(row.favourite_live, row.favourite_carried === 1),
-    organize: weigh(row.organize_pending, row.organize_applied_at != null),
-    share: weigh(row.share_live, row.share_applied === 1),
+    ...demoteForState(row.state, {
+      edit: weigh(row.needs_edit, row.edit_applied === 1),
+      // A queued REMOVAL wears the heart-off badge (grilling Q5); when
+      // suspended it demotes to the carried heart — the gallery
+      // favourite still stands while the switch-off waits.
+      favourite:
+        row.favourite_removing === 1
+          ? 'removing'
+          : weigh(row.favourite_live, row.favourite_carried === 1),
+      organize: weigh(row.organize_pending, row.organize_applied_at != null),
+      share: weigh(row.share_live, row.share_applied === 1),
+    }),
   });
 }
 

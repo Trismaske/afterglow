@@ -93,11 +93,13 @@ export function DayProgressScreen({ route, navigation }: Props) {
   const badgesFor = useCallback(
     (member: ReviewGroupRow['members'][number]): PhotoBadge[] => {
       const weights = actionWeights(member.asset_id, member.state);
-      const suspended = member.state === 'culled' || member.state === 'trashed';
+      // Edit stays LIVE on a staged cull (m0.8.7, F21) — only a trashed
+      // photo demotes it.
+      const trashed = member.state === 'trashed';
       return photoBadges({
         ...weights,
         state: member.state,
-        edit: weights.edit ?? (member.needs_edit === 1 ? (suspended ? 'carried' : 'live') : null),
+        edit: weights.edit ?? (member.needs_edit === 1 ? (trashed ? 'carried' : 'live') : null),
         // The SD annotation (m0.8.7, F14); thumbnail-size cluster, so no
         // folder pill here.
         sdCard: isSdPhoto(member.asset_id),

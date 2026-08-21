@@ -269,7 +269,7 @@ export async function getOrganizeQueue(
                  ELSE substr(pa.target, instr(pa.target, char(10)) + 1) END AS organize_path
      FROM photos p
      JOIN photo_actions pa ON pa.photo_id = p.asset_id AND pa.kind = 'organize'
-     WHERE pa.state IN ('queued', 'error') AND ${livePhotoClause('p.asset_id')}${reach.sql}${src.sql}
+     WHERE pa.state IN ('queued', 'error') AND ${livePhotoClause('p.asset_id', 'organize')}${reach.sql}${src.sql}
      ORDER BY p.taken_at ASC`,
     ...reach.params,
     ...src.params,
@@ -280,7 +280,7 @@ export async function countOrganizeQueue(db: SQLiteDatabase): Promise<number> {
   const row = await db.getFirstAsync<{ n: number }>(
     `SELECT COUNT(*) AS n FROM photos p
        JOIN photo_actions pa ON pa.photo_id = p.asset_id AND pa.kind = 'organize'
-      WHERE pa.state IN ('queued', 'error') AND ${livePhotoClause('p.asset_id')}`,
+      WHERE pa.state IN ('queued', 'error') AND ${livePhotoClause('p.asset_id', 'organize')}`,
   );
   return row?.n ?? 0;
 }

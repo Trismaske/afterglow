@@ -78,9 +78,9 @@ export async function addToShareQueue(
       photoId,
     );
     if (existing) return;
-    // A cycle only carries across a NON-EMPTY LIVE queue. Culling the
-    // last live shared photo empties the visible queue without any share
-    // code running (verdict writes never touch this module), so a stale
+    // A cycle only carries across a NON-EMPTY LIVE queue. A queue can
+    // empty without any share code running (a trash execution or an
+    // external removal cleans the last row up in trashStore), so a stale
     // open cycle can linger — close it before choosing one, or the next
     // queued photo inherits the old cycle's pass history instead of
     // starting a fresh empty→non-empty cycle (codex r4).
@@ -88,7 +88,7 @@ export async function addToShareQueue(
       `UPDATE share_cycles SET ended_at = ? WHERE ended_at IS NULL
          AND NOT EXISTS (SELECT 1 FROM photo_actions
                           WHERE kind = 'share' AND state IN ('queued', 'error')
-                            AND ${livePhotoClause('photo_actions.photo_id')})`,
+                            AND ${livePhotoClause('photo_actions.photo_id', 'share')})`,
       at,
     );
     const open = await txn.getFirstAsync<{ id: number }>(
@@ -118,14 +118,14 @@ export async function addToShareQueue(
 
 /** End the open cycle when the queue just became empty (N#5) — shared by
  * every queue-emptying path; also exported for the trash-cleanup path.
- * LIVE rows only: a staged cull's retained action is not queue
- * membership (STATE_MODEL.md) and must not hold a cycle open. */
+ * LIVE rows only — and since m0.8.7 (F21) a STAGED cull's share is live
+ * work, so it rightly holds its cycle open until sent or executed. */
 export async function closeShareCycleIfQueueEmpty(db: SQLiteDatabase, at: number): Promise<void> {
   await db.runAsync(
     `UPDATE share_cycles SET ended_at = ? WHERE ended_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM photo_actions
                         WHERE kind = 'share' AND state IN ('queued', 'error')
-                          AND ${livePhotoClause('photo_actions.photo_id')})`,
+                          AND ${livePhotoClause('photo_actions.photo_id', 'share')})`,
     at,
   );
 }
@@ -193,7 +193,7 @@ export async function getShareQueue(
      -- v18: the queue is an action row, so the cycle comes from the ONE
      -- open cycle rather than a column repeated on every queued photo.
      WHERE q.kind = 'share' AND q.state IN ('queued', 'error')
-       AND ${livePhotoClause('q.photo_id')}${reach.sql}${src.sql}
+       AND ${livePhotoClause('q.photo_id', 'share')}${reach.sql}${src.sql}
      ORDER BY p.taken_at ASC`,
     ...reach.params,
     ...src.params,
@@ -211,11 +211,10 @@ export async function createShareBatch(
     const cycle = await txn.getFirstAsync<{ cycle_id: number }>(
       'SELECT id AS cycle_id FROM share_cycles WHERE ended_at IS NULL ORDER BY id DESC LIMIT 1',
     );
-    // No open cycle with LIVE queued work present is a legal state
-    // (codex r9): a staged cull's retained share row becomes live again
-    // on un-staging WITHOUT passing through addToShareQueue, and the
-    // empty-tab visit in between closed the old cycle. That resurfacing
-    // is its own empty→non-empty transition — mint the cycle here.
+    // Defensive first-use mint (F21 retired the un-stage resurface case
+    // this used to exist for): dispatch runs on a non-empty queue, so an
+    // open cycle normally exists; minting beats failing the dispatch on
+    // an inconsistent one.
     const cycleId =
       cycle?.cycle_id ??
       Number(
@@ -420,7 +419,7 @@ export async function countNeverShared(
   const row = await db.getFirstAsync<{ n: number }>(
     `SELECT COUNT(*) AS n FROM photo_actions q
      WHERE q.kind = 'share' AND q.state IN ('queued', 'error')
-       AND ${livePhotoClause('q.photo_id')}${reach.sql}${src.sql}
+       AND ${livePhotoClause('q.photo_id', 'share')}${reach.sql}${src.sql}
        AND NOT EXISTS (
        SELECT 1 FROM share_batch_members m
          JOIN share_batches b ON b.id = m.batch_id
@@ -480,7 +479,7 @@ export async function clearShareQueue(
       const row = await txn.getFirstAsync<{ n: number }>(
         `SELECT COUNT(*) AS n FROM photo_actions
           WHERE kind = 'share' AND state IN ('queued', 'error')
-            AND ${livePhotoClause('photo_actions.photo_id')}${reach.sql}${bound.sql}`,
+            AND ${livePhotoClause('photo_actions.photo_id', 'share')}${reach.sql}${bound.sql}`,
         ...reach.params,
         ...bound.params,
       );
@@ -497,14 +496,14 @@ export async function clearShareQueue(
         // strand it.
         `DELETE FROM photo_actions
           WHERE kind = 'share' AND state IN ('queued', 'error') AND resolved_at IS NULL
-            AND ${livePhotoClause('photo_actions.photo_id')}${reach.sql}${bound.sql}`,
+            AND ${livePhotoClause('photo_actions.photo_id', 'share')}${reach.sql}${bound.sql}`,
         ...reach.params,
         ...bound.params,
       );
       await txn.runAsync(
         `UPDATE photo_actions SET state = 'applied', target = NULL
           WHERE kind = 'share' AND state IN ('queued', 'error') AND resolved_at IS NOT NULL
-            AND ${livePhotoClause('photo_actions.photo_id')}${reach.sql}${bound.sql}`,
+            AND ${livePhotoClause('photo_actions.photo_id', 'share')}${reach.sql}${bound.sql}`,
         ...reach.params,
         ...bound.params,
       );
@@ -539,7 +538,7 @@ export async function countShareQueue(db: SQLiteDatabase): Promise<number> {
   const row = await db.getFirstAsync<{ n: number }>(
     `SELECT COUNT(*) AS n FROM photo_actions
       WHERE kind = 'share' AND state IN ('queued', 'error')
-        AND ${livePhotoClause('photo_actions.photo_id')}`,
+        AND ${livePhotoClause('photo_actions.photo_id', 'share')}`,
   );
   return row?.n ?? 0;
 }

@@ -24,7 +24,7 @@
  * writes are direct store calls under user write priority, exactly like
  * the queue screens' own.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -90,28 +90,44 @@ export function StateEditorSheet({
   const [tick, setTick] = useState(0);
   const photoId = photo?.id ?? null;
 
+  // F30 (m0.8.7): a RE-READ of the same photo keeps the previous facts
+  // rendered (dimmed via `stale` below) instead of unmounting the body
+  // to "Loading…" — the collapse-and-return the tester saw was exactly
+  // that unmount. Only a photo CHANGE clears the facts: another photo's
+  // rows must never render under this header.
+  const lastPhotoRef = useRef<string | null>(null);
+  const [rereading, setRereading] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    setFacts(undefined);
+    if (photoId !== lastPhotoRef.current) {
+      lastPhotoRef.current = photoId;
+      setFacts(undefined);
+    }
     setLoadFailed(false);
     if (photoId === null) return;
+    setRereading(true);
     void Promise.all([getPhotoFacts(db, photoId), isInShareQueue(db, photoId)]).then(
       ([f, queued]) => {
         if (cancelled) return;
         setFacts(f);
         setShareQueued(queued);
+        setRereading(false);
       },
       (error: unknown) => {
         // FAIL CLOSED: an unreadable row must not render as "untracked,
         // read-only" — that is a confident wrong answer. Say so, retry.
         console.warn('[editor] facts read failed:', String(error));
-        if (!cancelled) setLoadFailed(true);
+        if (!cancelled) {
+          setLoadFailed(true);
+          setRereading(false);
+        }
       },
     );
     return () => {
       cancelled = true;
     };
   }, [db, photoId, tick]);
+  const stale = busy || rereading;
 
   /** Every write funnels here: run, then re-read the facts and tell the
    * host — the sheet STAYS OPEN so several edits chain naturally. */
@@ -258,25 +274,31 @@ export function StateEditorSheet({
             ? 'Removal queued'
             : offer.favourite === 'remove_applied'
               ? 'Favourited in the gallery'
-              : 'Not favourited',
-      buttons: [
-        {
-          key: 'toggle',
-          label:
-            offer.favourite === 'add'
-              ? 'Add favourite'
-              : offer.favourite === 'cancel_add'
-                ? 'Cancel'
-                : offer.favourite === 'remove_applied'
-                  ? 'Remove'
-                  : 'Cancel removal',
-          onPress: direct(() =>
-            applyReviewDecisions(db, [], now(), {
-              favouriteChanges: [nextFavouriteIntent(facts.asset_id, favStatus)],
-            }),
-          ),
-        },
-      ],
+              : offer.favourite === 'suspended'
+                ? 'Suspended while staged to delete'
+                : 'Not favourited',
+      // F21 point 2: no addition on a staged cull — the row names why.
+      buttons:
+        offer.favourite === 'suspended'
+          ? []
+          : [
+              {
+                key: 'toggle',
+                label:
+                  offer.favourite === 'add'
+                    ? 'Add favourite'
+                    : offer.favourite === 'cancel_add'
+                      ? 'Cancel'
+                      : offer.favourite === 'remove_applied'
+                        ? 'Remove'
+                        : 'Cancel removal',
+                onPress: direct(() =>
+                  applyReviewDecisions(db, [], now(), {
+                    favouriteChanges: [nextFavouriteIntent(facts.asset_id, favStatus)],
+                  }),
+                ),
+              },
+            ],
     });
     // --- share (a resolved pass is fact; only a new pass is addable)
     rows.push({
@@ -315,25 +337,31 @@ export function StateEditorSheet({
       status:
         offer.organize === 'remove'
           ? 'Move queued'
-          : facts.organize_applied_at !== null
-            ? `Moved to ${appliedAlbum ?? 'an album'}`
-            : 'No move asked',
-      buttons: [
-        offer.organize === 'remove'
-          ? {
-              key: 'remove',
-              label: 'Remove',
-              onPress: direct(() => unqueueOrganize(db, facts.asset_id, now())),
-            }
-          : {
-              key: 'add',
-              label: 'Queue a move',
-              onPress: direct(async () => {
-                const refusal = await queueOrganize(db, facts.asset_id, now());
-                if (refusal !== null) throw new Error(refusal);
-              }),
-            },
-      ],
+          : offer.organize === 'suspended'
+            ? 'Suspended while staged to delete'
+            : facts.organize_applied_at !== null
+              ? `Moved to ${appliedAlbum ?? 'an album'}`
+              : 'No move asked',
+      // F21 point 2: no addition on a staged cull — the row names why.
+      buttons:
+        offer.organize === 'suspended'
+          ? []
+          : [
+              offer.organize === 'remove'
+                ? {
+                    key: 'remove',
+                    label: 'Remove',
+                    onPress: direct(() => unqueueOrganize(db, facts.asset_id, now())),
+                  }
+                : {
+                    key: 'add',
+                    label: 'Queue a move',
+                    onPress: direct(async () => {
+                      const refusal = await queueOrganize(db, facts.asset_id, now());
+                      if (refusal !== null) throw new Error(refusal);
+                    }),
+                  },
+            ],
     });
   }
 
@@ -392,9 +420,9 @@ export function StateEditorSheet({
                       style={[
                         styles.verdictChip,
                         active && [styles.verdictChipActive, { borderColor: accent }],
-                        busy && styles.dimmed,
+                        stale && styles.dimmed,
                       ]}
-                      disabled={busy || active}
+                      disabled={stale || active}
                       onPress={() => setVerdict(target)}
                       accessibilityLabel={`Set verdict: ${label}`}
                     >
@@ -420,8 +448,8 @@ export function StateEditorSheet({
                   {row.buttons.map((button) => (
                     <Pressable
                       key={button.key}
-                      style={[styles.actionButton, busy && styles.dimmed]}
-                      disabled={busy}
+                      style={[styles.actionButton, stale && styles.dimmed]}
+                      disabled={stale}
                       onPress={button.onPress}
                     >
                       <Text style={styles.actionButtonText}>{button.label}</Text>

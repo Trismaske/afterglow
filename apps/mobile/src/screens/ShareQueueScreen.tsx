@@ -48,10 +48,12 @@ import {
 } from '../db/shareStore';
 import { shareMediaUris, subscribeShareTargetChosen } from '../../modules/media-store-actions';
 import { getEditableContentUri } from '../lib/media';
+import { getActionsForPhotos } from '../db/actions';
 import { showToast } from '../lib/toast';
 import { colors, touch, useTheme } from '../theme';
 import { Chip, QueueGridCell } from '../components/QueueGrid';
 import { QueueViewer } from '../components/QueueViewer';
+import { QueueRemoveChip } from '../components/QueueRemoveChip';
 import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
 import { useReview } from '../review/ReviewContext';
 
@@ -284,18 +286,46 @@ export function ShareQueueScreen(_props: Props) {
         setBusy(false);
       }
     };
-    if (shareIds.length > SHARE_SOFT_WARN_COUNT) {
+    const sizeGate = (): void => {
+      if (shareIds.length > SHARE_SOFT_WARN_COUNT) {
+        Alert.alert(
+          `Share ${shareIds.length} photos?`,
+          "Some apps can't receive this many at once.",
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Share anyway', onPress: () => void fire() },
+          ],
+        );
+        return;
+      }
+      void fire();
+    };
+    // Share-before-edit confirm (m0.8.7 rider): a photo whose edit
+    // intent is still queued shares the UNEDITED file — name it at
+    // dispatch time, once per batch. A failed read must not silently
+    // block the dispatch — logged, and the size gate proceeds as before.
+    let pendingEdits = 0;
+    try {
+      const actions = await getActionsForPhotos(db, shareIds);
+      for (const list of actions.values()) {
+        if (list.some((a) => a.kind === 'edit' && (a.state === 'queued' || a.state === 'error')))
+          pendingEdits += 1;
+      }
+    } catch (error) {
+      console.warn('[share] pending-edit check failed — dispatch proceeds:', String(error));
+    }
+    if (pendingEdits > 0) {
       Alert.alert(
-        `Share ${shareIds.length} photos?`,
-        "Some apps can't receive this many at once.",
+        'Share before editing?',
+        `${pendingEdits} of these photo${pendingEdits === 1 ? ' still has' : 's still have'} an unsent edit request — sharing now sends the unedited file${pendingEdits === 1 ? '' : 's'}.`,
         [
           { text: 'Cancel', style: 'cancel' },
-          { text: 'Share anyway', onPress: () => void fire() },
+          { text: 'Share anyway', onPress: sizeGate },
         ],
       );
       return;
     }
-    await fire();
+    sizeGate();
   }, [busy, db, shareIds, reload]);
 
   const saveLabel = useCallback(
@@ -308,49 +338,38 @@ export function ShareQueueScreen(_props: Props) {
     [db, labelBatchId],
   );
 
-  const runClear = useCallback(async () => {
-    // The warning counts the RENDERED rows — exactly the set the bounded
-    // clear below may touch (final cycle U4). A fresh queue count could
-    // describe rows a remount just revealed that the write will never
-    // clear ("5 of 3 photos were never shared").
+  /** The confirm body the shared chip renders (final cycle U4): counts
+   * the RENDERED rows — exactly the set the bounded clear may touch. */
+  const clearConfirmMessage = useMemo(() => {
     const neverShared = (rows ?? []).filter((r) => r.pass_count === 0).length;
-    const total = rows?.length ?? 0;
-    const message =
-      neverShared > 0
-        ? `${neverShared} of ${total} photos were never shared. Clear anyway?`
-        : `Clear all ${total} photo${total === 1 ? '' : 's'} from the share queue? Past share events are kept in History.`;
-    Alert.alert('Clear share queue', message, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Clear',
-        style: 'destructive',
-        onPress: () =>
-          void (async () => {
-            try {
-              // The dialog can sit open across a card swap (Q5/T2): the
-              // write re-reads LIVE mount state so a now-unreachable
-              // row's pending share survives byte-for-byte (plan §5),
-              // AND it is bounded to the rows the dialog described — a
-              // remount may only shrink the clear, never add unseen
-              // rows to it.
-              invalidateMountedVolumes();
-              await clearShareQueue(
-                db,
-                Date.now(),
-                await mountedVolumeSet(),
-                (rows ?? []).map((r) => r.photo_id),
-              );
-              setSelected(new Set());
-            } catch (error) {
-              // A rejected transaction must not close the dialog into
-              // silence (final cycle V4) — say so, then show what stands.
-              console.warn('[share] clear failed:', String(error));
-              showToast('Could not clear the queue — nothing was changed. Try again.');
-            }
-            void reload();
-          })(),
-      },
-    ]);
+    return neverShared > 0
+      ? `${neverShared} of ${rows?.length ?? 0} were never shared. Past share events are kept in History.`
+      : 'Past share events are kept in History.';
+  }, [rows]);
+
+  /** The clear WRITE — the shared QueueRemoveChip owns the confirm. */
+  const runClear = useCallback(async () => {
+    try {
+      // The dialog can sit open across a card swap (Q5/T2): the write
+      // re-reads LIVE mount state so a now-unreachable row's pending
+      // share survives byte-for-byte (plan §5), AND it is bounded to
+      // the rows the dialog described — a remount may only shrink the
+      // clear, never add unseen rows to it.
+      invalidateMountedVolumes();
+      await clearShareQueue(
+        db,
+        Date.now(),
+        await mountedVolumeSet(),
+        (rows ?? []).map((r) => r.photo_id),
+      );
+      setSelected(new Set());
+    } catch (error) {
+      // A rejected transaction must not close the dialog into silence
+      // (final cycle V4) — say so, then show what stands.
+      console.warn('[share] clear failed:', String(error));
+      showToast('Could not clear the queue — nothing was changed. Try again.');
+    }
+    void reload();
   }, [db, rows, reload]);
 
   const removeSelected = useCallback(async () => {
@@ -407,7 +426,16 @@ export function ShareQueueScreen(_props: Props) {
           />
           <Chip label="None" onPress={() => setSelected(new Set())} />
           <Chip label="Unshared" onPress={selectUnshared} />
-          {selectionMode ? <Chip label="Remove" onPress={() => void removeSelected()} /> : null}
+          {/* The shared removal affordance (m0.8.7): one chip covers the
+              selection remove AND the confirmed clear-all that used to
+              be the bottom "Clear queue" button. */}
+          <QueueRemoveChip
+            queueLabel="share"
+            count={count}
+            selectedCount={selected.size}
+            confirmMessage={clearConfirmMessage}
+            onRemove={(scope) => void (scope === 'selected' ? removeSelected() : runClear())}
+          />
         </View>
       ) : null}
       {failed && rows !== null ? (
@@ -441,9 +469,6 @@ export function ShareQueueScreen(_props: Props) {
             <Text style={styles.shareText}>
               {selectionMode ? `Share ${selected.size} selected` : `Share all ${count}`}
             </Text>
-          </Pressable>
-          <Pressable style={styles.clearButton} onPress={() => void runClear()}>
-            <Text style={styles.clearText}>Clear queue</Text>
           </Pressable>
         </View>
       ) : null}
@@ -524,16 +549,6 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   shareText: { color: colors.text, fontSize: 16, fontWeight: '700' },
-  clearButton: {
-    minHeight: 40,
-    borderRadius: touch.radius,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  clearText: { color: colors.textDim, fontSize: 14, fontWeight: '600' },
   disabled: { opacity: 0.5 },
   labelBackdrop: {
     flex: 1,

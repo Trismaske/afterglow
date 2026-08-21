@@ -194,10 +194,10 @@ describe('share queue + cycles', () => {
     expect(cycles.n).toBe(2);
   });
 
-  it('culling the last LIVE shared photo ends the cycle — the next queue starts fresh', async () => {
-    // Verdict writes never touch this module, so the cull leaves the old
-    // cycle open with a retained (non-live) row; the next add must close
-    // it and mint a fresh cycle, or the new queue inherits pass history.
+  it("a staged cull's share stays LIVE (F21): listed, cycle held open, dispatchable", async () => {
+    // "Delete it, but share it first": the cull no longer hides the
+    // share — the queue lists it, the cycle stays open, and dispatch
+    // sends it like any other row.
     const d = await fresh();
     insertPhoto(d, 'p1');
     insertPhoto(d, 'p2');
@@ -207,18 +207,38 @@ describe('share queue + cycles', () => {
     await markShareBatchShared(asExpo(d), b1, 'com.test/app', AT + 11);
     d.raw.prepare("UPDATE photos SET state = 'culled' WHERE asset_id = 'p1'").run();
     await addToShareQueue(asExpo(d), 'p2', AT + 20);
+    // ONE cycle throughout: the staged cull's live share held it open.
     const cycles = d.raw.prepare('SELECT COUNT(*) AS n FROM share_cycles').get() as { n: number };
-    expect(cycles.n).toBe(2);
+    expect(cycles.n).toBe(1);
     const queue = await getShareQueue(asExpo(d));
-    expect(queue.map((r) => r.photo_id)).toEqual(['p2']);
-    expect(queue[0].pass_count).toBe(0);
+    expect(queue.map((r) => r.photo_id)).toEqual(['p1', 'p2']);
+    // The staged cull keeps its same-cycle pass badge.
+    expect(queue[0].pass_count).toBe(1);
+    expect(queue[1].pass_count).toBe(0);
   });
 
-  it('a staged cull SURVIVES the clear, and un-staging restores its queue place', async () => {
-    // STATE_MODEL's restore promise outranks the sweep (grilling Q12):
-    // the clear takes exactly the live rows it counted and the screen
-    // showed; the hidden retained row rides through and resurfaces when
-    // the photo is un-staged.
+  it('a TRASH EXECUTION still empties the queue and ends the cycle', async () => {
+    // The suspension moved from staging to execution (F21): only the
+    // actual trash cleanup takes the share out of play.
+    const d = await fresh();
+    insertPhoto(d, 'p1');
+    await addToShareQueue(asExpo(d), 'p1', AT);
+    d.raw
+      .prepare("UPDATE photos SET state = 'trashed', is_present = 0 WHERE asset_id = 'p1'")
+      .run();
+    // The missing-media sweep inside the read demotes the row and closes
+    // the cycle, exactly like the trash-cleanup path.
+    expect(await getShareQueue(asExpo(d), AT + 10)).toEqual([]);
+    const open = d.raw
+      .prepare('SELECT COUNT(*) AS n FROM share_cycles WHERE ended_at IS NULL')
+      .get() as { n: number };
+    expect(open.n).toBe(0);
+  });
+
+  it('the clear covers a staged cull too — its share is live, counted, and cleared', async () => {
+    // With shares live on staged culls (F21), the clear's "exactly what
+    // the screen showed" now INCLUDES them: nothing hides, so nothing
+    // needs a resurface path (the old un-stage machinery is gone).
     const d = await fresh();
     insertPhoto(d, 'p1');
     insertPhoto(d, 'p2');
@@ -226,14 +246,11 @@ describe('share queue + cycles', () => {
     await addToShareQueue(asExpo(d), 'p2', AT + 1);
     d.raw.prepare("UPDATE photos SET state = 'culled' WHERE asset_id = 'p1'").run();
     const result = await clearShareQueue(asExpo(d), AT + 10);
-    expect(result.cleared).toBe(1); // p2 — exactly what the screen showed
-    const rows = d.raw
-      .prepare("SELECT photo_id, state FROM photo_actions WHERE kind = 'share'")
-      .all() as { photo_id: string; state: string }[];
-    expect(rows).toEqual([{ photo_id: 'p1', state: 'queued' }]);
-    d.raw.prepare("UPDATE photos SET state = 'kept' WHERE asset_id = 'p1'").run();
-    const queue = await getShareQueue(asExpo(d));
-    expect(queue.map((r) => r.photo_id)).toEqual(['p1']);
+    expect(result.cleared).toBe(2);
+    const rows = d.raw.prepare("SELECT photo_id FROM photo_actions WHERE kind = 'share'").all() as {
+      photo_id: string;
+    }[];
+    expect(rows).toEqual([]);
   });
 
   it('clear removes an ERRORED never-sent row, exactly like clearQueue', async () => {

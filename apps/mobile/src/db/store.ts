@@ -223,6 +223,32 @@ export async function countStagedCulls(
   return row?.n ?? 0;
 }
 
+/** Staged culls (same scope as the list) carrying NEVER-SENT share or
+ * edit intents (m0.8.7, F21 point 3): queued rows with no resolved_at —
+ * exactly the rows the post-confirm cleanup will DELETE, so the cull
+ * confirm names them first with proceed/cancel. Counted per photo. */
+export async function countStagedCullsWithUnsentIntents(
+  db: SQLiteDatabase,
+  mounted: readonly string[] | null = null,
+  roots: readonly SourceRoot[] | null = null,
+): Promise<{ share: number; edit: number }> {
+  const reach = reachClause(mounted);
+  const src = sourceClause(roots);
+  const countFor = async (kind: 'share' | 'edit'): Promise<number> => {
+    const row = await db.getFirstAsync<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM photos
+        WHERE state = 'culled' AND is_present = 1${reach.sql}${src.sql}
+          AND EXISTS (SELECT 1 FROM photo_actions pa
+                       WHERE pa.photo_id = photos.asset_id AND pa.kind = '${kind}'
+                         AND pa.state IN ('queued', 'error') AND pa.resolved_at IS NULL)`,
+      ...reach.params,
+      ...src.params,
+    );
+    return row?.n ?? 0;
+  };
+  return { share: await countFor('share'), edit: await countFor('edit') };
+}
+
 /** The durable global cull queue (P4#1): every staged, present cull. */
 export interface StagedCullRow {
   asset_id: string;
@@ -2468,7 +2494,7 @@ export async function getToEditPhotos(
     `SELECT p.asset_id, p.uri, p.taken_at, p.day FROM photos p
        JOIN photo_actions pa ON pa.photo_id = p.asset_id
       WHERE pa.kind = 'edit' AND pa.state IN ('queued', 'error')
-        AND ${livePhotoClause('p.asset_id')}${reach.sql}${src.sql}
+        AND ${livePhotoClause('p.asset_id', 'edit')}${reach.sql}${src.sql}
       ORDER BY p.taken_at DESC`,
     ...reach.params,
     ...src.params,
@@ -2498,7 +2524,7 @@ export async function getEditDetectionRows(
        FROM photos p
        JOIN photo_actions pa ON pa.photo_id = p.asset_id
       WHERE pa.kind = 'edit' AND pa.state IN ('queued', 'error')
-        AND ${livePhotoClause('p.asset_id')}${reach.sql}`,
+        AND ${livePhotoClause('p.asset_id', 'edit')}${reach.sql}`,
     ...reach.params,
   );
 }
@@ -3118,17 +3144,12 @@ export async function getRescuedPhotoPage(
   );
 }
 
-/** One photo row for the progress grids' DB-backed filters. */
+/** One photo row for the progress grids' DB-backed filters. Action
+ * weights are NOT projected here (m0.8.7): the grid hydrates the full
+ * weighted set for both engines via getActionBadges. */
 export interface GridPhotoRow {
-  /** An edit action is queued (layer 2). */
+  /** An edit action is queued (layer 2) — the editor-offer input. */
   needs_edit: number;
-  /** A favourite is waiting TOWARD TRUE (directional — a queued removal
-   * wears no heart, favouriteState.ts). */
-  fav_pending: number;
-  /** An organize action is queued. */
-  organize_pending: number;
-  /** A share action is queued. */
-  share_pending: number;
   asset_id: string;
   uri: string;
   taken_at: number;
@@ -3193,14 +3214,7 @@ export async function getGridPhotosByFilter(
             EXISTS (SELECT 1 FROM photo_group_assignments a
                     WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped,
             EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = photos.asset_id
-                     AND pa.kind = 'edit' AND pa.state IN ('queued', 'error')) AS needs_edit,
-            EXISTS (SELECT 1 FROM photo_actions pf WHERE pf.photo_id = photos.asset_id
-                     AND pf.kind = 'favourite' AND pf.state IN ('queued', 'error')
-                     AND pf.target = '1') AS fav_pending,
-            EXISTS (SELECT 1 FROM photo_actions po WHERE po.photo_id = photos.asset_id
-                     AND po.kind = 'organize' AND po.state IN ('queued', 'error')) AS organize_pending,
-            EXISTS (SELECT 1 FROM photo_actions ps WHERE ps.photo_id = photos.asset_id
-                     AND ps.kind = 'share' AND ps.state IN ('queued', 'error')) AS share_pending
+                     AND pa.kind = 'edit' AND pa.state IN ('queued', 'error')) AS needs_edit
      FROM photos WHERE ${where.sql} AND (${filterSql})${src.sql}${reach.sql}
        -- Grid filters never select trashed rows, so presence is the
        -- whole predicate here (keep-history tombstones stay out).

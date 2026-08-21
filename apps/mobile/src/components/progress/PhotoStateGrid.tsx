@@ -41,6 +41,15 @@ import {
   scopeKeyOf,
   type PhotoScope,
 } from '../../db/store';
+import { getActionBadges, getFavouriteActionStates } from '../../db/actions';
+import { favouriteBadgeWeight, type FavouriteStatus } from '../../lib/favouriteState';
+import {
+  demoteForState,
+  isSdPhoto,
+  photoBadges,
+  type WeightedActionSet,
+} from '../../lib/photoBadges';
+import { DecisionBadge } from '../DecisionBadge';
 import { UNDATED_DAY_KEY } from '../../lib/dates';
 import { colors, useTheme } from '../../theme';
 import { VERDICT_META } from './stateMeta';
@@ -59,15 +68,12 @@ export interface GridPhoto {
   effective: EffectiveState;
   /** The actual photos.state row value; null = never tracked. */
   dbState: PhotoState | null;
-  /** Pending ACTIONS (layer 2, never verdicts) — one dot each, so an
-   * action-filtered grid shows why each photo matched. The MediaStore
-   * engine leaves them undefined (its filters are verdict-only).
-   * favPending is directional at the SQL layer: only a favourite waiting
-   * TOWARD TRUE shows (a queued removal wears no heart). */
-  editPending?: boolean;
-  favPending?: boolean;
-  organizePending?: boolean;
-  sharePending?: boolean;
+  /** The WEIGHTED action set (m0.8.7 full hydration): live, carried and
+   * the favourite's 'removing', already demoted per the photo's verdict
+   * (demoteForState). Hydrated on BOTH engines — the MediaStore paths
+   * used to render no action data at all. Undefined = the page's
+   * hydration failed (badges absent, never wrong). */
+  actions?: WeightedActionSet;
 }
 
 const BATCH = 48;
@@ -114,6 +120,43 @@ interface GridPagedItem {
  * rescued stream's keyset. The merged pager hands each fetcher only its
  * own cursor back, so the union is safe by construction. */
 type GridCursor = string | { takenAt: number; assetId: string };
+
+const NO_FAVOURITE: FavouriteStatus = { state: 'none', target: null };
+
+/** Hydrate one page's WEIGHTED action sets (m0.8.7): two chunked reads
+ * for the whole page, demoted per photo verdict. A failed read logs and
+ * returns null — the page renders with verdict badges only, never with
+ * invented action data. */
+async function hydrateActionWeights(
+  db: Parameters<typeof getActionBadges>[0],
+  photos: readonly GridPhoto[],
+): Promise<Map<string, WeightedActionSet> | null> {
+  if (photos.length === 0) return new Map();
+  try {
+    const ids = photos.map((p) => p.id);
+    const [badges, favourites] = await Promise.all([
+      getActionBadges(db, ids),
+      getFavouriteActionStates(db, ids),
+    ]);
+    const out = new Map<string, WeightedActionSet>();
+    for (const photo of photos) {
+      const entry = badges.get(photo.id) ?? {};
+      out.set(
+        photo.id,
+        demoteForState(photo.dbState, {
+          edit: entry.edit ?? null,
+          favourite: favouriteBadgeWeight(favourites.get(photo.id) ?? NO_FAVOURITE),
+          organize: entry.organize ?? null,
+          share: entry.share ?? null,
+        }),
+      );
+    }
+    return out;
+  } catch (error) {
+    console.warn('[progress] action hydration failed — badges omitted:', String(error));
+    return null;
+  }
+}
 
 export function PhotoStateGrid({
   scope,
@@ -210,12 +253,13 @@ export function PhotoStateGrid({
             takenAt: r.taken_at,
             day: r.day,
             dbState: r.state,
-            editPending: !!r.needs_edit,
-            favPending: !!r.fav_pending,
-            organizePending: !!r.organize_pending,
-            sharePending: !!r.share_pending,
             effective: classifyPhotoState({ state: r.state }),
           }));
+          const weights = await hydrateActionWeights(db, photos);
+          if (!fresh()) return;
+          if (weights !== null) {
+            for (const photo of photos) photo.actions = weights.get(photo.id);
+          }
           // A failed page must NOT read as the end of the data: the
           // offset only advanced by rows actually returned, so leaving
           // `exhausted` unset lets the next scroll retry the same page.
@@ -268,6 +312,13 @@ export function PhotoStateGrid({
             }
           }
           if (!fresh()) return;
+          // FULL hydration on the MediaStore engine too (m0.8.7): the
+          // All/Unreviewed paths used to render no action data at all.
+          const weights = await hydrateActionWeights(db, collected);
+          if (!fresh()) return;
+          if (weights !== null) {
+            for (const photo of collected) photo.actions = weights.get(photo.id);
+          }
           // A page that JUST failed must not seal the grid as complete —
           // the failure footer/empty copy renders first, and only a
           // later page may mark exhaustion (the sticky flag keeps the
@@ -386,24 +437,29 @@ export function PhotoStateGrid({
           recyclingKey={item.id}
         />
         <View style={styles.dots}>
-          {/* Verdict first, then every pending ACTION in photoBadges.ts
-              order — the grid's own order under docs/STATE_MODEL.md.
-              Without the action dots an action-filtered grid showed
-              nothing but keep-green, giving no sign of why each photo
-              matched. Each dot takes its kind's reserved hue (rule 2). */}
+          {/* Verdict dot first (the grid's primary state signal), then
+              the WEIGHTED actions as mini glyph badges (m0.8.7 — a dot
+              cannot render the heart-off glyph, so the dot scale is
+              retired for actions; glyphs carry weight and direction).
+              These are state-inspection marks, the grid's content — the
+              F19 hide toggle deliberately does not reach them. */}
           <View style={[styles.dot, { backgroundColor: VERDICT_META[item.effective].color }]} />
-          {item.editPending === true && (
-            <View style={[styles.dot, { backgroundColor: colors.edit }]} />
-          )}
-          {item.favPending === true && (
-            <View style={[styles.dot, { backgroundColor: colors.fav }]} />
-          )}
-          {item.organizePending === true && (
-            <View style={[styles.dot, { backgroundColor: colors.organize }]} />
-          )}
-          {item.sharePending === true && (
-            <View style={[styles.dot, { backgroundColor: colors.share }]} />
-          )}
+          {item.actions !== undefined &&
+            photoBadges({
+              state: item.dbState ?? 'unreviewed',
+              ...item.actions,
+              sdCard: isSdPhoto(item.id),
+            })
+              .filter(
+                (badge) =>
+                  badge.kind !== 'folder' &&
+                  badge.kind !== 'cull' &&
+                  badge.kind !== 'keep' &&
+                  badge.kind !== 'trashed',
+              )
+              .map((badge) => (
+                <DecisionBadge key={badge.kind} kind={badge.kind} size={13} weight={badge.weight} />
+              ))}
         </View>
       </Pressable>
     ),

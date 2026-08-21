@@ -145,7 +145,11 @@ describe('writeContinuousGroups', () => {
     expect(row).toEqual({
       state: 'culled',
       taken_at: AT - 100,
-      mod_time: AT + 5,
+      // The queued edit is LIVE even on a staged cull (m0.8.7, F21), so
+      // the upsert preserves its detection baseline instead of
+      // refreshing mod_time — refreshing would silently lose the edit
+      // detection the user is waiting on.
+      mod_time: AT - 3_600_000,
       uri: 'file:///dcim/1-v2.jpg',
     });
     // The queued edit is a separate layer, and the scan may not touch it.

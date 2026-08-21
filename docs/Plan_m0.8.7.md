@@ -137,3 +137,11 @@ Getting these human-vetted is a top priority; an approved entry is pruned per th
 8. **The S10e queue-read measurement ships as instrumentation.**
    The release build cannot be timed from outside, so the scoped reads carry a per-session aggregated `[perf] queue read (<kind>)` line (plus a 27k-corpus timing pin in queuePlan.real.test.ts as the desktop proxy); the device pass reads the real figures off the sink.
    If they bite, `source_root` remains its own decision, per the plan.
+9. **The dot scale retires for actions; glyphs carry the grid.**
+   Grid tiles keep the verdict dot (the grid's primary state signal, outside the F19 hide toggle — a Progress grid whose state marks hide defeats the screen) and render the weighted actions as mini `DecisionBadge` glyphs at 13 px — the heart-off, carried-vs-live, and the SD glyph all read at that size where a dot could carry none of them.
+   Hydration is two chunked reads per page on BOTH engines, demoted through the new one-place `demoteForState` (which History's badges now share; the deck's provider keeps its ref-integrated twin with a pointer).
+10. **One removal semantic for the four queues (`QueueRemoveChip`).**
+    Removing an explicit SELECTION acts directly (a targeted act needs no second question); clearing ALL always confirms with the count and the forget/keep rule.
+    Share's bottom "Clear queue" button folded into the chip (its never-shared warning rides the confirm body); Organize's clear-all gained the confirm; Edit and Favourite gained the affordance, bound M5-style to rendered ∩ fresh scoped rows.
+11. **The F21 in-build calls.**
+    The deck's browse-mode edit chip flag-toggles on a staged cull instead of re-deciding (queueing the edit must not silently rescue the cull); the editor refuses favourite/organize ADDITIONS on a staged cull with a named "Suspended while staged to delete" row while existing queued rows stay cancellable; `createShareBatch`'s cycle fallback shrank to a plain defensive first-use mint (the resurface case it existed for is gone); the trashed-photo path keeps full suspension everywhere.

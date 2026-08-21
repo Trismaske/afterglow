@@ -103,7 +103,7 @@ The screen file's header is the contract.
 - **Settings**: source, goals, accent, the Library scan row, forget-card, resets.
 - **SourcePicker**: volume-tagged rows. Saves trigger a rescan.
 
-Components: `MainTabBar`, `ActionChip`, `DiagErrorBoundary`, `Ghost`, `GoalCelebration`, `AlbumPicker`, `QueueGrid` (the shared selection language), `UnitCard`, `QueueViewer` + `useQueueRows` (the queue-screen shell), `useDoubleTapZoom`, `useExternalRefresh` (foreground + volume-mount reloads), `PhotoViewer` (THE standard viewer, hosts the state editor), `DecisionBadge` + `BadgeCluster`, `GoalRing`, `ReDecideSheet`, `BigButton`, `StateProgressBar`, `EditDiagnosticsSheet`, `progress/*`.
+Components: `MainTabBar`, `ActionChip`, `DiagErrorBoundary`, `Ghost`, `GoalCelebration`, `AlbumPicker`, `QueueGrid` (the shared selection language), `QueueRemoveChip` (the four queues' one removal affordance, confirm included), `UnitCard`, `QueueViewer` + `useQueueRows` (the queue-screen shell), `useDoubleTapZoom`, `useExternalRefresh` (foreground + volume-mount reloads), `PhotoViewer` (THE standard viewer, hosts the state editor), `DecisionBadge` + `BadgeCluster`, `GoalRing`, `ReDecideSheet`, `BigButton`, `StateProgressBar`, `EditDiagnosticsSheet`, `progress/*`.
 
 ## Verify
 

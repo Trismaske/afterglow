@@ -7,7 +7,7 @@ import { useSQLiteContext } from 'expo-sqlite';
 import { mountedVolumeSet } from '../lib/mountedVolumes';
 import { resolveSources } from '../lib/sourceCatalog';
 import type { MainTabScreenProps } from '../navigation';
-import { getToEditPhotos, markEditDone, type ToEditRow } from '../db/store';
+import { setNeedsEdit, getToEditPhotos, markEditDone, type ToEditRow } from '../db/store';
 import { withUserWritePriority } from '../lib/writePriority';
 import { useReview } from '../review/ReviewContext';
 import { getEditableContentUri } from '../lib/media';
@@ -16,6 +16,7 @@ import { NO_EDITOR_MESSAGE, NO_EDITOR_TITLE } from '../lib/editActions';
 import { EditDiagnosticsSheet } from '../components/EditDiagnosticsSheet';
 import { QueueViewer } from '../components/QueueViewer';
 import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
+import { QueueRemoveChip } from '../components/QueueRemoveChip';
 import { showToast } from '../lib/toast';
 import { labelForDayKey } from '../lib/dates';
 import { formatClock } from '../lib/format';
@@ -60,6 +61,31 @@ export function EditQueueScreen(_props: Props) {
     },
     [db, reload, refresh],
   );
+
+  /** Confirmed clear-all (m0.8.7 shared bar): bound to the rendered rows
+   * intersected with a fresh scoped read — the M5 rule; the write may
+   * shrink, never widen past what the screen showed. */
+  const removeAll = useCallback(async () => {
+    try {
+      const rendered = new Set((rows ?? []).map((r) => r.asset_id));
+      const fresh = (
+        await getToEditPhotos(
+          db,
+          await mountedVolumeSet(),
+          (await resolveSources(db)).roots ?? null,
+        )
+      ).filter((r) => rendered.has(r.asset_id));
+      for (const row of fresh) {
+        await withUserWritePriority(() => setNeedsEdit(db, row.asset_id, false, Date.now()));
+      }
+      await refresh();
+      await reload();
+    } catch (error) {
+      console.warn('[edit] queue clear failed:', String(error));
+      Alert.alert('Could not clear the queue', 'The list below shows what actually stands.');
+      await reload().catch(() => {});
+    }
+  }, [db, rows, refresh, reload]);
 
   const askMarkDone = useCallback(
     (assetId: string) => {
@@ -192,6 +218,17 @@ export function EditQueueScreen(_props: Props) {
             ? 'Nothing queued to edit.'
             : `${rows.length} queued · “Edit here” opens an editor that can save over the original; “View only” opens the photo read-only (use its own edit button to pick an editor)`}
       </Text>
+      {rows !== null && rows.length > 0 ? (
+        <View style={styles.chips}>
+          {/* The shared removal affordance (m0.8.7): this queue had none. */}
+          <QueueRemoveChip
+            queueLabel="edit"
+            count={rows.length}
+            selectedCount={0}
+            onRemove={() => void removeAll()}
+          />
+        </View>
+      ) : null}
       {failed && rows !== null ? (
         // codex r9: the reload kept the last rows on a failed read — the
         // list may be stale, and it has to say so.
@@ -232,6 +269,7 @@ const styles = StyleSheet.create({
   heading: { color: colors.text, fontSize: 24, fontWeight: '800', marginBottom: 2 },
   root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 16 },
   subtitle: { color: colors.textDim, fontSize: 14, marginBottom: 10 },
+  chips: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   list: { gap: 10, flexGrow: 1 },
   row: {
     flexDirection: 'row',

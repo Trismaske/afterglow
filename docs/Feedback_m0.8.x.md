@@ -18,7 +18,7 @@ A fix aimed at the wrong cause passes review and fails on the phone.
 |---|---|---|---|
 | **m0.8.5** | the review loop | **SHIPPED 2026-08-17** — F1 F3 F4 F5 F6 F7 F13 F17 plus the accent pass; behavior recorded in PLAN.md's shipped entry | — |
 | **m0.8.6** | the browsing surfaces | Going back to look at something: Timeline, Progress, History, and editing a photo's state from any of them | F2 F8 F9 F16 · N1 (a changed decision advances) N2 (the finish button dims on every write) · TODO "rescued-date scope", "tombstone rows", the star/Compare knot · zoom: the two-thumb walking pan stutters on every finger change (m0.8.5 device pass, parked — momentum covers most of its use; the fix is porting react-native-zoom-toolkit's touch-position pinch/pan math into the worklets — it cannot be adopted wholesale: host `GestureDetector` + `runOnJS`, both forbidden here) · deck: a singles finish flashes the browse control row for one frame before the advance (`finishing`'s escape clause fires while the post-write rows are still stale — emulator probe; the human pass reads it as fine, so it rides with the browse-swap unify) |
-| **m0.8.7** | sources, badges, and the queues | Where photos come from, what they wear, and the four queue screens behaving alike | F10 F11 F12 F14 F15 F18 F19 F20 · TODO "action-layer coherence", "type-scale and token pass" · [Errors_design.md](Errors_design.md) |
+| **m0.8.7** | sources, badges, and the queues | Where photos come from, what they wear, and the four queue screens behaving alike | F10 F11 F12 F14 F15 F18 F19 F20 · TODO "action-layer coherence", "type-scale and token pass" · [Errors_design.md](Errors_design.md) · 2026-08-20 riders ([Feedback_m0.8.7-m0.9.md](Feedback_m0.8.7-m0.9.md)) |
 
 Each release is one subsystem, so each gets one device pass and one review cycle rather than three overlapping ones.
 m0.9 (Videos) is unchanged and follows.
@@ -47,22 +47,14 @@ Shipped; the release's distilled record lives in PLAN.md's roadmap entry, and th
 ## m0.8.7 — sources, badges, and the queues
 
 Where photos come from, what they wear, and the four queue screens behaving like one another.
+Riders from the 2026-08-20 round also land here — specs in [Feedback_m0.8.7-m0.9.md](Feedback_m0.8.7-m0.9.md): F21 (per-kind action suspension + cull-confirm guard), F27's undated-fallback fix (the measured cause of the daily full corpus scans), F30 (the state editor keeps stale facts dimmed across writes), the share-dispatch-with-pending-edit confirm, and the step-zero S23 scan-log capture.
 
-### Retire the regroup freeze (agreed direction, m0.8.6 closing grilling)
+### Retire the regroup freeze (design-complete — [Regroup_design.md](Regroup_design.md))
 
-**Tristan, 2026-08-20:** grouping becomes pure presentation — photos own their state; groups may grow, shrink, and re-form freely under any strictness or source change.
-Two survivors: "Not related" ejections stay durable (the one explicit user judgment about membership), and a duel lives only while its two photos share a group — the scan deletes duels whose pair separates.
-Unreachable volumes regroup on remount (membership repair, not freezing).
-This deletes windowFreeze, the grow-only append machinery, and the reset carve-outs (net-negative code), and it ABSORBS the per-photo duel-scoping item below (a duel dying on pair separation is the same rule applied by the engine).
-Full design-doc + grilling before implementation; the m0.8.6 freeze behavior ships as reviewed.
-
-### Un-review drops only that photo's duels (agreed design, from the m0.8.6 device pass)
-
-**Today (m0.8.6 D5):** the state editor's un-review deletes the group's WHOLE Compare history, with a confirm.
-**Agreed (Tristan, 2026-08-19, ranked "first prize"):** delete only the duels the un-reviewed photo was in (`WHERE winner = ? OR loser = ?` within the group); the rest of the table stands.
-The confirm copy narrows to match ("its Compare answers involving this photo").
-Parked at the m0.8.6 tail deliberately: it reopens the decision-write contract (ReviewContext → store) and the D5 tests after the regroup path was device-passed.
-His explicitly rejected middle option ("second prize" — cascade to the counterpart's other duels) is recorded so it is not re-derived.
+The m0.8.6 closing grilling agreed the direction; the design grilling (2026-08-21, five questions) settled the rest.
+The design doc is the authoritative spec (decisions R1–R9): grouping becomes pure presentation; duels become a pair-keyed **append-only event log** (deleted by nothing short of the schema reset; forget-erase anonymizes); "Not related" becomes **directional cannot-link pairs** with a dissolution rule, undoable from the state editor via a targeted window rescan; exclusions persist at every strictness; the strictness confirm survives with re-copied honesty.
+Two earlier sub-decisions were superseded there and are recorded in its table: the "scan deletes duels whose pair separates" clause (R3 — no sweep at all), and the m0.8.6 "un-review deletes only that photo's duels" first-prize (R3 — un-review deletes no duels and loses its confirm; the rejected cascade option stays rejected).
+Schema v22 destructive rebuild; existing duels and ejection flags are lost by explicit decision.
 
 ### F18 · Cull-queue photos survive their source being deselected
 
@@ -161,10 +153,8 @@ Both are queue-and-badge work, which is what this release is.
 [Errors_design.md](Errors_design.md) ships here (Tristan, 2026-08-04).
 It generalises m0.8.4's organize-failure fix into one contract across the four boundaries where an OS refusal can be systematic: trash, favourite, share dispatch, edit launch.
 Three of those four are queue screens, which is why it belongs to this release and not another.
-**Gate:** its §6 open decisions must be settled in a grilling BEFORE implementation.
-The doc says so itself, and that has not happened yet.
-Do that grilling early in the release, not at the end.
-§7's phases are provisional pending those answers, so an unsettled §6 makes the implementation order a guess.
+**Gate cleared:** its §6 decisions were settled in a grilling (2026-08-21) — the doc is decision-complete and its §7 phases are firm.
+One tie to this release's other work: the `plural()` helper (D5) lands via F15's copy audit, and the error copy consumes it.
 
 ### TODO promotion · Type-scale and token pass
 

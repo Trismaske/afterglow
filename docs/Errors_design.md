@@ -1,12 +1,10 @@
 # Error surfacing across the platform boundaries: design
 
-**Status:** DRAFT, not decision-complete.
-§6 lists the open decisions.
-None has been put to Tristan yet.
-Do not implement this doc before they are settled.
+**Status:** decision-complete.
+§6's five decisions were settled in a grilling (Tristan, 2026-08-21).
+Ready to implement.
 **Release:** m0.8.7 (Tristan, 2026-08-04).
 Three of its four boundaries are queue screens, which is that release's subject.
-Run the §6 grilling EARLY in the release: §7's phases are provisional pending those answers.
 See [Feedback_m0.8.x.md](Feedback_m0.8.x.md).
 **Audience:** Tristan and the implementing agent.
 **Deliverable:** one contract for what the app says when Android refuses, applied at every boundary where an OS refusal can be systematic rather than transient.
@@ -126,7 +124,8 @@ Facts we own: how many URIs (single vs multiple changes the intent), whether any
 
 Honest note: this boundary resolves at *dispatch*, never at the sheet, so most real failures are "no app handled it".
 That may be the whole of tier 1 here.
-**This is possibly the boundary where tier 2 is the right answer**, and to say so is a result.
+**The expected outcome is tiers 2+3 only, which is compliant, not exempt** (D1): an honest generic line above the platform verbatim already improves on today's raw alert, and a tier-1 sentence appears only if implementation finds a provable cause.
+One failure mode disappears before this work starts: F21's per-kind suspension ([Feedback_m0.8.7-m0.9.md](Feedback_m0.8.7-m0.9.md)) keeps a staged cull's share intent live, so dispatch stops silently dropping culled photos from a batch.
 
 ### 4.4 Edit launch (`modules/media-store-actions` probes + `lib/editMatrix.ts`)
 
@@ -158,40 +157,36 @@ The sites were:
 | `ShareQueueScreen.tsx:218` | "Clear all 1 photos from the share queue?" |
 
 The codebase mostly gets this right already (`HomeScreen:530`, `SettingsScreen:187-188`), which is why this was three sites and not thirty.
-D5 (a shared `plural()` helper) stays open and is now purely forward-looking.
-With these fixed there is nothing to consolidate, so the helper only earns its place if a future boundary adds enough sentences to pay for the abstraction.
+D5 settled the consolidation question: the `plural()` helper lands via F15's app-wide copy audit (§6).
 
 ---
 
-## 6. Open decisions: for a grilling, in this order
+## 6. Decisions: settled in the 2026-08-21 grilling
 
-Each blocks the one after it.
-
-| # | Decision | Why it is open |
+| # | Decision | Settled |
 |---|---|---|
-| D1 | Is the three-tier contract **mandatory** at all four boundaries, or applied where it earns its place? | §4.3 suggests share may have no real tier 1. A contract with an exception is honest; one applied uniformly is easier to review. |
-| D2 | Does `editMatrix` generalise, or do the two mechanisms stay separate? | They answer different questions (capabilities vs one failed run). Merging may be an abstraction that grows total code. |
-| D3 | Does any boundary need a **persisted** reason? | m0.8.4 ruled it out for organize because the retry regenerates it. If a boundary exists where it does not, that reopens the schema question — and its cost is a destructive reset. |
-| D4 | Does the favourite boundary get partial-success copy? | `unverifiedIds` supports it and nothing else in the app expresses partial success. That is new behaviour, not a copy fix. |
-| D5 | Shared `plural()` helper, or local ternaries? | Three sites is under the threshold where an abstraction pays. |
+| D1 | Contract scope | **Mandatory at all four boundaries; tier-1 sentences are not.** Every boundary presents failures in the three-tier shape (tier 2 + tier 3 at minimum); tier 1 appears exactly where owned facts prove a cause. A boundary shipping tiers 2+3 only — share, expectedly — is compliant, not exempt. |
+| D2 | `editMatrix` vs the classifiers | **Separate mechanisms, shared shape, defined relationship.** Each boundary gets its own pure classifier in the `organizeFailures` mold; `editMatrix` stays a capability probe and doubles as the edit-launch classifier's **fact source**. A shared classifier skeleton may be proposed by the fourth classifier with evidence, not before. |
+| D3 | Persisted reasons | **No.** All four boundaries pass the regeneration test (a retry re-produces the reason), so the m0.8.4 rule stands app-wide. Reopens only if a boundary appears whose reason genuinely cannot be regenerated. Post-hoc "what failed last Tuesday" diagnosis belongs to the parked field-diagnostics TODO item, not this contract. |
+| D4 | Favourite partial success | **Yes**: "N were applied; Android did not confirm M" — counts only (the queue shows *which*), singular and plural asserted for **both** counts, tier 3 verbatim after, proven with a deliberately unrecognisable platform message (§8). |
+| D5 | `plural()` helper | **Yes, landed by F15's copy audit** (same release), consumed here — the audit touches every count-bearing string anyway, and per-site the call is shorter than the ternary. Fallback: if the audit finds fewer than ~5 count-bearing sites, keep local ternaries and record the count as the reason. |
 
 **D-organize is now CLOSED** (Tristan, 2026-07-31, m0.8.4 acceptance): the app keeps no allow-list of its own.
 Android is the only authority on where a photo may live, and a refusal is explained in Android's own words.
 A mirrored copy of the rule survives for the album PICKER only, as a convenience that can hide a legal option but never block one.
-That layering (*platform is truth, validator is authority, filter is convenience*) is the shape this doc proposes for the other boundaries.
-
-**Nothing here is an autonomous call.** Every row above is a genuine fork, which is why this doc stops at the table.
+That layering (*platform is truth, validator is authority, filter is convenience*) is the shape the settled decisions adopt for the other boundaries.
 
 ---
 
-## 7. Implementation phases (provisional, pending §6)
+## 7. Implementation phases
 
 1. ~~§5's three copy fixes~~: **done** in m0.8.4's acceptance round.
-2. **Favourite** (§4.2): richest facts, clearest win, and D4 is the only decision it needs.
+2. **Favourite** (§4.2): richest facts, clearest win; D4's partial-success sentence.
 3. **Trash** (§4.1): closest to done. Mostly it names causes the lifecycle already distinguishes.
-4. **Share** (§4.3): last, because D1 may conclude it needs nothing.
+4. **Share** (§4.3): expected tiers 2+3 (D1); a tier-1 sentence only if a provable cause is found in the build.
+5. **Edit launch** (§4.4): a classifier over `editMatrix`'s probe facts (D2).
 
-Edit launch (§4.4) is deliberately unscheduled: it depends entirely on D2.
+The `plural()` helper arrives via F15's audit (D5) before or alongside phase 2, so every sentence above consumes it.
 
 ## 8. Testing
 

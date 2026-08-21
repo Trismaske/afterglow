@@ -441,6 +441,7 @@ Auto-update (electron-updater) lands here too.
 **The m0.8.x feedback line (next).**
 The remaining tester items from the 2026-07-31 round, organised into subsystem-aligned releases so each gets one device pass and one review cycle.
 Items, evidence, and the settled decisions: [docs/Feedback_m0.8.x.md](docs/Feedback_m0.8.x.md).
+A second round (2026-08-20, F21–F30, settled in an 11-question grilling) spans m0.8.7 through m0.9: [docs/Feedback_m0.8.7-m0.9.md](docs/Feedback_m0.8.7-m0.9.md).
 
 - **m0.8.7 — sources, badges, and the queues.**
   Source selection becomes a scope axis exactly like mount state: deselecting a folder writes nothing, and its photos leave every queue, count, and grid until it is re-added.
@@ -450,12 +451,20 @@ Items, evidence, and the settled decisions: [docs/Feedback_m0.8.x.md](docs/Feedb
   A copy audit fixes singular strings in plural situations.
   The four queue screens get one action language, plus full action hydration in the Progress grids.
   Carries two more: the **error-surfacing contract** ([docs/Errors_design.md](docs/Errors_design.md) — one three-tier answer at every boundary where Android can refuse systematically, with its §6 to be settled before implementation) and the type-scale and token pass, whose evidence sits on this release's own screens.
-- **m0.8.8 — the accessibility pass** (Tristan, m0.8.6 closing grilling).
-  A dedicated release: OS font-scale changes measured across both test devices, full UI gates at each scale to assess the impact across the whole app, and the resulting policy for every pinned-height surface (the uniform timeline card, its footer note, and whatever else the measurements implicate).
-  Until then the pinned surfaces deliberately ellipsize at extreme scales rather than break the exact-geometry landings.
+  Riders from the 2026-08-20 round: action suspension becomes per-kind so a staged cull can still be shared and edited, with a cull-confirm guard naming unsent intents (F21); a share-dispatch confirm when a queued edit is pending; the state editor keeps stale facts dimmed across writes instead of collapsing to "Loading…" (F30); and F27's measured cause — the delta planner's silent undated fallback, amplified by a volume-wide change query that lets out-of-source photos trigger scans — is fixed here: the changed set is filtered to the source scope, in-source undated changes land without a corpus walk, and every planner fallback logs its reason.
+  The S23 `[scan]` logcat capture (running since 2026-08-21, no app code) measures the fallback's frequency and watches for other full-pass reasons through the release cycle.
+  The **stats-accuracy sweep** ([docs/STATS_ACCURACY.md](docs/STATS_ACCURACY.md), from the 2026-08-21 audit) also rides: external deletions stop counting as culls, the intake chart's populations align, the frontier reads durable stamps, `decided_first_at` makes past days immutable (inside the v22 rebuild), the two "longest streak" definitions unify, and two figures retire until the event log can back them truthfully ("you keep 1 of X" and the favourites figure — stats track Afterglow actions, and both currently state library facts).
+- **m0.8.8 — the review deck** (the 2026-08-20 round's deck cluster).
+  The post-decision advance goes to the nearest unreviewed photo — forward first, backward at the tail — in both deck kinds (F23+F24).
+  "Not related" joins the verdict row (Keep · Compare · Not related · Cull, weighted widths, always present and disabled where inapplicable), reclaiming ~68 px of stage on groups and unifying the group/singles layout; heights and weights are device-pass tunables (F28).
+  Compare's buttons become Keep (green, writes immediately) and Cull (red, writes immediately) with one binary complement prompt for the other photo; the whole-table machinery and "is better" wording are deleted, and the don't-ask-again preference is rewired into the prompts (F29).
+  Zoom becomes pixel-perfect at any depth: a BitmapRegionDecoder snapshot function in the native module serves the settled viewport at native resolution on all three zoom surfaces, with the base decode raised to ≥4096 px (F22; escalation pre-registered: raise the base → pivot to a tiling library).
 
-**m0.9 — Videos (moved from m0.8)**
-- **Videos enter review** (singles-first: playback, keep/cull/queues, with grouping later if warranted).
+**m0.9 — Media kinds (Videos, widened by the 2026-08-20 round)**
+- **Videos enter review** (singles-first: playback, keep/cull/queues, with grouping later if warranted) — scope confirmed 2026-08-20: expo-video, singles interleaved by capture time, muted by default (F26).
+- **Motion photos play** (F25): scan-time container detection (Samsung SEF and Google XMP) with a one-time backfill, looped muted full-view playback, and zoom always inspecting the still frame.
+- **Kind chips** (GIF · Motion · Video) join the badge vocabulary; plain photos stay unchipped. One Autoplay toggle (default ON, under a "Playback" settings heading) governs motion photos and videos; GIFs keep their native always-animating behavior. Grid thumbnails stay still, chip-badged.
+- **The scan explains itself** (F27, presentation — the measured undated-fallback cause is fixed in m0.8.7): no "Scanning…" before the skip check survives, full passes name their reason, deltas name their size, and any further full-pass reason the S23 log capture surfaces gets the same treatment.
 - **Per-ABI APK splits** (deferred from m0.8's Gate 6): the universal APK is ~163 MB with MediaPipe.
   Splits reclaim most of it once the release workflow handles multiple artifacts.
 - **Visual vet of live groups** (deferred from m0.8): a contact sheet from a device DB's actual continuous groups, to eyeball the fitted curve's real-world behavior.
@@ -463,7 +472,12 @@ Items, evidence, and the settled decisions: [docs/Feedback_m0.8.x.md](docs/Feedb
   The 30-day version already exists (`activityWindow`'s `goalDays`, printed beside the goal line), so this is the same figure over the whole history.
   One decision it carries: like every goal figure, it re-scores against the CURRENT goal, so the number moves when the goal changes — defensible on a 30-day chart, stranger on an all-time total.
 
-**After m0.9**: hardening and tester-driven fixes to 1.0.
+**m0.9.1 — the accessibility pass** (moved from m0.8.8, deliberately after the UI stops moving; Tristan, m0.8.6 closing grilling).
+A dedicated release: OS font-scale changes measured across both test devices, full UI gates at each scale to assess the impact across the whole app, and the resulting policy for every pinned-height surface (the uniform timeline card, its footer note, and whatever else the measurements implicate).
+Until then the pinned surfaces deliberately ellipsize at extreme scales rather than break the exact-geometry landings.
+
+**After m0.9.1**: hardening and tester-driven fixes to 1.0.
+One named design round in this stretch: the **generic event log** (assessed 2026-08-21, deliberately not built piecemeal) — one append-only event stream designed once for all its members: group completions (revives the "you keep 1 of X" stat), favourite events (revives the favourites-applied figure), the parked History action streams, the lifetime-counter pattern, and whether duels stay standalone. The same round owns the actions-vs-library stats audit and its copy pass (stats track actions performed in Afterglow; library facts are labeled as such). See [docs/STATS_ACCURACY.md](docs/STATS_ACCURACY.md).
 This includes the planned **one-time identity break**, which bundles everything that forces a reinstall into a single tester disruption: the real release keystore, the **application id aligned to the "Afterglow" name** (drops `com.afterglow.companion`), and a **versionCode reset to 1** (fresh installs have no downgrade check).
 Note: if Play Store distribution ever happens, Play tracks the highest versionCode per id.
 That is moot since the id is new.
@@ -491,6 +505,10 @@ No release target until then.
 - **`expo-media-library/legacy` migration** — mobile deliberately uses the legacy module for queries (battle-tested cursor paging).
   Migrate to the SDK's class-based Query/Asset API when Expo deprecates the legacy path in earnest (m0.8+).
   All access funnels through `src/lib/media.ts`, so it stays a one-file migration.
+- **Animated video/motion thumbnails** — grids show still thumbs with kind chips; animating them needs a per-photo transcode-preview pipeline or Samsung-style sequential-clip orchestration over recycling list cells, both a subsystem.
+  Trigger: missing them once m0.9's looping full-view playback ships.
+- **Loop/boomerang export** — neither motion-photo container stores playback settings, so "make it loop" honestly means exporting a new video file with the effect baked in (Samsung Gallery's own model).
+  Trigger: a user asks for it.
 - **GitLab releases** — deferred until further notice.
   GitHub Releases is the sole delivery path.
   Do not add GitLab CI or remotes without a new decision.

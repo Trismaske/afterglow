@@ -134,6 +134,21 @@ describe('getBacklogFrontier', () => {
     expect(frontier.oldestUnreviewedDay).toBe(pendingDays.sort()[0]);
   });
 
+  it('holds its four-group parameter order under BOTH scopes (src + reach twice + src)', async () => {
+    // Class-2 pin (REVIEW_CLASSES): the query interpolates the source
+    // clause twice and the reach clause twice — a drifted spread order
+    // binds days into volume slots silently.
+    const history = buildReviewHistory();
+    const d = await fresh();
+    seed(d, history.photos);
+    const roots = [{ volume: 'external_primary', dir: 'DCIM' }];
+    const scoped = await getBacklogFrontier(asExpo(d), roots, ['external_primary']);
+    // The fixture's uris all live under DCIM on the primary volume, so a
+    // correctly-bound scoped read equals the unscoped one.
+    const unscoped = await getBacklogFrontier(asExpo(d), null, null);
+    expect(scoped).toEqual(unscoped);
+  });
+
   it('counts undated photos still waiting', async () => {
     const history = buildReviewHistory();
     const pending = history.photos.filter((photo) => photo.state === 'unreviewed').slice(0, 5);

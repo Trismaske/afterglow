@@ -80,6 +80,7 @@ import {
   deltaVerdict,
   filterChangedToSources,
   planDeltaRanges,
+  rangesForTargets,
 } from '../lib/deltaScan';
 import { mapWithConcurrency } from '../lib/concurrency';
 import { waitForUserWrites } from '../lib/writePriority';
@@ -176,10 +177,37 @@ function update(patch: Partial<ScanStatus>): void {
 
 let flight: Promise<void> | null = null;
 let rescanQueued = false;
+/** Eject/un-eject re-placement requests (m0.8.7, Regroup_design §5):
+ * each is one photo whose window should re-page NOW rather than on the
+ * next natural pass. Drained by the next flight, which runs a TARGETED
+ * pass instead of a full one — through the same single-flight, the same
+ * range machinery, and the same status line as any small delta. */
+const pendingTargets: RescanTarget[] = [];
 /** Bumped by requestRescan: a running flight captures its generation and
  * stops persisting once superseded — groups written under old settings
  * (source/strictness) would repopulate what the change just reset. */
 let scanGeneration = 0;
+
+export interface RescanTarget {
+  assetId: string;
+  /** photos.taken_at — the window walk's anchor for a dated photo. */
+  takenAtMs: number;
+  /** photos.day IS NULL: no range can fetch it — the pass lands it by
+   * direct per-id fetch instead (the F27 machinery). */
+  undated: boolean;
+}
+
+/**
+ * Re-place one photo through a TARGETED window rescan (Regroup_design
+ * §5): the eject/un-eject flows call this so the regroup lands in
+ * seconds through the normal pipeline instead of waiting for the next
+ * natural pass. Routed through the single-flight; a running pass drains
+ * the target when it finishes.
+ */
+export function requestTargetedRescan(db: SQLiteDatabase, target: RescanTarget): Promise<void> {
+  pendingTargets.push(target);
+  return startContinuousScan(db);
+}
 
 /**
  * Start the continuous scan unless one is already running; resolves when
@@ -205,6 +233,9 @@ export function startContinuousScan(
         // A queued rescan came from a settings apply/reset — forced (it
         // may rewrite scan OUTPUT without changing scan INPUT).
         void startContinuousScan(db, { force: true });
+      } else if (pendingTargets.length > 0) {
+        // Targets that arrived mid-flight drain in their own pass.
+        void startContinuousScan(db);
       }
     });
   return flight;
@@ -781,6 +812,20 @@ async function finishPass(
 async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   const generation = scanGeneration;
   const superseded = (): boolean => generation !== scanGeneration;
+
+  // TARGETED pass (Regroup_design §5): drain the eject/un-eject targets
+  // and return — never a full pass's stamps (no fingerprint, no
+  // baselines, no reconciliation: re-placement is presentation repair
+  // and must not claim verification). A forced rescan outranks it: the
+  // full pass covers every target anyway.
+  const targets = pendingTargets.splice(0);
+  if (targets.length > 0 && !force) {
+    await targetedPass(db, targets, superseded);
+    return;
+  }
+  // A forced run DROPS drained targets: the full pass below re-windows
+  // the whole library, targets included.
+
   status = { ...IDLE, phase: 'scanning' };
   update({});
 
@@ -1156,6 +1201,60 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     `[scan] done: scanned ${status.scanned}, embedded ${status.embedded} fresh, ` +
       `${status.windowsGrouped} windows grouped`,
   );
+}
+
+/**
+ * The TARGETED pass (Regroup_design §5): walk each dated target's window
+ * from the tracked timestamps (the same walk a changed photo gets) and
+ * re-page just those ranges; undated targets land by direct per-id
+ * fetch. No fingerprint, no baselines, no reconciliation — this pass
+ * re-places photos and claims nothing else. Failures land in the status
+ * like any scan error; the next natural pass covers whatever this one
+ * missed.
+ */
+async function targetedPass(
+  db: SQLiteDatabase,
+  targets: readonly RescanTarget[],
+  superseded: () => boolean,
+): Promise<void> {
+  status = { ...IDLE, phase: 'scanning' };
+  update({});
+  const sources = await resolveSources(db);
+  const rawStrictness = await getSetting(db, GROUPING_STRICTNESS_KEY);
+  const strictness = parseStrictness(rawStrictness);
+  const engine = newEngineHealth();
+  const mounted = await getMountedVolumes();
+  const mountedVolumes: ReadonlySet<string> = new Set(mounted);
+  const timestamps = await getPhotoTimestamps(db, sources.roots ?? null);
+  const dated = targets.filter((t) => !t.undated);
+  const ranges = rangesForTargets(
+    dated.map((t) => t.takenAtMs),
+    timestamps,
+    ADJACENT_MERGE_MAX_GAP_MS,
+  );
+  const undatedIds = targets.filter((t) => t.undated).map((t) => t.assetId);
+  console.log(
+    `[scan] targeted rescan: ${targets.length} photo(s) → ${ranges.length} range(s)` +
+      (undatedIds.length > 0 ? `, ${undatedIds.length} by direct fetch` : ''),
+  );
+  const result = await pageAndGroup(db, {
+    ranges,
+    albumIds: sources.albumIds ?? undefined,
+    baseThreshold: strictness.baseThreshold,
+    engine,
+    superseded,
+    mountedVolumes,
+    // No favourite projection on a targeted pass: it re-places
+    // membership, nothing more.
+    favourites: null,
+    undatedIds,
+  });
+  if (result === null) {
+    console.log('[scan] targeted rescan superseded — the queued rescan covers it');
+    return;
+  }
+  update({ phase: 'done' });
+  console.log(`[scan] targeted rescan done: ${status.scanned} re-paged`);
 }
 
 /**

@@ -71,7 +71,11 @@ import { resolveSources } from '../lib/sourceCatalog';
 import { mountedVolumeSet, onVolumesChanged } from '../lib/mountedVolumes';
 import type { SourceRoot } from '../lib/sources';
 import { withUserWritePriority } from '../lib/writePriority';
-import { startContinuousScan, subscribeScanStatus } from '../scan/scanRunner';
+import {
+  requestTargetedRescan,
+  startContinuousScan,
+  subscribeScanStatus,
+} from '../scan/scanRunner';
 import {
   favouriteBadgeWeight,
   nextFavouriteIntent,
@@ -1433,13 +1437,20 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
           // present members (v22) and clears the assignment — the photo
           // leaves the deck now; the mounted snapshot lets the repair
           // defer a rump group waiting on an ejected card.
-          await ejectNotRelated(
+          const targets = await ejectNotRelated(
             db,
             [assetId],
             Date.now(),
             expectedGroupId,
             await mountedVolumeSet(),
           );
+          // Re-place the photo NOW (Regroup_design §5): the targeted
+          // rescan lands its next group in seconds through the normal
+          // pipeline — fire-and-forget; the next natural pass covers a
+          // failure.
+          for (const target of targets) {
+            void requestTargetedRescan(db, target).catch(() => {});
+          }
         },
         { kind: 'makeSingle', assetId, groupId: expectedGroupId },
       ),

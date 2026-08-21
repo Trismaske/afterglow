@@ -794,6 +794,15 @@ export async function repairGroupMembership(
   }
 }
 
+/** What the eject/un-eject flows hand the targeted rescan (Regroup_design
+ * §5): the photo's window anchor, and whether only a direct fetch can
+ * reach it (day NULL — no DATE_TAKEN range matches). */
+export interface RescanTargetRow {
+  assetId: string;
+  takenAtMs: number;
+  undated: boolean;
+}
+
 export async function ejectNotRelated(
   db: SQLiteDatabase,
   assetIds: readonly string[],
@@ -805,8 +814,9 @@ export async function ejectNotRelated(
   expectedGroupId?: number,
   /** Mounted volumes at the tap — see applyNotRelatedEjection. */
   mounted: readonly string[] | null = null,
-): Promise<void> {
-  if (assetIds.length === 0) return;
+): Promise<RescanTargetRow[]> {
+  if (assetIds.length === 0) return [];
+  const targets: RescanTargetRow[] = [];
   await withWriteTransaction(db, async (txn) => {
     if (expectedGroupId !== undefined) {
       const rows = await txn.getAllAsync<{ photo_id: string }>(
@@ -824,7 +834,47 @@ export async function ejectNotRelated(
       }
     }
     await applyNotRelatedEjection(txn, assetIds, at, mounted);
+    // The targeted-rescan anchors, read in the same transaction.
+    for (const ids of chunk(assetIds, IN_CHUNK)) {
+      const rows = await txn.getAllAsync<{
+        asset_id: string;
+        taken_at: number;
+        day: string | null;
+      }>(
+        `SELECT asset_id, taken_at, day FROM photos
+          WHERE asset_id IN (${ids.map(() => '?').join(',')})`,
+        ...ids,
+      );
+      for (const row of rows) {
+        targets.push({ assetId: row.asset_id, takenAtMs: row.taken_at, undated: row.day === null });
+      }
+    }
   });
+  return targets;
+}
+
+/**
+ * Un-eject (Regroup_design R6): delete the photo's OWN "not related"
+ * pairs — never those naming it as a partner (other photos' judgments) —
+ * and hand back the targeted-rescan anchor so the caller can re-place it
+ * in seconds. Clearing pairs touches no verdict, action, or stat.
+ */
+export async function clearNotRelated(
+  db: SQLiteDatabase,
+  assetId: string,
+): Promise<{ cleared: number; target: RescanTargetRow | null }> {
+  let cleared = 0;
+  let target: RescanTargetRow | null = null;
+  await withWriteTransaction(db, async (txn) => {
+    const dropped = await txn.runAsync('DELETE FROM not_related WHERE ejected_id = ?', assetId);
+    cleared = Number(dropped.changes);
+    const row = await txn.getFirstAsync<{ taken_at: number; day: string | null }>(
+      'SELECT taken_at, day FROM photos WHERE asset_id = ? AND is_present = 1',
+      assetId,
+    );
+    if (row) target = { assetId, takenAtMs: row.taken_at, undated: row.day === null };
+  });
+  return { cleared, target };
 }
 
 // --------------------------------------------- m0.8 DB-backed review reads

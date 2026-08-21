@@ -5,6 +5,7 @@ import {
   deltaVerdict,
   filterChangedToSources,
   planDeltaRanges,
+  rangesForTargets,
 } from './deltaScan';
 import type { ChangedMediaRow } from '../../modules/media-store-actions';
 
@@ -372,5 +373,22 @@ describe('filterChangedToSources (F27, m0.8.7)', () => {
 
   it('drops a null-bucket non-trashed row under a dirs scope, like the paging it mirrors', () => {
     expect(filterChangedToSources([row({ bucketId: null })], scope)).toEqual([]);
+  });
+});
+
+describe('rangesForTargets (targeted window rescan, Regroup_design §5)', () => {
+  it('walks the whole window around a target, like a changed photo', () => {
+    const timestamps = lib(0, 10, 20, 30, 90, 100);
+    expect(rangesForTargets([T + 20 * MIN], timestamps, GAP)).toEqual([
+      { startMs: T, endMs: T + 30 * MIN, changed: 1 },
+    ]);
+  });
+
+  it('merges targets that share a window; keeps separate windows apart', () => {
+    const timestamps = lib(0, 10, 90, 100);
+    expect(rangesForTargets([T + 10 * MIN, T, T + 90 * MIN], timestamps, GAP)).toEqual([
+      { startMs: T, endMs: T + 10 * MIN, changed: 2 },
+      { startMs: T + 90 * MIN, endMs: T + 100 * MIN, changed: 1 },
+    ]);
   });
 });

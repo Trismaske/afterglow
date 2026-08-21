@@ -211,6 +211,36 @@ export function planDeltaRanges(
   return { ranges, undated, trashed, changed: changed.length };
 }
 
+/**
+ * Ranges for a TARGETED window rescan (m0.8.7, Regroup_design §5): the
+ * eject/un-eject flows re-place one photo by walking its own window and
+ * re-paging it through the ordinary range machinery — the same walk a
+ * changed photo gets, minus the change query. Overlapping targets merge
+ * exactly as planDeltaRanges merges changed rows.
+ */
+export function rangesForTargets(
+  targetsMs: readonly number[],
+  sortedTimestamps: readonly number[],
+  gapMs: number,
+): DeltaRange[] {
+  const ranges: DeltaRange[] = [];
+  for (const at of [...targetsMs].sort((a, b) => a - b)) {
+    const last = ranges[ranges.length - 1];
+    if (last && at <= last.endMs) {
+      last.changed += 1;
+      continue;
+    }
+    const { startMs, endMs } = walkWindow(sortedTimestamps, at, gapMs);
+    if (last && startMs <= last.endMs) {
+      last.endMs = Math.max(last.endMs, endMs);
+      last.changed += 1;
+    } else {
+      ranges.push({ startMs, endMs, changed: 1 });
+    }
+  }
+  return ranges;
+}
+
 /** The maximal ≤`gapMs`-chain around `at`, in `sorted` (ascending). */
 function walkWindow(
   sorted: readonly number[],

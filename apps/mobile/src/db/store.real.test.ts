@@ -495,6 +495,33 @@ describe('ejectNotRelated ("not related" pairs, v22)', () => {
     ]);
   });
 
+  it('returns the targeted-rescan anchors, undated flagged for direct fetch', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2'], [['1', '2']]);
+    d.raw.prepare('UPDATE photos SET day = NULL WHERE asset_id = ?').run(id('1'));
+    const targets = await ejectNotRelated(asExpo(d), [id('1')], AT + 100);
+    expect(targets).toEqual([{ assetId: id('1'), takenAtMs: AT - 3_600_000, undated: true }]);
+  });
+
+  it('clearNotRelated (un-eject) deletes only the photo OWN pairs and hands back its anchor', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2', '3'], [['1', '2'], ['3']].filter((g) => g.length > 1) as string[][]);
+    await ejectNotRelated(asExpo(d), [id('1')], AT + 100);
+    // A pair naming 1 as PARTNER (someone else's judgment) must survive.
+    d.raw
+      .prepare('INSERT INTO not_related (ejected_id, partner_id, at) VALUES (?, ?, ?)')
+      .run(id('3'), id('1'), AT + 101);
+    const { clearNotRelated } = await import('./store');
+    const result = await clearNotRelated(asExpo(d), id('1'));
+    expect(result.cleared).toBe(1); // (1→2) gone
+    expect(result.target).toEqual({ assetId: id('1'), takenAtMs: AT - 3_600_000, undated: false });
+    const remaining = d.raw.prepare('SELECT ejected_id, partner_id FROM not_related').all() as {
+      ejected_id: string;
+      partner_id: string;
+    }[];
+    expect(remaining).toEqual([{ ejected_id: id('3'), partner_id: id('1') }]);
+  });
+
   it('never pairs against a tombstoned member — the judgment is about visible photos', async () => {
     const d = await fresh();
     await seed(d, ['1', '2', '3'], [['1', '2', '3']]);

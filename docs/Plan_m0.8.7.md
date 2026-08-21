@@ -153,3 +153,7 @@ Getting these human-vetted is a top priority; an approved entry is pruned per th
 14. **The edit-launch classifier consumes one post-failure `probeLaunch`.**
     D2's fact-source relationship, implemented: a dispatch failure runs a single read-only probe whose typed verdict ('no_handler', 'security' — our Kotlin's words) selects tier 1; resolve and write-request failures are stage facts needing no probe.
     The caller-less `NO_EDITOR_*` constants swept — the classifier owns that copy now.
+15. **The targeted rescan rides the single-flight as a pass KIND, and undated targets take the F27 direct fetch.**
+    `requestTargetedRescan` queues targets that the next flight drains as a stampless pass (no fingerprint, no baselines, no reconciliation — re-placement is presentation repair); targets arriving mid-flight drain in a follow-up pass, and a FORCED rescan drops them (its full pass covers everything).
+    A day-NULL photo has no rangeable DATE_TAKEN, so its re-placement reuses the delta's direct per-id fetch; eject and un-eject both hand their anchors back from the same transaction that wrote the pairs.
+    R8's strictness confirm re-copy landed back in phase 2 (appendix #2); the source picker's save keeps no confirm — its save button is itself the deliberate act.

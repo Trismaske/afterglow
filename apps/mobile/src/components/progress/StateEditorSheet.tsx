@@ -31,13 +31,21 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
 import { classifyPhotoState, editorOffer, type EditorOffer } from '../../lib/progress';
-import { applyReviewDecisions, getPhotoFacts, markEditDone, type PhotoFacts } from '../../db/store';
+import {
+  applyReviewDecisions,
+  clearNotRelated,
+  getPhotoFacts,
+  markEditDone,
+  type PhotoFacts,
+} from '../../db/store';
 import { decodeOrganizeTarget } from '../../db/actions';
 import { addToShareQueue, isInShareQueue, removeFromShareQueue } from '../../db/shareStore';
 import { queueOrganize, unqueueOrganize } from '../../db/organizeStore';
 import { nextFavouriteIntent, type FavouriteStatus } from '../../lib/favouriteState';
 import { useReview } from '../../review/ReviewContext';
 import { withUserWritePriority } from '../../lib/writePriority';
+import { requestTargetedRescan } from '../../scan/scanRunner';
+import { plural } from '../../lib/format';
 import { dayKey, labelForDayKey, UNDATED_DAY_KEY } from '../../lib/dates';
 import { formatClockSeconds } from '../../lib/format';
 import { colors, touch, useTheme } from '../../theme';
@@ -331,6 +339,27 @@ export function StateEditorSheet({
       facts.organize_applied_target !== null
         ? decodeOrganizeTarget(facts.organize_applied_target)?.path
         : null;
+    // --- "not related" (v22, Regroup_design R6): the photo's OWN pairs
+    // are the one membership judgment the editor can undo — clearing
+    // them touches no verdict or action, and the targeted rescan lands
+    // the regroup in seconds.
+    if (facts.not_related_count > 0) {
+      rows.push({
+        icon: 'image-move',
+        label: 'Not related',
+        status: `Never groups with ${plural(facts.not_related_count, 'photo')}`,
+        buttons: [
+          {
+            key: 'unmark',
+            label: 'Un-mark',
+            onPress: direct(async () => {
+              const { target } = await clearNotRelated(db, facts.asset_id);
+              if (target) void requestTargetedRescan(db, target).catch(() => {});
+            }),
+          },
+        ],
+      });
+    }
     rows.push({
       icon: 'folder-move-outline',
       label: 'Organize',

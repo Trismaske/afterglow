@@ -97,6 +97,35 @@ Caveat in a failure: an all-black photo (pocket shot) inside the transition can 
   adb shell content call --uri content://media/none/ --method scan_volume --arg external_primary
   ```
 
+## Release-pass recipes (proven by hand in m0.8.7; fold into the script — docs/TODO.md)
+
+The m0.8.7 release-specific pass ran end to end as an agent-driven adb session using the §6.1–6.6 techniques in [ANDROID_DEVICE_TESTING.md](ANDROID_DEVICE_TESTING.md) (`scripts/adb-ui.sh` + generated media + the diag sink as the assertion surface).
+Each recipe below is one working automated walk: seed → drive → assert.
+They are the specification for extending this gate script; until then, an agent can replay them directly.
+
+1. **Source-scope round trip (F18).**
+   Picker: add a folder → assert the forced pass ran (`sink 'full pass: forced rescan'`) and Home's totals grew by exactly the folder's count; deselect → totals shrink by the same number and the day rows re-scope; re-add → totals return **with `embedded 0 fresh`** in the done line (byte-for-byte restore, nothing re-analyzed).
+2. **Delta discipline (F27).**
+   Push one EXIF-stripped JPEG in-source and one image into another app's folder (out-of-source), `scan_volume`, background+foreground the app, then assert the sink shows: `out-of-source change(s) ignored`, `DELTA wins`, `undated changed photo(s) landed by direct fetch`, and NO full-pass line.
+3. **Grouping truth: eject, dissolve, un-eject, re-mint.**
+   Seed a 5-variant burst (§6.3) → it must group as one unit.
+   Eject two members ("Not related" ×2): each fires `sink 'targeted rescan'`, and the Timeline must then show BOTH a 3-shot core and a 2-shot group of the ejected pair (the dissolution rule).
+   Viewer facts must read "not related to N photos"; the editor's Un-mark clears it and the targeted rescan lands a legal regroup.
+   Land a 6th variant while the deck is open: the delta regroups beneath it, the deck holds its unit, and a verdict tap still writes cleanly.
+4. **Strictness confirm (R8).**
+   Tap a strictness chip → the dialog must carry the exact copy ("Regroups your whole library… never touched"); confirm → full pass; afterwards every count that encodes a decision (ring, day rows, staged culls) must be unchanged.
+5. **Share-then-cull (F21).**
+   Queue share on a photo, cull it → it must stay listed in the Share queue; dispatch via a direct-share target (Drive) → the label prompt is the dispatch proof, the receiver's "Uploaded N items" notification the physical one, and History must show `Shared · N photos · "label"`.
+   Then queue an UNSENT share + edit on another photo, cull it, and the trash confirm must name both intents with correct n=1 copy before the OS consent.
+6. **Error boundary on screen.**
+   Queue an organize move on a photo whose MediaStore row is OWNED by another app → apply → the three-tier dialog must show our fact first ("lives in another app's own storage") and "Android said: …not allowed" verbatim last.
+   (Favourite on the same photo legitimately succeeds — metadata is writable cross-app; do not read that as a missing failure.)
+7. **Stats immutability around the trash.**
+   Record the ring before confirming culls; after the OS consent and verification the ring must be UNCHANGED (credit happened at staging) and the day row must keep the trashed decisions counted.
+8. **Badges and the eye.**
+   With an SD folder in scope, one deck frame must show the SD glyph on stage and thumbnails, the folder pill on the stage only, and any gallery-flag hearts (F20).
+   The header eye must empty the badge cluster from the dump and flip its own label; a picker row-select must pixel-diff to nothing outside the tapped row (§6.6).
+
 ## Manual pass (what automation cannot judge)
 
 - Frame-level responsiveness when it matters (a perceived-latency complaint).

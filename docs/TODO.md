@@ -85,7 +85,12 @@ Numbers change whenever an item closes, so **cross-references from code or other
    Damage is bounded: the ring (durable) stays correct, and the miss self-heals at the next day boundary.
    A durable fix means persisting un-noted credits and replaying them from startup recovery — its own design pass.
 
-9. **One timestamp per decision write, carried into the goal note** (codex, m0.8.5 device-pass review).
+9. **Script the release-pass recipes into the UI gate** (from m0.8.7's agent-driven device pass).
+   The eight recipes in [MOBILE_UI_GATE.md](MOBILE_UI_GATE.md) "Release-pass recipes" each ran end to end by hand-driven adb (harness: `scripts/adb-ui.sh`; techniques: [ANDROID_DEVICE_TESTING.md](ANDROID_DEVICE_TESTING.md) §6.1–6.6) — seeded media, sink-line assertions, pixel diffs, OS-dialog walks included.
+   The open design questions before they join `scripts/mobile-ui-gate.mjs`: the gate is deliberately mutation-light while these recipes seed media, change sources/strictness, and trash photos (a separate `--release-pass` mode? a second script sharing the gate's helpers?); host-side deps appear (ImageMagick, exiftool, PIL); and several steps take minutes of scan time each, so the pass wants its own budget and ordering.
+   Until scripted, an agent replays the recipes directly — they are written as specifications.
+
+10. **One timestamp per decision write, carried into the goal note** (codex, m0.8.5 device-pass review).
    Every verdict path samples `Date.now()` twice: once for the write's `decided_at` (freshness judged against that day) and again inside `noteDecisions` (the note's day, captured synchronously at the call).
    A transaction that spans local midnight can therefore compute freshness against the old day while the note evaluates against the new one.
    The damage is bounded: the window is one sub-second transaction at exactly midnight, `noteDecisions` already drops notes whose chain runs on a later day than their call, and the per-day cache re-reads on the next note.

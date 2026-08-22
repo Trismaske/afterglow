@@ -285,6 +285,109 @@ A row inserted or updated from the shell lands directly, where the provider woul
 A shell probe therefore proves nothing about what apps may do (measured in m0.8.4: shell updates landed rows in folders the provider refuses to apps).
 Measure provider rules from the app itself.
 
+### 6.1 The tap-by-text harness
+
+`scripts/adb-ui.sh` packages the working loop the m0.8.7 automated device pass ran on: dump the hierarchy, find a node by text/content-desc regex, tap its center, assert the effect.
+
+```bash
+source scripts/adb-ui.sh HARDWARE_SERIAL
+tap "Continue reviewing" && has "Keep remaining" && shot deck-open
+sink '\[scan\] delta done' | tail -1
+```
+
+What its rules encode (each one cost a wrong conclusion before it existed):
+
+- Every `tap`/`has` re-dumps; a stale hierarchy tapped confidently drives the wrong screen.
+- A `TAP-MISS` returns 1 and must be checked — an ignored miss silently invalidates every later assertion.
+- Zero-area nodes are skipped: detached (inactive-tab) screens leave ghost nodes whose "center" is (0,0).
+- When `texts` shows an unexpected screen, the app was probably backgrounded (a stray BACK exits through Home) or a system dialog is up — screenshot before assuming.
+- A swipe from y≈700 upward at the screen top opens the notification shade, not the list — scroll with start points well inside the content.
+
+### 6.2 The diagnostics sink is the assertion surface
+
+Every console line the app emits persists on-device (m0.8.7, `lib/diagLog.ts`), so scripted passes assert **behavior** by grepping the sink instead of screenshots:
+
+```bash
+adb -s SERIAL shell "grep -hE '\[scan\] (done|delta)' \
+  /sdcard/Android/data/com.afterglow.companion/files/diag/*.log" | tail
+```
+
+The `[scan]` lines carry the whole scan contract (delta vs full, reasons, tripwires, targeted rescans) and the `[perf]` lines the timings; a claim like "no corpus walk happened" or "the un-eject landed" is one grep, timestamped.
+Wait for a pass by polling the sink for its `done` line — never by sleeping a guessed duration.
+
+### 6.3 Generating test media
+
+Real pass items need photos with controlled properties; ImageMagick + exiftool make them on the host:
+
+```bash
+# A distinctive scene, then near-identical variants that will GROUP
+# (same window: EXIF stamps seconds apart; similarity: tiny crop/brightness deltas)
+convert -size 1400x1050 plasma:red-blue -seed 42 base.png
+for i in 1 2 3 4 5; do
+  convert base.png -brightness-contrast $((i-3))x0 -crop 1360x1020+$((i*4))+$((i*2)) +repage -quality 92 burst_$i.jpg
+  exiftool -overwrite_original "-DateTimeOriginal=2026:08:22 01:35:0$i" burst_$i.jpg
+done
+
+# An honestly UNDATED photo (exercises the delta's direct-fetch leg)
+convert -size 1200x900 plasma:fractal -strip noexif.jpg && exiftool -all= -overwrite_original noexif.jpg
+```
+
+Push into place, then make MediaStore ingest (per-file scan broadcasts are unreliable on modern Android; scan the volume):
+
+```bash
+adb -s SERIAL push burst_1.jpg /sdcard/DCIM/Camera/AG_BURST_1.jpg
+adb -s SERIAL shell "content call --uri content://media/none/ --method scan_volume --arg external_primary"
+```
+
+Landing a file under another app's storage (`/sdcard/Android/media/com.whatsapp/...`) makes an **out-of-source** change for scan tests; a REAL row owned by that app (check `owner_package_name`) is what forces the organize boundary's ownership refusal — a shell-pushed file may scan with no owner and behave differently.
+Prefix generated files (`AG_...`) so cleanup is a name match.
+
+### 6.4 Volume (SD card) control
+
+A physically present card can be mounted and unmounted in software — reach-axis tests without touching the phone:
+
+```bash
+adb -s SERIAL shell sm list-volumes           # public:179,1 unmounted 0A91-E18D
+adb -s SERIAL shell sm mount public:179,1     # → SD rows in the picker, SD badges, volumesChanged
+adb -s SERIAL shell sm unmount public:179,1
+```
+
+Mounting mid-scan is itself a test: the pass must abort on the mount fence ("storage volumes changed mid-scan") and the next open rescan cleanly.
+
+### 6.5 Fresh-state setup and OS dialogs
+
+A scripted pass on a fresh install must grant the media permission itself, or every step fails against the permission screen (the gate's 0-buckets failure shape):
+
+```bash
+adb -s SERIAL shell pm clear com.afterglow.companion
+adb -s SERIAL shell pm grant com.afterglow.companion android.permission.READ_EXTERNAL_STORAGE  # API ≤32
+adb -s SERIAL shell pm grant com.afterglow.companion android.permission.READ_MEDIA_IMAGES      # API 33+
+adb -s SERIAL shell monkey -p com.afterglow.companion -c android.intent.category.LAUNCHER 1
+```
+
+Grant only the READ permission this way.
+The per-operation consents (trash, write, favourite batches) must never be pre-granted — **drive** them: they are plain dialogs the harness taps like any node (`tap "^Allow$"`), and walking them is part of what the pass proves.
+The share sheet is drivable the same way; a direct-share target ("My Drive") uploads with no further dialog, and the receiving app's own notification ("Uploaded 2 items") is the physical-delivery proof — read it from a `texts` dump of the opened shade.
+
+### 6.6 Pixel assertions
+
+Layout claims ("selecting a row must not shift its neighbours") are verifiable by screenshot diff, not eyeballs:
+
+```bash
+shot before && tap "WhatsApp Images" && shot after
+python3 - <<'PY'
+from PIL import Image, ImageChops
+a = Image.open('/tmp/adb-ui/before.png').convert('L'); b = Image.open('/tmp/adb-ui/after.png').convert('L')
+px = ImageChops.difference(a, b).load(); w, h = a.size
+bands, start = [], None
+for y in range(h):
+    hot = sum(px[x, y] for x in range(0, w, 8)) > 300
+    if hot and start is None: start = y
+    elif not hot and start is not None: bands.append((start, y)); start = None
+print(bands)   # expect: the status-bar clock + the tapped row's own band, nothing else
+PY
+```
+
 ## 7. Emulator pass
 
 The repository setup creates an accelerated Android 16 emulator:

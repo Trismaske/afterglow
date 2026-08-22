@@ -119,6 +119,7 @@ v1 re-gates or adds a Settings toggle (docs/TODO.md, "Re-gate the `[perf]` logs 
 Pre-release UI gate: `node scripts/mobile-ui-gate.mjs` against an installed RELEASE build on a test device (docs/MOBILE_UI_GATE.md).
 The gate relaunches the app through the launcher intent, which a dev-client build answers with its "connect to a server" screen, so every step fails.
 Device/emulator workflow + gesture checks: docs/DEVELOPMENT.md.
+Agent-driven UI walks on a device: `scripts/adb-ui.sh` (tap-by-text over uiautomator) plus docs/ANDROID_DEVICE_TESTING.md §6 (seeded media, sink assertions, pixel diffs); the release-pass recipes in docs/MOBILE_UI_GATE.md replay as specifications.
 The standing human acceptance pass (frame-level latency, the OS consent flows the gate cannot drive, and visual taste) lives in docs/MOBILE_UI_GATE.md.
 A release-specific gate list belongs in that release's plan when one exists.
 Release APK: `cd android && ./gradlew assembleRelease` (debug-keystore signed, do not change signing).

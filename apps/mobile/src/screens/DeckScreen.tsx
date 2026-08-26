@@ -118,7 +118,8 @@ const THUMB_INSET = 2;
  * the pre-registered fallback for the ¼-width middle labels is icon +
  * short label. */
 const VERDICT_ROW_MIN_HEIGHT = 50;
-const VERDICT_FLEX = 1.4;
+// 1.4 → 1.5 → 1.6 → 1.75 (S23 device pass, Tristan): 1.75 ACCEPTED.
+const VERDICT_FLEX = 1.75;
 const FINISH_MIN_HEIGHT = 56;
 
 /** The write-error surface for the deck's DIRECT queue writes (codex r7:
@@ -2085,7 +2086,11 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
             numberOfLines={1}
             adjustsFontSizeToFit
           >
-            Compare{compareCandidateCount > 2 ? ' with…' : ''}
+            {/* One fixed label (S23 pass, Tristan): the count-based
+                " with…" suffix read as a kind difference. Whether the
+                tap opens the picker or goes straight in is still
+                decided by the candidate count (openCompare). */}
+            Compare
           </Text>
         </Pressable>
         <Pressable

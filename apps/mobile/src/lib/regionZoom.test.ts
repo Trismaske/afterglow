@@ -301,27 +301,35 @@ describe('maxScaleFor (dynamic per-photo max zoom)', () => {
   const DENSITY = 3;
 
   it('raises the max well past the floor for a 200MP-mode photo — 16 stopped before 1:1', () => {
-    // Portrait display 9180×16320: 1:1 at ~17.8×, headroom 2.5× → ~44.6.
+    // Portrait display 9180×16320: 1:1 at ~17.8×, headroom 10× → ~178
+    // (sharpness-adjudication depth — the S23 pass bar, raised again).
     const max = maxScaleFor(DECK_W, DECK_H, 9180, 16320, DENSITY);
-    expect(max).toBeGreaterThan(40);
-    expect(max).toBeLessThanOrEqual(48);
+    expect(max).toBeGreaterThan(144);
+    expect(max).toBeLessThanOrEqual(240);
   });
 
-  it('gives ordinary 12MP photos the raised 24 floor (the focus-check depth)', () => {
-    // 1:1 at ~4.4×, headroom 2.5× → ~11: the floor carries it to 24.
-    expect(maxScaleFor(DECK_W, DECK_H, 3000, 4000, DENSITY)).toBe(24);
+  it('gives 12MP photos ~10× past their 1:1', () => {
+    // 1:1 at ~4.4×, headroom 10× → ~44.
+    const max = maxScaleFor(DECK_W, DECK_H, 3000, 4000, DENSITY);
+    expect(max).toBeGreaterThan(40);
+    expect(max).toBeLessThan(50);
+  });
+
+  it('floors tiny sources at 24 (the focus-check depth)', () => {
+    // ~2MP 1200×1600: 1:1 at ~1.9×, headroom 10× → ~19 — floored.
+    expect(maxScaleFor(DECK_W, DECK_H, 1200, 1600, DENSITY)).toBe(24);
   });
 
   it('caps pathological sources at the ceiling', () => {
-    expect(maxScaleFor(DECK_W, DECK_H, 60000, 4000, DENSITY)).toBe(48);
+    expect(maxScaleFor(DECK_W, DECK_H, 60000, 4000, DENSITY)).toBe(240);
   });
 
   it('shrinks on a bigger stage — the fullscreen viewer needs less scale to reach 1:1', () => {
     const deck = maxScaleFor(DECK_W, DECK_H, 9180, 16320, DENSITY);
-    // Viewer stage 360×772: 1:1 at ~8.5×, headroom 2.5× → ~21 — under
-    // the floor, so even the 200MP photo rides the floor there.
+    // Viewer stage 360×772: 1:1 at ~8.5×, headroom 10× → ~85.
     const viewer = maxScaleFor(360, 772, 9180, 16320, DENSITY);
     expect(viewer).toBeLessThan(deck);
-    expect(viewer).toBe(24);
+    expect(viewer).toBeGreaterThan(70);
+    expect(viewer).toBeLessThan(100);
   });
 });

@@ -67,13 +67,16 @@ export const SETTLE_QUIET_MS = 120;
  * sharpness check always used the full range, and with downscaling off
  * the same gesture now deserves more real depth. */
 export const MAX_SCALE_FLOOR = 24;
-/** The absolute zoom ceiling — past this even a 200MP source is pure
- * interpolation on any stage. */
-export const MAX_SCALE_CEILING = 48;
-/** How far past 1:1 physical pixels the zoom may go — inspection
- * headroom (the pre-pipeline range was "past 1:1 by design";
- * 2 → 2.5, Tristan 2026-08-25). */
-export const PAST_1TO1_HEADROOM = 2.5;
+/** The absolute zoom ceiling — a guard for degenerate sources (extreme
+ * panoramas), not a depth policy: the headroom below is the policy
+ * (48 → 64 → 96 → 144 → 240 across the S23 pass rounds). */
+export const MAX_SCALE_CEILING = 240;
+/** How far past 1:1 physical pixels the zoom may go. DELIBERATELY deep
+ * into reconstruction territory (2 → 2.5 → 3 → 4 → 6 → 10, Tristan,
+ * 2026-08-25/26): judging sharpness between two near-identical shots
+ * wants source pixels magnified well past 1:1 — the pipeline serves s1
+ * patches throughout, so depth costs nothing but interpolation. */
+export const PAST_1TO1_HEADROOM = 10;
 
 const BYTES_PER_PIXEL = 4; // ARGB_8888, always (G3)
 

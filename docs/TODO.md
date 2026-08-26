@@ -130,6 +130,31 @@ Numbers change whenever an item closes, so **cross-references from code or other
    Fix shape to design: a content version threaded through the photo reads (photos.mod_time is already tracked) into per-surface `cacheKey`/`recyclingKey`, plus an invalidation hook where edit detection already classifies in-place edits.
    Needs its own pass: touches every surface and the DB read shapes.
 
+13. **The Everything filter is unusable on a large library whenever the JS thread is busy** (S23 device pass, 2026-08-26 — measured twice, diagnosis in three parts).
+    (a) *The discard livelock*: the browse read resets on every review-version bump (TimelineScreen.tsx `useExternalRefresh` block) and a reset DISCARDS the in-flight page (the generation checks around the publish) — and versions bump constantly: the initial scan and embedding backfill while they run, and the USER'S OWN DECISIONS forever after.
+    Sink evidence: seven completed 40-item reads (68–179 s each) thrown away across one morning; one 0 ms lucky page rendered mid-window and then relocked — "works, then breaks again", worse for trust than staying visibly loading.
+    (b) *The per-page SQL is O(whole library)*: `fetchBrowseGroupsPage` re-aggregates `MAX(taken_at)` over every group on every page (no index can serve the ordering).
+    Measured at the S23's scale (25k photos / 5,656 groups, real scan-write seed): ~160 ms per page on a workstation → ~1–3 s projected on-device. Real, fixable, but NOT the 120–179 s observed.
+    (c) *The dominant ~50–100× multiplier is JS-thread starvation*: every expo-sqlite statement needs a JS-thread turnaround, and the browse read makes several per fetch; a busy JS thread (backfill grouping, post-decision queue refreshes at 27k scale) stretches a ~1 s read into minutes. Zoom decodes stayed at 66–102 ms throughout — the cores were free; the THREAD was not.
+    Not an m0.8.8 regression (the read path is m0.8.6's; this release didn't touch it).
+    Fix prongs for the m0.9 pre-build grilling:
+    1. A precomputed, indexed group ANCHOR column maintained at write time — turns the page into a true keyset walk.
+    2. Coalesce resets behind the in-flight page — a completed page always renders before the (single, merged) reset runs.
+    3. On-device profiling of the JS-thread multiplier; any scan/refresh backpressure must yield the THREAD, not just cores.
+    The scale benchmark that produced (b)'s numbers is kept skipped at `apps/mobile/src/db/browseBench.real.test.ts` — unskip it to measure a fix against the same seed.
+
+14. **Hi-res group entry shows a black stage for ~5 s** (S23 device pass, 2026-08-26, recording 120115).
+    Entering a group of 50/200MP photos with a cold image cache leaves the pager stage AND the thumbnail strip black for ~5 s: expo-image (Glide) decodes each full 150–200MP JPEG to view size from the `file://` path — per photo, per surface.
+    The region pipeline is uninvolved (nothing in the sink during the window); this is the URI layer.
+    Fix direction for m0.9: serve grids, strips, and at-rest pages from `content://` MediaStore uris so the OS supplies its precomputed thumbnails (why Samsung Gallery opens the same photos instantly), keeping full decodes for the zoom pipeline only; alternatively a persisted app thumbnail cache.
+    Related: the `content://` switch interacts with TODO 12's cache-versioning design — decide them together.
+
+15. **Nearest-neighbour rendering at extreme zoom (a pixel-grid mode)** (S23 device pass rounds, 2026-08-26).
+    Past 1:1 every magnification step renders bilinear — soft gradient blobs — while sharpness adjudication between two near-identical shots (the tester's core Compare use) wants the honest per-pixel view: nearest-neighbour blocks, Lightroom's 8:1 look, where a crisp edge is a 1–2-block step and a soft edge a 3–4-block ramp.
+    The zoom range already reaches 10× past 1:1 (accepted at the m0.8.8 pass); this is the next lever if raw depth stops discriminating.
+    expo-image exposes no sampling mode, so it needs a native rendering change: draw the region-zoom patch bitmaps with nearest filtering past a threshold scale (or pre-scale patches nearest-neighbour).
+    Decide at an m0.9+ grilling: threshold scale, whether it is automatic or a toggle, and whether it applies to Compare only.
+
 ## Waiting for a trigger
 
 This section holds fixes whose shape is known but whose value is unproven, and questions whose answer needs evidence that does not exist yet.

@@ -582,9 +582,8 @@ export function CompareScreen({ navigation, route }: Props) {
     async (keepId: string, againstId: string) => {
       if (singles) await decide(keepId, 'keep', null);
       else if (numericGroupId !== null) await compareKeepWinner(numericGroupId, keepId, againstId);
-      showToast(`Photo ${posOf(keepId)} kept`);
     },
-    [singles, decide, numericGroupId, compareKeepWinner, posOf],
+    [singles, decide, numericGroupId, compareKeepWinner],
   );
 
   /** "Keep {N}" — writes IMMEDIATELY (F29/G10): a targeted keep plus
@@ -605,13 +604,9 @@ export function CompareScreen({ navigation, route }: Props) {
         } catch {
           return; // surfaced by the provider alert; stay on the screen
         }
-        // Truthful surfaces: only groups record a duel row (singles
-        // duels never have) — the toast must not claim otherwise.
-        showToast(
-          singles
-            ? `Photo ${posOf(keepId)} kept`
-            : `Photo ${posOf(keepId)} kept — compare recorded`,
-        );
+        // No success toast (S23 pass, Tristan): the decision glyphs
+        // already show the outcome — toasts here are noise. Failure
+        // surfaces (the provider alert, the preference toast) stay.
         if (!otherPending(otherId)) {
           navigation.goBack();
           return;
@@ -619,7 +614,6 @@ export function CompareScreen({ navigation, route }: Props) {
         if (afterKeep === 'cull') {
           try {
             await decide(otherId, 'cull', singles ? null : (numericGroupId ?? undefined));
-            showToast(`Photo ${posOf(otherId)} staged to cull`);
           } catch {
             return; // the keep landed; the remembered cull did not — stay
           }
@@ -636,17 +630,7 @@ export function CompareScreen({ navigation, route }: Props) {
         setBusy(false);
       }
     },
-    [
-      busy,
-      singles,
-      decide,
-      numericGroupId,
-      compareKeepWinner,
-      posOf,
-      otherPending,
-      afterKeep,
-      navigation,
-    ],
+    [busy, singles, decide, numericGroupId, compareKeepWinner, otherPending, afterKeep, navigation],
   );
 
   /** "Cull {N}" — writes IMMEDIATELY (F29/G10): a plain cull, no duel
@@ -662,7 +646,6 @@ export function CompareScreen({ navigation, route }: Props) {
         } catch {
           return; // surfaced by the provider alert; stay on the screen
         }
-        showToast(`Photo ${posOf(cullId)} staged to cull`);
         if (!otherPending(otherId)) {
           navigation.goBack();
           return;
@@ -686,17 +669,7 @@ export function CompareScreen({ navigation, route }: Props) {
         setBusy(false);
       }
     },
-    [
-      busy,
-      singles,
-      decide,
-      numericGroupId,
-      posOf,
-      otherPending,
-      afterCull,
-      keepOtherNow,
-      navigation,
-    ],
+    [busy, singles, decide, numericGroupId, otherPending, afterCull, keepOtherNow, navigation],
   );
 
   /** Resolve the binary prompt (D8). `apply` = the verdict button was
@@ -740,7 +713,6 @@ export function CompareScreen({ navigation, route }: Props) {
           try {
             if (active.kind === 'cullOther') {
               await decide(active.otherId, 'cull', singles ? null : (numericGroupId ?? undefined));
-              showToast(`Photo ${posOf(active.otherId)} staged to cull`);
             } else {
               await keepOtherNow(active.otherId, active.decidedId);
             }
@@ -753,18 +725,7 @@ export function CompareScreen({ navigation, route }: Props) {
         setBusy(false);
       }
     },
-    [
-      prompt,
-      busy,
-      rememberAnswer,
-      db,
-      decide,
-      singles,
-      numericGroupId,
-      posOf,
-      keepOtherNow,
-      navigation,
-    ],
+    [prompt, busy, rememberAnswer, db, decide, singles, numericGroupId, keepOtherNow, navigation],
   );
 
   // A failed unit read renders the inline retry INSTEAD of the empty

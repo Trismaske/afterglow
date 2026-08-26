@@ -22,7 +22,7 @@ scripts/android-device.sh adb R5CW20KBA2W pull /sdcard/Android/data/com.afterglo
 1. Launch, grant permissions, let the first scan finish (Home shows a percentage; a big library takes a while).
 2. Confirm Home's totals look sane for the library.
 
-**Result:**
+**Result:** Pass
 **Feedback:**
 
 ---
@@ -40,11 +40,11 @@ Expected sink lines while you do this: `[perf] zoom base …` once per photo, `[
 
 | Tier | Result | Feedback |
 |---|---|---|
-| 12MP | | |
-| 50MP-mode JPEG | | |
-| 200MP-mode JPEG | | |
-| HEIC | | |
-| DNG | | |
+| 12MP | Pass | |
+| 50MP-mode JPEG | Pass | |
+| 200MP-mode JPEG | Pass | |
+| HEIC | Pass | |
+| DNG | Pass | |
 
 ---
 
@@ -56,7 +56,7 @@ The S10e's software HEIC path made the first decode cost like a full decode (0.8
 2. Was the base already sharp when the zoom started, or did you catch it soft?
 3. Check the sink's `zoom base` timing for the HEIC.
 
-**Result:**
+**Result:** Pass
 **Feedback (timing if you pulled it):**
 
 ---
@@ -70,7 +70,7 @@ The S10e's software HEIC path made the first decode cost like a full decode (0.8
 5. **Deliberate flick:** a real fling must still glide with momentum (the 150 dp/s dead-band must not deaden it — tunable if it feels wrong).
 6. **Scale breathing:** during two-thumb shoves, the scale may breathe a percent or two with content locked (the engagement gate was removed) — is it noticeable/objectionable?
 
-**Result:**
+**Result:** Pass
 **Feedback:**
 
 ---
@@ -83,7 +83,7 @@ The S10e's software HEIC path made the first decode cost like a full decode (0.8
 4. Decide with **nothing pending left** → stays put; the unit-advance takes over.
 5. Judge the **long-skip feel** (a jump across many photos): fly vs snap — is the current animation right? (Named tunable.)
 
-**Result:**
+**Result:** Pass
 **Feedback:**
 
 ---
@@ -94,8 +94,8 @@ The S10e's software HEIC path made the first decode cost like a full decode (0.8
 2. Fat-finger check at real thumb speed: are Keep/Cull comfortably separated from the middle pair? (Weights 1.4 : 1 are tunable.)
 3. Do the ¼-width middle labels fit on the S23's width, or does the pre-registered icon+short-label fallback need to trigger?
 
-**Result:**
-**Feedback:**
+**Result:** Pass, I would however like to try 1.5 and 1.6 to see if that feels better. It does look and feel okay for now.
+**Feedback:** Compare reads "Compare with..." for singles, and "Compare" for groups? This is a red flag. This tells me that there is still some code difference between singles and groups for these pages when it should be exactly the same component just with different props to render the different copy between singles and groups. The behavior, the buttons, all the logic behind them, the deck, tthe thumbnail photos, everything should be exactly the same. No code duplicated between singles and groups. However, seeing that the compare has different copy for singles and groups, this is a major red flag and is telling me as someone that hasn't seen the code that there are skeletons in the closet here that need to be cleaned out. Why is the code different between singles and groups? Why is this not a single component with the same interface, the same JSX effectively. This is a major red flag for me.
 
 ---
 
@@ -111,8 +111,8 @@ Run all four outcomes in a **group** (this exercises the codex-round-1 fix — t
 6. The prompt must **not** fire when the other photo is already decided.
 7. **Close — no verdict** still leaves both untouched.
 
-**Result:**
-**Feedback:**
+**Result:** Pass
+**Feedback:** Is the toast really needed? I don't think it is? Toasts are used for warnings and such right? We can see the results of the compare in the decision glyphs, do we really need the Toast? My feeling is no.
 
 ---
 
@@ -123,7 +123,7 @@ Run all four outcomes in a **group** (this exercises the codex-round-1 fix — t
 3. The zoomed view must show the **edited** pixels within a moment of returning (a brief re-sharpen is expected).
 4. Known accepted gap: the *unzoomed* pager thumbnail may still show the pre-edit frame (app-wide cache class, parked in TODO) — note it, don't fail it.
 
-**Result:**
+**Result:** Fail, I had to leave the review page, go to the home screen, and come bacck to the group to see the edit
 **Feedback:**
 
 ---
@@ -136,7 +136,7 @@ Run all four outcomes in a **group** (this exercises the codex-round-1 fix — t
 4. **"Reset to no zoom":** the one-off unexplained zoom reset from an earlier S10e session — does anything like it appear?
 5. **Memory:** any OOM, blackouts, or `[zoom] memory trim` / `margin clamped` lines in the sink during heavy zooming across the biggest photos.
 
-**Result:**
+**Result:** All working well, no changes needed.
 **Feedback:**
 
 ---
@@ -146,8 +146,8 @@ Run all four outcomes in a **group** (this exercises the codex-round-1 fix — t
 Side by side on the same 50MP and 200MP photos: Afterglow's deep zoom vs Samsung Gallery — sharpness at settle, behavior during pans, overall feel.
 The bar from the feedback round: **as good or better**.
 
-**Result:**
-**Feedback:**
+**Result:** Pass
+**Feedback:** As Good, although I noticed on the 200MP photos that I could zoom in more in Gallery than I could in Afterglow. I want our zoom to be even more than Gallery, can we increase it further?
 
 ---
 
@@ -156,14 +156,54 @@ The bar from the feedback round: **as good or better**.
 1. Hold-then-lift and flick feel with the final build (the 150 dp/s dead-band landed after your last full pass).
 2. One deep-zoom sweep on the 50MP JPEG to confirm nothing regressed since your "feels perfect" build (three codex-fix rounds landed after it).
 
-**Result:**
+**Result:** Pass
 **Feedback:**
 
 ---
 
 ## Verdict
 
-- [ ] **PASS — tag `mobile-m0.8.8`** (all sections pass or accepted)
+- [x] **PASS — tag `mobile-m0.8.8`** (all sections pass or accepted; section 7 re-scoped to its zoom-layer criterion with the URI-cache class parked — Tristan, reopen rounds 1–3)
 - [ ] **FAIL — reopen** (list the failing sections above)
 
-**Overall feedback:**
+**Overall feedback:** Some minor issues, especially with the really long everything load, that is the biggest regression by far. I also noticed that the group of Hi Res photos take s a long time to load (See recording Screen_Recording_20260826_120115_Afterglow.mp4), but I am not sure if there is anything we can do about this.
+
+---
+
+## Reopen round (2026-08-26, after the first fill-in)
+
+**Section 7 resolved by controlled repro** (sacrificial photo, in-place byte swap over adb, background→foreground): the zoom pipeline revalidated within 400 ms (stale log + fresh decode in the sink) and the ZOOMED view showed post-edit pixels; the stale content you saw is the URI layer underneath (pager page + thumbnail strip — expo-image's uri cache), the app-wide class parked as TODO "Stale rendered pixels after an in-place edit".
+**Section 5's red flag defused**: one deck component; the label branches on candidate count ("with…" = a picker follows, >2 eligible), not on kind — live-proven showing "Compare with…" in a group.
+**Overall-feedback items diagnosed**: the Everything stall (three-part diagnosis, TODO) and the hi-res black stage (~5 s of full-size JPEG decodes for pager/thumbs; content:// thumbnail fix direction, TODO).
+
+**Changes in the retest build** (gates green; awaiting ~1 GB free on the S23 to install):
+
+1. Verdict-row weight 1.4 → **1.5** — judge it; 1.6 is the next step if still tight.
+2. Compare's success toasts **removed** (failure surfaces stay).
+3. Max zoom deepened past Gallery: headroom 2.5 → **3**, ceiling 48 → **64** — re-run the 200MP Gallery comparison.
+
+**Result:**
+**Feedback:**
+
+Then tick the Verdict above.
+
+### Reopen round 2 (installed on both devices)
+
+Section 7's park CONFIRMED (the fix shape depends on m0.9's content:// thumbnail decision — TODO 12 + 14 decide together).
+Round-1 results: toasts verified gone; 1.5 rejected (1.4 preferred so far); 64× still not deep enough.
+
+1. Compare label pinned to **"Compare"** always (the picker still opens by candidate count) — confirm.
+2. Verdict-row weight now **1.6** — judge against your remembered 1.4; the loser reverts.
+3. Zoom now **headroom 4× past 1:1, ceiling 96** (200MP ≈ 71× on the deck) — re-run the Gallery comparison.
+
+**Result:**
+**Feedback:**
+
+### Reopen round 3 (installed on both devices)
+
+Round-2 results: label pin confirmed good, **1.75 ACCEPTED** for the verdict row.
+Zoom depth showed diminishing returns per headroom point; trialing **10× past 1:1** (ceiling 240; 200MP ≈ 178× deck, 12MP ≈ 44×).
+Known trade at this depth: bilinear smoothing may mask micro-contrast — if depth stops helping, the next lever is nearest-neighbour rendering at extreme zoom (a pixel-grid mode, m0.9-shaped), not more scale.
+
+**Result:** Pass — 10× accepted ("the level of zoom I was looking for"); 1.75 accepted; label pin and toast removal confirmed in round 2. The pixel-grid mode is parked in docs/TODO.md.
+**Feedback:**

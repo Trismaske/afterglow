@@ -19,7 +19,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: git diff --check
-      - run: npm audit --audit-level=high
+      # Self-pruning allowlist gate (scripts/audit-gate.mjs): strict on
+      # anything new, and a fixed-upstream advisory FAILS the build until
+      # its allowlist entry is deleted.
+      - run: node scripts/audit-gate.mjs
       - run: npm run lint
       - run: npm run format:check
       - run: npm run build -w @afterglow/core

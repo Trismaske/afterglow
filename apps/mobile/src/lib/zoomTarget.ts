@@ -8,13 +8,13 @@
  * A double tap zooms to DOUBLE_TAP_ZOOM_SCALE about the tapped point
  * (tx = -(x - W/2) · (s - 1)), clamped to those same bounds.
  *
- * The zoomed pan itself is TOUCH-POSITION anchored (m0.8.6 §10, the
- * react-native-zoom-toolkit port): `panFrame` derives the translation
- * from the fingers' absolute focal position each frame and re-anchors on
- * every touch-set change, so translation stays continuous while two
- * thumbs walk across the photo — the gesture-start-relative
- * translationX/Y jumped at every finger land or lift, because the
- * averaged point it measures from moved with the touch set.
+ * The whole pinch-pan is ONE tracker (`zoomTouchFrame`, m0.8.8): scale
+ * from the raw finger span, translation from the raw focal, both off a
+ * single anchor taken at every touch-set change — the standard
+ * one-anchor model (react-native-zoom-toolkit's pinchTransform; the
+ * library itself cannot mount under this app's detector and worklet
+ * constraints, so its algebra lives here). Its header carries the
+ * rationale and the formulas.
  *
  * The impure partners live in the screens: DeckScreen / PhotoViewer /
  * CompareScreen wire this into their gesture worklets and page
@@ -31,224 +31,170 @@
 export const DOUBLE_TAP_MS = 300;
 
 /** Where a double tap lands the zoom — deep enough to read detail, well
- * under the pinch ceiling (MAX_SCALE 16). */
+ * under every photo's dynamic pinch ceiling (lib/regionZoom.ts). */
 export const DOUBLE_TAP_ZOOM_SCALE = 2.5;
 
-/**
- * How far a pinch must open or close before it is allowed to change the
- * zoom at all — a fraction of the finger distance at gesture start.
- *
- * Pan and pinch are deliberately SIMULTANEOUS (you may drag a photo
- * while resizing it), and the pan takes two fingers so a zoomed photo
- * can be shoved around with both thumbs. The cost is that two thumbs
- * dragging fast never hold their separation exactly, and every wobble
- * reached the pinch as a scale change: panning a fully-zoomed photo
- * quietly zoomed it back out (Tristan, S23 pass 2026-08-04).
- *
- * So a pinch must first prove itself. Below this delta the gesture is
- * treated as pan noise and the scale is left alone; once past it, the
- * zoom follows the fingers from THAT moment (`pinchGain`), so crossing
- * the threshold does not jump the photo by the threshold's worth.
- */
-export const PINCH_ENGAGE_DELTA = 0.15;
+/** Release velocities (dp/s) below this start NO decay glide: a
+ * hold-then-lift must leave the photo exactly where the finger left it
+ * (S10e video 16's "little nudge on release" — RNGH's averaged-pointer
+ * velocity tracker emits noise at lift-off, and a few dp/s of it reads
+ * as the photo moving on its own). Real flicks measure hundreds to
+ * thousands of dp/s, so the dead-band never eats one. Per-axis, so a
+ * clean horizontal flick keeps its momentum even with a noisy Y. */
+export const FLICK_MIN_VELOCITY = 150;
 
-/** Has this pinch moved far enough to count as a deliberate zoom? */
-export function pinchEngaged(rawScale: number): boolean {
-  'worklet';
-  return Math.abs(rawScale - 1) >= PINCH_ENGAGE_DELTA;
-}
+/** The slice of RNGH's TouchData the gesture math reads. VIEW-LOCAL
+ * x/y deliberately (S10e video 12): the anchor formula subtracts the
+ * stage centre from the focal, so both MUST share an origin — window
+ * coordinates put the stage's window offset into the translation,
+ * scaled by (stretch − 1): pans were perfect (r = 1 cancels it) while
+ * every zoom-in drifted the photo downward by the header's height
+ * worth of error. View-local is safe here because every zoom gesture
+ * attaches to an UNTRANSFORMED view (the stage, or the overlay's
+ * untransformed backdrop — the photo transforms INSIDE them), so the
+ * coordinates are stable under a motionless finger. Never attach these
+ * gestures to the transformed layer: there view-local x/y move with
+ * the photo they drive — a feedback loop. */
+export type PanTouch = { x: number; y: number };
 
-/** The zoom factor to apply, measured from where the pinch engaged
- * rather than from where the fingers first landed. `base` is the raw
- * gesture scale at the engaging frame. */
-export function pinchGain(rawScale: number, base: number): number {
-  'worklet';
-  return base === 0 ? 1 : rawScale / base;
-}
-
-/**
- * Per-frame pinch tracking that survives FINGER CHANGES (m0.8.5 §10
- * check 9, S10e). Two rules, each killing a measured drift:
- *
- * 1. A frame whose pointer count differs from the last frame's
- *    RE-ANCHORS (the zoom holds still and the new finger set's distance
- *    becomes the new base) — finger distances from different finger
- *    sets are not comparable.
- * 2. A frame with FEWER THAN TWO pointers never zooms — it re-anchors
- *    continuously. The platform detector under RNGH's pinch ships with
- *    quick scale on (no off switch exposed): fingers walking across a
- *    zoomed photo read as a double tap, and every ONE-finger drag after
- *    that reports continuous scale changes (anchored mode) with no
- *    pointer-count change for rule 1 to catch — on device the zoom
- *    ratcheted with a single finger down. Single-finger zoom is never
- *    legitimate here: both review surfaces own their double-tap
- *    semantics outright.
- *
- * A frame with a stable two-plus-finger set zooms relative to its
- * anchor. Engagement (PINCH_ENGAGE_DELTA) belongs to ONE CONTIGUOUS
- * two-finger stretch: a finger change ends it, and the next stretch
- * must re-prove the threshold from its own anchor (S10e round 3 — with
- * engagement persisting, the two-finger overlap windows of a
- * finger-walk still zoomed, because their span genuinely changes while
- * the hand travels; span alone cannot tell that overlap from a pinch,
- * so every stretch is treated as pan noise until it proves itself).
- * The engaging frame also re-anchors, keeping the no-jump rule above.
- *
- * Pure and worklet-safe; the screens carry the tracking in one shared
- * value and reset it to PINCH_TRACKING_START on finalize.
- */
-export type PinchTracking = {
-  /** Pointer count of the previous frame; 0 = no frame seen yet. */
-  pointers: number;
-  /** Raw gesture scale at the current anchor frame. */
-  base: number;
-  /** The displayed zoom when the anchor was set. */
-  anchorScale: number;
-  /** Has this gesture proven itself a deliberate pinch? */
-  live: boolean;
-};
-
-export const PINCH_TRACKING_START: PinchTracking = {
-  pointers: 0,
-  base: 1,
-  anchorScale: 1,
-  live: false,
-};
-
-/** One gesture frame in, the tracking to carry and the zoom to show
- * out. `scale: null` = leave the zoom exactly where it is. */
-export function pinchFrame(
-  tracking: PinchTracking,
-  raw: number,
-  pointers: number,
-  currentScale: number,
-): { tracking: PinchTracking; scale: number | null } {
-  'worklet';
-  if (pointers !== tracking.pointers || pointers < 2) {
-    // The finger set changed (distances not comparable), or fewer than
-    // two fingers are down (any reported scale change is the platform
-    // detector's single-finger quick-scale, never a pinch). Hold the
-    // zoom, measure everything after from here — and END the
-    // engagement: the new finger set is pan noise until it proves
-    // itself (header, contiguous-stretch rule).
-    return {
-      tracking: { pointers, base: raw, anchorScale: currentScale, live: false },
-      scale: null,
-    };
-  }
-  if (!tracking.live) {
-    if (!pinchEngaged(pinchGain(raw, tracking.base))) return { tracking, scale: null };
-    // Engaged: re-anchor at THIS frame so crossing the threshold does
-    // not jump the photo by the threshold's worth.
-    return {
-      tracking: { pointers, base: raw, anchorScale: currentScale, live: true },
-      scale: null,
-    };
-  }
-  return { tracking, scale: tracking.anchorScale * pinchGain(raw, tracking.base) };
-}
-
-/** The slice of RNGH's TouchData the pan math reads. ABSOLUTE (window)
- * coordinates deliberately: the gesture's view is itself carried by the
- * translation it drives, so view-local x/y move under a motionless
- * finger — a feedback loop. The math only needs deltas, so any frame
- * that does not move with the photo works; the window is that frame. */
-export type PanTouch = { absoluteX: number; absoluteY: number };
-
-/** The mean touch position — the pan's focal point. One touch is its
- * own focal. An empty list returns the origin; callers never translate
- * from it (`panFrame` re-anchors on a zero-touch frame). */
+/** The mean touch position (view-local) — the gesture's focal point.
+ * One touch is its own focal. An empty list returns the origin; callers
+ * never act on it (`zoomTouchFrame` re-anchors on a zero-touch frame). */
 export function touchFocal(touches: readonly PanTouch[]): { x: number; y: number } {
   'worklet';
   if (touches.length === 0) return { x: 0, y: 0 };
   let x = 0;
   let y = 0;
   for (const touch of touches) {
-    x += touch.absoluteX;
-    y += touch.absoluteY;
+    x += touch.x;
+    y += touch.y;
   }
   return { x: x / touches.length, y: y / touches.length };
 }
 
+/** The distance between the first two touches — the pinch span. Fewer
+ * than two fingers have no span (0): scale holds, which is what makes
+ * the platform quick-scale ratchet (single-finger scale reports)
+ * impossible by construction. */
+export function touchSpan(touches: readonly PanTouch[]): number {
+  'worklet';
+  if (touches.length < 2) return 0;
+  const dx = touches[0].x - touches[1].x;
+  const dy = touches[0].y - touches[1].y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
 /**
- * Per-frame pan tracking for the TOUCH-POSITION pan (m0.8.6 §10 — the
- * react-native-zoom-toolkit port). The walking-pan defect: driving the
- * zoomed pan from the gesture's start-relative translationX/Y
- * (`averageTouches`) hiccuped at every finger land or lift, because the
- * averaged point the translation measures from jumps with the touch
- * set. Instead the translation is derived from the fingers' absolute
- * focal position each frame against an anchor:
+ * ONE tracker for the whole pinch-pan (m0.8.8 — the unification).
  *
- *   tx = base + (focal − anchor), clamped to the pan bounds
+ * The previous design ran TWO trackers: a pinch tracker owning scale
+ * and a pan tracker owning translation, each with its own anchors,
+ * activation state, and reset rules that had to agree. They did not:
+ * whether a pinch was focal-anchored depended on whether the PAN
+ * gesture had happened to activate (S10e video 11 — "sometimes it
+ * zooms to my fingers, sometimes it strays"). This is the standard
+ * one-anchor model instead (react-native-zoom-toolkit's pinchTransform
+ * — the library itself cannot mount under this app's detector and
+ * worklet constraints, so its algebra lives here):
  *
- * and ANY touch-set change re-anchors — anchor := the current focal,
- * base := the current translation — which by construction changes
- * nothing at the re-anchor instant, so the translation stays continuous
- * across finger changes. A frame that is not `panning` (the gesture not
- * yet active, or the photo not zoomed) re-anchors continuously, so the
- * moment panning starts is just as jump-free.
+ *   r = span / anchorSpan          (1 with fewer than two fingers)
+ *   s = clamp(anchorScale · r)
+ *   t = F − c − (s / anchorScale) · (F_a − c − anchorT)
  *
- * Pure and worklet-safe; the screens carry the tracking in one shared
- * value, force a re-anchor from onTouchesDown/onTouchesUp (the frame
- * where the set actually changed — the count comparison here is the
- * safety net for a same-count swap between move frames), and reset it
- * to PAN_TRACKING_START as each touch stream begins.
+ * — every frame, from raw touches. Scale and translation can never
+ * disagree because they share one anchor, taken at every touch-set
+ * change (that re-anchor is also what keeps a two-thumb walking pan
+ * continuous, and why a finger landing or lifting can never jump the
+ * photo: at the re-anchor instant the formula is the identity).
+ *
+ * The old engagement gate (PINCH_ENGAGE_DELTA) is gone: it existed
+ * because span wobble during a two-thumb shove drifted the zoom, but
+ * with a shared anchor the content under the fingers stays LOCKED
+ * whatever the span does — wobble breathes the scale a percent or two
+ * without displacing anything. The device pass judges the breathing.
  */
-export type PanTracking = {
-  /** Touch count at the anchor frame; 0 = no anchor yet, the next move
-   * frame re-anchors (what onTouchesDown/onTouchesUp force). */
+export type ZoomTracking = {
+  /** Touch count at the anchor; 0 = no anchor yet, the next frame
+   * re-anchors (what onTouchesDown/onTouchesUp force). */
   pointers: number;
-  /** The focal position (window coordinates) at the anchor frame. */
-  anchorX: number;
-  anchorY: number;
-  /** The translation when the anchor was set. */
-  baseX: number;
-  baseY: number;
+  /** The focal position (window coordinates) at the anchor. */
+  focalX: number;
+  focalY: number;
+  /** The finger span at the anchor (0 = un-pinched anchor). */
+  span: number;
+  /** The transform when the anchor was taken. */
+  baseScale: number;
+  baseTx: number;
+  baseTy: number;
+  /** The stream materially changed the scale — its release is a pinch
+   * end, never a flick (the deck's no-fling-after-zoom rule). */
+  zoomed: boolean;
 };
 
-export const PAN_TRACKING_START: PanTracking = {
+export const ZOOM_TRACKING_START: ZoomTracking = {
   pointers: 0,
-  anchorX: 0,
-  anchorY: 0,
-  baseX: 0,
-  baseY: 0,
+  focalX: 0,
+  focalY: 0,
+  span: 0,
+  baseScale: 1,
+  baseTx: 0,
+  baseTy: 0,
+  zoomed: false,
 };
 
-/** One touch frame in, the tracking to carry and the translation to
- * show out. `translation: null` = leave the photo exactly where it is
- * (a re-anchor frame, or not panning). `maxX`/`maxY` are the caller's
- * pan bounds for the current scale. */
-export function panFrame(
-  tracking: PanTracking,
+/**
+ * One touch frame in, the tracking to carry and the transform to show
+ * out. `transform: null` = leave everything exactly where it is (a
+ * re-anchor frame, or not active). The returned translation is
+ * UNCLAMPED — the caller clamps to `panBounds` of the returned scale.
+ * `cx`/`cy` are the stage centre; `minScale`/`maxScale` clamp the
+ * scale before the translation is derived from it, so a clamped zoom
+ * still anchors correctly.
+ */
+export function zoomTouchFrame(
+  tracking: ZoomTracking,
   touches: readonly PanTouch[],
-  panning: boolean,
-  currentTx: number,
-  currentTy: number,
-  maxX: number,
-  maxY: number,
-): { tracking: PanTracking; translation: { x: number; y: number } | null } {
+  active: boolean,
+  scale: number,
+  tx: number,
+  ty: number,
+  minScale: number,
+  maxScale: number,
+  cx: number,
+  cy: number,
+): { tracking: ZoomTracking; transform: { scale: number; x: number; y: number } | null } {
   'worklet';
   const focal = touchFocal(touches);
+  const span = touchSpan(touches);
   const pointers = touches.length;
-  if (!panning || pointers === 0 || pointers !== tracking.pointers) {
+  if (!active || pointers === 0 || pointers !== tracking.pointers) {
     // Re-anchor: measure everything after from HERE, moving nothing now.
     return {
       tracking: {
         pointers,
-        anchorX: focal.x,
-        anchorY: focal.y,
-        baseX: currentTx,
-        baseY: currentTy,
+        focalX: focal.x,
+        focalY: focal.y,
+        span,
+        baseScale: scale,
+        baseTx: tx,
+        baseTy: ty,
+        zoomed: tracking.zoomed,
       },
-      translation: null,
+      transform: null,
     };
   }
-  const clamp = (value: number, max: number) => Math.min(max, Math.max(-max, value));
+  const ratio = tracking.span > 0 && span > 0 ? span / tracking.span : 1;
+  const nextScale = Math.min(maxScale, Math.max(minScale, tracking.baseScale * ratio));
+  const stretch = nextScale / tracking.baseScale;
   return {
-    tracking,
-    translation: {
-      x: clamp(tracking.baseX + (focal.x - tracking.anchorX), maxX),
-      y: clamp(tracking.baseY + (focal.y - tracking.anchorY), maxY),
+    tracking:
+      tracking.zoomed || Math.abs(nextScale - tracking.baseScale) > 0.02 * tracking.baseScale
+        ? { ...tracking, zoomed: true }
+        : tracking,
+    transform: {
+      scale: nextScale,
+      x: focal.x - cx - stretch * (tracking.focalX - cx - tracking.baseTx),
+      y: focal.y - cy - stretch * (tracking.focalY - cy - tracking.baseTy),
     },
   };
 }

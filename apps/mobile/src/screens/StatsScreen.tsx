@@ -720,17 +720,10 @@ function HabitsTab({
           {trend ?? 'Your culling rate appears here once you have a month of decisions behind you.'}
         </Text>
         {habits.duels.duels > 0 && (
-          <Text style={styles.cardHint}>
-            {`${plural(habits.duels.duels, 'head-to-head compare')}` +
-              // The percentage reads over DIALOG outcomes only: a triage
-              // duel (3+ alive) decides nothing, and counting it as a
-              // keep-both inflated the figure (v19).
-              (habits.duels.verdictDuels > 0
-                ? ` · you kept both ${Math.round(
-                    (habits.duels.keptBoth / habits.duels.verdictDuels) * 100,
-                  )}% of the time`
-                : '')}
-          </Text>
+          // The kept-both percentage retired with the whole-table dialog
+          // (m0.8.8 F29): its outcomes stopped being minted, and a figure
+          // over a closed era would misread as current behavior.
+          <Text style={styles.cardHint}>{plural(habits.duels.duels, 'head-to-head compare')}</Text>
         )}
       </View>
 

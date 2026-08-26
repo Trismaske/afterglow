@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 import { requireOptionalNativeModule } from 'expo';
+import type { SharedRefType } from 'expo';
 
 export type MediaStoreActionStatus = 'applied' | 'cancelled' | 'unsupported';
 
@@ -55,10 +56,26 @@ interface NativeApi {
   listFavouriteImageIds(volume: string): Promise<string[]>;
   loadImageById(volume: string, rawId: string): Promise<NativeImageRow | null>;
   listMountedVolumes(): Promise<string[]>;
+  openRegionDecoder(uri: string): Promise<RegionDecoderInfo>;
+  decodeRegion(
+    handle: number,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    sampleSize: number,
+    rotation: number,
+  ): Promise<RegionBitmap>;
+  closeRegionDecoder(handle: number): Promise<void>;
+  decodeScaled(uri: string, sampleSize: number, rotation: number): Promise<RegionBitmap>;
   addListener(event: 'volumesChanged', listener: () => void): { remove(): void };
   addListener(
     event: 'shareTargetChosen',
     listener: (payload: { token: number; component: string }) => void,
+  ): { remove(): void };
+  addListener(
+    event: 'memoryTrim',
+    listener: (payload: { level: number }) => void,
   ): { remove(): void };
 }
 
@@ -123,6 +140,29 @@ export interface MoveResult {
   message: string;
   /** The current file path when status is 'moved' or 'already' (photos.uri repair). */
   newData?: string;
+}
+
+/** A decoded bitmap from the F22 region pipeline (m0.8.8, D6):
+ * expo-image's `source` prop renders it zero-copy; the caller releases
+ * it when the retention cache evicts. `release` is OPTIONAL-called
+ * everywhere: with the native class unregistered it was undefined and
+ * every swap crashed (S10e, 2026-08-24) — GC would reclaim the bitmap
+ * anyway (getAdditionalMemoryPressure guides it), so a missing method
+ * degrades to slower reclamation, never a crash. */
+export type RegionBitmap = SharedRefType<'image'> & { release?: () => void };
+
+/** An open per-photo BitmapRegionDecoder (RegionZoom.kt). Dimensions
+ * are SENSOR-space; `rotation` is the EXIF rotation every display
+ * surface applies (lib/regionZoom.ts maps between the spaces). */
+export interface RegionDecoderInfo {
+  handle: number;
+  width: number;
+  height: number;
+  rotation: number;
+  /** MediaStore DATE_MODIFIED (seconds; 0 = unknown): a retained base
+   * whose source bytes changed under the same id re-decodes — in-place
+   * edits keep id and uri (codex round 2). */
+  modTime: number;
 }
 
 const native = requireOptionalNativeModule<NativeApi>('MediaStoreActions');
@@ -381,5 +421,58 @@ export function subscribeShareTargetChosen(
 ): () => void {
   if (Platform.OS !== 'android' || native == null) return () => {};
   const subscription = native.addListener('shareTargetChosen', listener);
+  return () => subscription.remove();
+}
+
+// ---- The F22 region-zoom pipeline (m0.8.8, G3 + D1–D7). Geometry
+// lives in src/lib/regionZoom.ts; lifetimes in components/useRegionZoom.
+// Open THROWS off-Android and on unsupported formats — the hook
+// fail-softs (one log line, overlay stays on the cached stage image).
+
+/** Open a per-photo region decoder; throws when the format (or the
+ * platform) cannot serve regions — the caller fail-softs. */
+export async function openRegionDecoder(uri: string): Promise<RegionDecoderInfo> {
+  if (!available()) throw new Error('Region decoding requires Android.');
+  return native!.openRegionDecoder(uri);
+}
+
+/** Decode a SENSOR-space rect at a power-of-2 sample (D4 chose it);
+ * the returned bitmap is rotated to display orientation. */
+export async function decodeRegion(
+  handle: number,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  sampleSize: number,
+  rotation: number,
+): Promise<RegionBitmap> {
+  if (!available()) throw new Error('Region decoding requires Android.');
+  return native!.decodeRegion(handle, x, y, width, height, sampleSize, rotation);
+}
+
+/** Idempotent; safe on already-closed handles. */
+export async function closeRegionDecoder(handle: number): Promise<void> {
+  if (!available()) return;
+  return native!.closeRegionDecoder(handle);
+}
+
+/** The base decode: the whole image at the D2 formula's sample,
+ * rotated to display orientation. */
+export async function decodeScaled(
+  uri: string,
+  sampleSize: number,
+  rotation: number,
+): Promise<RegionBitmap> {
+  if (!available()) throw new Error('Region decoding requires Android.');
+  return native!.decodeScaled(uri, sampleSize, rotation);
+}
+
+/** Android's onTrimMemory relayed (m0.8.8 D9): the region-zoom
+ * retention flushes on real pressure — never a device-class guess.
+ * `level` is the raw ComponentCallbacks2 constant. No-op off Android. */
+export function subscribeMemoryTrim(listener: (payload: { level: number }) => void): () => void {
+  if (Platform.OS !== 'android' || native == null) return () => {};
+  const subscription = native.addListener('memoryTrim', listener);
   return () => subscription.remove();
 }

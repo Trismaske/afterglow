@@ -2,6 +2,8 @@
 
 Round of 2026-08-20 (Tristan, S23 + S10e on shipped m0.8.6): ten items, **F21–F30**, continuing the 2026-07-31 round's numbering.
 Settled in an 11-question grilling (2026-08-20/21) with per-item code facts gathered before each decision.
+Two late items, **F31–F32** (reported 2026-08-23 on shipped m0.8.7), were settled in the m0.8.8 pre-build grilling (G12–G13 below) and slotted into m0.9.
+Two further items, **F33–F34** (reported 2026-08-25 on shipped m0.8.7), are recorded in the m0.9 section with their decisions still **open**: they are settled in the m0.9 pre-build grilling, not here.
 Organised into three releases — one subsystem, one device pass, one review cycle each (L1) — all landing **before** the accessibility pass, which moves to m0.9.1 so font scales are measured once the UI stops moving.
 This doc spans the releases, so it is named for the span.
 Delete it when m0.9 ships.
@@ -16,8 +18,8 @@ Reproduce an item whose cause is only **read** before you write its fix.
 | | Release | What it is | Items |
 |---|---|---|---|
 | **m0.8.7** | sources, badges, and the queues | **SHIPPED** — F21 F30, F27's undated-fallback fix, the share-before-edit confirm, and the stats-accuracy sweep; behavior recorded in PLAN.md's shipped entry | — |
-| **m0.8.8** | the review deck | The deck and Compare become one tighter loop; zoom becomes pixel-perfect | F22 F23 F24 F28 F29 |
-| **m0.9** | media kinds | Videos and motion photos enter; every kind wears its chip; the scan explains itself | F25 F26 · F27 (presentation) · plus m0.9's previously planned items, unchanged |
+| **m0.8.8** | the review deck | **BUILT** — S10e-verified; tag gated on the S23 pass (G3). Distilled record in PLAN.md's shipped entry | F22 F23 F24 F28 F29 |
+| **m0.9** | media kinds | Videos and motion photos enter; every kind wears its chip; the scan explains itself; the stage's metadata grows and becomes configurable | F25 F26 · F27 (presentation) · F31 F32 F33 F34 · plus m0.9's previously planned items, unchanged |
 
 **m0.9.1** is the accessibility pass (moved from m0.8.8).
 
@@ -38,6 +40,8 @@ Reproduce an item whose cause is only **read** before you write its fix.
 | G9 | Deck control block (F28) | **Option A**: one weighted verdict row Keep(1.4) · Compare(1) · Not related(1) · Cull(1.4) at ~50 px, chips 44, finish 64→56; "Not related" always present, disabled in singles | Reclaims ~68 px of stage on groups and unifies group/singles row structure. Rejected: three-verdict row (fat-finger adjacency of "keep remaining" beside Cull), stacked half-height middle buttons (under the touch floor). Heights/weights are device-pass tunables; icon+short-label is the pre-registered fallback for the middle pair. |
 | G10 | Compare buttons (F29) | **Keep (green, writes) · Cull (red, writes)** + one binary complement prompt for the other photo; whole-table machinery and "is better" deleted; the don't-ask-again preference **rewired** into the prompts | All four outcomes map onto existing write modes (full duel, triage keep, reverse duel, plain cull) — a rewiring, not new machinery, and net-negative code. Green becomes legal under STATE_MODEL rule 2 precisely because the tap now writes. Prompt fires only when the other photo is still unreviewed. |
 | G11 | State-editor collapse (F30) | **Dimmed stale facts** during re-reads at both sites (sheet + viewer facts panel) instead of unmounting to "Loading…" | Kills the collapse for both verdict directions and every chained write. The kept-path's delayed render burst is correct queue behavior; the sheet becomes indifferent to it. |
+| G12 | The "Camera" pill (F31) | **Exceptions-only + fullscreen-only + metadata placement** (settled 2026-08-23): no folder pill for the primary volume's DCIM/Camera; other folders keep it; annotations (folder + SD) live in the deck stage's day·time metadata badge and the viewer facts panel, never among the action glyphs, never on small squares | The camera roll is the "plain photo" of source-ness — a pill on ~every photo distinguishes nothing (the kind-chips noise rule); folder is a fact, not an action, so it reads wrong in the action cluster. Verified: only the deck stage hydrates it today (DeckScreen.tsx:1576), so the surface set is a placement move, not a retreat. |
+| G13 | Scan status cadence (F32) | **Per-photo publish, time-throttled to ~1 s** (settled 2026-08-23), replacing the once-per-200-page update | The cadence was coupled to `SCAN_PAGE_SIZE`, a DB-efficiency constant, not a presentation choice; a time throttle is smooth on slow phases and costs one state update per second on fast ones. Shrinking the page to 20 would pay scan speed for presentation. |
 
 ---
 
@@ -48,58 +52,10 @@ The S23 adb scan-log capture retires when the m0.8.7 build (whose in-app diagnos
 
 ---
 
-## m0.8.8 — the review deck
+## m0.8.8 — the review deck (built)
 
-### F23 + F24 · Advance to the nearest unreviewed photo
-
-**Reported:** (F23) deciding the last photo of a group with earlier unreviewed members strands the cursor at the end; (F24) deciding mid-group lands on already-decided neighbours.
-**Read:** the advance is a bare `index + 1` with no state test ([DeckScreen.tsx:1603](../apps/mobile/src/screens/DeckScreen.tsx#L1603)); "first pending" exists only at unit entry ([DeckScreen.tsx:883-895](../apps/mobile/src/screens/DeckScreen.tsx#L883-L895)).
-
-**Fix (G4):** after an advancing decision, jump to the nearest unreviewed photo **forward first**; if none ahead, **backward to the closest**; if none anywhere, stay put (the existing unit-advance takes over).
-Both deck kinds (shared decide handler).
-All cursor moves go through `jumpTo` (the pager-alignment contract, [DeckScreen.tsx:1186-1224](../apps/mobile/src/screens/DeckScreen.tsx#L1186-L1224)).
-Long-skip animation feel (fly vs snap) is a device-pass judgment call.
-
-### F28 · "Not related" joins the verdict row
-
-**Reported:** move "Not related" between Keep and Cull, sharing the row with Compare, reclaiming vertical space and unifying the group/singles layout.
-**Read:** today it is a group-only fourth row costing 54 px ([DeckScreen.tsx:1911-1924](../apps/mobile/src/screens/DeckScreen.tsx#L1911-L1924)).
-
-**Fix (G9):** one weighted row — **Keep (flex 1.4) · Compare (1) · Not related (1) · Cull (1.4)** at ~50 px; chips unchanged (44); finish button 64→56.
-Total control block ≈170 px in both modes (from 238/184): groups reclaim ~68 px of stage.
-"Not related" is **always present, disabled in singles** (and in browse, as today) so row geometry never shifts between deck kinds.
-Neutral styling carries over (it writes no verdict — STATE_MODEL rules 2/3).
-Heights and flex weights are declared **device-pass tunables**; the pre-registered fallback for the ¼-width middle labels is icon + short label.
-The UI gate has no "Not related" selector and its Compare regex (`^Compare( with…)?$`, [mobile-ui-gate.mjs:708](../scripts/mobile-ui-gate.mjs#L708)) is unaffected; the frame probe's keep-green band assertion must keep holding.
-
-### F29 · Compare gets Keep and Cull
-
-**Reported:** replace "is better" with Cull and Keep (green); on Cull, ask about keeping the other; on Keep, ask about culling the other.
-**Read:** the whole-table branch deliberately writes nothing on tap (selection + dialog), which is why it wears the accent ([CompareScreen.tsx:914-936](../apps/mobile/src/screens/CompareScreen.tsx#L914-L936)); all four outcomes of the new flow map onto existing write modes ([ReviewContext.tsx:1440-1489](../apps/mobile/src/review/ReviewContext.tsx#L1440-L1489)).
-
-**Fix (G10):**
-
-1. Two buttons, always: **Keep {photo}** (green, writes immediately) and **Cull {photo}** (red, writes immediately). "Is better", the accent branch, and the whole-table gating (UI and store-side) are deleted.
-2. After either write, one binary prompt about the other photo: "Cull {other}?" after Keep, "Keep {other}?" after Cull. Declining leaves it open (triage semantics).
-3. The prompt fires **only when the other photo is still unreviewed** — never offers to overwrite settled work. Keep-both is two taps and a decline.
-4. Duel rows keep recording, mapped to existing modes (`kept_both` true/false/NULL); "Close — no verdict" stays.
-
-The don't-ask-again preference is **rewired** into the prompts: one remembered answer per direction ("always cull the other" / "always keep the other"), Settings reset row updated.
-
-### F22 · Zoomed quality on a 50MP photo is much worse than the gallery
-
-**Reported:** deep zoom is visibly soft next to Samsung Gallery.
-**Read, cause located:** expo-image's Android default (`allowDownscaling=true`) decodes every photo to roughly the stage size, and zoom is a pure composited transform that never re-decodes — 1:1 is reached at ~1.0×, so the entire 16× range magnifies interpolation ([ExpoImageViewWrapper.kt:484-494](../node_modules/expo-image/android/src/main/java/expo/modules/image/ExpoImageViewWrapper.kt#L484-L494), [DeckScreen.tsx:819-821](../apps/mobile/src/screens/DeckScreen.tsx#L819-L821)).
-The header comments claiming full-res decode ([DeckScreen.tsx:100-106](../apps/mobile/src/screens/DeckScreen.tsx#L100-L106), duplicated in PhotoViewer and Compare) are wrong and get corrected.
-
-**Fix (G3):** sharpness is not negotiable (200MP capture exists on the S23; future max zoom may rise past 16×).
-
-1. **Region-snapshot function** in the existing native module: URI + source rect + target size → BitmapRegionDecoder patch (~10 MB), laid over the stage when the gesture settles and debounced during pan. Pixel-perfect at any zoom, any source size, zero new dependencies. JPEG and HEIF (API 28+) covered.
-2. **Base decode raised to ≥4096 px** (≈50 MB ARGB) so mid-gesture softness shrinks; a bump to ~6144 is available if the devices wear it.
-3. All three zoom surfaces: deck overlay, PhotoViewer overlay, Compare panes.
-4. `decodeFormat` stays ARGB — 16-bit banding would corrupt keep/cull judgments.
-5. **Escalation ladder, pre-registered:** tester still unhappy *mid-gesture* → raise the base; unhappy *after settle* → that is a patch bug, fix it; both exhausted → pivot to a tiling library (C2, `subsampling-scale-image-view`), accepting the gesture-system replacement.
-6. Device-pass measurement gate: settle latency, memory, and texture behavior on both devices before ship.
+F22 F23 F24 F28 F29 are built and S10e-verified; the tag waits on the S23 device pass (the G3 ship gate, [docs/Plan_m0.8.8.md](Plan_m0.8.8.md)).
+The distilled record lives in PLAN.md's shipped entry; the settled behavior in the three zoom surfaces' headers, `lib/regionZoom.ts`, `lib/zoomTarget.ts`, and `components/useRegionZoom.ts`.
 
 ---
 
@@ -149,6 +105,67 @@ What stays here is the presentation half, in the release where the scan status s
 2. A full pass **names its reason** in the status line ("Weekly full check…"); a delta names its size ("Checking 12 new photos…") — a truthful surface can never *feel* like a full walk.
 3. The accumulated capture log is read back here: if it names any full-pass reason beyond the weekly reconciliation and the (by then fixed) undated fallback, that reason gets the same treatment.
 
+### F31 · The "Camera" pill reads as an action
+
+**Reported (2026-08-23, m0.8.7):** a "Camera" label sits among the share/favourite/edit/organize glyphs on the deck stage; its purpose and grouping are unclear.
+**Read:** it is F19's source-folder annotation (photoBadges.ts:81-84) — source distinction, not media kinds — hydrated **only** on the deck stage (DeckScreen.tsx:1576); no grid or thumbnail wears it.
+
+**Fix (G12):**
+
+1. **Exceptions-only:** no pill for the primary volume's DCIM/Camera; every other folder (WhatsApp, Screenshots, Downloads, SD anything) keeps its pill.
+2. **Placement:** the deck stage moves the folder pill and SD marker out of the action cluster into the day·time metadata badge; the fullscreen viewer carries folder (and SD, if missing) in its facts panel.
+3. **Small squares stay annotation-free** (already true; now the contract).
+4. Lands with m0.9's kind chips — one badge-vocabulary pass.
+
+### F32 · Scan status updates every 200 photos
+
+**Reported (2026-08-23):** not often enough; suggested every 20 photos or every 2.5–5 s.
+**Read:** publishing is coupled to `SCAN_PAGE_SIZE = 200` (scanRunner.ts:103, 404-424, 470) — the count only moves once per fetched page, so slow phases freeze the line for many seconds then jump 200.
+
+**Fix (G13):** publish per photo, time-throttled to ~1 s.
+Lands with F27's status-line rewrite (above) — cadence and truthful copy touch the status surface once.
+
+### F33 · The metadata badge carries extension and resolution
+
+**Reported (2026-08-25, m0.8.7):** show more about the photo itself in the metadata corner — the file **extension** and the **resolution**.
+**Read:** that corner is the deck stage's day·time badge, top-left ([DeckScreen.tsx:1878-1888](../apps/mobile/src/screens/DeckScreen.tsx#L1878-L1888)); the position counter sits top-right ([DeckScreen.tsx:1873-1877](../apps/mobile/src/screens/DeckScreen.tsx#L1873-L1877)) and the badge cluster bottom-left ([DeckScreen.tsx:1889](../apps/mobile/src/screens/DeckScreen.tsx#L1889)).
+F31 (above) already moves the folder pill and the SD marker into that same badge, so one pass rewrites it for both items.
+**Read:** the values exist at scan time and are discarded — `LoadedPhoto` carries `filename`, `width` and `height` on both read paths ([media.ts:57-73](../apps/mobile/src/lib/media.ts#L57-L73), [media.ts:374-389](../apps/mobile/src/lib/media.ts#L374-L389)) — but the `photos` table stores none of the three ([database.ts:38-90](../apps/mobile/src/db/database.ts#L38-L90)), so `getPhotoFacts` has nothing to select ([store.ts:1451](../apps/mobile/src/db/store.ts#L1451)).
+
+**Shape:** three new `photos` columns (`display_name`, `width`, `height`) written by the scan upsert, plus the render in the metadata badge and in the viewer facts panel.
+Schema goes **v22 → v23** — the same bump m0.9's motion-photo kind column already takes, so the release costs testers one destructive reset, not two (pre-v1 policy).
+
+**Not state.** Extension and resolution are file facts, not verdicts, actions or annotations ([STATE_MODEL.md](STATE_MODEL.md), layer 3), so they never join the badge vocabulary and never appear on small squares.
+The metadata badge and the viewer facts panel are their only homes.
+
+**Open — for the m0.9 pre-build grilling:**
+
+1. **Resolution as pixels, as megapixels, or both.** `8160 × 4592` is the exact fact a photographer checks; `37 MP` is the comparable one and costs a third of the width; both spend a whole badge line on one item. A middle option: megapixels on the stage, full pixel dimensions in the viewer facts panel, where there is room and the reader has already asked for detail.
+2. **Where the extension comes from, and its casing.** The display name and the MIME subtype disagree (`.jpg` vs `.jpeg`; HEIC files report `image/heif`), so one of them must be named as the truth.
+3. **The unknown-value rule.** A photo whose dimensions MediaStore did not report needs a rendering; the badge already has the pattern in "Unknown day".
+
+### F34 · Settings choose which overlay items show
+
+**Reported (2026-08-25, m0.8.7):** the stage is getting busy — this release adds kind chips (G6/G7), moves the folder pill and SD marker into the metadata badge (F31), and F33 adds two more facts.
+The eye hides everything or nothing.
+A Settings section should let each item be turned on or off on its own: source folder, date and time, position in the run, resolution, megapixels, extension.
+**Read:** the eye is one durable boolean over the whole badge family ([badgePrefs.ts](../apps/mobile/src/lib/badgePrefs.ts)), mirrored in the deck header ([DeckScreen.tsx:225-241](../apps/mobile/src/screens/DeckScreen.tsx#L225-L241)) and the viewer top bar ([PhotoViewer.tsx:767-771](../apps/mobile/src/components/PhotoViewer.tsx#L767-L771)).
+It does **not** reach the metadata badge or the position counter — both render unconditionally ([DeckScreen.tsx:1873-1888](../apps/mobile/src/screens/DeckScreen.tsx#L1873-L1888)).
+So "all of them" is two scopes today, not one, and the tester's list spans both.
+
+**The pre-registered trigger has fired.** `badgePrefs.ts` refused per-badge settings on 2026-08-21 as "a settings row earned by a guess", and named the condition for revisiting: *"if the cluster still feels noisy with the toggle in hand, that complaint arrives with evidence."*
+This is that complaint, from the tester holding the toggle, against a stage about to gain four more items.
+Implementing it rewrites that header.
+
+**Open — for the m0.9 pre-build grilling:**
+
+1. **What the section governs.** The metadata items only, or one combined overlay vocabulary that also splits the badge cluster into per-kind rows. The tester's list is metadata; the eye's scope is badges. Separate keeps two mental models; combined makes the eye a master switch over a settings-defined set.
+2. **What the eye means afterwards.** A master hide over whatever the settings enable — the settings say what exists, the eye says whether to show it — or a third state the per-item rows can override.
+3. **Whether the choices are per-surface.** The deck stage, the fullscreen viewer and Compare have different room. One shared set is fewer rows and one model; per-surface sets are truer to the complaint, which is about the stage.
+4. **Whether megapixels is its own row.** It is a second rendering of resolution, not a second fact, so it is a row only if F33 shows both.
+5. **How six-plus switches are carried.** A long switch list is the L6 concern the original refusal was made under, so it is answered rather than assumed away: a chip row or a "Metadata" sub-screen may carry it better than one row per item.
+6. **The zoom fail-soft notice joins the redesign** (m0.8.8 close-out, Tristan): the small "Full detail unavailable" chip the zoom overlay shows when the region pipeline rejects a photo (Plan_m0.8.8.md appendix 19) — review its copy, placement, and whether it belongs to the overlay vocabulary this section defines.
+
 ---
 
 ## What this round adds to PLAN.md's trigger backlog
@@ -162,3 +179,4 @@ What stays here is the presentation half, in the release where the scan status s
 1. **G3 (m0.8.8) → G6 (m0.9).** Motion-photo "zoom shows the still" relies on the region pipeline decoding the JPEG primary. Ship order already satisfies it.
 2. **m0.8.7's type-scale/token pass → F28 (m0.8.8).** The deck relayout consumes the tokens that pass establishes; landing F28 first would re-touch the deck twice.
 3. **m0.8.7's badge vocabulary + hide control → kind chips (m0.9).** The chips join an existing, toggleable vocabulary rather than inventing one.
+4. **F31 → F33 → F34, all inside m0.9.** The folder pill's move into the metadata badge, the two new facts, and per-item visibility all rewrite the same badge and the same preference layer. They land as one pass, in that order — F34 cannot name its rows until F33 settles what the badge shows.

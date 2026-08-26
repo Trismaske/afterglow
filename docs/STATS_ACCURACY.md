@@ -59,7 +59,7 @@ Full query citations live in the audit rows below; "moves on" lists only non-rev
 | Coverage chart | `getCoverageByDay` | T3 | as Home (gap 5) |
 | Shooting vs reviewing | `intakeWindow` ([stats.ts](../apps/mobile/src/lib/stats.ts)) | one population: BOTH series reach+source scoped (gap 6) — the one scoped decided read | deletion, unmount, source change (by design: it describes the visible library) |
 | Forecast projections | `getForecastBaseRates` ([store.ts](../apps/mobile/src/db/store.ts)) | T1 population, stamps-only classification (gap 4) | erase cascades thin shared/edit history |
-| "N head-to-head compares · kept both P%" | `getDuelSummary` ([store.ts](../apps/mobile/src/db/store.ts)) | **T2 lifetime** — append-only event log, no deleters (gap 3, R3); forget-erase anonymizes endpoints | erase |
+| "N head-to-head compares" | `getDuelSummary` ([store.ts](../apps/mobile/src/db/store.ts)) | **T2 lifetime** — append-only event log, no deleters (gap 3, R3); forget-erase anonymizes endpoints. The kept-both P% clause retired in m0.8.8 (F29): the whole-table dialog stopped minting `kept_both`, and a percentage over a closed era would misread as current behavior | erase |
 | Decisiveness "cull X% lately vs Y% all-time" | `getDecisionOutcomesSince` ([store.ts](../apps/mobile/src/db/store.ts)) | T1 population, stamps-only classification (gap 4), unscoped (habit) | erase |
 | Queue "waiting" / "finished · median" | `getQueueTurnaround` ([store.ts:3986-4018](../apps/mobile/src/db/store.ts#L3986-L4018)) | waiting T3 (deliberate), finished **T2 lifetime** | erase cascade only |
 

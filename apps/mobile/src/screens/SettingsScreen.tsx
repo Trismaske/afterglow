@@ -72,8 +72,12 @@ import {
 import { scanStatusLine } from '../lib/scanSkip';
 import { countTrackedByVolume, countTrackedPhotos } from '../db/store';
 import { applyGroupingSettingChange } from '../db/store';
-import { COMPARE_AUTO_CULL_KEY, serializeCompareDuelPref } from '../lib/comparePrefs';
-import { getSetting, setSetting } from '../db/store';
+import {
+  COMPARE_AFTER_CULL_KEY,
+  COMPARE_AFTER_KEEP_KEY,
+  serializeComparePref,
+} from '../lib/comparePrefs';
+import { getSetting, setSetting, setSettings } from '../db/store';
 import { ACCENT_PRESETS } from '../lib/accentTheme';
 import { showToast } from '../lib/toast';
 import { colors, touch, useTheme } from '../theme';
@@ -533,14 +537,20 @@ export function SettingsScreen({ navigation }: Props) {
   );
 
   const resetConfirmations = useCallback(() => {
-    // The toast only fires on a COMMITTED write; a rejection says so
-    // instead of silently keeping auto-cull on (codex r7 sibling of the
+    // BOTH remembered compare answers clear in ONE atomic statement
+    // (codex m0.8.8 round 1: two independent writes could clear one
+    // direction while the failure toast claims nothing changed). The
+    // toast only fires on a COMMITTED write; a rejection says so
+    // instead of silently keeping a memory (codex r7 sibling of the
     // goal/coverage persist handling).
-    void setSetting(db, COMPARE_AUTO_CULL_KEY, serializeCompareDuelPref('ask')).then(
-      () => showToast('Confirmation dialogs will ask again'),
+    void setSettings(db, [
+      [COMPARE_AFTER_KEEP_KEY, serializeComparePref('ask')],
+      [COMPARE_AFTER_CULL_KEY, serializeComparePref('ask')],
+    ]).then(
+      () => showToast('Confirmation prompts will ask again'),
       (error: unknown) => {
         console.warn('[settings] confirmation reset failed:', String(error));
-        showToast('Could not save — confirmation dialogs unchanged');
+        showToast('Could not save — confirmation prompts unchanged');
       },
     );
   }, [db]);
@@ -806,9 +816,9 @@ export function SettingsScreen({ navigation }: Props) {
         <Text style={styles.sectionLabel}>Confirmations</Text>
         <Pressable style={styles.row} onPress={resetConfirmations}>
           <View style={styles.rowBody}>
-            <Text style={styles.rowTitle}>Reset confirmation dialogs</Text>
+            <Text style={styles.rowTitle}>Reset confirmation prompts</Text>
             <Text style={styles.rowHint}>
-              Dialogs skipped with "Don't ask again" (compare auto-cull) ask again.
+              Compare's remembered "after keep" and "after cull" answers ask again.
             </Text>
           </View>
         </Pressable>

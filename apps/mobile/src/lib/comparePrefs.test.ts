@@ -1,17 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { parseCompareDuelPref, serializeCompareDuelPref } from './comparePrefs';
+import { parseCompareAfterCull, parseCompareAfterKeep, serializeComparePref } from './comparePrefs';
 
-describe('compare duel preference (tri-state, m0.8.2)', () => {
-  it('round-trips all three states', () => {
-    for (const pref of ['ask', 'cull', 'keep_both'] as const) {
-      expect(parseCompareDuelPref(serializeCompareDuelPref(pref))).toBe(pref);
+describe('compare prompt preferences (per-direction, m0.8.8 D8)', () => {
+  it('round-trips every after-keep state', () => {
+    for (const pref of ['ask', 'cull', 'leave'] as const) {
+      expect(parseCompareAfterKeep(serializeComparePref(pref))).toBe(pref);
     }
   });
 
-  it('maps the legacy boolean encoding and garbage to safe values', () => {
-    expect(parseCompareDuelPref('1')).toBe('cull'); // legacy auto-cull
-    expect(parseCompareDuelPref('0')).toBe('ask'); // legacy off
-    expect(parseCompareDuelPref(null)).toBe('ask');
-    expect(parseCompareDuelPref('what')).toBe('ask');
+  it('round-trips every after-cull state', () => {
+    for (const pref of ['ask', 'keep', 'leave'] as const) {
+      expect(parseCompareAfterCull(serializeComparePref(pref))).toBe(pref);
+    }
+  });
+
+  it('treats absence, garbage, and the retired tri-state encoding as ask', () => {
+    for (const parse of [parseCompareAfterKeep, parseCompareAfterCull]) {
+      expect(parse(null)).toBe('ask');
+      expect(parse('what')).toBe('ask');
+      expect(parse('1')).toBe('ask'); // the retired m0.8.2 auto-cull encoding
+      expect(parse('keep_both')).toBe('ask');
+    }
+    // The directions do not accept each other's verdicts.
+    expect(parseCompareAfterKeep('keep')).toBe('ask');
+    expect(parseCompareAfterCull('cull')).toBe('ask');
   });
 });

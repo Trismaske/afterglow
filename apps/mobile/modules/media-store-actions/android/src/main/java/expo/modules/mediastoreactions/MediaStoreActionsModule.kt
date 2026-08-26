@@ -2,8 +2,10 @@ package expo.modules.mediastoreactions
 
 import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
+import android.content.ComponentCallbacks2
 import android.content.ContentResolver
 import android.content.Context
+import android.content.res.Configuration
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
@@ -17,11 +19,14 @@ import expo.modules.kotlin.activityresult.AppContextActivityResultLauncher
 import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class MediaStoreActionsModule : Module() {
   private lateinit var launcher: AppContextActivityResultLauncher<MediaStoreActionInput, Boolean>
   private var volumeReceiver: BroadcastReceiver? = null
   private var shareChosenReceiver: BroadcastReceiver? = null
+  private var trimCallbacks: ComponentCallbacks2? = null
 
   companion object {
     /** Same-app broadcast carrying the chooser's chosen-component
@@ -41,7 +46,15 @@ class MediaStoreActionsModule : Module() {
     // m0.8.6 D10: shareTargetChosen relays the chooser's
     // EXTRA_CHOSEN_COMPONENT — the fact "the user handed this batch to
     // an app", which is what promotes a share pass to 'shared'.
-    Events("volumesChanged", "shareTargetChosen")
+    // m0.8.8 D9: memoryTrim relays onTrimMemory so the region-zoom
+    // retention cache can flush under REAL pressure (never a guess by
+    // device class); the JS side decides which levels act.
+    Events("volumesChanged", "shareTargetChosen", "memoryTrim")
+
+    // The F22 SharedRef class MUST be registered, or the JS-side object
+    // arrives without its SharedObject prototype — `.release()` was
+    // `undefined` and every patch swap crashed the app (S10e, 2026-08-24).
+    Class(RegionBitmapRef::class)
 
     OnCreate {
       val filter = IntentFilter().apply {
@@ -91,6 +104,17 @@ class MediaStoreActionsModule : Module() {
           ContextCompat.RECEIVER_NOT_EXPORTED,
         )
       }
+
+      val callbacks = object : ComponentCallbacks2 {
+        override fun onTrimMemory(level: Int) {
+          sendEvent("memoryTrim", mapOf("level" to level))
+        }
+        override fun onConfigurationChanged(newConfig: Configuration) = Unit
+        @Deprecated("Deprecated in ComponentCallbacks")
+        override fun onLowMemory() = Unit
+      }
+      trimCallbacks = callbacks
+      appContext.reactContext?.registerComponentCallbacks(callbacks)
     }
 
     OnDestroy {
@@ -98,6 +122,8 @@ class MediaStoreActionsModule : Module() {
       volumeReceiver = null
       shareChosenReceiver?.let { appContext.reactContext?.unregisterReceiver(it) }
       shareChosenReceiver = null
+      trimCallbacks?.let { appContext.reactContext?.unregisterComponentCallbacks(it) }
+      trimCallbacks = null
     }
 
     RegisterActivityContracts {
@@ -123,6 +149,59 @@ class MediaStoreActionsModule : Module() {
     // transient failure for a deleted photo.
     AsyncFunction("mediaPresence") Coroutine { uri: Uri ->
       mediaPresenceOf(uri)
+    }
+
+    // ---- The F22 region-zoom pipeline (m0.8.8, G3 + D1–D7). All
+    // geometry (base formula, sample selection, margins, retention) is
+    // JS-side (src/lib/regionZoom.ts); these decode what they are told
+    // and hand bitmaps over as SharedRef<Bitmap> (RegionZoom.kt header).
+    // Dispatchers.IO keeps long decodes (a 200MP base is ~1.6 s on the
+    // S10e) off the module queue, where they would starve trash/share.
+
+    AsyncFunction("openRegionDecoder") Coroutine { uri: Uri ->
+      withContext(Dispatchers.IO) {
+        val context = appContext.reactContext
+          ?: throw IllegalStateException("Android context unavailable")
+        val opened = RegionZoom.open(context.contentResolver, uri)
+        mapOf(
+          "handle" to opened.handle,
+          "width" to opened.width,
+          "height" to opened.height,
+          "rotation" to opened.rotation,
+          "modTime" to opened.modTime,
+        )
+      }
+    }
+
+    AsyncFunction("decodeRegion") Coroutine {
+      handle: Int, x: Int, y: Int, width: Int, height: Int, sampleSize: Int, rotation: Int ->
+      withContext(Dispatchers.IO) {
+        RegionBitmapRef(
+          RegionZoom.decodeRegion(handle, x, y, width, height, sampleSize, rotation),
+          appContext,
+        )
+      }
+    }
+
+    // Coroutine + IO like its siblings (codex round 1): close waits on
+    // the decoder lock, and an abandoned multi-second decode would
+    // otherwise stall the module's whole async queue — the next open,
+    // trash, share — until it finished.
+    AsyncFunction("closeRegionDecoder") Coroutine { handle: Int ->
+      withContext(Dispatchers.IO) {
+        RegionZoom.close(handle)
+      }
+    }
+
+    AsyncFunction("decodeScaled") Coroutine { uri: Uri, sampleSize: Int, rotation: Int ->
+      withContext(Dispatchers.IO) {
+        val context = appContext.reactContext
+          ?: throw IllegalStateException("Android context unavailable")
+        RegionBitmapRef(
+          RegionZoom.decodeScaled(context.contentResolver, uri, sampleSize, rotation),
+          appContext,
+        )
+      }
     }
 
     // D15 EXIF date rescue (m0.8.3): one header-only ExifInterface read

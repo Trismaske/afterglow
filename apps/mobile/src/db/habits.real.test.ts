@@ -152,20 +152,20 @@ describe('getQueueTurnaround', () => {
 });
 
 describe('getDuelSummary', () => {
-  it('counts duels, dialog outcomes, and kept-both — triage (NULL) stays out of the %', async () => {
+  it('counts every duel alike — historical dialog outcomes included (F29 closed era)', async () => {
     const d = await fresh();
     const insert = d.raw.prepare(
       "INSERT INTO duels (winner_id, loser_id, kept_both, at) VALUES ('a', 'b', ?, 1)",
     );
-    // Two triage duels (v19: NULL = verdict-free) among five dialog ones:
-    // they count as compares but never as keep-both decisions.
+    // Historical kept_both values (the retired m0.8.2 dialog) still count
+    // as compares; new rows are always NULL.
     for (const keptBoth of [0, 1, 1, 0, 0, null, null]) insert.run(keptBoth);
-    expect(await getDuelSummary(asExpo(d))).toEqual({ duels: 7, verdictDuels: 5, keptBoth: 2 });
+    expect(await getDuelSummary(asExpo(d))).toEqual({ duels: 7 });
   });
 
   it('is zero, not null, on an empty history', async () => {
     const d = await fresh();
-    expect(await getDuelSummary(asExpo(d))).toEqual({ duels: 0, verdictDuels: 0, keptBoth: 0 });
+    expect(await getDuelSummary(asExpo(d))).toEqual({ duels: 0 });
   });
 });
 

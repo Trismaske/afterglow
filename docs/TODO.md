@@ -117,6 +117,19 @@ Numbers change whenever an item closes, so **cross-references from code or other
    The read-source half of the same family is related: "A D15-rescued photo's date does not reach the Progress library scope".
    That item was designed and shipped in m0.8.6.
 
+11. **One shared zoom-surface component** (Tristan, m0.8.8 close-out grilling, 2026-08-26).
+    DeckScreen's overlay, PhotoViewer, and CompareScreen each carry a near-copy of the zoom machinery: transform shared values, the `zoomTouchFrame` wiring, the overlay stack (URI → base → patch slots → fail-soft notice), a `useRegionZoom` instance, and matching styles.
+    m0.8.8 paid the triplication tax repeatedly (the flick dead-band, the `forPhotoId` gate, and the notice each landed three times; a review round caught one surface missed).
+    Design a shared `ZoomSurface` owning that machinery — with its gesture configs and callbacks INLINE in the shared file (extracting callbacks to props is the documented de-workletization crash class), parameterized by arbitration (pager-negotiating vs single-driver), pan bounds, and chrome.
+    A refactor of live behavior: lands with equivalence tests and a device pass.
+    Slot at the m0.9 pre-build grilling — m0.9's video/motion playback touches these same surfaces, so consolidating first builds that once instead of three times.
+
+12. **Stale rendered pixels after an in-place edit** (codex m0.8.8 round 2, 2026-08-26).
+   An editor saving OVER the original keeps the photo's MediaStore id and content uri, and every image cache in the app keys on those: expo-image's disk/memory cache (all pagers, grids, the viewer) and nothing invalidates any of them, so a re-visited edited photo can render pre-edit pixels until cache eviction.
+   The m0.8.8 zoom pipeline closed its own layer: the region decoder's `open` reports DATE_MODIFIED and a retained base whose source changed re-decodes, so the overlay never mixes eras — but the URI layers underneath stay app-wide stale.
+   Fix shape to design: a content version threaded through the photo reads (photos.mod_time is already tracked) into per-surface `cacheKey`/`recyclingKey`, plus an invalidation hook where edit detection already classifies in-place edits.
+   Needs its own pass: touches every surface and the DB read shapes.
+
 ## Waiting for a trigger
 
 This section holds fixes whose shape is known but whose value is unproven, and questions whose answer needs evidence that does not exist yet.

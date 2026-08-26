@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Modal, PixelRatio, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -23,37 +23,41 @@ import type { RootStackParamList } from '../navigation';
 import { useReview } from '../review/ReviewContext';
 import { getSetting, setSetting, type ReviewGroupRow, type ReviewMemberRow } from '../db/store';
 import {
-  COMPARE_AUTO_CULL_KEY,
-  parseCompareDuelPref,
-  serializeCompareDuelPref,
-  type CompareDuelPref,
+  COMPARE_AFTER_CULL_KEY,
+  COMPARE_AFTER_KEEP_KEY,
+  parseCompareAfterCull,
+  parseCompareAfterKeep,
+  serializeComparePref,
+  type CompareAfterCull,
+  type CompareAfterKeep,
 } from '../lib/comparePrefs';
 import { showToast } from '../lib/toast';
 import {
   DOUBLE_TAP_MS,
-  PAN_TRACKING_START,
-  PINCH_TRACKING_START,
-  panFrame,
-  pinchFrame,
+  FLICK_MIN_VELOCITY,
+  ZOOM_TRACKING_START,
+  zoomTouchFrame,
 } from '../lib/zoomTarget';
 import { colors, touch, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded } from '../lib/format';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { isFavouriteSelected } from '../lib/favouriteState';
 import { ActionChip } from '../components/ActionChip';
+import { useRegionZoom } from '../components/useRegionZoom';
+import { MAX_SCALE_FLOOR, maxScaleFor } from '../lib/regionZoom';
 import { addToShareQueue, removeFromShareQueue } from '../db/shareStore';
 import { queueOrganize, unqueueOrganize } from '../db/organizeStore';
 import { useIsFocused } from '@react-navigation/native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Compare'>;
 
-// 16× (Tristan, 2026-08-04). Past 1:1 pixels by design: a 50 MP frame
-// reaches one source pixel per screen pixel at ~5.7× on a 1440 px-wide
-// phone, so the top of this range magnifies interpolation rather than
-// revealing detail — wanted for inspecting a focus point, not for
-// judging sharpness. panBounds clamps to the photo's own edges, so a
-// deep zoom cannot wander off the content.
-const MAX_SCALE = 16;
+// The max zoom is DYNAMIC per photo (m0.8.8, Tristan): enough to reach
+// 1:1 physical pixels plus inspection headroom, between MAX_SCALE_FLOOR
+// and MAX_SCALE_CEILING — a fixed 16 stopped BEFORE 1:1 on a 200MP
+// photo, while deep fixed maxima on a 12MP photo are pure mush. `maxScaleFor` in
+// lib/regionZoom.ts owns the formula; Compare takes the MAX of its two
+// photos' ceilings (you zoom for the detailed one). panBounds clamps to the photo's
+// own edges, so a deep zoom cannot wander off the content.
 
 function clamp(value: number, max: number): number {
   'worklet';
@@ -83,27 +87,28 @@ function surfaceQueueWriteError(error: unknown): void {
  * "3/9" numbering) instead of A/B, so testers can find the photo again
  * after leaving compare.
  *
- * VERDICTS (m0.8.2, F15): a duel writes them only when it IS the whole
- * table — any singles duel, or a group duel whose endpoints include
- * EVERY undecided member (zero alive — browse — is vacuously covered;
- * kept endpoints alone never make a duel "whole" while an undecided
- * member watches from outside). There the "N is better" tap raises the
- * keep-both/cull dialog. Its "don't ask again" sticks with WHICHEVER
- * outcome it rides on — auto-cull or auto-keep-both (Tristan's
- * grilling), resettable from Settings: "Keep both" marks
- * BOTH photos kept, "Cull" stages the loser and leaves the winner
- * untouched — atomically either way, with the duel row in the group
- * case. A duel with 3+ alive is TRIAGE (m0.8.6 D7): its positive act is
- * "Keep N" — a targeted keep on that photo plus the duel row, no
- * whole-table claim, the rest of the table left open.
+ * VERDICTS (m0.8.8, F29/G10, D8): both buttons WRITE, immediately and
+ * unconditionally — "Keep {N}" (keep-green, a targeted keep plus the
+ * duel row in groups) and "Cull {N}" (cull-red, a plain cull, no duel:
+ * a cull judgment says nothing about "better"). After either write, ONE
+ * binary prompt about the other photo — "Cull the other photo?" after a
+ * keep, "Keep the other photo?" after a cull — firing only while the
+ * other photo is still unreviewed (never offers to overwrite settled
+ * work; keep-both is two taps and a decline). Declining leaves the
+ * other photo open (triage semantics) and closes the screen like every
+ * resolved write. The prompt's "Remember this answer" checkbox stores
+ * WHICHEVER button was pressed, per direction (lib/comparePrefs.ts);
+ * Settings' reset row clears both memories.
  * Eligibility is undecided-or-KEPT (F11), so a duel can re-decide a
- * prior keep; "Cull N" always just stages the visible photo.
+ * prior keep.
  *
- * m0.8.3: the whole-table claim is judged over the RENDERED reachable
- * table — the deck's load-time mounted snapshot rides into the write
- * (PersistDecisionExtras.mounted, store-revalidated) — so a hidden
- * unreachable member neither vetoes nor joins a verdict; its own
- * question waits for remount.
+ * The m0.8.2 whole-table machinery ("N is better", the accent branch,
+ * the keep-both/cull dialog, the store's whole-table revalidation) is
+ * DELETED — every outcome now maps onto the narrow targeted writes, so
+ * a verdict button can always wear its verdict's colour (STATE_MODEL
+ * rule 2). Duel rows record the keep direction (kept_both NULL); the
+ * dialog-outcome values true/false are a closed era the stats read
+ * historically.
  */
 export function CompareScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
@@ -114,8 +119,6 @@ export function CompareScreen({ navigation, route }: Props) {
     groups,
     singles: singleRows,
     compareKeepWinner,
-    compareCull,
-    compareKeepBoth,
     needsEdit,
     toggleNeedsEdit,
     decide,
@@ -249,14 +252,25 @@ export function CompareScreen({ navigation, route }: Props) {
   }, [singleRows, day, dayList, numericGroupId, queueGroup, loadedGroup]);
   const [busy, setBusy] = useState(false);
   const [showB, setShowB] = useState(false);
-  const [duelPref, setDuelPref] = useState<CompareDuelPref>('ask');
-  const [cullOffer, setCullOffer] = useState<{ winnerId: string; loserId: string } | null>(null);
-  const [dontAskAgain, setDontAskAgain] = useState(false);
+  const [afterKeep, setAfterKeep] = useState<CompareAfterKeep>('ask');
+  const [afterCull, setAfterCull] = useState<CompareAfterCull>('ask');
+  /** The pending binary prompt about the OTHER photo (D8): raised after
+   * an immediate Keep/Cull write when the other photo is unreviewed and
+   * its direction's preference says ask. */
+  const [prompt, setPrompt] = useState<{
+    kind: 'cullOther' | 'keepOther';
+    decidedId: string;
+    otherId: string;
+  } | null>(null);
+  const [rememberAnswer, setRememberAnswer] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    void getSetting(db, COMPARE_AUTO_CULL_KEY).then((raw) => {
-      if (!cancelled) setDuelPref(parseCompareDuelPref(raw));
+    void getSetting(db, COMPARE_AFTER_KEEP_KEY).then((raw) => {
+      if (!cancelled) setAfterKeep(parseCompareAfterKeep(raw));
+    });
+    void getSetting(db, COMPARE_AFTER_CULL_KEY).then((raw) => {
+      if (!cancelled) setAfterCull(parseCompareAfterCull(raw));
     });
     return () => {
       cancelled = true;
@@ -276,7 +290,6 @@ export function CompareScreen({ navigation, route }: Props) {
   const groupInfo = useMemo(() => {
     if (!group || singles) return null;
     return {
-      aliveIds: group.members.filter((m) => m.state === 'unreviewed').map((m) => m.asset_id),
       memberIds: group.members.map((m) => m.asset_id),
     };
   }, [group, singles]);
@@ -306,20 +319,14 @@ export function CompareScreen({ navigation, route }: Props) {
   const savedTx = useSharedValue(0);
   const savedTy = useSharedValue(0);
   const stageW = useSharedValue(0);
+  /** Dynamic zoom ceiling: the MAX of the two photos' maxScaleFor —
+   * flicker comparison zooms for the more detailed side. */
+  const maxScale = useSharedValue<number>(MAX_SCALE_FLOOR);
   const stageH = useSharedValue(0);
-  // A pinch must prove itself before it may change the zoom (see
-  // lib/zoomTarget PINCH_ENGAGE_DELTA): these carry that decision, and
-  // the raw scale it was made at, across the gesture's frames.
-  const pinchTracking = useSharedValue(PINCH_TRACKING_START);
-  /** This touch stream actually CHANGED the zoom — its release is a
-   * pinch ending, not a flick, so the pan decay stays out of it
-   * (DeckScreen carries the same rule). */
-  const pinchZoomed = useSharedValue(false);
-  // The touch-position pan's anchor + base (m0.8.6 §10, lib/zoomTarget
-  // panFrame): translation is derived from the fingers' absolute focal
-  // position against these, re-anchored on every touch-set change, so
-  // panning stays continuous while two thumbs walk across the photo.
-  const panTracking = useSharedValue(PAN_TRACKING_START);
+  // ONE tracker for the whole pinch-pan (zoomTouchFrame, m0.8.8 —
+  // DeckScreen carries the rationale). Compare has no pager, so the PAN
+  // handler below is the single driver for scale AND translation.
+  const zoomTracking = useSharedValue(ZOOM_TRACKING_START);
 
   const flip = useCallback(() => setShowB((v) => !v), []);
 
@@ -367,30 +374,23 @@ export function CompareScreen({ navigation, route }: Props) {
   }, [flip]);
 
   const pinchGesture = usePinchGesture({
-    onUpdate: (event) => {
-      // pinchFrame carries engagement AND finger-change re-anchoring
-      // (§10 check 9): a finger landing or lifting mid-gesture holds
-      // the zoom instead of leaping with the new finger distance.
-      const step = pinchFrame(
-        pinchTracking.value,
-        event.scale,
-        event.numberOfPointers,
-        scale.value,
-      );
-      pinchTracking.value = step.tracking;
-      if (step.scale === null) return;
-      pinchZoomed.value = true;
-      scale.value = Math.min(MAX_SCALE, Math.max(1, step.scale));
-      // Keep the pan inside bounds while zooming back out.
-      const maxX = (stageW.value * (scale.value - 1)) / 2;
-      const maxY = (stageH.value * (scale.value - 1)) / 2;
-      tx.value = clamp(tx.value, maxX);
-      ty.value = clamp(ty.value, maxY);
+    // The pinch DETECTOR keeps the two-finger arbitration; the zoom
+    // itself is driven from the PAN handler's raw touch frames below
+    // (zoomTouchFrame — ONE tracker, DeckScreen carries the rationale).
+    onBegin: () => {
+      cancelAnimation(scale);
+      cancelAnimation(tx);
+      cancelAnimation(ty);
     },
     // onFinalize also fires when a pinch is CANCELLED, which onDeactivate
-    // does not — the engagement flag has to clear either way.
+    // does not — the anchor has to clear either way. The ZOOMED marker
+    // survives (codex round 1): the simultaneous pan outlives the pinch
+    // (it deactivates on the LAST finger, the pinch finalizes earlier),
+    // and its no-fling-after-zoom check reads this flag — a full reset
+    // here let a scale-changing stream end as a flick. The pan's own
+    // onBegin starts the next stream's tracking fresh.
     onFinalize: () => {
-      pinchTracking.value = PINCH_TRACKING_START;
+      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
     },
     onDeactivate: () => {
       savedScale.value = scale.value;
@@ -424,42 +424,47 @@ export function CompareScreen({ navigation, route }: Props) {
       cancelAnimation(ty);
       savedTx.value = tx.value;
       savedTy.value = ty.value;
-      // A fresh touch stream: whether it turns into a pinch is decided
-      // by the frames ahead of it.
-      pinchZoomed.value = false;
+      // A fresh touch stream: a fresh anchor, and whether it turns into
+      // a pinch is decided by the frames ahead of it (tracking.zoomed).
+      zoomTracking.value = ZOOM_TRACKING_START;
     },
-    // The zoomed pan is TOUCH-POSITION anchored (m0.8.6 §10, the
-    // react-native-zoom-toolkit port — DeckScreen carries the full
-    // rationale): translation comes from the fingers' absolute focal
-    // position each frame (panFrame), not from the start-relative
-    // translationX/Y whose averaged origin jumps at every finger land
-    // or lift. A touch-set change re-anchors instead (down/up force
-    // it; panFrame's count check catches a same-count swap between
-    // move frames), keeping the translation continuous.
+    // The whole pinch-pan runs off the raw touch frames (zoomTouchFrame
+    // — m0.8.6 §10's touch-position anchoring, unified with the pinch
+    // in m0.8.8): a touch-set change re-anchors (down/up force it; the
+    // count check catches a same-count swap between move frames), so
+    // everything stays continuous across finger changes.
     onTouchesDown: () => {
-      panTracking.value = PAN_TRACKING_START;
+      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
     },
     onTouchesUp: () => {
-      panTracking.value = PAN_TRACKING_START;
+      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
     },
     onTouchesMove: (event) => {
-      const maxX = (stageW.value * (scale.value - 1)) / 2;
-      const maxY = (stageH.value * (scale.value - 1)) / 2;
-      const step = panFrame(
-        panTracking.value,
+      const step = zoomTouchFrame(
+        zoomTracking.value,
         event.allTouches,
-        // Not yet active (or not zoomed) re-anchors continuously, so
-        // the pan's activation threshold cannot jump the photo either.
-        event.state === State.ACTIVE && scale.value > 1,
+        // Two fingers drive unconditionally — the initial pinch from
+        // scale 1 included (Compare has no pager to protect); a single
+        // finger needs the zoom AND activation, so a flip-tap's jitter
+        // cannot nudge the photo.
+        event.allTouches.length >= 2 || (scale.value > 1 && event.state === State.ACTIVE),
+        scale.value,
         tx.value,
         ty.value,
-        maxX,
-        maxY,
+        1,
+        maxScale.value,
+        stageW.value / 2,
+        stageH.value / 2,
       );
-      panTracking.value = step.tracking;
-      if (step.translation === null) return;
-      tx.value = step.translation.x;
-      ty.value = step.translation.y;
+      zoomTracking.value = step.tracking;
+      if (step.transform === null) return;
+      scale.value = step.transform.scale;
+      // Compare clamps to the stage rectangle (its stacked pair shares
+      // one transform; per-photo edges are not meaningful here).
+      const maxX = (stageW.value * (step.transform.scale - 1)) / 2;
+      const maxY = (stageH.value * (step.transform.scale - 1)) / 2;
+      tx.value = clamp(step.transform.x, maxX);
+      ty.value = clamp(step.transform.y, maxY);
     },
     onDeactivate: (event) => {
       savedTx.value = tx.value;
@@ -467,18 +472,23 @@ export function CompareScreen({ navigation, route }: Props) {
       if (scale.value <= 1) return;
       // A stream that ZOOMED ends as a pinch, not a flick — momentum
       // out of it flung the photo on every two-finger zoom (round 5).
-      if (pinchZoomed.value) return;
+      if (zoomTracking.value.zoomed) return;
       // The release keeps the flick's momentum — the standard gallery
       // feel (m0.8.5 §10 check 9 round 3), inside the same bounds the
-      // drag was clamped to.
+      // drag was clamped to. Sub-flick velocities are lift-off noise
+      // (FLICK_MIN_VELOCITY): a hold-then-lift moves nothing.
       const maxX = (stageW.value * (scale.value - 1)) / 2;
       const maxY = (stageH.value * (scale.value - 1)) / 2;
-      tx.value = withDecay({ velocity: event.velocityX, clamp: [-maxX, maxX] }, () => {
-        savedTx.value = tx.value;
-      });
-      ty.value = withDecay({ velocity: event.velocityY, clamp: [-maxY, maxY] }, () => {
-        savedTy.value = ty.value;
-      });
+      if (Math.abs(event.velocityX) >= FLICK_MIN_VELOCITY) {
+        tx.value = withDecay({ velocity: event.velocityX, clamp: [-maxX, maxX] }, () => {
+          savedTx.value = tx.value;
+        });
+      }
+      if (Math.abs(event.velocityY) >= FLICK_MIN_VELOCITY) {
+        ty.value = withDecay({ velocity: event.velocityY, clamp: [-maxY, maxY] }, () => {
+          savedTy.value = ty.value;
+        });
+      }
     },
   });
 
@@ -487,6 +497,41 @@ export function CompareScreen({ navigation, route }: Props) {
   const zoomStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: tx.value }, { translateY: ty.value }, { scale: scale.value }],
   }));
+
+  // F22 (m0.8.8): the region-zoom pipeline for BOTH stacked photos —
+  // flicker comparison is the point, so both stay warm (D2's guardrail
+  // and the shared retention budget exist for exactly this pair). Each
+  // hook plans against its own source dimensions under the one shared
+  // transform; the hooks poll shared values from JS (never runOnJS).
+  const regionStageSize = useCallback(
+    () => ({ width: stageW.value, height: stageH.value }),
+    [stageW, stageH],
+  );
+  const regionViewport = useCallback(
+    () => ({ scale: scale.value, tx: tx.value, ty: ty.value }),
+    [scale, tx, ty],
+  );
+  const regionZoomA = useRegionZoom(
+    pair?.a.id ?? null,
+    pair?.a.uri ?? null,
+    pair !== null,
+    regionStageSize,
+    regionViewport,
+  );
+  const regionZoomB = useRegionZoom(
+    pair?.b.id ?? null,
+    pair?.b.uri ?? null,
+    pair !== null,
+    regionStageSize,
+    regionViewport,
+  );
+  useEffect(() => {
+    const forSize = (size: { width: number; height: number } | null) =>
+      size
+        ? maxScaleFor(stageW.value, stageH.value, size.width, size.height, PixelRatio.get())
+        : MAX_SCALE_FLOOR;
+    maxScale.value = Math.max(forSize(regionZoomA.sourceSize), forSize(regionZoomB.sourceSize));
+  }, [regionZoomA.sourceSize, regionZoomB.sourceSize, maxScale, stageW, stageH]);
 
   /** A READ failure on either load. It routes NOWHERE: the retry card
    * below renders instead of the missing-pair fallback, because a failed
@@ -521,174 +566,205 @@ export function CompareScreen({ navigation, route }: Props) {
    */
   useEffect(() => registerCelebrationHost(), [registerCelebrationHost]);
 
-  /** Triage (3+ comparable in the group), m0.8.6 D7: "Keep this one" —
-   * a targeted keep on the winner plus the duel row. The loser is
-   * untouched (the direct Cull chip is its path), and no whole-table
-   * claim is made: the rest of the table stays open. */
-  const keepWinnerNow = useCallback(
-    async (winnerId: string, loserId: string) => {
-      if (numericGroupId === null) return;
-      try {
-        await compareKeepWinner(numericGroupId, winnerId, loserId);
-      } catch {
-        return; // surfaced by the provider alert; stay on the screen
-      }
-      showToast(`Photo ${posOf(winnerId)} kept — compare recorded`);
-      navigation.goBack();
-    },
-    [numericGroupId, compareKeepWinner, posOf, navigation],
+  /** The other photo's LIVE state — the follow-up prompt fires only
+   * while it is still unreviewed (G10: never offer to overwrite
+   * settled work). */
+  const otherPending = useCallback(
+    (id: string) => (itemLookup.get(id)?.state ?? 'unreviewed') === 'unreviewed',
+    [itemLookup],
   );
 
-  /** Dialog outcome "Keep both" (F15): BOTH participants land on kept —
-   * atomically, with the duel row in the group case. */
-  const keepBothNow = useCallback(
-    async (winnerId: string, loserId: string) => {
-      try {
-        await compareKeepBoth(
-          winnerId,
-          loserId,
-          singles ? undefined : (numericGroupId ?? undefined),
-        );
-      } catch {
-        return; // surfaced by the provider alert; stay on the screen
-      }
-      showToast(`Kept photos ${posOf(winnerId)} and ${posOf(loserId)}`);
-      navigation.goBack();
+  /** Write the other photo's KEEP (the accepted "Keep the other?" and
+   * the remembered-keep path): a targeted keep plus the duel row in
+   * groups (the duel records the keep direction), a plain keep in
+   * singles (singles record no duel rows — unchanged contract). */
+  const keepOtherNow = useCallback(
+    async (keepId: string, againstId: string) => {
+      if (singles) await decide(keepId, 'keep', null);
+      else if (numericGroupId !== null) await compareKeepWinner(numericGroupId, keepId, againstId);
+      showToast(`Photo ${posOf(keepId)} kept`);
     },
-    [compareKeepBoth, singles, numericGroupId, posOf, navigation],
+    [singles, decide, numericGroupId, compareKeepWinner, posOf],
   );
 
-  /** Dialog/auto-cull outcome "Cull": stage the loser; the winner stays
-   * untouched (a cull judgment says nothing about keeping — F15). Only
-   * reachable through `decideBetter`'s whole-table gate, which is what
-   * licenses the group leg's duel-carrying `compareCull` — its store
-   * guard asserts the duel covers every alive member. The direct chip
-   * writes through `decideCull` instead. */
-  const cullLoserNow = useCallback(
-    async (winnerId: string, loserId: string) => {
-      try {
-        if (singles) {
-          await decide(loserId, 'cull', null);
-          showToast(`Photo ${posOf(loserId)} staged to cull`);
-        } else if (numericGroupId !== null) {
-          await compareCull(numericGroupId, loserId, winnerId);
-          showToast(`Photo ${posOf(loserId)} staged to cull`);
-        }
-      } catch {
-        return; // surfaced by the provider alert; stay on the screen
-      }
-      navigation.goBack();
-    },
-    [singles, decide, numericGroupId, compareCull, posOf, navigation],
-  );
-
-  const decideBetter = useCallback(
-    async (winnerId: string, loserId: string) => {
+  /** "Keep {N}" — writes IMMEDIATELY (F29/G10): a targeted keep plus
+   * the duel row in groups (kept_both NULL — the duel answers "which
+   * did you keep out of this pair", nothing more), a plain keep in
+   * singles. Then the after-keep step: prompt, remembered answer, or
+   * nothing (other photo already settled). */
+  const keepVisible = useCallback(
+    async (keepId: string, otherId: string) => {
       if (busy) return;
-      // The dialog appears exactly when the duel IS the whole table
-      // (F15): any singles duel, or a group whose undecided remainder
-      // this duel settles. "Settles" means every ALIVE member is one of
-      // the two endpoints — kept members can rejoin a duel via F11, so
-      // `aliveCount <= 2` alone is not enough: a kept-vs-kept (or
-      // kept-vs-one-of-two-alive) duel leaves undecided members and
-      // must stay verdict-free triage. Zero alive (browse) is vacuously
-      // covered and keeps its dialog. The store re-validates this in
-      // the write transaction against a racing scan.
-      const wholeTable =
-        singles || (groupInfo?.aliveIds ?? []).every((id) => id === winnerId || id === loserId);
-      if (!wholeTable) {
-        setBusy(true);
-        try {
-          await keepWinnerNow(winnerId, loserId);
-        } finally {
-          setBusy(false);
-        }
-        return;
-      }
-      // The suppressed dialog honours WHICHEVER outcome it was
-      // suppressed with (Tristan's grilling): auto-cull or
-      // auto-keep-both.
-      if (duelPref === 'cull') {
-        setBusy(true);
-        try {
-          await cullLoserNow(winnerId, loserId);
-        } finally {
-          setBusy(false);
-        }
-      } else if (duelPref === 'keep_both') {
-        setBusy(true);
-        try {
-          await keepBothNow(winnerId, loserId);
-        } finally {
-          setBusy(false);
-        }
-      } else {
-        setDontAskAgain(false);
-        setCullOffer({ winnerId, loserId });
-      }
-    },
-    [groupInfo, duelPref, busy, cullLoserNow, keepBothNow, keepWinnerNow, singles],
-  );
-
-  const resolveCullOffer = useCallback(
-    async (cull: boolean) => {
-      const offer = cullOffer;
-      if (!offer || busy) return;
-      setCullOffer(null);
       setBusy(true);
       try {
-        // "Don't ask again" sticks with WHICHEVER outcome it rides on
-        // (Tristan's grilling): cull → auto-cull, keep both →
-        // auto-keep-both. The VERDICT never waits on the preference
-        // write (codex r8): a rejected pref must not swallow the choice
-        // the user just confirmed — the dialog simply asks again next
-        // time, said out loud.
-        if (dontAskAgain) {
-          const pref: CompareDuelPref = cull ? 'cull' : 'keep_both';
-          setDuelPref(pref);
-          void setSetting(db, COMPARE_AUTO_CULL_KEY, serializeCompareDuelPref(pref)).catch(
-            (error: unknown) => {
-              console.warn('[compare] duel preference not saved:', String(error));
-              setDuelPref('ask');
-              showToast('Preference not saved — the dialog will ask again');
-            },
-          );
+        try {
+          if (singles) await decide(keepId, 'keep', null);
+          else if (numericGroupId !== null)
+            await compareKeepWinner(numericGroupId, keepId, otherId);
+          else return;
+        } catch {
+          return; // surfaced by the provider alert; stay on the screen
         }
-        if (cull) await cullLoserNow(offer.winnerId, offer.loserId);
-        else await keepBothNow(offer.winnerId, offer.loserId);
+        // Truthful surfaces: only groups record a duel row (singles
+        // duels never have) — the toast must not claim otherwise.
+        showToast(
+          singles
+            ? `Photo ${posOf(keepId)} kept`
+            : `Photo ${posOf(keepId)} kept — compare recorded`,
+        );
+        if (!otherPending(otherId)) {
+          navigation.goBack();
+          return;
+        }
+        if (afterKeep === 'cull') {
+          try {
+            await decide(otherId, 'cull', singles ? null : (numericGroupId ?? undefined));
+            showToast(`Photo ${posOf(otherId)} staged to cull`);
+          } catch {
+            return; // the keep landed; the remembered cull did not — stay
+          }
+          navigation.goBack();
+          return;
+        }
+        if (afterKeep === 'leave') {
+          navigation.goBack();
+          return;
+        }
+        setRememberAnswer(false);
+        setPrompt({ kind: 'cullOther', decidedId: keepId, otherId });
       } finally {
         setBusy(false);
       }
     },
-    [cullOffer, busy, dontAskAgain, db, cullLoserNow, keepBothNow],
+    [
+      busy,
+      singles,
+      decide,
+      numericGroupId,
+      compareKeepWinner,
+      posOf,
+      otherPending,
+      afterKeep,
+      navigation,
+    ],
   );
 
-  /** The DIRECT "Cull N" chip: a plain verdict write, NO duel and NO
-   * star — the screen doc's "'Cull N' always just stages the visible
-   * photo" taken literally. The duel-carrying `compareCull` claims its
-   * verdicts cover every alive member (the store re-validates that in
-   * the transaction), which is only true on the dialog/auto-cull path
-   * `decideBetter` guards; routed through here, a 3+-alive group made
-   * the always-visible chip throw "group changed" spuriously. The
-   * expectedGroupId is the deck's own narrow assignment guard, not the
-   * whole-table one. */
-  const decideCull = useCallback(
-    async (loserId: string) => {
+  /** "Cull {N}" — writes IMMEDIATELY (F29/G10): a plain cull, no duel
+   * row (a cull judgment says nothing about "better" — the m0.8.2 chip
+   * contract, kept). Then the after-cull step, mirroring keepVisible. */
+  const cullVisible = useCallback(
+    async (cullId: string, otherId: string) => {
       if (busy) return;
       setBusy(true);
       try {
         try {
-          await decide(loserId, 'cull', singles ? null : (numericGroupId ?? undefined));
+          await decide(cullId, 'cull', singles ? null : (numericGroupId ?? undefined));
         } catch {
           return; // surfaced by the provider alert; stay on the screen
         }
-        showToast(`Photo ${posOf(loserId)} staged to cull`);
+        showToast(`Photo ${posOf(cullId)} staged to cull`);
+        if (!otherPending(otherId)) {
+          navigation.goBack();
+          return;
+        }
+        if (afterCull === 'keep') {
+          try {
+            await keepOtherNow(otherId, cullId);
+          } catch {
+            return; // the cull landed; the remembered keep did not — stay
+          }
+          navigation.goBack();
+          return;
+        }
+        if (afterCull === 'leave') {
+          navigation.goBack();
+          return;
+        }
+        setRememberAnswer(false);
+        setPrompt({ kind: 'keepOther', decidedId: cullId, otherId });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [
+      busy,
+      singles,
+      decide,
+      numericGroupId,
+      posOf,
+      otherPending,
+      afterCull,
+      keepOtherNow,
+      navigation,
+    ],
+  );
+
+  /** Resolve the binary prompt (D8). `apply` = the verdict button was
+   * pressed; false = "Leave open". "Remember this answer" stores
+   * WHICHEVER button resolved it, per direction — a remembered "Leave
+   * open" silences the prompt, a remembered verdict auto-applies it.
+   * The verdict never waits on the preference write (codex r8, kept): a
+   * rejected pref must not swallow the choice the user just confirmed —
+   * the prompt simply asks again next time, said out loud. */
+  const resolvePrompt = useCallback(
+    async (apply: boolean) => {
+      const active = prompt;
+      if (!active || busy) return;
+      setPrompt(null);
+      setBusy(true);
+      try {
+        if (rememberAnswer) {
+          if (active.kind === 'cullOther') {
+            const pref: CompareAfterKeep = apply ? 'cull' : 'leave';
+            setAfterKeep(pref);
+            void setSetting(db, COMPARE_AFTER_KEEP_KEY, serializeComparePref(pref)).catch(
+              (error: unknown) => {
+                console.warn('[compare] prompt preference not saved:', String(error));
+                setAfterKeep('ask');
+                showToast('Preference not saved — the prompt will ask again');
+              },
+            );
+          } else {
+            const pref: CompareAfterCull = apply ? 'keep' : 'leave';
+            setAfterCull(pref);
+            void setSetting(db, COMPARE_AFTER_CULL_KEY, serializeComparePref(pref)).catch(
+              (error: unknown) => {
+                console.warn('[compare] prompt preference not saved:', String(error));
+                setAfterCull('ask');
+                showToast('Preference not saved — the prompt will ask again');
+              },
+            );
+          }
+        }
+        if (apply) {
+          try {
+            if (active.kind === 'cullOther') {
+              await decide(active.otherId, 'cull', singles ? null : (numericGroupId ?? undefined));
+              showToast(`Photo ${posOf(active.otherId)} staged to cull`);
+            } else {
+              await keepOtherNow(active.otherId, active.decidedId);
+            }
+          } catch {
+            return; // the first verdict already landed; stay for a retry
+          }
+        }
         navigation.goBack();
       } finally {
         setBusy(false);
       }
     },
-    [busy, decide, singles, numericGroupId, posOf, navigation],
+    [
+      prompt,
+      busy,
+      rememberAnswer,
+      db,
+      decide,
+      singles,
+      numericGroupId,
+      posOf,
+      keepOtherNow,
+      navigation,
+    ],
   );
 
   // A failed unit read renders the inline retry INSTEAD of the empty
@@ -734,12 +810,6 @@ export function CompareScreen({ navigation, route }: Props) {
   const hidden = showB ? pair.a : pair.b;
   const visibleLabel = posOf(visible.id);
   const favourite = isFavouriteSelected(favouriteStatus(visible.id));
-  // Which act the positive button performs, computed the same way
-  // `decideBetter` will decide it (D7): whole table → the dialog;
-  // triage → a targeted keep. The button must SAY which (rule 2 — a
-  // button that writes a keep wears keep-green and the word).
-  const wholeTableNow =
-    singles || (groupInfo?.aliveIds ?? []).every((id) => id === visible.id || id === hidden.id);
 
   // Seconds always; millis when the two candidates share a second and the
   // data has sub-second resolution (same rule as the deck labels).
@@ -761,42 +831,136 @@ export function CompareScreen({ navigation, route }: Props) {
           v3's plain GestureDetector is a HOST component, and this stage's
           child is a Pressable whose press IS the flip — the tap must keep
           reaching the JS responder path underneath. */}
-      <InterceptingGestureDetector>
-        <VirtualGestureDetector gesture={composedGesture}>
-          {/* The stage itself is the tap target: presses flip (JS thread),
+      {/* Decorative border on the OUTER frame, never the measured stage
+          (DeckScreen's stageFrame comment): a border insets absoluteFill
+          children while onLayout reports the border box, and that 2 dp
+          disagreement magnifies into a visible content jump on every
+          patch apply at deep zoom. */}
+      <View style={styles.stageFrame}>
+        <InterceptingGestureDetector>
+          <VirtualGestureDetector gesture={composedGesture}>
+            {/* The stage itself is the tap target: presses flip (JS thread),
               while drags and pinches hand over to the gestures above. */}
-          <Pressable
-            style={styles.stage}
-            onPress={onStagePress}
-            onLayout={(event) => {
-              stageW.value = event.nativeEvent.layout.width;
-              stageH.value = event.nativeEvent.layout.height;
-            }}
-          >
-            <Animated.View style={[styles.stack, zoomStyle]}>
-              <Image
-                source={{ uri: pair.a.uri }}
-                style={StyleSheet.absoluteFill}
-                contentFit="contain"
-                recyclingKey={pair.a.id}
-              />
-              {/* Stacked on top; opacity flip keeps both mounted so the zoom
+            <Pressable
+              style={styles.stage}
+              onPress={onStagePress}
+              onLayout={(event) => {
+                stageW.value = event.nativeEvent.layout.width;
+                stageH.value = event.nativeEvent.layout.height;
+              }}
+            >
+              <Animated.View style={[styles.stack, zoomStyle]}>
+                {/* Per-photo layer groups (F22): each photo, its dwell-
+                  warmed base, and its settled patch flip together under
+                  the shared transform — both sides stay warm so the
+                  flicker comparison is sharp in both directions. */}
+                <View style={StyleSheet.absoluteFill}>
+                  <Image
+                    source={{ uri: pair.a.uri }}
+                    style={StyleSheet.absoluteFill}
+                    contentFit="contain"
+                    recyclingKey={pair.a.id}
+                  />
+                  {/* ALWAYS MOUNTED, props-only (useRegionZoom header:
+                    a mid-gesture mount breaks RNGH pointer tracking). */}
+                  <Image
+                    source={regionZoomA.baseSource ?? undefined}
+                    style={StyleSheet.absoluteFill}
+                    contentFit="contain"
+                    transition={0}
+                    allowDownscaling={false}
+                  />
+                  {regionZoomA.patchSlots.map((slot, slotIndex) => (
+                    <Image
+                      key={slotIndex}
+                      source={slot?.source ?? undefined}
+                      style={{
+                        position: 'absolute',
+                        left: 0,
+                        top: 0,
+                        width: slot?.width ?? 1,
+                        height: slot?.height ?? 1,
+                        // Transform, not left/top: layout snaps to the pixel
+                        // grid, and a deep-zoom scale magnified that snap into
+                        // a visible content jump on every apply (S10e video 6).
+                        transform: [
+                          { translateX: slot?.left ?? 0 },
+                          { translateY: slot?.top ?? 0 },
+                        ],
+                        zIndex: slot?.z ?? 0,
+                        opacity: slot ? 1 : 0,
+                      }}
+                      contentFit="fill"
+                      transition={0}
+                      allowDownscaling={false}
+                    />
+                  ))}
+                </View>
+                {/* Stacked on top; opacity flip keeps both mounted so the zoom
                 transform (on the shared parent) applies to both at once. */}
-              <Image
-                source={{ uri: pair.b.uri }}
-                style={[StyleSheet.absoluteFill, { opacity: showB ? 1 : 0 }]}
-                contentFit="contain"
-                recyclingKey={pair.b.id}
-              />
-            </Animated.View>
-            <View style={styles.abBadge} pointerEvents="none">
-              <Text style={styles.abBadgeText}>
-                {visibleLabel} · {formatClockPrecise(visible.timestamp, withMs)}
-              </Text>
-            </View>
-          </Pressable>
-        </VirtualGestureDetector>
-      </InterceptingGestureDetector>
+                <View style={[StyleSheet.absoluteFill, { opacity: showB ? 1 : 0 }]}>
+                  <Image
+                    source={{ uri: pair.b.uri }}
+                    style={StyleSheet.absoluteFill}
+                    contentFit="contain"
+                    recyclingKey={pair.b.id}
+                  />
+                  {/* ALWAYS MOUNTED, props-only (useRegionZoom header:
+                    a mid-gesture mount breaks RNGH pointer tracking). */}
+                  <Image
+                    source={regionZoomB.baseSource ?? undefined}
+                    style={StyleSheet.absoluteFill}
+                    contentFit="contain"
+                    transition={0}
+                    allowDownscaling={false}
+                  />
+                  {regionZoomB.patchSlots.map((slot, slotIndex) => (
+                    <Image
+                      key={slotIndex}
+                      source={slot?.source ?? undefined}
+                      style={{
+                        position: 'absolute',
+                        left: 0,
+                        top: 0,
+                        width: slot?.width ?? 1,
+                        height: slot?.height ?? 1,
+                        // Transform, not left/top: layout snaps to the pixel
+                        // grid, and a deep-zoom scale magnified that snap into
+                        // a visible content jump on every apply (S10e video 6).
+                        transform: [
+                          { translateX: slot?.left ?? 0 },
+                          { translateY: slot?.top ?? 0 },
+                        ],
+                        zIndex: slot?.z ?? 0,
+                        opacity: slot ? 1 : 0,
+                      }}
+                      contentFit="fill"
+                      transition={0}
+                      allowDownscaling={false}
+                    />
+                  ))}
+                </View>
+              </Animated.View>
+              <View style={styles.abBadge} pointerEvents="none">
+                <Text style={styles.abBadgeText}>
+                  {visibleLabel} · {formatClockPrecise(visible.timestamp, withMs)}
+                </Text>
+              </View>
+              {/* Zoom fail-soft notice (DeckScreen's zoomNotice comment).
+                  Compare has no zoom-only overlay, so it shows whenever
+                  the VISIBLE photo's pipeline rejected — reviewed with
+                  the m0.9 metadata-corner redesign. */}
+              {(showB ? regionZoomB : regionZoomA).failed && (
+                <View style={styles.zoomNotice} pointerEvents="none">
+                  <Text style={styles.zoomNoticeText}>
+                    Full detail unavailable — image file can't be fully read
+                  </Text>
+                </View>
+              )}
+            </Pressable>
+          </VirtualGestureDetector>
+        </InterceptingGestureDetector>
+      </View>
 
       <View style={styles.subRow}>
         <View style={styles.abChips}>
@@ -906,91 +1070,80 @@ export function CompareScreen({ navigation, route }: Props) {
         <Pressable
           style={[styles.actionButton, styles.cullButton]}
           disabled={busy}
-          onPress={() => void decideCull(visible.id)}
+          onPress={() => void cullVisible(visible.id, hidden.id)}
         >
           <MaterialCommunityIcons name="close" size={21} color={colors.cull} />
           <Text style={styles.actionText}>Cull {visibleLabel}</Text>
         </Pressable>
         <Pressable
-          // TRIAGE (D7): the button IS a keep — keep-green and the word,
-          // parallel to "Cull N" beside it. WHOLE TABLE: accent, "N is
-          // better" — a selection whose outcome the dialog (or the
-          // suppressed preference) decides, so a verdict hue would claim
-          // a keep it may not write (rule 2, Tristan's grilling).
-          style={[
-            styles.actionButton,
-            wholeTableNow
-              ? { backgroundColor: theme.accentMuted, borderColor: theme.accent, borderWidth: 1 }
-              : styles.keepButton,
-          ]}
+          // Both buttons WRITE (F29/G10), so both wear their verdict's
+          // colour (STATE_MODEL rule 2) — the accent "is better" branch
+          // is gone.
+          style={[styles.actionButton, styles.keepButton]}
           disabled={busy}
-          onPress={() => void decideBetter(visible.id, hidden.id)}
+          onPress={() => void keepVisible(visible.id, hidden.id)}
         >
-          <MaterialCommunityIcons
-            name="check"
-            size={21}
-            color={wholeTableNow ? theme.accent : colors.keep}
-          />
-          <Text style={styles.actionText}>
-            {wholeTableNow ? `${visibleLabel} is better` : `Keep ${visibleLabel}`}
-          </Text>
+          <MaterialCommunityIcons name="check" size={21} color={colors.keep} />
+          <Text style={styles.actionText}>Keep {visibleLabel}</Text>
         </Pressable>
       </View>
       <Pressable style={styles.closeButton} disabled={busy} onPress={() => navigation.goBack()}>
         <Text style={styles.closeText}>Close — no verdict</Text>
       </Pressable>
 
-      {/* m0.5: two-photo group "better" → offer to cull the loser. */}
+      {/* The binary follow-up prompt about the OTHER photo (F29/G10,
+          D8): fires only while it is still unreviewed; both answers
+          resolve the compare. A system-back dismissal counts as "Leave
+          open" — the first verdict already landed, so the prompt must
+          never strand the screen mid-flow. */}
       <Modal
-        visible={cullOffer !== null}
+        visible={prompt !== null}
         transparent
         animationType="fade"
-        onRequestClose={() => setCullOffer(null)}
+        onRequestClose={() => void resolvePrompt(false)}
       >
         <View style={styles.offerBackdrop}>
           <View style={styles.offerCard}>
             <Text style={styles.offerTitle}>
-              Keep only photo {cullOffer ? posOf(cullOffer.winnerId) : ''}?
+              {prompt?.kind === 'cullOther' ? 'Cull the other photo?' : 'Keep the other photo?'}
             </Text>
-            {/* F15: the dialog IS the verdict — both answers write. */}
             <Text style={styles.offerText}>
-              Keep both marks photos {cullOffer ? posOf(cullOffer.winnerId) : ''} and{' '}
-              {cullOffer ? posOf(cullOffer.loserId) : ''} kept . Cull stages photo{' '}
-              {cullOffer ? posOf(cullOffer.loserId) : ''} — deleted only after you confirm the cull
-              list.
+              {prompt?.kind === 'cullOther'
+                ? `Photo ${prompt ? posOf(prompt.otherId) : ''} is still unreviewed. Culling stages it — deleted only after you confirm the cull list.`
+                : `Photo ${prompt ? posOf(prompt.otherId) : ''} is still unreviewed. Leaving it open keeps it in the review queue.`}
             </Text>
             <Pressable
               style={styles.offerCheckRow}
               hitSlop={6}
-              onPress={() => setDontAskAgain((v) => !v)}
+              onPress={() => setRememberAnswer((v) => !v)}
             >
               <View
                 style={[
                   styles.offerCheckbox,
-                  dontAskAgain && { backgroundColor: theme.accent, borderColor: theme.accent },
+                  rememberAnswer && { backgroundColor: theme.accent, borderColor: theme.accent },
                 ]}
               >
-                {dontAskAgain && (
+                {rememberAnswer && (
                   <MaterialCommunityIcons name="check" size={15} color={theme.onAccent} />
                 )}
               </View>
-              <Text style={styles.offerCheckLabel}>
-                Don't ask again — "better" always does what I pick now
-              </Text>
+              <Text style={styles.offerCheckLabel}>Remember this answer</Text>
             </Pressable>
             <View style={styles.offerButtons}>
-              <Pressable
-                style={[styles.offerButton, styles.offerKeepButton]}
-                onPress={() => void resolveCullOffer(false)}
-              >
-                <Text style={styles.offerButtonText}>Keep both</Text>
+              <Pressable style={styles.offerButton} onPress={() => void resolvePrompt(false)}>
+                <Text style={styles.offerButtonText}>Leave open</Text>
               </Pressable>
               <Pressable
-                style={[styles.offerButton, styles.offerCullButton]}
-                onPress={() => void resolveCullOffer(true)}
+                style={[
+                  styles.offerButton,
+                  prompt?.kind === 'cullOther' ? styles.offerCullButton : styles.offerKeepButton,
+                ]}
+                onPress={() => void resolvePrompt(true)}
               >
                 <Text style={styles.offerButtonText}>
-                  Cull {cullOffer ? posOf(cullOffer.loserId) : ''}
+                  {prompt?.kind === 'cullOther'
+                    ? `Cull ${prompt ? posOf(prompt.otherId) : ''}`
+                    : `Keep ${prompt ? posOf(prompt.otherId) : ''}`}
                 </Text>
               </Pressable>
             </View>
@@ -1012,7 +1165,8 @@ const styles = StyleSheet.create({
   header: { gap: 2, paddingHorizontal: 4 },
   headerTitle: { color: colors.text, fontSize: 16, fontWeight: '700' },
   headerHint: { color: colors.textDim, fontSize: 12 },
-  stage: {
+  /** Border here, NOT on the stage (DeckScreen's stageFrame comment). */
+  stageFrame: {
     flex: 1,
     borderRadius: touch.radius,
     borderWidth: 1,
@@ -1020,6 +1174,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     overflow: 'hidden',
   },
+  stage: { flex: 1 },
   stack: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
   abBadge: {
     position: 'absolute',
@@ -1030,6 +1185,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
     paddingVertical: 4,
   },
+  /** The zoom fail-soft notice (DeckScreen's zoomNotice). */
+  zoomNotice: {
+    position: 'absolute',
+    bottom: 12,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderRadius: 6,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  zoomNoticeText: { color: 'rgba(255,255,255,0.85)', fontSize: 12 },
   abBadgeText: {
     color: colors.text,
     fontSize: 13,
@@ -1115,6 +1281,11 @@ const styles = StyleSheet.create({
     borderRadius: touch.radius,
     alignItems: 'center',
     justifyContent: 'center',
+    // "Leave open" writes nothing, so it wears the neutral surface
+    // (STATE_MODEL rule 3); the verdict answer overrides with its hue.
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   offerKeepButton: { backgroundColor: colors.keepDim },
   offerCullButton: { backgroundColor: colors.cullDim },

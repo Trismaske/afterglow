@@ -451,18 +451,27 @@ Auto-update (electron-updater) lands here too.
   Built through a 20-decision vetting grilling and a three-round three-reviewer codex cycle (31 finding groups fixed); 903 tests.
 
 **The 2026-08-20 feedback round (next).**
-F21–F30, settled in an 11-question grilling, spanning m0.8.8 and m0.9: [docs/Feedback_m0.8.7-m0.9.md](docs/Feedback_m0.8.7-m0.9.md).
+F21–F30, settled in an 11-question grilling, spanning m0.8.8 and m0.9; four later items joined the m0.9 half — F31–F32 settled in the m0.8.8 pre-build grilling, F33–F34 still open for m0.9's: [docs/Feedback_m0.8.7-m0.9.md](docs/Feedback_m0.8.7-m0.9.md).
 
-- **m0.8.8 — the review deck** (the 2026-08-20 round's deck cluster).
-  The post-decision advance goes to the nearest unreviewed photo — forward first, backward at the tail — in both deck kinds (F23+F24).
-  "Not related" joins the verdict row (Keep · Compare · Not related · Cull, weighted widths, always present and disabled where inapplicable), reclaiming ~68 px of stage on groups and unifying the group/singles layout; heights and weights are device-pass tunables (F28).
-  Compare's buttons become Keep (green, writes immediately) and Cull (red, writes immediately) with one binary complement prompt for the other photo; the whole-table machinery and "is better" wording are deleted, and the don't-ask-again preference is rewired into the prompts (F29).
-  Zoom becomes pixel-perfect at any depth: a BitmapRegionDecoder snapshot function in the native module serves the settled viewport at native resolution on all three zoom surfaces, with the base decode raised to ≥4096 px (F22; escalation pre-registered: raise the base → pivot to a tiling library).
+- **m0.8.8 — the review deck** (the 2026-08-20 round's deck cluster: F22 F23 F24 F28 F29; S10e-complete, tag gated on the S23 pass).
+  **The advance** (F23+F24): an advancing decision jumps both deck kinds to the nearest unreviewed photo — forward first, backward at the tail, staying put when none remain (`lib/deckAdvance.ts`); browse-mode re-decides stop yanking the cursor.
+  **The verdict row** (F28): one weighted row — Keep (1.4) · Compare (1) · Not related (1) · Cull (1.4) — always present, disabled where inapplicable, unifying group/singles geometry and reclaiming ~68 px of stage.
+  **Compare verdicts** (F29): Keep (green) and Cull (red) both write immediately; one binary complement prompt for the other photo fires only while it is unreviewed, each direction with its own remembered answer (Settings resets both); the whole-table machinery, "is better", and `kept_both` minting are deleted — one duel row per compare, no verdict re-stamps, net-negative code.
+  **Pixel-perfect zoom** (F22): a two-layer region pipeline on all three zoom surfaces — a dwell-warmed **base** (whole image at the largest power-of-2 sample reaching `max(stage px, 3840)`, 128 MB guardrail) carries every gesture; a **patch** (visible region plus byte-budgeted margins, ≥1 source px per physical screen px, aligned to a 512 sensor-px grid) carries every settled view, decoded speculatively mid-gesture and applied seamlessly (stable always-mounted view tree, empty-first double-buffer slots, float-exact transform positioning).
+  Delivery is zero-copy `SharedRef<Bitmap>` into expo-image with downscaling disabled; EXIF display↔sensor mapping is pure and tested; visited bases retain in a 192 MB byte-MRU flushed on unit advance and memory trim (fixed budgets, loud exhaustion logs, no user knob — D9).
+  Max zoom is dynamic per photo: `clamp(2.5 × the 1:1 scale, 24, 48)`.
+  **The gesture rewrite**: ONE tracker (`zoomTouchFrame`, react-native-zoom-toolkit's pinchTransform algebra) owns scale and translation off a single per-stream anchor — focal-locked pinches from the first frame, walking-pan continuity, clamp coherence; stream ownership is explicit (the stage pinch must activate to claim a stream from the pager; an overlay claim stands the stage handlers down); sub-flick release velocities dead-band so a hold-then-lift moves nothing.
+  Platform rules hardened into the code headers: no `runOnJS` from gesture worklets, gesture callbacks inline-only, no host-view mounts under the intercepting detector mid-touch, expo-image swaps `SharedRef` bitmaps asynchronously (hence empty-first slot reuse), and the measured stage view must be borderless — Yoga insets absolute children by the border while `onLayout` reports the border box, a 2 dp seam that deep zoom magnifies into a visible jump.
+  Built from a measured pre-plan spike (`app_process` BitmapRegionDecoder benchmark — recipe in [docs/ANDROID_DEVICE_TESTING.md](docs/ANDROID_DEVICE_TESTING.md)), a 9-decision pre-build grilling, and sixteen tester screen recordings root-caused by frame forensics against the diagnostics sink; 928 tests.
 
 **m0.9 — Media kinds (Videos, widened by the 2026-08-20 round)**
 - **Videos enter review** (singles-first: playback, keep/cull/queues, with grouping later if warranted) — scope confirmed 2026-08-20: expo-video, singles interleaved by capture time, muted by default (F26).
 - **Motion photos play** (F25): scan-time container detection (Samsung SEF and Google XMP) with a one-time backfill, looped muted full-view playback, and zoom always inspecting the still frame.
 - **Kind chips** (GIF · Motion · Video) join the badge vocabulary; plain photos stay unchipped. One Autoplay toggle (default ON, under a "Playback" settings heading) governs motion photos and videos; GIFs keep their native always-animating behavior. Grid thumbnails stay still, chip-badged.
+- **The stage's metadata grows, and becomes configurable** (F33 + F34, reported 2026-08-25).
+  The day·time badge — which F31 already turns into the stage's metadata corner — also carries the file extension and the resolution, on three new `photos` columns riding the same v23 bump the motion-photo kind column takes.
+  A Settings section then chooses which overlay items show at all (source folder, date and time, position in the run, resolution, extension), behind the existing eye.
+  Both items' decisions are open, for the m0.9 pre-build grilling: how resolution reads (pixels, megapixels, or both), whether the section governs the badge cluster as well as the metadata, and what the eye means once per-item rows exist.
 - **The scan explains itself** (F27, presentation — the measured undated-fallback cause is fixed in m0.8.7): no "Scanning…" before the skip check survives, full passes name their reason, deltas name their size, and any further full-pass reason the S23 log capture surfaces gets the same treatment.
 - **Per-ABI APK splits** (deferred from m0.8's Gate 6): the universal APK is ~163 MB with MediaPipe.
   Splits reclaim most of it once the release workflow handles multiple artifacts.

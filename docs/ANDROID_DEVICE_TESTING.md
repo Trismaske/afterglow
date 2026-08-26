@@ -388,6 +388,35 @@ print(bands)   # expect: the status-bar clock + the tapped row's own band, nothi
 PY
 ```
 
+### 6.7 Standalone platform-API benchmarks via `app_process`
+
+Platform APIs (e.g. `BitmapRegionDecoder`, the m0.8.8 F22 spike) can be measured on a device without an app build:
+
+1. Write a plain Java class with a `main` that exercises the API against files pushed to `/data/local/tmp/` and prints timings.
+2. Compile against the platform jar and dex it:
+
+```bash
+javac -cp "$ANDROID_HOME/platforms/android-36/android.jar" Bench.java
+"$ANDROID_HOME/build-tools/36.0.0/d8" Bench*.class --output bench.zip
+adb push bench.zip /data/local/tmp/
+```
+
+3. Run it in a bare Android runtime (no Activity, no APK, no signing):
+
+```bash
+adb shell CLASSPATH=/data/local/tmp/bench.zip app_process /system/bin Bench <args>
+```
+
+Notes from the F22 spike: warm each measurement (first decode pays class-loading and index costs), use real camera files per format tier — codec behavior differs wildly (JPEG entropy cost is linear in the region's row position; HEIC is 512-px-tiled with a full-decode-priced first use), and `sendevent` is denied on unrooted retail devices, so gesture-dependent behavior still needs a finger.
+
+### 6.8 Screen-recording forensics
+
+A tester's screen recording plus the diagnostics sink is a measurement pair, not just a bug report — three m0.8.8 render-geometry defects were root-caused this way without touching the device.
+
+- **Clock alignment**: Samsung names recordings at STOP; the mp4's `creation_time` matches the filename. Recording window = `creation_time − duration`. Sink timestamps are UTC (Z); convert before correlating.
+- **Event location**: extract frames (`ffmpeg -vf fps=…`), compute frame-to-frame mean-absolute-difference, and flag spikes: an isolated spike at rest is an applied render change, spike–freeze–spike is a UI-thread hitch, and a spike riding above steady motion is an artifact mid-gesture. Match spike times against the sink's `[perf]` lines.
+- **Geometry measurement**: when the source photo is available, template-match frames into it (OpenCV `matchTemplate` on Scharr gradients beats raw intensity for text/detail; sweep the scale). Recovering the mapping for two frames — or for two layers within one frame via per-block shift classification — measures displacement, magnification, and anchor errors in exact pixels. This is how a 0.67 % patch-vs-base magnification was traced to `908/902` px — the stage's 1 dp border.
+
 ## 7. Emulator pass
 
 The repository setup creates an accelerated Android 16 emulator:

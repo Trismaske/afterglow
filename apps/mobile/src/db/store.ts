@@ -65,16 +65,6 @@ export interface PersistDecisionExtras {
    * photo between render and tap, and a verdict against the stale
    * assignment would answer a question the user never saw. */
   requireAssignment?: readonly { assetId: string; groupId: number | null }[];
-  /** The mounted set the UI rendered under (m0.8.3 §5): the compare
-   * whole-table revalidation judges outsiders over the SAME population
-   * Compare showed — an unreachable member is outside the table. */
-  mounted?: readonly string[] | null;
-  /** A duel carrying verdicts claims to be the whole table UNLESS this
-   * is explicitly false (m0.8.6 D7): the triage "Keep this one" writes a
-   * NARROW, explicitly-targeted keep on the winner and says nothing
-   * about the rest of the table, so the outsider check must not run for
-   * it. Defaulting to the stricter claim keeps the guard fail-closed. */
-  duelClaimsWholeTable?: boolean;
 }
 
 /**
@@ -186,6 +176,23 @@ export async function setSetting(db: SQLiteDatabase, key: string, value: string)
     'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     key,
     value,
+  );
+}
+
+/** Write several settings in ONE statement — atomic. A multi-key
+ * logical operation (Settings' single reset covers both compare-prompt
+ * memories) must commit whole or not at all: two independent writes
+ * could leave one direction cleared while the failure copy claims
+ * nothing changed (codex m0.8.8 round 1). */
+export async function setSettings(
+  db: SQLiteDatabase,
+  entries: ReadonlyArray<readonly [key: string, value: string]>,
+): Promise<void> {
+  if (entries.length === 0) return;
+  await db.runAsync(
+    `INSERT INTO settings (key, value) VALUES ${entries.map(() => '(?, ?)').join(', ')}
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ...entries.flat(),
   );
 }
 
@@ -378,53 +385,35 @@ export async function applyReviewDecisions(
     // write — recording/culling against the wrong group must abort whole
     // (the provider surfaces the error; nothing commits).
     if (extras.duel) {
-      const members = await txn.getAllAsync<{ photo_id: string }>(
-        `SELECT a.photo_id FROM photo_group_assignments a
+      const members = await txn.getAllAsync<{ photo_id: string; state: string }>(
+        `SELECT a.photo_id, p.state FROM photo_group_assignments a
          JOIN photos p ON p.asset_id = a.photo_id
          WHERE a.group_id = ? AND a.photo_id IN (?, ?)
-           -- Both endpoints must still be DUELABLE — undecided or kept
-           -- (F11 lets kept members rejoin a duel; staged culls stay
-           -- out on both endpoints): an externally removed, trashed or
-           -- staged endpoint would record a duel against an unavailable
-           -- photo, metadata-freezing the group around it.
-           AND p.is_present = 1 AND p.state IN ('unreviewed', 'kept')`,
+           AND p.is_present = 1`,
         Number(extras.duel.groupId),
         extras.duel.winnerId,
         extras.duel.loserId,
       );
-      if (members.length !== 2) {
+      // Per-endpoint validity (F29 codex round 1): the WINNER must still
+      // be keepable — undecided or kept (F11 lets kept members rejoin a
+      // duel) — while the LOSER may additionally be CULLED: the two-step
+      // "Cull, then Keep the other" flow records its reversed duel
+      // AFTER the cull committed, so a culled loser is the flow's
+      // normal state, not evidence the group changed. Removed and
+      // trashed endpoints still abort (the rows above exclude them).
+      const stateOf = new Map(members.map((m) => [m.photo_id, m.state]));
+      const winnerState = stateOf.get(extras.duel.winnerId);
+      const loserState = stateOf.get(extras.duel.loserId);
+      const winnerOk = winnerState === 'unreviewed' || winnerState === 'kept';
+      const loserOk =
+        loserState === 'unreviewed' || loserState === 'kept' || loserState === 'culled';
+      if (members.length !== 2 || !winnerOk || !loserOk) {
         throw new Error('This group changed while comparing — reopen it and try again.');
       }
-      // A duel that WRITES verdicts claims to be the whole table (F15):
-      // every alive member must be one of the two endpoints. Compare
-      // checks this before offering the dialog, but a warm scan can add
-      // an undecided member between its load and this write — a verdict
-      // would then close a question the duel never asked. The triage
-      // "Keep this one" (m0.8.6 D7) opts out explicitly: a targeted keep
-      // on one endpoint makes no whole-table claim, and the endpoint
-      // check above is its narrow guard.
-      if (changes.length > 0 && extras.duelClaimsWholeTable !== false) {
-        // The whole-table claim is judged over the SAME population the
-        // UI showed (m0.8.3 §5, codex phase-3): an unreviewed member on
-        // an ejected card is outside the table Compare offered, so it
-        // must not fail a legitimate duel — its verdict question waits
-        // for remount, exactly like the rest of its card.
-        const duelReach = reachClause(extras.mounted ?? null, 'p.volume_name');
-        const outsider = await txn.getFirstAsync<{ photo_id: string }>(
-          `SELECT a.photo_id FROM photo_group_assignments a
-           JOIN photos p ON p.asset_id = a.photo_id
-           WHERE a.group_id = ? AND a.photo_id NOT IN (?, ?)
-             AND p.is_present = 1 AND p.state = 'unreviewed'${duelReach.sql}
-           LIMIT 1`,
-          Number(extras.duel.groupId),
-          extras.duel.winnerId,
-          extras.duel.loserId,
-          ...duelReach.params,
-        );
-        if (outsider) {
-          throw new Error('This group changed while comparing — reopen it and try again.');
-        }
-      }
+      // No whole-table claim exists any more (m0.8.8 F29/G10): every
+      // compare write is a narrow, explicitly-targeted verdict on one
+      // endpoint, and the endpoint check above is its whole guard. The
+      // m0.8.2–m0.8.6 outsider revalidation left with the dialog.
     }
     for (const change of extras.needsEditChanges ?? []) {
       // v18: the verdict is untouched. Flagging an edit queues an ACTION
@@ -4035,28 +4024,19 @@ export async function getQueueTurnaround(
   }));
 }
 
-/** Compare-screen history: how often a duel ended in keeping both. */
+/** Compare-screen history. The kept-both percentage retired with the
+ * whole-table dialog (m0.8.8 F29/G10): new duels always record
+ * kept_both NULL, so a figure over dialog outcomes would read a closed
+ * era as if it were current behavior. */
 export interface DuelSummary {
-  /** Every duel, triage included — the "N head-to-head compares" count. */
+  /** Every duel — the "N head-to-head compares" count (lifetime-true,
+   * append-only event log). */
   duels: number;
-  /** Duels that carried a DIALOG outcome (kept_both non-null, v19) — the
-   * kept-both percentage's denominator. Triage writes no verdict and
-   * counting it as a keep-both decision inflated the figure. */
-  verdictDuels: number;
-  keptBoth: number;
 }
 
 export async function getDuelSummary(db: SQLiteDatabase): Promise<DuelSummary> {
-  const row = await db.getFirstAsync<{ duels: number; verdictDuels: number; keptBoth: number }>(
-    `SELECT COUNT(*) AS duels, COUNT(kept_both) AS verdictDuels,
-            SUM(kept_both) AS keptBoth
-       FROM duels`,
-  );
-  return {
-    duels: Number(row?.duels ?? 0),
-    verdictDuels: Number(row?.verdictDuels ?? 0),
-    keptBoth: Number(row?.keptBoth ?? 0),
-  };
+  const row = await db.getFirstAsync<{ duels: number }>(`SELECT COUNT(*) AS duels FROM duels`);
+  return { duels: Number(row?.duels ?? 0) };
 }
 
 /** Decisions and culls since a timestamp — the decisiveness trend's

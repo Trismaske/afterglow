@@ -1,26 +1,35 @@
 /**
- * Compare-tool confirmation preferences (m0.5; tri-state m0.8.2 —
- * Tristan's grilling) — settings-table keys.
+ * Compare-tool prompt preferences (m0.8.8, F29/G10, D8) —
+ * settings-table keys.
  *
- * A whole-table "X is better" raises the keep-both/cull dialog, whose
- * "Don't ask again" checkbox sticks with WHICHEVER outcome it rides on:
- * suppressed-with-cull means better = auto-cull the loser;
- * suppressed-with-keep-both means better = auto-keep both. Settings'
- * "Reset confirmation dialogs" row restores asking.
+ * Compare's Keep and Cull write immediately; each is followed by ONE
+ * binary prompt about the other photo ("Cull the other photo?" after a
+ * keep, "Keep the other photo?" after a cull) that fires only while the
+ * other photo is still unreviewed. The prompt's "Remember this answer"
+ * checkbox stores WHICHEVER button was pressed, per direction: a
+ * remembered verdict auto-applies it, a remembered "Leave open"
+ * silences the prompt. Settings' "Reset confirmation dialogs" row
+ * clears both memories.
  */
 
-/** Legacy key name kept (durable settings row): '1' = auto-cull,
- * 'keep_both' = auto-keep-both, anything else = ask. */
-export const COMPARE_AUTO_CULL_KEY = 'compare_auto_cull_loser';
+/** After "Keep {photo}": what happens to the other, still-unreviewed photo. */
+export const COMPARE_AFTER_KEEP_KEY = 'compare_after_keep';
+/** After "Cull {photo}": what happens to the other, still-unreviewed photo. */
+export const COMPARE_AFTER_CULL_KEY = 'compare_after_cull';
 
-export type CompareDuelPref = 'ask' | 'cull' | 'keep_both';
+export type CompareAfterKeep = 'ask' | 'cull' | 'leave';
+export type CompareAfterCull = 'ask' | 'keep' | 'leave';
 
-export function parseCompareDuelPref(raw: string | null): CompareDuelPref {
-  if (raw === '1') return 'cull';
-  if (raw === 'keep_both') return 'keep_both';
-  return 'ask';
+export function parseCompareAfterKeep(raw: string | null): CompareAfterKeep {
+  return raw === 'cull' || raw === 'leave' ? raw : 'ask';
 }
 
-export function serializeCompareDuelPref(pref: CompareDuelPref): string {
-  return pref === 'cull' ? '1' : pref === 'keep_both' ? 'keep_both' : '0';
+export function parseCompareAfterCull(raw: string | null): CompareAfterCull {
+  return raw === 'keep' || raw === 'leave' ? raw : 'ask';
+}
+
+/** Both prefs serialize as their literal value; 'ask' is the absent /
+ * reset state, so parsing tolerates any garbage as 'ask'. */
+export function serializeComparePref(pref: CompareAfterKeep | CompareAfterCull): string {
+  return pref;
 }

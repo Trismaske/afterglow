@@ -250,19 +250,11 @@ interface ReviewContextValue {
    * displayed group id is validated in the transaction — a background
    * rescan may have rebuilt the group since render. */
   makeSingle: (assetId: string, expectedGroupId: number) => Promise<void>;
-  /** Compare TRIAGE (3+ alive), m0.8.6 D7: "Keep this one" — a
-   * targeted keep on the winner plus the duel row, in one transaction.
-   * The narrow endpoint guard applies; no whole-table claim is made, so
-   * the loser and the rest of the table stay untouched. */
+  /** Compare's one duel-carrying write (m0.8.8 F29/G10): a targeted
+   * keep on the winner plus the duel row (kept_both NULL), in one
+   * transaction. The narrow endpoint guard applies; the loser and the
+   * rest of the table stay untouched. */
   compareKeepWinner: (groupId: number, winnerId: string, loserId: string) => Promise<void>;
-  /** Compare: cull the loser (records history + stages the cull). The
-   * winner stays untouched — a cull judgment says nothing about keeping. */
-  compareCull: (groupId: number, loserId: string, winnerId: string) => Promise<void>;
-  /** The two-photo dialog's explicit "Keep both" (m0.8.2, F15): BOTH
-   * participants land on kept, atomically. With a group: plus the duel
-   * row in the same transaction. Without (singles): a plain two-photo
-   * keep, each validated still-single. */
-  compareKeepBoth: (winnerId: string, loserId: string, groupId?: number) => Promise<void>;
   needsEdit: (assetId: string) => boolean;
   toggleNeedsEdit: (assetId: string) => Promise<void>;
   favouriteStatus: (assetId: string) => FavouriteStatus;
@@ -1464,119 +1456,34 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     [db, write],
   );
 
-  const recordDuel = useCallback(
-    async (
-      groupId: number,
-      winnerId: string,
-      loserId: string,
-      mode: 'keepBoth' | 'cull' | 'keepWinner',
-    ) => {
-      const duel: DuelRecord = {
-        groupId: String(groupId),
-        winnerId,
-        loserId,
-        // keptBoth records the whole-table DIALOG's outcome (v19): true
-        // = Keep both, false = Cull. The triage keep records NULL — it
-        // answers "which is better", not the dialog's question, and
-        // Stats' kept-both percentage reads over dialog outcomes only.
-        keptBoth: mode === 'keepBoth' ? true : mode === 'cull' ? false : null,
-        at: Date.now(),
-      };
-      // Verdicts (F15 + m0.8.6 D7): the dialog's "Keep both" keeps BOTH;
-      // its "Cull" stages the loser; the triage "Keep this one" keeps
-      // the winner alone. Duel and verdicts land in ONE transaction — a
-      // partial compare verdict must be impossible.
-      const verdicts: [string, ReviewVerdict][] =
-        mode === 'keepBoth'
-          ? [
-              [winnerId, 'kept'],
-              [loserId, 'kept'],
-            ]
-          : mode === 'cull'
-            ? [[loserId, 'culled']]
-            : [[winnerId, 'kept']];
-      return applyReviewDecisions(db, verdicts, duel.at, {
-        duel,
-        // The triage keep is a NARROW, explicitly-targeted verdict: it
-        // claims nothing about the rest of the table (D7), so only the
-        // dialog modes carry the whole-table claim.
-        duelClaimsWholeTable: mode !== 'keepWinner',
-        // The whole-table revalidation judges outsiders over the SAME
-        // mounted population Compare RENDERED (m0.8.3 §5, final cycle
-        // S5/T4) — a queue-backed group pairs with the queue snapshot's
-        // own set (deckMountedRef could be a previously browsed deck's
-        // world); an independently loaded group uses its loadGroup set.
-        // Never a fresh read, which a mid-compare remount could widen.
-        mounted: snapshotRef.current.groups.some((g) => g.groupId === groupId)
-          ? snapshotMountedRef.current
-          : (deckMountedRef.current ?? snapshotMountedRef.current),
-      });
-    },
-    [db],
-  );
-
-  /** Triage's positive act (m0.8.6 D7): a targeted keep on the duel's
-   * winner plus the duel row, in one transaction. The narrow guard is
-   * the store's endpoint check — no whole-table claim is made, so the
-   * loser and the rest of the table stay exactly as they were. */
+  /** Compare's one duel-carrying write (m0.8.8 F29/G10): a targeted
+   * keep on the winner plus the duel row (kept_both NULL — the duel
+   * records which of the pair was kept, nothing more), in one
+   * transaction. The store's endpoint check is its whole guard: every
+   * compare write is narrow, so the m0.8.2–m0.8.6 whole-table claim,
+   * its mounted-population revalidation, and the kept_both true/false
+   * dialog outcomes are gone (their historical rows remain). */
   const compareKeepWinner = useCallback(
     (groupId: number, winnerId: string, loserId: string) =>
-      write(() => recordDuel(groupId, winnerId, loserId, 'keepWinner'), {
-        kind: 'duel',
-        groupId,
-        winnerId,
-        loserId,
-        mode: 'keepWinner',
-      }),
-    [recordDuel, write],
-  );
-
-  const compareKeepBoth = useCallback(
-    (winnerId: string, loserId: string, groupId?: number) => {
-      if (groupId !== undefined) {
-        return write(() => recordDuel(groupId, winnerId, loserId, 'keepBoth'), {
+      write(
+        () => {
+          const duel: DuelRecord = {
+            groupId: String(groupId),
+            winnerId,
+            loserId,
+            keptBoth: null,
+            at: Date.now(),
+          };
+          return applyReviewDecisions(db, [[winnerId, 'kept']], duel.at, { duel });
+        },
+        {
           kind: 'duel',
           groupId,
           winnerId,
           loserId,
-          mode: 'keepBoth',
-        });
-      }
-      // Singles: no group, no duel row — just both kept, each
-      // validated STILL single (a scan may have grouped one mid-compare,
-      // and a verdict would then answer for a group the user never saw).
-      return write(
-        () =>
-          applyReviewDecisions(
-            db,
-            [
-              [winnerId, 'kept'],
-              [loserId, 'kept'],
-            ],
-            Date.now(),
-            {
-              requireAssignment: [
-                { assetId: winnerId, groupId: null },
-                { assetId: loserId, groupId: null },
-              ],
-            },
-          ),
-        { kind: 'keepMany', assetIds: [winnerId, loserId] },
-      );
-    },
-    [db, recordDuel, write],
-  );
-
-  const compareCull = useCallback(
-    (groupId: number, loserId: string, winnerId: string) =>
-      write(() => recordDuel(groupId, winnerId, loserId, 'cull'), {
-        kind: 'duel',
-        groupId,
-        winnerId,
-        loserId,
-        mode: 'cull',
-      }),
-    [recordDuel, write],
+        },
+      ),
+    [db, write],
   );
 
   const needsEdit = useCallback((assetId: string) => needsEditRef.current.has(assetId), []);
@@ -1846,8 +1753,6 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       keepRest,
       makeSingle,
       compareKeepWinner,
-      compareCull,
-      compareKeepBoth,
       needsEdit,
       toggleNeedsEdit,
       favouriteStatus,
@@ -1889,8 +1794,6 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       keepRest,
       makeSingle,
       compareKeepWinner,
-      compareCull,
-      compareKeepBoth,
       needsEdit,
       toggleNeedsEdit,
       favouriteStatus,

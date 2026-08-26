@@ -339,75 +339,17 @@ describe('reviewPatch parity with db/store.ts', () => {
     );
   });
 
-  it('compare-cull: loser culled and the duel recorded in one transaction', async () => {
+  it("compare 'Keep {N}' (F29): a targeted keep on the winner plus the duel row", async () => {
     const d = await fresh();
-    await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
-    // Member 3 is kept first: a verdict-writing duel claims the whole
-    // table, so every alive member must be an endpoint (F15).
-    await applyReviewDecisions(asExpo(d), [[id('3'), 'kept']], AT + 50);
-    const before = await snapshot(d);
-    const groupId = before.groups[0]!.groupId;
-    await expectParity(
-      d,
-      before,
-      { kind: 'duel', groupId, winnerId: id('1'), loserId: id('2'), mode: 'cull' },
-      () =>
-        applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 100, {
-          duel: {
-            groupId: String(groupId),
-            winnerId: id('1'),
-            loserId: id('2'),
-            keptBoth: false,
-            at: AT + 100,
-          },
-        }),
-    );
-  });
-
-  it('compare keep-both (F15): BOTH kept in one transaction; the group leaves the queue', async () => {
-    const d = await fresh();
-    await seed(d, ['1', '2', '3'], [['1', '2']]);
-    const before = await snapshot(d);
-    const groupId = before.groups[0]!.groupId;
-    const after = await expectParity(
-      d,
-      before,
-      { kind: 'duel', groupId, winnerId: id('1'), loserId: id('2'), mode: 'keepBoth' },
-      () =>
-        applyReviewDecisions(
-          asExpo(d),
-          [
-            [id('1'), 'kept'],
-            [id('2'), 'kept'],
-          ],
-          AT + 100,
-          {
-            duel: {
-              groupId: String(groupId),
-              winnerId: id('1'),
-              loserId: id('2'),
-              keptBoth: true,
-              at: AT + 100,
-            },
-          },
-        ),
-    );
-    // Both decided → the pair leaves the queue entirely.
-    expect(after.groups.some((g) => g.groupId === groupId)).toBe(false);
-  });
-
-  it("triage 'Keep this one' (D7): a targeted keep on the winner, no whole-table claim", async () => {
-    const d = await fresh();
-    // Member 3 stays undecided — the duel is NOT the whole table, and the
-    // narrow claim must let the keep through where the whole-table guard
-    // would have thrown.
+    // Member 3 stays undecided — every compare write is narrow (F29), so
+    // an undecided outsider never blocks the keep.
     await seed(d, ['1', '2', '3', '4'], [['1', '2', '3']]);
     const before = await snapshot(d);
     const groupId = before.groups[0]!.groupId;
     const after = await expectParity(
       d,
       before,
-      { kind: 'duel', groupId, winnerId: id('1'), loserId: id('2'), mode: 'keepWinner' },
+      { kind: 'duel', groupId, winnerId: id('1'), loserId: id('2') },
       () =>
         applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100, {
           duel: {
@@ -417,7 +359,6 @@ describe('reviewPatch parity with db/store.ts', () => {
             keptBoth: null,
             at: AT + 100,
           },
-          duelClaimsWholeTable: false,
         }),
     );
     // The winner alone is kept; the loser and the outsider stay open,
@@ -426,26 +367,6 @@ describe('reviewPatch parity with db/store.ts', () => {
     expect(group.members.find((m) => m.asset_id === id('1'))!.state).toBe('kept');
     expect(group.members.find((m) => m.asset_id === id('2'))!.state).toBe('unreviewed');
     expect(group.members.find((m) => m.asset_id === id('3'))!.state).toBe('unreviewed');
-  });
-
-  it('a verdict-carrying duel WITHOUT the narrow opt-out still claims the whole table', async () => {
-    const d = await fresh();
-    await seed(d, ['1', '2', '3', '4'], [['1', '2', '3']]);
-    const before = await snapshot(d);
-    const groupId = before.groups[0]!.groupId;
-    // Member 3 is an undecided outsider: the whole-table revalidation
-    // must reject the claim (fail-closed default).
-    await expect(
-      applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100, {
-        duel: {
-          groupId: String(groupId),
-          winnerId: id('1'),
-          loserId: id('2'),
-          keptBoth: null,
-          at: AT + 100,
-        },
-      }),
-    ).rejects.toThrow(/group changed while comparing/);
   });
 
   it('make-single ejects into feed order; a 2-member group dissolves whole', async () => {

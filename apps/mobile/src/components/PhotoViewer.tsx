@@ -14,6 +14,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   FlatList,
   Modal,
+  PixelRatio,
   Pressable,
   StyleSheet,
   Text,
@@ -58,12 +59,13 @@ import { VERDICT_META } from './progress/stateMeta';
 import { StateEditorSheet } from './progress/StateEditorSheet';
 import type { GridPhoto } from './progress/PhotoStateGrid';
 import { useDoubleTapZoom } from './useDoubleTapZoom';
+import { useRegionZoom } from './useRegionZoom';
+import { MAX_SCALE_FLOOR, maxScaleFor } from '../lib/regionZoom';
 import {
-  PAN_TRACKING_START,
-  PINCH_TRACKING_START,
+  FLICK_MIN_VELOCITY,
+  ZOOM_TRACKING_START,
   panBounds,
-  panFrame,
-  pinchFrame,
+  zoomTouchFrame,
 } from '../lib/zoomTarget';
 
 /** What a host must know about each photo it shows. */
@@ -80,13 +82,13 @@ export interface ViewerItem {
   day?: string | null;
 }
 
-// 16× (Tristan, 2026-08-04). Past 1:1 pixels by design: a 50 MP frame
-// reaches one source pixel per screen pixel at ~5.7× on a 1440 px-wide
-// phone, so the top of this range magnifies interpolation rather than
-// revealing detail — wanted for inspecting a focus point, not for
-// judging sharpness. panBounds clamps to the photo's own edges, so a
-// deep zoom cannot wander off the content.
-const MAX_SCALE = 16;
+// The max zoom is DYNAMIC per photo (m0.8.8, Tristan): enough to reach
+// 1:1 physical pixels plus inspection headroom, between MAX_SCALE_FLOOR
+// and MAX_SCALE_CEILING — a fixed 16 stopped BEFORE 1:1 on a 200MP
+// photo, while deep fixed maxima on a 12MP photo are pure mush. `maxScaleFor` in
+// lib/regionZoom.ts owns the formula; each surface carries it in a
+// shared value the pinch clamp reads. panBounds clamps to the photo's
+// own edges, so a deep zoom cannot wander off the content.
 
 function clampPan(value: number, max: number): number {
   'worklet';
@@ -166,24 +168,55 @@ export function PhotoViewer({
   const savedTy = useSharedValue(0);
   const stageW = useSharedValue(0);
   const stageH = useSharedValue(0);
+  /** Dynamic per-photo zoom ceiling (maxScaleFor) — shared value so the
+   * pinch worklet clamps without touching the bridge. */
+  const maxScale = useSharedValue<number>(MAX_SCALE_FLOOR);
   // Photo width / height, set by the overlay image's onLoad (JS → shared
   // value, the safe bridge direction). Pans clamp to the photo's own
   // rendered edges via panBounds — 0 means not yet loaded.
   const imageAspect = useSharedValue(0);
-  // A pinch must prove itself before it may change the zoom (see
-  // lib/zoomTarget PINCH_ENGAGE_DELTA): these carry that decision, and
-  // the raw scale it was made at, across the gesture's frames.
-  const pinchTracking = useSharedValue(PINCH_TRACKING_START);
-  /** This touch stream actually CHANGED the zoom — its release is a
-   * pinch ending, not a flick, so the pan decay stays out of it
-   * (DeckScreen carries the same rule). */
-  const pinchZoomed = useSharedValue(false);
-  // The touch-position pan's anchor + base (m0.8.6 §10, lib/zoomTarget
-  // panFrame): translation is derived from the fingers' absolute focal
-  // position against these, re-anchored on every touch-set change, so
-  // panning stays continuous while two thumbs walk across the photo.
-  const panTracking = useSharedValue(PAN_TRACKING_START);
+  // ONE tracker for the whole pinch-pan (zoomTouchFrame, m0.8.8 —
+  // DeckScreen carries the rationale).
+  const zoomTracking = useSharedValue(ZOOM_TRACKING_START);
+  /** The overlay's handlers own the current touch stream — the stage
+   * pinch (which can receive the same stream through the shared
+   * interceptor) stands down completely while this is set. */
+  const overlayOwnsStream = useSharedValue(false);
   const pagerGesture = useNativeGesture();
+
+  // F22 (m0.8.8): the region-zoom pipeline for the current page — the
+  // hook polls the shared values from JS (never runOnJS; see the bridge
+  // comment above). The viewer is dwell-by-nature, so bases warm almost
+  // immediately after a page settles.
+  const regionStageSize = useCallback(
+    () => ({ width: stageW.value, height: stageH.value }),
+    [stageW, stageH],
+  );
+  const regionViewport = useCallback(
+    () => ({ scale: scale.value, tx: tx.value, ty: ty.value }),
+    [scale, tx, ty],
+  );
+  const regionZoom = useRegionZoom(
+    currentId,
+    current?.uri ?? null,
+    current !== null,
+    regionStageSize,
+    regionViewport,
+  );
+
+  // The photo's real resolution sets its zoom ceiling; unknown keeps
+  // the classic floor.
+  useEffect(() => {
+    maxScale.value = regionZoom.sourceSize
+      ? maxScaleFor(
+          stageW.value,
+          stageH.value,
+          regionZoom.sourceSize.width,
+          regionZoom.sourceSize.height,
+          PixelRatio.get(),
+        )
+      : MAX_SCALE_FLOOR;
+  }, [regionZoom.sourceSize, maxScale, stageW, stageH]);
 
   const resetZoom = useCallback(() => {
     scale.value = 1;
@@ -207,25 +240,54 @@ export function PhotoViewer({
   // gesture rebuilt while a touch is in flight is its own crash.
   const zoomGesture = usePinchGesture({
     simultaneousWith: pagerGesture,
-    onUpdate: (event) => {
-      // pinchFrame carries engagement AND finger-change re-anchoring
-      // (§10 check 9): a finger landing or lifting mid-gesture holds
-      // the zoom instead of leaping with the new finger distance.
-      const step = pinchFrame(
-        pinchTracking.value,
-        event.scale,
-        event.numberOfPointers,
+    // The pinch DETECTOR exists to claim two-finger touches from the
+    // pager; the zoom itself is driven from the raw touch frames below
+    // (zoomTouchFrame — ONE tracker, DeckScreen carries the rationale).
+    onBegin: () => {
+      // A zoomed stream belongs to the OVERLAY's handlers; the stage
+      // pinch may still receive it through the shared interceptor, and
+      // acting on it would fight the overlay over the one tracker
+      // (S10e video 13: single-finger pans froze into identity frames
+      // against the stage's per-frame re-anchor).
+      if (overlayOwnsStream.value) return;
+      cancelAnimation(scale);
+      cancelAnimation(tx);
+      cancelAnimation(ty);
+      zoomTracking.value = ZOOM_TRACKING_START;
+    },
+    onTouchesCancel: () => {
+      // The pager stole the stream — drop the anchor so nothing stale
+      // survives into the next touch.
+      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
+    },
+    onTouchesMove: (event) => {
+      if (overlayOwnsStream.value) return;
+      const step = zoomTouchFrame(
+        zoomTracking.value,
+        event.allTouches,
+        // One finger on the stage belongs to the pager — and so does
+        // the stream until the pinch ACTIVATES: activation is what
+        // claims it from the native scroll, and zooming before the
+        // claim let the pager steal the stream mid-zoom (S10e video
+        // 13's per-photo first-pinch freeze).
+        event.state === State.ACTIVE && event.allTouches.length >= 2,
         scale.value,
+        tx.value,
+        ty.value,
+        1,
+        maxScale.value,
+        stageW.value / 2,
+        stageH.value / 2,
       );
-      pinchTracking.value = step.tracking;
-      if (step.scale === null) return;
-      pinchZoomed.value = true;
-      scale.value = Math.min(MAX_SCALE, Math.max(1, step.scale));
-      const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
-      tx.value = clampPan(tx.value, bounds.maxX);
-      ty.value = clampPan(ty.value, bounds.maxY);
+      zoomTracking.value = step.tracking;
+      if (step.transform === null) return;
+      scale.value = step.transform.scale;
+      const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, step.transform.scale);
+      tx.value = clampPan(step.transform.x, bounds.maxX);
+      ty.value = clampPan(step.transform.y, bounds.maxY);
     },
     onDeactivate: () => {
+      if (overlayOwnsStream.value) return;
       savedScale.value = scale.value;
       savedTx.value = tx.value;
       savedTy.value = ty.value;
@@ -233,9 +295,10 @@ export function PhotoViewer({
     // onFinalize also fires on cancellation — a broken gesture can never
     // strand the overlay barely above scale 1, covering the pager.
     onFinalize: () => {
-      // The engagement decision belongs to ONE pinch: left standing, the
-      // next two fingers down would resume mid-zoom from a stale base.
-      pinchTracking.value = PINCH_TRACKING_START;
+      if (overlayOwnsStream.value) return;
+      // The anchor belongs to ONE touch stream: left standing, the next
+      // two fingers down would resume mid-zoom from a stale base.
+      zoomTracking.value = ZOOM_TRACKING_START;
       // Follows onBegin, so it fires for plain taps too — do nothing
       // when there was never a zoom to unwind (DeckScreen's guard): a
       // tap's finalize otherwise races the JS double-tap zoom
@@ -276,41 +339,49 @@ export function PhotoViewer({
       cancelAnimation(ty);
       savedTx.value = tx.value;
       savedTy.value = ty.value;
-      // A fresh touch stream: whether it turns into a pinch is decided
-      // by the frames ahead of it.
-      pinchZoomed.value = false;
+      // A fresh touch stream: a fresh anchor, and whether it turns into
+      // a pinch is decided by the frames ahead of it (tracking.zoomed).
+      zoomTracking.value = ZOOM_TRACKING_START;
+      // Claim the stream: the stage pinch stands down until finalize.
+      overlayOwnsStream.value = true;
     },
-    // The zoomed pan is TOUCH-POSITION anchored (m0.8.6 §10, the
-    // react-native-zoom-toolkit port — DeckScreen carries the full
-    // rationale): translation comes from the fingers' absolute focal
-    // position each frame (panFrame), not from the start-relative
-    // translationX/Y whose averaged origin jumps at every finger land
-    // or lift. A touch-set change re-anchors instead (down/up force
-    // it; panFrame's count check catches a same-count swap between
-    // move frames), keeping the translation continuous.
+    onTouchesCancel: () => {
+      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
+    },
+    // The whole zoomed pinch-pan runs off the raw touch frames
+    // (zoomTouchFrame — m0.8.6 §10's touch-position anchoring, unified
+    // with the pinch in m0.8.8; DeckScreen carries the rationale): a
+    // touch-set change re-anchors (down/up force it; the count check
+    // catches a same-count swap between move frames), so everything
+    // stays continuous across finger changes.
     onTouchesDown: () => {
-      panTracking.value = PAN_TRACKING_START;
+      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
     },
     onTouchesUp: () => {
-      panTracking.value = PAN_TRACKING_START;
+      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
     },
     onTouchesMove: (event) => {
-      const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
-      const step = panFrame(
-        panTracking.value,
+      const step = zoomTouchFrame(
+        zoomTracking.value,
         event.allTouches,
-        // Not yet active (or not zoomed) re-anchors continuously, so
-        // the pan's activation threshold cannot jump the photo either.
-        event.state === State.ACTIVE && scale.value > 1,
+        // Two fingers drive unconditionally (a pinch must be focal-
+        // anchored from its FIRST frame); a single finger waits for
+        // activation so a tap's jitter cannot nudge the photo.
+        scale.value > 1 && (event.allTouches.length >= 2 || event.state === State.ACTIVE),
+        scale.value,
         tx.value,
         ty.value,
-        bounds.maxX,
-        bounds.maxY,
+        1,
+        maxScale.value,
+        stageW.value / 2,
+        stageH.value / 2,
       );
-      panTracking.value = step.tracking;
-      if (step.translation === null) return;
-      tx.value = step.translation.x;
-      ty.value = step.translation.y;
+      zoomTracking.value = step.tracking;
+      if (step.transform === null) return;
+      scale.value = step.transform.scale;
+      const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, step.transform.scale);
+      tx.value = clampPan(step.transform.x, bounds.maxX);
+      ty.value = clampPan(step.transform.y, bounds.maxY);
     },
     onDeactivate: (event) => {
       savedTx.value = tx.value;
@@ -318,22 +389,46 @@ export function PhotoViewer({
       if (scale.value <= 1) return;
       // A stream that ZOOMED ends as a pinch, not a flick — momentum
       // out of it flung the photo on every two-finger zoom (round 5).
-      if (pinchZoomed.value) return;
+      if (zoomTracking.value.zoomed) return;
       // The release keeps the flick's momentum — the standard gallery
       // feel (m0.8.5 §10 check 9 round 3), inside the same pan bounds.
+      // Sub-flick velocities are lift-off noise (FLICK_MIN_VELOCITY): a
+      // hold-then-lift moves nothing.
       const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
-      tx.value = withDecay(
-        { velocity: event.velocityX, clamp: [-bounds.maxX, bounds.maxX] },
-        () => {
-          savedTx.value = tx.value;
-        },
-      );
-      ty.value = withDecay(
-        { velocity: event.velocityY, clamp: [-bounds.maxY, bounds.maxY] },
-        () => {
-          savedTy.value = ty.value;
-        },
-      );
+      if (Math.abs(event.velocityX) >= FLICK_MIN_VELOCITY) {
+        tx.value = withDecay(
+          { velocity: event.velocityX, clamp: [-bounds.maxX, bounds.maxX] },
+          () => {
+            savedTx.value = tx.value;
+          },
+        );
+      }
+      if (Math.abs(event.velocityY) >= FLICK_MIN_VELOCITY) {
+        ty.value = withDecay(
+          { velocity: event.velocityY, clamp: [-bounds.maxY, bounds.maxY] },
+          () => {
+            savedTy.value = ty.value;
+          },
+        );
+      }
+    },
+    // Overlay streams release their claim and unwind a barely-above-1
+    // zoom themselves — the stage's finalize (which used to do it) is
+    // gated off while the overlay owns the stream. onFinalize also
+    // fires on cancellation, so a broken stream can never keep the
+    // claim (which would dead-stick the stage pinch).
+    onFinalize: () => {
+      overlayOwnsStream.value = false;
+      zoomTracking.value = ZOOM_TRACKING_START;
+      if (scale.value === 1 && savedScale.value === 1) return;
+      if (scale.value <= 1.02) {
+        scale.value = withTiming(1);
+        savedScale.value = 1;
+        tx.value = withTiming(0);
+        ty.value = withTiming(0);
+        savedTx.value = 0;
+        savedTy.value = 0;
+      }
     },
   });
   // Double-tap resets zoom; the timing animation carries scale back to
@@ -657,7 +752,68 @@ export function PhotoViewer({
                           if (width > 0 && height > 0) imageAspect.value = width / height;
                         }}
                       />
+                      {/* F22: dwell-warmed base + double-buffered patch
+                          slots — ALWAYS MOUNTED, props-only updates
+                          (useRegionZoom header: a mid-gesture mount
+                          breaks RNGH pointer tracking). forPhotoId gate
+                          (codex round 2): a host reload can reorder the
+                          live item array while zoomed, swapping
+                          `current` one commit before the hook's effect
+                          clears the old photo's sources — the gate
+                          blanks that frame instead of blending photos
+                          (DeckScreen carries the same gate). */}
+                      <Image
+                        source={
+                          regionZoom.forPhotoId === current.id
+                            ? (regionZoom.baseSource ?? undefined)
+                            : undefined
+                        }
+                        style={StyleSheet.absoluteFill}
+                        contentFit="contain"
+                        transition={0}
+                        allowDownscaling={false}
+                      />
+                      {regionZoom.patchSlots.map((slot, slotIndex) => (
+                        <Image
+                          key={slotIndex}
+                          source={
+                            regionZoom.forPhotoId === current.id
+                              ? (slot?.source ?? undefined)
+                              : undefined
+                          }
+                          style={{
+                            position: 'absolute',
+                            left: 0,
+                            top: 0,
+                            width: slot?.width ?? 1,
+                            height: slot?.height ?? 1,
+                            // Transform, not left/top: layout snaps to the pixel
+                            // grid, and a deep-zoom scale magnified that snap into
+                            // a visible content jump on every apply (S10e video 6).
+                            transform: [
+                              { translateX: slot?.left ?? 0 },
+                              { translateY: slot?.top ?? 0 },
+                            ],
+                            zIndex: slot?.z ?? 0,
+                            opacity: slot ? 1 : 0,
+                          }}
+                          contentFit="fill"
+                          transition={0}
+                          allowDownscaling={false}
+                        />
+                      ))}
                     </Animated.View>
+                  )}
+                  {/* Zoom-time fail-soft notice (DeckScreen's zoomNotice
+                      comment): the region pipeline rejected this photo —
+                      depth is cached-image quality; say why. m0.9
+                      metadata-corner redesign reviews it. */}
+                  {regionZoom.failed && regionZoom.forPhotoId === current.id && (
+                    <View style={styles.zoomNotice} pointerEvents="none">
+                      <Text style={styles.zoomNoticeText}>
+                        Full detail unavailable — image file can't be fully read
+                      </Text>
+                    </View>
                   )}
                 </Animated.View>
               </VirtualGestureDetector>
@@ -793,6 +949,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 40,
   },
   deadText: { color: colors.textDim, fontSize: 14, textAlign: 'center' },
+  /** The zoom-time fail-soft notice (DeckScreen's zoomNotice). */
+  zoomNotice: {
+    position: 'absolute',
+    bottom: 96,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderRadius: 6,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  zoomNoticeText: { color: 'rgba(255,255,255,0.85)', fontSize: 12 },
   root: { flex: 1, backgroundColor: '#000' },
   stage: { flex: 1 },
   topBar: {

@@ -38,42 +38,44 @@ Both removal affordances use the local `modules/media-store-actions` trash reque
 
 ## src/lib/ (pure logic is unit-tested; impure partner files do the platform I/O)
 
-| File(s)                                                | Role                                                                                          |
-| ------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| media.ts                                               | MediaStore → core `MediaItem` adapter, the app's ONE trash wrapper, volume-qualified ingestion |
-| mediaIdentity.ts                                       | Canonical `<volume>/<rawId>` photo ids, uri-path → volume parse                               |
-| mountedVolumes.ts                                      | Burst-cached mounted-volume set: "reachability is scope, not state"                           |
-| volumeScan.ts                                          | Per-volume scan-contract math: baselines, tripwires, invariants                               |
-| scanWindows.ts                                         | Merge-window accumulator                                                                      |
-| deltaScan.ts                                           | Delta-scan range derivation + the delta-vs-full cost model                                    |
-| scanSkip.ts                                            | Unchanged-library scan-skip fingerprint                                                       |
-| embeddings.ts                                          | Embedding + dHash backfill (impure) over modules/image-embedder                               |
-| dates.ts                                               | Day math, `UNDATED_DAY_KEY`, the EXIF date rescue's pure half                                 |
-| detect.ts / editDetection.ts                           | Edit detection on Home focus: impure wiring / pure heuristics                                 |
-| edit.ts / editActions.ts                               | Editor + viewer launches / intent constants + copy                                            |
-| editMatrix.ts                                          | Gate-0 editor-launch diagnostic matrix                                                        |
-| favourites.ts / favouriteState.ts                      | Batched native favourite apply + verification / intent transitions + badge weights            |
-| organizeFailures.ts / favouriteFailures.ts / trashFailures.ts / shareFailures.ts / editLaunchFailures.ts | The four-boundary failure classifiers: three tiers, from facts we own (Errors_design, m0.8.7) |
-| sources.ts / sourceCatalog.ts                          | Volume-qualified source roots / the native album catalog                                      |
-| timeline.ts                                            | The merged review timeline: units, truncation, pending-only routing                           |
-| deckUnit.ts                                            | The deck's unit identity + the Deck route's param round trip (L4)                             |
-| progress.ts / progressPager.ts                         | Progress/state-bar logic + `groupedUnderlineRuns` / newest-first k-way merged pager           |
-| reviewPatch.ts                                         | Optimistic queue patches, SQL-parity tested                                                   |
-| photoBadges.ts / badgePrefs.ts                         | The badge set a photo wears (actions weighted; folder/SD annotations) / the one durable hide-all toggle |
-| dailyGoal.ts / coverageGoal.ts / groupingPrefs.ts      | The count goal / the independent coverage goal / grouping strictness                          |
-| stats.ts / statsLoad.ts                                | Stats chart geometry / ONE loader per Stats tab                                               |
-| habits.ts / habitsCopy.ts                              | The Habits tab's descriptive math / its sentences                                             |
-| libraryInsights.ts                                     | The Progress page's math: capture histogram, frontier, storage, burst tax                     |
-| forecast.ts / forecastCopy.ts                          | The forward-looking math, refusals included / every sentence the forecast may say             |
-| comparePrefs.ts / zoomTarget.ts                        | Tri-state duel preference / double-tap zoom math (impure partner: `components/useDoubleTapZoom`) |
-| stripScroll.ts                                         | Keeping the deck's thumbnail strip on the current photo (F7)                                  |
-| diagLog.ts / diagShape.ts                              | On-device diagnostics: the console/crash hook wiring / its pure line shaping + suppressor     |
-| hash.ts / concurrency.ts / format.ts / toast.ts / accentTheme.ts | Content-hash fallback id, bounded-parallel map, formatting, toasts, accent tokens   |
+| File(s)                                                                                                  | Role                                                                                                                                                |
+| -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| media.ts                                                                                                 | MediaStore → core `MediaItem` adapter, the app's ONE trash wrapper, volume-qualified ingestion                                                      |
+| mediaIdentity.ts                                                                                         | Canonical `<volume>/<rawId>` photo ids, uri-path → volume parse                                                                                     |
+| mountedVolumes.ts                                                                                        | Burst-cached mounted-volume set: "reachability is scope, not state"                                                                                 |
+| volumeScan.ts                                                                                            | Per-volume scan-contract math: baselines, tripwires, invariants                                                                                     |
+| scanWindows.ts                                                                                           | Merge-window accumulator                                                                                                                            |
+| deltaScan.ts                                                                                             | Delta-scan range derivation + the delta-vs-full cost model                                                                                          |
+| scanSkip.ts                                                                                              | Unchanged-library scan-skip fingerprint                                                                                                             |
+| embeddings.ts                                                                                            | Embedding + dHash backfill (impure) over modules/image-embedder                                                                                     |
+| dates.ts                                                                                                 | Day math, `UNDATED_DAY_KEY`, the EXIF date rescue's pure half                                                                                       |
+| detect.ts / editDetection.ts                                                                             | Edit detection on Home focus: impure wiring / pure heuristics                                                                                       |
+| edit.ts / editActions.ts                                                                                 | Editor + viewer launches / intent constants + copy                                                                                                  |
+| editMatrix.ts                                                                                            | Gate-0 editor-launch diagnostic matrix                                                                                                              |
+| favourites.ts / favouriteState.ts                                                                        | Batched native favourite apply + verification / intent transitions + badge weights                                                                  |
+| organizeFailures.ts / favouriteFailures.ts / trashFailures.ts / shareFailures.ts / editLaunchFailures.ts | The four-boundary failure classifiers: three tiers, from facts we own (Errors_design, m0.8.7)                                                       |
+| sources.ts / sourceCatalog.ts                                                                            | Volume-qualified source roots / the native album catalog                                                                                            |
+| timeline.ts                                                                                              | The merged review timeline: units, truncation, pending-only routing                                                                                 |
+| deckUnit.ts                                                                                              | The deck's unit identity + the Deck route's param round trip (L4)                                                                                   |
+| deckAdvance.ts                                                                                           | The post-decision advance: nearest pending forward, backward at the tail (F23+F24, G4)                                                              |
+| progress.ts / progressPager.ts                                                                           | Progress/state-bar logic + `groupedUnderlineRuns` / newest-first k-way merged pager                                                                 |
+| reviewPatch.ts                                                                                           | Optimistic queue patches, SQL-parity tested                                                                                                         |
+| photoBadges.ts / badgePrefs.ts                                                                           | The badge set a photo wears (actions weighted; folder/SD annotations) / the one durable hide-all toggle                                             |
+| dailyGoal.ts / coverageGoal.ts / groupingPrefs.ts                                                        | The count goal / the independent coverage goal / grouping strictness                                                                                |
+| stats.ts / statsLoad.ts                                                                                  | Stats chart geometry / ONE loader per Stats tab                                                                                                     |
+| habits.ts / habitsCopy.ts                                                                                | The Habits tab's descriptive math / its sentences                                                                                                   |
+| libraryInsights.ts                                                                                       | The Progress page's math: capture histogram, frontier, storage, burst tax                                                                           |
+| forecast.ts / forecastCopy.ts                                                                            | The forward-looking math, refusals included / every sentence the forecast may say                                                                   |
+| comparePrefs.ts / zoomTarget.ts                                                                          | Per-direction compare prompt prefs (D8) / the ONE pinch-pan tracker (`zoomTouchFrame`), pan bounds, double-tap math (impure partner: `components/useDoubleTapZoom`) |
+| regionZoom.ts                                                                                            | F22 region-zoom geometry + policy: base formula (D2), patch sampling (D4), margins (D5), retention (D7). Impure partner: `components/useRegionZoom` |
+| stripScroll.ts                                                                                           | Keeping the deck's thumbnail strip on the current photo (F7)                                                                                        |
+| diagLog.ts / diagShape.ts                                                                                | On-device diagnostics: the console/crash hook wiring / its pure line shaping + suppressor                                                           |
+| hash.ts / concurrency.ts / format.ts / toast.ts / accentTheme.ts                                         | Content-hash fallback id, bounded-parallel map, formatting, toasts, accent tokens                                                                   |
 
 `src/db/`: `database.ts` (schema + the fresh-baseline destructive reset), `store.ts` (verdict writes + queue reads), `actions.ts` (the one four-action queue shape), `trashStore.ts`, `shareStore.ts`, `organizeStore.ts`, `embeddingStore.ts` (the model-SHA pin), `volumeLifecycle.ts` ("Forget this card").
 `src/scan/scanRunner.ts` is the continuous-scan orchestrator.
 Its header carries the whole scan contract: pipeline, unchanged-library skip, delta scan, per-volume rules, and the D15 EXIF date rescue.
-`modules/`: media-store-actions (trash/favourite/write requests, gate-0 probes, the EXIF header read), image-embedder (MediaPipe MobileNetV3-large, pinned `MODEL_SHA256`), material-you-accent, diag-log (the rotating on-device diagnostics sink).
+`modules/`: media-store-actions (trash/favourite/write requests, gate-0 probes, the EXIF header read, the F22 region decoders — RegionZoom.kt), image-embedder (MediaPipe MobileNetV3-large, pinned `MODEL_SHA256`), material-you-accent, diag-log (the rotating on-device diagnostics sink).
 
 ## Gestures: virtual detectors only (Gesture Handler 3)
 
@@ -103,7 +105,7 @@ The screen file's header is the contract.
 - **Settings**: source, goals, accent, the Library scan row, forget-card, resets.
 - **SourcePicker**: volume-tagged rows. Saves trigger a rescan.
 
-Components: `MainTabBar`, `ActionChip`, `DiagErrorBoundary`, `Ghost`, `GoalCelebration`, `AlbumPicker`, `QueueGrid` (the shared selection language), `QueueRemoveChip` (the four queues' one removal affordance, confirm included), `UnitCard`, `QueueViewer` + `useQueueRows` (the queue-screen shell), `useDoubleTapZoom`, `useExternalRefresh` (foreground + volume-mount reloads), `PhotoViewer` (THE standard viewer, hosts the state editor), `DecisionBadge` + `BadgeCluster`, `GoalRing`, `ReDecideSheet`, `BigButton`, `StateProgressBar`, `EditDiagnosticsSheet`, `progress/*`.
+Components: `MainTabBar`, `ActionChip`, `DiagErrorBoundary`, `Ghost`, `GoalCelebration`, `AlbumPicker`, `QueueGrid` (the shared selection language), `QueueRemoveChip` (the four queues' one removal affordance, confirm included), `UnitCard`, `QueueViewer` + `useQueueRows` (the queue-screen shell), `useDoubleTapZoom`, `useRegionZoom` (the F22 pipeline's impure half: dwell warm, settle polling, SharedRef lifetimes, shared retention), `useExternalRefresh` (foreground + volume-mount reloads), `PhotoViewer` (THE standard viewer, hosts the state editor), `DecisionBadge` + `BadgeCluster`, `GoalRing`, `ReDecideSheet`, `BigButton`, `StateProgressBar`, `EditDiagnosticsSheet`, `progress/*`.
 
 ## Verify
 

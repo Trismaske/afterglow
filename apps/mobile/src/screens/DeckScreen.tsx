@@ -9,6 +9,7 @@ import {
   Text,
   View,
   TextInput,
+  PixelRatio,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
@@ -66,13 +67,15 @@ import { addToShareQueue, removeFromShareQueue } from '../db/shareStore';
 import { queueOrganize, unqueueOrganize } from '../db/organizeStore';
 import { useDoubleTapZoom } from '../components/useDoubleTapZoom';
 import {
-  PAN_TRACKING_START,
-  PINCH_TRACKING_START,
+  FLICK_MIN_VELOCITY,
+  ZOOM_TRACKING_START,
   panBounds,
-  panFrame,
-  pinchFrame,
+  zoomTouchFrame,
 } from '../lib/zoomTarget';
 import { stripScrollOffset } from '../lib/stripScroll';
+import { nearestPendingIndex } from '../lib/deckAdvance';
+import { flushRegionZoomRetention, useRegionZoom } from '../components/useRegionZoom';
+import { MAX_SCALE_FLOOR, maxScaleFor } from '../lib/regionZoom';
 import {
   deckUnitKey,
   paramsForUnit,
@@ -98,13 +101,25 @@ type SharedProps = {
 const THUMB = 52;
 const THUMB_GAP = 6;
 const THUMB_INSET = 2;
-// 16× (Tristan, 2026-08-04). Past 1:1 pixels by design: a 50 MP frame
-// reaches one source pixel per screen pixel at ~5.7× on a 1440 px-wide
-// phone, so the top of this range magnifies interpolation rather than
-// revealing detail — wanted for inspecting a focus point, not for
-// judging sharpness. panBounds clamps to the photo's own edges, so a
-// deep zoom cannot wander off the content.
-const MAX_SCALE = 16;
+// The max zoom is DYNAMIC per photo (m0.8.8, Tristan): enough to reach
+// 1:1 physical pixels plus inspection headroom, between MAX_SCALE_FLOOR
+// and MAX_SCALE_CEILING — a fixed 16 stopped BEFORE 1:1 on a 200MP
+// photo, while deep fixed maxima on a 12MP photo are pure mush. `maxScaleFor` in
+// lib/regionZoom.ts owns the formula; each surface carries it in a
+// shared value the pinch clamp reads. panBounds clamps to the photo's
+// own edges, so a deep zoom cannot wander off the content.
+
+/** F28 (m0.8.8, G9): ONE weighted verdict row — Keep · Compare · Not
+ * related · Cull — in both deck kinds, reclaiming the group deck's
+ * fourth row (~68 px of stage). The verdict buttons out-weigh the
+ * middle pair 1.4:1 (fat-finger separation for the writing buttons);
+ * the finish button cedes 64→56 (deck-local — every other surface
+ * keeps `touch.action`). All three numbers are DEVICE-PASS TUNABLES;
+ * the pre-registered fallback for the ¼-width middle labels is icon +
+ * short label. */
+const VERDICT_ROW_MIN_HEIGHT = 50;
+const VERDICT_FLEX = 1.4;
+const FINISH_MIN_HEIGHT = 56;
 
 /** The write-error surface for the deck's DIRECT queue writes (codex r7:
  * toggleShare/toggleOrganize bypass the provider, so its decision alert
@@ -604,24 +619,22 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   const savedTy = useSharedValue(0);
   const stageW = useSharedValue(0);
   const stageH = useSharedValue(0);
+  /** The dynamic per-photo zoom ceiling (maxScaleFor) — a shared value
+   * so the pinch worklet clamps without touching the bridge. */
+  const maxScale = useSharedValue<number>(MAX_SCALE_FLOOR);
   // Photo width / height, set by the overlay image's onLoad (JS → shared
   // value, the safe bridge direction). Pans clamp to the photo's own
   // rendered edges via panBounds — 0 means not yet loaded.
   const imageAspect = useSharedValue(0);
-  // A pinch must prove itself before it may change the zoom (see
-  // lib/zoomTarget PINCH_ENGAGE_DELTA): these carry that decision, and
-  // the raw scale it was made at, across the gesture's frames.
-  const pinchTracking = useSharedValue(PINCH_TRACKING_START);
-  /** This touch stream actually CHANGED the zoom — its release is a
-   * pinch ending, not a flick, so the pan decay stays out of it (round
-   * 5: a pinch release inherited the pan's velocity and flung the
-   * photo). Cleared when the next touch stream begins. */
-  const pinchZoomed = useSharedValue(false);
-  // The touch-position pan's anchor + base (m0.8.6 §10, lib/zoomTarget
-  // panFrame): translation is derived from the fingers' absolute focal
-  // position against these, re-anchored on every touch-set change, so
-  // panning stays continuous while two thumbs walk across the photo.
-  const panTracking = useSharedValue(PAN_TRACKING_START);
+  // ONE tracker for the whole pinch-pan (zoomTouchFrame, m0.8.8): scale
+  // and translation share a single anchor, so they can never disagree —
+  // the two-tracker design made focal anchoring depend on the PAN
+  // gesture's activation state (S10e video 11).
+  const zoomTracking = useSharedValue(ZOOM_TRACKING_START);
+  /** The overlay's handlers own the current touch stream — the stage
+   * pinch (which can receive the same stream through the shared
+   * interceptor) stands down completely while this is set. */
+  const overlayOwnsStream = useSharedValue(false);
 
   const resetZoom = useCallback(() => {
     scale.value = 1;
@@ -677,25 +690,55 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   // Panning belongs to the zoom overlay, which only receives touches
   // while zoomed (see `zoomedGesture`).
   const stageGesture = usePinchGesture({
-    onUpdate: (event) => {
-      // pinchFrame carries engagement AND finger-change re-anchoring
-      // (§10 check 9): a finger landing or lifting mid-gesture holds
-      // the zoom instead of leaping with the new finger distance.
-      const step = pinchFrame(
-        pinchTracking.value,
-        event.scale,
-        event.numberOfPointers,
+    // The pinch DETECTOR exists to claim two-finger touches from the
+    // pager; the zoom itself is driven from the raw touch frames below
+    // (zoomTouchFrame — ONE tracker for scale AND translation, so a
+    // fresh pinch is focal-anchored from its first frame).
+    onBegin: () => {
+      // A zoomed stream belongs to the OVERLAY's handlers; the stage
+      // pinch may still receive it through the shared interceptor, and
+      // acting on it would fight the overlay over the one tracker
+      // (S10e video 13: single-finger pans froze into identity frames
+      // against the stage's per-frame re-anchor).
+      if (overlayOwnsStream.value) return;
+      cancelAnimation(scale);
+      cancelAnimation(tx);
+      cancelAnimation(ty);
+      zoomTracking.value = ZOOM_TRACKING_START;
+    },
+    onTouchesCancel: () => {
+      // The pager stole the stream — drop the anchor so nothing stale
+      // survives into the next touch.
+      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
+    },
+    onTouchesMove: (event) => {
+      if (overlayOwnsStream.value) return;
+      const step = zoomTouchFrame(
+        zoomTracking.value,
+        event.allTouches,
+        // One finger on the stage belongs to the pager — and so does
+        // the stream until the pinch ACTIVATES: activation is what
+        // claims it from the native scroll, and zooming before the
+        // claim let the pager steal the stream mid-zoom (S10e video
+        // 13's per-photo first-pinch freeze).
+        event.state === State.ACTIVE && event.allTouches.length >= 2,
         scale.value,
+        tx.value,
+        ty.value,
+        1,
+        maxScale.value,
+        stageW.value / 2,
+        stageH.value / 2,
       );
-      pinchTracking.value = step.tracking;
-      if (step.scale === null) return;
-      pinchZoomed.value = true;
-      scale.value = Math.min(MAX_SCALE, Math.max(1, step.scale));
-      const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
-      tx.value = clampPan(tx.value, bounds.maxX);
-      ty.value = clampPan(ty.value, bounds.maxY);
+      zoomTracking.value = step.tracking;
+      if (step.transform === null) return;
+      scale.value = step.transform.scale;
+      const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, step.transform.scale);
+      tx.value = clampPan(step.transform.x, bounds.maxX);
+      ty.value = clampPan(step.transform.y, bounds.maxY);
     },
     onDeactivate: () => {
+      if (overlayOwnsStream.value) return;
       savedScale.value = scale.value;
       savedTx.value = tx.value;
       savedTy.value = ty.value;
@@ -704,9 +747,10 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     // broken gesture can never strand the overlay barely above scale 1,
     // covering the pager.
     onFinalize: () => {
-      // The engagement decision belongs to ONE pinch: left standing, the
-      // next two fingers down would resume mid-zoom from a stale base.
-      pinchTracking.value = PINCH_TRACKING_START;
+      if (overlayOwnsStream.value) return;
+      // The anchor belongs to ONE touch stream: left standing, the next
+      // two fingers down would resume mid-zoom from a stale base.
+      zoomTracking.value = ZOOM_TRACKING_START;
       // Follows onBegin, so it fires for plain taps too — do nothing
       // when there was never a zoom to unwind.
       if (scale.value === 1 && savedScale.value === 1) return;
@@ -749,42 +793,49 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       cancelAnimation(ty);
       savedTx.value = tx.value;
       savedTy.value = ty.value;
-      // A fresh touch stream: whether it turns into a pinch is decided
-      // by the frames ahead of it.
-      pinchZoomed.value = false;
+      // A fresh touch stream: a fresh anchor, and whether it turns into
+      // a pinch is decided by the frames ahead of it (tracking.zoomed).
+      zoomTracking.value = ZOOM_TRACKING_START;
+      // Claim the stream: the stage pinch stands down until finalize.
+      overlayOwnsStream.value = true;
     },
-    // The zoomed pan is TOUCH-POSITION anchored (m0.8.6 §10, the
-    // react-native-zoom-toolkit port): translation comes from the
-    // fingers' absolute focal position each frame (panFrame), NOT from
-    // the gesture's start-relative translationX/Y — the averaged point
-    // that translation measures from jumps whenever a finger lands or
-    // lifts, which hiccuped every two-thumb walking pan. A touch-set
-    // change re-anchors instead (down/up force it; panFrame's count
-    // check catches a same-count swap between move frames), so the
-    // translation stays continuous across finger changes.
+    onTouchesCancel: () => {
+      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
+    },
+    // The whole zoomed pinch-pan runs off the raw touch frames
+    // (zoomTouchFrame — m0.8.6 §10's touch-position anchoring, unified
+    // with the pinch in m0.8.8): a touch-set change re-anchors (down/up
+    // force it; the count check catches a same-count swap between move
+    // frames), so everything stays continuous across finger changes.
     onTouchesDown: () => {
-      panTracking.value = PAN_TRACKING_START;
+      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
     },
     onTouchesUp: () => {
-      panTracking.value = PAN_TRACKING_START;
+      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
     },
     onTouchesMove: (event) => {
-      const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
-      const step = panFrame(
-        panTracking.value,
+      const step = zoomTouchFrame(
+        zoomTracking.value,
         event.allTouches,
-        // Not yet active (or not zoomed) re-anchors continuously, so
-        // the pan's activation threshold cannot jump the photo either.
-        event.state === State.ACTIVE && scale.value > 1,
+        // Two fingers drive unconditionally (a pinch must be focal-
+        // anchored from its FIRST frame — never gated on the pan
+        // gesture's activation distance); a single finger waits for
+        // activation so a tap's jitter cannot nudge the photo.
+        scale.value > 1 && (event.allTouches.length >= 2 || event.state === State.ACTIVE),
+        scale.value,
         tx.value,
         ty.value,
-        bounds.maxX,
-        bounds.maxY,
+        1,
+        maxScale.value,
+        stageW.value / 2,
+        stageH.value / 2,
       );
-      panTracking.value = step.tracking;
-      if (step.translation === null) return;
-      tx.value = step.translation.x;
-      ty.value = step.translation.y;
+      zoomTracking.value = step.tracking;
+      if (step.transform === null) return;
+      scale.value = step.transform.scale;
+      const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, step.transform.scale);
+      tx.value = clampPan(step.transform.x, bounds.maxX);
+      ty.value = clampPan(step.transform.y, bounds.maxY);
     },
     onDeactivate: (event) => {
       savedTx.value = tx.value;
@@ -792,23 +843,46 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       if (scale.value <= 1) return;
       // A stream that ZOOMED ends as a pinch, not a flick — momentum
       // out of it flung the photo on every two-finger zoom (round 5).
-      if (pinchZoomed.value) return;
+      if (zoomTracking.value.zoomed) return;
       // The release keeps the flick's momentum (§10 check 9 round 3 —
       // the standard gallery feel), decaying inside the same pan
-      // bounds the drag was clamped to.
+      // bounds the drag was clamped to. Sub-flick velocities are noise
+      // (FLICK_MIN_VELOCITY): a hold-then-lift moves nothing.
       const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
-      tx.value = withDecay(
-        { velocity: event.velocityX, clamp: [-bounds.maxX, bounds.maxX] },
-        () => {
-          savedTx.value = tx.value;
-        },
-      );
-      ty.value = withDecay(
-        { velocity: event.velocityY, clamp: [-bounds.maxY, bounds.maxY] },
-        () => {
-          savedTy.value = ty.value;
-        },
-      );
+      if (Math.abs(event.velocityX) >= FLICK_MIN_VELOCITY) {
+        tx.value = withDecay(
+          { velocity: event.velocityX, clamp: [-bounds.maxX, bounds.maxX] },
+          () => {
+            savedTx.value = tx.value;
+          },
+        );
+      }
+      if (Math.abs(event.velocityY) >= FLICK_MIN_VELOCITY) {
+        ty.value = withDecay(
+          { velocity: event.velocityY, clamp: [-bounds.maxY, bounds.maxY] },
+          () => {
+            savedTy.value = ty.value;
+          },
+        );
+      }
+    },
+    // Overlay streams release their claim and unwind a barely-above-1
+    // zoom themselves — the stage's finalize (which used to do it) is
+    // gated off while the overlay owns the stream. onFinalize also
+    // fires on cancellation, so a broken stream can never keep the
+    // claim (which would dead-stick the stage pinch).
+    onFinalize: () => {
+      overlayOwnsStream.value = false;
+      zoomTracking.value = ZOOM_TRACKING_START;
+      if (scale.value === 1 && savedScale.value === 1) return;
+      if (scale.value <= 1.02) {
+        scale.value = withTiming(1);
+        savedScale.value = 1;
+        tx.value = withTiming(0);
+        ty.value = withTiming(0);
+        savedTx.value = 0;
+        savedTy.value = 0;
+      }
     },
   });
   // m0.7 (#18): double-tap resets zoom. The timing animation carries
@@ -1456,6 +1530,45 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     [pageW, onPagePress],
   );
 
+  // F22 (m0.8.8): the region-zoom pipeline for the current stage photo —
+  // dwell-warmed base + settled patches over the zoom overlay. Keyed on
+  // the LIVE current item, so a frozen (inert) view tears the pipeline
+  // down exactly when its controls go dead. The callbacks READ shared
+  // values from the JS side (the safe direction; the hook polls — never
+  // runOnJS, per the bridge comment above).
+  const regionStageSize = useCallback(
+    () => ({ width: stageW.value, height: stageH.value }),
+    [stageW, stageH],
+  );
+  const regionViewport = useCallback(
+    () => ({ scale: scale.value, tx: tx.value, ty: ty.value }),
+    [scale, tx, ty],
+  );
+  const regionZoom = useRegionZoom(
+    isFocused ? (current?.id ?? null) : null,
+    isFocused ? (current?.uri ?? null) : null,
+    isFocused && current !== null,
+    regionStageSize,
+    regionViewport,
+  );
+  // D7: retained bases die with the unit (the new current stays warm).
+  useEffect(() => {
+    flushRegionZoomRetention(currentIdRef.current ?? undefined);
+  }, [unitKey]);
+  // The photo's real resolution sets its zoom ceiling; unknown (pre-
+  // dwell, failed open) keeps the classic floor.
+  useEffect(() => {
+    maxScale.value = regionZoom.sourceSize
+      ? maxScaleFor(
+          stageW.value,
+          stageH.value,
+          regionZoom.sourceSize.width,
+          regionZoom.sourceSize.height,
+          PixelRatio.get(),
+        )
+      : MAX_SCALE_FLOOR;
+  }, [regionZoom.sourceSize, maxScale, stageW, stageH]);
+
   // A failed unit read renders the inline retry INSTEAD of the empty
   // root below: the failure state routes nowhere (no effect consumes
   // 'failed'), so the unit stays open until the read succeeds or the
@@ -1607,10 +1720,12 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
 
   /** ONE decide handler for both deck kinds (m0.8.2 unification, F10):
    * every verdict leaves the photo in place badged — membership never
-   * changes mid-visit — so a FRESH decision advances the pager past it,
-   * while re-deciding an already-decided photo stays put (the user is
-   * looking at that one). Unreachable while `inert`: every control
-   * that calls it is disabled on a frozen view. */
+   * changes mid-visit — so a FRESH decision advances the pager to the
+   * nearest PENDING photo (m0.8.8 G4, F23+F24: forward first, backward
+   * at the tail, stay when none remain — `lib/deckAdvance.ts`), while
+   * re-deciding an already-decided photo stays put (the user is looking
+   * at that one). Unreachable while `inert`: every control that calls
+   * it is disabled on a frozen view. */
   const decideCurrent = async (target: RedecideTarget) => {
     if (inert || current === null) return;
     const index = cursor;
@@ -1626,7 +1741,15 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     const targetVerdict = target === 'cull' ? 'culled' : 'kept';
     const advances = activeTarget !== target && (prior === 'unreviewed' || targetVerdict !== prior);
     const applied = await redecide(current.id, target);
-    if (advances && applied && index + 1 < deckItems.length) jumpTo(index + 1);
+    if (!advances || !applied) return;
+    // Same pending predicate as unit entry; the just-decided photo is
+    // `from` and never a candidate, so a state row that has not
+    // refreshed yet cannot bounce the cursor back onto it.
+    const jump = nearestPendingIndex(
+      deckItems.map((i) => (stateOf.get(i.id) ?? 'unreviewed') === 'unreviewed'),
+      index,
+    );
+    if (jump !== null) jumpTo(jump);
   };
 
   return (
@@ -1651,20 +1774,30 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
           is the RNGH2-shaped detector: it attaches gestures to the child
           it already has instead of inserting a view, so the hierarchy —
           and both behaviours above — stay exactly as they were. */}
-      <InterceptingGestureDetector>
-        <VirtualGestureDetector gesture={stageGesture}>
-          <View
-            style={styles.stage}
-            onLayout={(event) => {
-              setPageW(event.nativeEvent.layout.width);
-              stageW.value = event.nativeEvent.layout.width;
-              stageH.value = event.nativeEvent.layout.height;
-            }}
-          >
-            {pageW > 0 && (
-              <>
-                <View style={styles.pager}>
-                  {/* Decode underlay: the page Image a data swap mounts
+      {/* The decorative border lives on this OUTER frame, never on the
+          measured stage: Yoga insets absolutely-positioned children by
+          the parent's border while onLayout reports the border box, so
+          a bordered stage renders the overlay images in a box 2 dp
+          smaller than every consumer of stageW/stageH assumes. At deep
+          zoom that 2 dp is magnified by scale × density — measured as
+          an ~85 px content jump on every patch apply (S10e recording,
+          2026-08-25: the max-zoom snap, the lift-finger nudge, and the
+          momentum-pan tearing were all this one geometry error). */}
+      <View style={styles.stageFrame}>
+        <InterceptingGestureDetector>
+          <VirtualGestureDetector gesture={stageGesture}>
+            <View
+              style={styles.stage}
+              onLayout={(event) => {
+                setPageW(event.nativeEvent.layout.width);
+                stageW.value = event.nativeEvent.layout.width;
+                stageH.value = event.nativeEvent.layout.height;
+              }}
+            >
+              {pageW > 0 && (
+                <>
+                  <View style={styles.pager}>
+                    {/* Decode underlay: the page Image a data swap mounts
                       starts transparent until its decode lands, and on
                       the S10e that gap was a visible blank (§10 check
                       3). The previous photo sits under the pager for
@@ -1674,59 +1807,61 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                       from cache — emulator probe), while left visible it
                       would ghost through every contained page's
                       letterbox margins. */}
-                  {lastPhotoRef.current !== null && (
-                    <Image
-                      source={{ uri: lastPhotoRef.current }}
-                      style={[
-                        StyleSheet.absoluteFill,
-                        { opacity: inert || !loadedPagesRef.current.has(view.current.id) ? 1 : 0 },
-                      ]}
-                      contentFit="contain"
-                      transition={0}
+                    {lastPhotoRef.current !== null && (
+                      <Image
+                        source={{ uri: lastPhotoRef.current }}
+                        style={[
+                          StyleSheet.absoluteFill,
+                          {
+                            opacity: inert || !loadedPagesRef.current.has(view.current.id) ? 1 : 0,
+                          },
+                        ]}
+                        contentFit="contain"
+                        transition={0}
+                      />
+                    )}
+                    <FlatList
+                      // Keyed by the DISPLAYED unit: a unit change swaps in
+                      // a fresh native list at its own first pending photo
+                      // (initialScrollIndex), and the outgoing list's
+                      // offsets, momentum and in-flight animations are
+                      // discarded with it — see DeckView.unitKey.
+                      key={view.unitKey}
+                      ref={listRef}
+                      data={view.items}
+                      keyExtractor={(i) => i.id}
+                      renderItem={renderPage}
+                      horizontal
+                      pagingEnabled
+                      // A FROZEN deck is fully inert (codex device-pass
+                      // round): a swipe would move the native offset while
+                      // every guard ignores it. A JUST-SWAPPED deck also
+                      // ignores swipes for its settle window — see
+                      // `pagerSettling`.
+                      scrollEnabled={!inert && !pagerSettling}
+                      showsHorizontalScrollIndicator={false}
+                      initialScrollIndex={Math.min(view.cursor, view.items.length - 1)}
+                      getItemLayout={(_data, index) => ({
+                        length: pageW,
+                        offset: pageW * index,
+                        index,
+                      })}
+                      onScroll={onPagerScroll}
+                      scrollEventThrottle={32}
+                      onScrollBeginDrag={() => {
+                        pagerAnimatingRef.current = false;
+                      }}
+                      onMomentumScrollEnd={onMomentumEnd}
                     />
-                  )}
-                  <FlatList
-                    // Keyed by the DISPLAYED unit: a unit change swaps in
-                    // a fresh native list at its own first pending photo
-                    // (initialScrollIndex), and the outgoing list's
-                    // offsets, momentum and in-flight animations are
-                    // discarded with it — see DeckView.unitKey.
-                    key={view.unitKey}
-                    ref={listRef}
-                    data={view.items}
-                    keyExtractor={(i) => i.id}
-                    renderItem={renderPage}
-                    horizontal
-                    pagingEnabled
-                    // A FROZEN deck is fully inert (codex device-pass
-                    // round): a swipe would move the native offset while
-                    // every guard ignores it. A JUST-SWAPPED deck also
-                    // ignores swipes for its settle window — see
-                    // `pagerSettling`.
-                    scrollEnabled={!inert && !pagerSettling}
-                    showsHorizontalScrollIndicator={false}
-                    initialScrollIndex={Math.min(view.cursor, view.items.length - 1)}
-                    getItemLayout={(_data, index) => ({
-                      length: pageW,
-                      offset: pageW * index,
-                      index,
-                    })}
-                    onScroll={onPagerScroll}
-                    scrollEventThrottle={32}
-                    onScrollBeginDrag={() => {
-                      pagerAnimatingRef.current = false;
-                    }}
-                    onMomentumScrollEnd={onMomentumEnd}
-                  />
-                </View>
-              </>
-            )}
-            {/* Always mounted; visibility + touchability are UI-thread
+                  </View>
+                </>
+              )}
+              {/* Always mounted; visibility + touchability are UI-thread
                 animated props (see zoomStyle/zoomOverlayProps). The image
                 is the same URI the pager page shows, so expo-image serves
                 it from cache rather than decoding twice. */}
-            <VirtualGestureDetector gesture={zoomedGesture}>
-              {/* The opaque backdrop lives on this UNtransformed layer, so
+              <VirtualGestureDetector gesture={zoomedGesture}>
+                {/* The opaque backdrop lives on this UNtransformed layer, so
                   it covers the stage by construction. On the transformed
                   layer it was one rounding error away from leaking: for a
                   photo that fills an axis, the content clamp is exactly
@@ -1734,48 +1869,119 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                   photo peek out in a sliver at the edge (device-observed
                   on both phones). The photo transforms INSIDE it; a few-px
                   edge miss now shows flat stage colour instead. */}
-              <Animated.View
-                style={[
-                  StyleSheet.absoluteFill,
-                  { backgroundColor: colors.surface },
-                  zoomOverlayStyle,
-                ]}
-                animatedProps={zoomOverlayProps}
-              >
-                <Animated.View style={[StyleSheet.absoluteFill, zoomStyle]}>
-                  <Image
-                    source={{ uri: view.current.uri }}
-                    style={StyleSheet.absoluteFill}
-                    contentFit="contain"
-                    recyclingKey={`zoom-${view.current.id}`}
-                    onLoad={(event) => {
-                      const { width, height } = event.source;
-                      if (width > 0 && height > 0) imageAspect.value = width / height;
-                    }}
-                  />
+                <Animated.View
+                  style={[
+                    StyleSheet.absoluteFill,
+                    { backgroundColor: colors.surface },
+                    zoomOverlayStyle,
+                  ]}
+                  animatedProps={zoomOverlayProps}
+                >
+                  <Animated.View style={[StyleSheet.absoluteFill, zoomStyle]}>
+                    <Image
+                      source={{ uri: view.current.uri }}
+                      style={StyleSheet.absoluteFill}
+                      contentFit="contain"
+                      recyclingKey={`zoom-${view.current.id}`}
+                      onLoad={(event) => {
+                        const { width, height } = event.source;
+                        if (width > 0 && height > 0) imageAspect.value = width / height;
+                      }}
+                    />
+                    {/* F22 (m0.8.8): dwell-warmed BASE + double-buffered
+                      PATCH slots. ALWAYS MOUNTED, props-only updates —
+                      mounting a view here mid-gesture breaks RNGH's
+                      pointer tracking (useRegionZoom header, the S10e
+                      recording). Identity-gated by PROP, on BOTH ids:
+                      the pipeline serves the LIVE current photo while a
+                      frozen view shows the HELD one, and forPhotoId
+                      covers the one commit where an in-place advance
+                      renders the NEW id before the hook's effect clears
+                      the OLD photo's sources (the deck decides while
+                      zoomed, so that frame is visible here) — sources
+                      go undefined on any mismatch, so no frame can
+                      blend two photos. */}
+                    <Image
+                      source={
+                        current?.id === view.current.id && regionZoom.forPhotoId === view.current.id
+                          ? (regionZoom.baseSource ?? undefined)
+                          : undefined
+                      }
+                      style={StyleSheet.absoluteFill}
+                      contentFit="contain"
+                      transition={0}
+                      allowDownscaling={false}
+                    />
+                    {regionZoom.patchSlots.map((slot, slotIndex) => (
+                      <Image
+                        key={slotIndex}
+                        source={
+                          current?.id === view.current.id &&
+                          regionZoom.forPhotoId === view.current.id
+                            ? (slot?.source ?? undefined)
+                            : undefined
+                        }
+                        style={{
+                          position: 'absolute',
+                          left: 0,
+                          top: 0,
+                          width: slot?.width ?? 1,
+                          height: slot?.height ?? 1,
+                          // Transform, not left/top: layout snaps to the pixel
+                          // grid, and a deep-zoom scale magnified that snap into
+                          // a visible content jump on every apply (S10e video 6).
+                          transform: [
+                            { translateX: slot?.left ?? 0 },
+                            { translateY: slot?.top ?? 0 },
+                          ],
+                          zIndex: slot?.z ?? 0,
+                          opacity: slot ? 1 : 0,
+                        }}
+                        contentFit="fill"
+                        transition={0}
+                        allowDownscaling={false}
+                      />
+                    ))}
+                  </Animated.View>
+                  {/* Zoom-time fail-soft notice (close-out grilling):
+                      the region pipeline rejected this photo
+                      (unreadable EXIF, mirrored orientation,
+                      unopenable format), so depth shows cached-image
+                      quality — say why, exactly when the user would
+                      wonder. On the UNtransformed layer so it never
+                      scales; visible only while the overlay is
+                      (zoomed). Flagged for the m0.9 metadata-corner
+                      redesign (F31/F33/F34). */}
+                  {regionZoom.failed && regionZoom.forPhotoId === view.current.id && (
+                    <View style={styles.zoomNotice} pointerEvents="none">
+                      <Text style={styles.zoomNoticeText}>
+                        Full detail unavailable — image file can't be fully read
+                      </Text>
+                    </View>
+                  )}
                 </Animated.View>
-              </Animated.View>
-            </VirtualGestureDetector>
-            <View style={styles.posBadge} pointerEvents="none">
-              <Text style={styles.posBadgeText}>
-                {view.cursor + 1}/{view.keepCount}
-              </Text>
-            </View>
-            <View style={styles.timeBadge} pointerEvents="none">
-              {/* Day AND time (F17): a time with no date says nothing
+              </VirtualGestureDetector>
+              <View style={styles.posBadge} pointerEvents="none">
+                <Text style={styles.posBadgeText}>
+                  {view.cursor + 1}/{view.keepCount}
+                </Text>
+              </View>
+              <View style={styles.timeBadge} pointerEvents="none">
+                {/* Day AND time (F17): a time with no date says nothing
                   about WHEN in a library you are reviewing out of order.
                   Rendered from `day`, NEVER from taken_at. */}
-              <Text style={styles.timeBadgeText}>
-                {`${labelForDayKey(view.dayOf.get(view.current.id) ?? UNDATED_DAY_KEY)} · ${formatClockPrecise(
-                  view.current.timestamp,
-                  view.needMs[view.cursor] ?? false,
-                )}`}
-              </Text>
+                <Text style={styles.timeBadgeText}>
+                  {`${labelForDayKey(view.dayOf.get(view.current.id) ?? UNDATED_DAY_KEY)} · ${formatClockPrecise(
+                    view.current.timestamp,
+                    view.needMs[view.cursor] ?? false,
+                  )}`}
+                </Text>
+              </View>
+              <BadgeCluster badges={badgesFor(view.current)} size={24} style={styles.flagBadge} />
             </View>
-            <BadgeCluster badges={badgesFor(view.current)} size={24} style={styles.flagBadge} />
-          </View>
-        </VirtualGestureDetector>
-      </InterceptingGestureDetector>
+          </VirtualGestureDetector>
+        </InterceptingGestureDetector>
+      </View>
 
       {/* The strip FOLLOWS the current photo (m0.8.5, F7). It used to be
           a plain ScrollView with no ref, so past roughly the seventh
@@ -1864,7 +2070,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
           <Text style={styles.actionText}>Keep</Text>
         </Pressable>
         <Pressable
-          style={[styles.actionButton, styles.compareButton]}
+          style={[styles.actionButton, styles.middleButton]}
           // Compare works on UNDECIDED photos only (its verdicts can
           // cull a loser) — decided photos stay in the deck, so the
           // button goes dead on them, and in browse mode (all decided)
@@ -1873,9 +2079,32 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
           disabled={busy || inert || !compareEligible}
           onPress={() => openCompare()}
         >
-          <MaterialCommunityIcons name="compare-horizontal" size={21} color={colors.textDim} />
-          <Text style={[styles.actionText, !compareEligible && styles.actionTextDisabled]}>
+          <MaterialCommunityIcons name="compare-horizontal" size={18} color={colors.textDim} />
+          <Text
+            style={[styles.middleText, !compareEligible && styles.actionTextDisabled]}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+          >
             Compare{compareCandidateCount > 2 ? ' with…' : ''}
+          </Text>
+        </Pressable>
+        <Pressable
+          style={[
+            styles.actionButton,
+            styles.middleButton,
+            (view.browseControls || !view.isGroup) && styles.middleButtonDead,
+          ]}
+          // "Not related" shares the row in BOTH deck kinds (F28, G9):
+          // always mounted so row geometry never shifts between kinds,
+          // dead in singles (no group to leave) and in browse (a
+          // finished group's membership is settled work, D4). Neutral
+          // styling — it writes no verdict (STATE_MODEL rules 2/3).
+          disabled={busy || inert || view.browseControls || !view.isGroup}
+          onPress={() => group && void run(() => makeSingle(current.id, group.groupId))}
+        >
+          <MaterialCommunityIcons name="image-move" size={18} color={colors.textDim} />
+          <Text style={styles.middleText} numberOfLines={1} adjustsFontSizeToFit>
+            Not related
           </Text>
         </Pressable>
         <Pressable
@@ -1936,21 +2165,6 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
         />
       </View>
 
-      {view.isGroup && (
-        <View style={styles.secondaryRow}>
-          <Pressable
-            style={styles.secondaryButton}
-            // Mounted in browse too (stable slots) but dead there: a
-            // finished group's membership is settled work (D4).
-            disabled={busy || inert || view.browseControls}
-            onPress={() => group && void run(() => makeSingle(current.id, group.groupId))}
-          >
-            <MaterialCommunityIcons name="image-move" size={18} color={colors.textDim} />
-            <Text style={styles.secondaryText}>Not related</Text>
-          </Pressable>
-        </View>
-      )}
-
       <BigButton
         // "Saving…" only once the write has actually run long (§10
         // check 2): a fast finish advances before the timer fires,
@@ -1966,6 +2180,9 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
         // elsewhere no longer flickers it.
         disabled={busy || inert || view.finishCount === 0}
         dimmed={inert || view.finishCount === 0 || finishing}
+        // F28: the deck's finish cedes 64→56 for stage space; every
+        // other BigButton keeps `touch.action`.
+        style={{ minHeight: FINISH_MIN_HEIGHT }}
         onPress={() =>
           singlesMode
             ? day && void run(() => keepAllSingles(day, range ?? null).then(() => {}), 'finish')
@@ -2069,7 +2286,10 @@ const styles = StyleSheet.create({
   loadFailedText: { color: colors.textDim, fontSize: 14, textAlign: 'center' },
   retryButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 16 },
   retryText: { fontSize: 15, fontWeight: '700' },
-  stage: {
+  /** Border here, NOT on the stage (see the render comment): the
+   * measured stage must be exactly the box its absoluteFill children
+   * render in. */
+  stageFrame: {
     flex: 1,
     borderRadius: touch.radius,
     borderWidth: 1,
@@ -2077,7 +2297,19 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     overflow: 'hidden',
   },
+  stage: { flex: 1 },
   pager: { flex: 1 },
+  /** The zoom-time fail-soft notice (see the overlay render comment). */
+  zoomNotice: {
+    position: 'absolute',
+    bottom: 12,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderRadius: 6,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  zoomNoticeText: { color: 'rgba(255,255,255,0.85)', fontSize: 12 },
   posBadge: {
     position: 'absolute',
     top: 10,
@@ -2128,36 +2360,28 @@ const styles = StyleSheet.create({
   thumbActive: { borderColor: colors.text },
   actionRow: { flexDirection: 'row', gap: 10 },
   actionButton: {
-    flex: 1,
-    minHeight: 56,
+    // The verdict buttons out-weigh the neutral middle pair (F28, G9);
+    // the middle pair overrides to flex 1.
+    flex: VERDICT_FLEX,
+    minHeight: VERDICT_ROW_MIN_HEIGHT,
     borderRadius: touch.radius,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 3,
+    paddingHorizontal: 4,
   },
   cullButton: { backgroundColor: colors.cullDim },
-  compareButton: {
+  middleButton: {
+    flex: 1,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
   },
+  middleButtonDead: { opacity: 0.45 },
   actionText: { color: colors.text, fontSize: 16, fontWeight: '800' },
+  middleText: { color: colors.textDim, fontSize: 12, fontWeight: '700' },
   actionTextDisabled: { color: colors.textDim },
   secondaryRow: { flexDirection: 'row', gap: 10 },
-  secondaryButton: {
-    flex: 1,
-    minHeight: 44,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: 8,
-    flexDirection: 'row',
-    gap: 6,
-  },
-  secondaryText: { color: colors.textDim, fontSize: 13, fontWeight: '700' },
   thumbBadges: {
     position: 'absolute',
     right: 3,

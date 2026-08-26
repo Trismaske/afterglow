@@ -1936,57 +1936,77 @@ describe('stale actions against absent/regrouped photos reject', () => {
     expect(stateOf(d, '2').state).toBe('culled');
   });
 
-  it('a verdict-writing duel aborts when an undecided member sits OUTSIDE the pair', async () => {
-    // The whole-table claim (F15) is re-validated in the transaction: a
-    // warm scan can add an undecided member between Compare's load and
-    // the write, and a verdict would close a question the duel never
-    // asked. Triage duels (no verdicts) make no such claim.
+  it('a verdict-writing duel accepts an undecided member OUTSIDE the pair (narrow claim, F29)', async () => {
+    // Every compare write is a narrow, explicitly-targeted verdict
+    // (m0.8.8 F29/G10) — an undecided outsider is simply left open, so
+    // the write goes through where the retired whole-table claim threw.
     const d = await fresh();
     await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
     const gid = groupIdOf(d, '1');
-    await expect(
-      applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 100, {
-        duel: {
-          groupId: String(gid),
-          winnerId: id('1'),
-          loserId: id('2'),
-          keptBoth: false,
-          at: AT + 100,
-        },
-      }),
-    ).rejects.toThrow(/changed while comparing/);
-    // The same duel WITHOUT verdicts is triage and writes fine.
-    await applyReviewDecisions(asExpo(d), [], AT + 200, {
+    await applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 100, {
       duel: {
         groupId: String(gid),
         winnerId: id('1'),
         loserId: id('2'),
-        keptBoth: true,
-        at: AT + 200,
+        keptBoth: null,
+        at: AT + 100,
       },
     });
     expect(d.raw.prepare('SELECT COUNT(*) AS n FROM duels').get()).toEqual({ n: 1 });
+    expect(stateOf(d, '2').state).toBe('culled');
+    expect(stateOf(d, '3').state).toBe('unreviewed');
   });
 
-  it('a duel against a STAGED-CULL endpoint still aborts', async () => {
-    // Staged culls stay out of Compare on both endpoints (F11) — the
-    // widened guard must not widen past kept.
+  it('a duel whose WINNER is staged-cull aborts', async () => {
+    // The winner must be keepable (undecided or kept) — a culled photo
+    // cannot be kept through a duel write.
     const d = await fresh();
     await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
     const gid = groupIdOf(d, '1');
-    await applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 50);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'culled']], AT + 50);
     await expect(
-      applyReviewDecisions(asExpo(d), [], AT + 100, {
+      applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100, {
         duel: {
           groupId: String(gid),
           winnerId: id('1'),
           loserId: id('2'),
-          keptBoth: true,
+          keptBoth: null,
           at: AT + 100,
         },
       }),
     ).rejects.toThrow(/changed while comparing/);
     expect(d.raw.prepare('SELECT COUNT(*) AS n FROM duels').get()).toEqual({ n: 0 });
+  });
+
+  it('a duel whose LOSER is culled writes — the F29 cull-then-keep-the-other flow', async () => {
+    // The two-step flow culls the visible photo FIRST, then records the
+    // reversed duel keeping the other (appendix 6). The loser being
+    // culled is the flow's normal state, not a changed group (codex
+    // m0.8.8 round 1 — the old both-endpoints guard aborted every
+    // grouped keep-after-cull as "group changed").
+    const d = await fresh();
+    await seed(d, ['1', '2', '3'], [['1', '2', '3']]);
+    const gid = groupIdOf(d, '1');
+    await applyReviewDecisions(asExpo(d), [[id('2'), 'culled']], AT + 50);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 100, {
+      duel: {
+        groupId: String(gid),
+        winnerId: id('1'),
+        loserId: id('2'),
+        keptBoth: null,
+        at: AT + 100,
+      },
+    });
+    expect(stateOf(d, '1').state).toBe('kept');
+    expect(stateOf(d, '2').state).toBe('culled');
+    const duel = d.raw.prepare('SELECT winner_id, loser_id, kept_both FROM duels').get() as Record<
+      string,
+      unknown
+    >;
+    expect(duel.winner_id).toBe(id('1'));
+    expect(duel.loser_id).toBe(id('2'));
+    expect(duel.kept_both).toBeNull();
+    expect(foreignKeyCheck(d)).toEqual([]);
   });
 
   it('ejecting an absent member rejects', async () => {
@@ -2507,7 +2527,6 @@ describe('duels are an append-only event log (v22) — no verdict path deletes t
         keptBoth: null,
         at: AT + 10,
       },
-      duelClaimsWholeTable: false,
     });
     return groupId;
   }

@@ -215,3 +215,45 @@ Spend part of any cycle's budget on device runs, because static review has never
     Anything that must be true ON the frame a transition commits (a disabled control, a suppressed event handler, an overlay) cannot be armed by an effect — effects run after paint, and the unguarded frame is exactly the one the race hits.
     Derive the guard from state that already changed in the committing render (compare identities: `settledUnit !== unitKey`), and use effects only to LIFT it later.
     The same class hides in event handlers: a handler that checks a flag an effect sets accepts every event delivered before the effect ran — including stale deliveries from an unmounted native view, whose events outlive it by a few frames.
+
+## Shared caches, native seams, and render pipelines (m0.8.8)
+
+53. **A two-step flow revalidated against pre-flow state.**
+    A guard written before a multi-write flow existed rejects the flow's own first write as "state changed".
+    When a feature makes a state sequence first-class, re-derive every guard on the path from the flow's real state machine, per endpoint — not from the single-write era's invariant.
+54. **Check-then-decode on a shared cache.**
+    Two surfaces independently checking a shared cache and then decoding race: the loser's `put` replaces (and releases) the winner's entry while a mounted view still renders it, and a hit landing between check and decode gets discarded.
+    Shared expensive work needs per-key single-flight with ADOPT semantics — and the in-flight key must include the source VERSION its waiters observed, or an edit landing mid-decode hands old bytes to a surface that opened new ones.
+55. **An identity check that survives unmount.**
+    Async completions gated only on "is this still the same item" apply happily after the component died, because the item id outlives the mount.
+    Every completion path — not just the one branch someone remembered — needs the liveness gate beside the identity gate, with an owner releasing the resource on the dead path.
+56. **A deferred apply without a generation fence.**
+    Work deferred even a frame (an empty-first slot swap, a stash) can be overtaken by newer work or a clearing reset inside the window; landing it then violates newest-wins with stale content.
+    Fence every deferral on a generation bumped by both applies and clears, and release the loser.
+57. **Shared mutable bookkeeping cleared by a stale closure.**
+    Per-item flags on a cross-item object (`baseDecoding`, `decoding` on a pipeline reused across photos) get cleared by the PREVIOUS item's completion, unblocking or clobbering the current one.
+    Guard every write to shared bookkeeping with the closure's own identity; reset the flag at item change so abandoned work never blocks the successor.
+58. **A budget formula allowed below its correctness floor.**
+    A sizing formula (`√(budget/bytes)`) quietly drops below 1 when the input outgrows the budget, turning a margin-limiter into a coverage-cutter.
+    Every budget that shapes an optional extra needs an explicit floor at the mandatory part; budgets bound cushions, never promises.
+59. **A silent default on a failed metadata read.**
+    Degrading a failed EXIF/metadata read to a default (rotation 0) renders WRONG content when a sibling renderer read the same metadata successfully — two renderers, two answers, composited.
+    When alignment with another renderer cannot be proven, reject into the path with ONE renderer; wrong pixels are never fail-soft.
+60. **A blocking call on a module's serial async queue.**
+    One non-coroutine function waiting on a lock (a close behind a multi-second decode) stalls every unrelated call on the module's single queue.
+    Anything that can wait must dispatch like its siblings; audit the odd one out in any AsyncFunction block.
+61. **A version probe that cannot probe the stored data shape.**
+    An invalidation mechanism queried MediaStore columns through the `file://` uris the app actually stores — always returning "unknown", making the whole feature inert while reading as implemented.
+    When adding a probe, verify it fires on the REAL stored identifiers (and treat "cannot verify" as stale, never as permission to reuse).
+62. **A timer standing in for ownership.**
+    A deferred release protects the replacing surface's next commit — not a SIBLING surface whose state still holds the old ref indefinitely.
+    Shared refs need pin-scoped lifetime (park until the last consumer's pin drops), not a grace period.
+63. **An identity-keyed effect blind to same-identity content changes.**
+    Effects keyed on id+uri never re-run when an in-place edit changes the bytes behind the same id — the one path users actually take to edit.
+    Content-sensitive pipelines need a foreground/content-version trigger alongside the identity deps.
+64. **A module-level cache outliving its last subscriber's reclaim signal.**
+    Tearing down the last subscriber removed the memory-pressure listener but kept the cache — megabytes strandable with nothing able to flush them.
+    The last consumer leaving either flushes the cache or keeps the reclaim path alive; never neither.
+65. **A simultaneous-gesture finalizer resetting stream state a sibling still reads.**
+    Recognizers over one touch stream finalize at different times; a full reset in the earlier one erases flags the later one's deactivation logic reads.
+    Stream-scoped state is reset by the LAST handler out (or preserved across the earlier finalizer), never by whichever finishes first.

@@ -58,15 +58,13 @@ export type LocalAction =
   | { kind: 'redecide'; assetId: string; target: 'keep' | 'to_edit' }
   | { kind: 'unstage'; assetId: string }
   | { kind: 'restore'; assetId: string }
-  /** The duel's verdict shape (m0.8.6 D7): the whole-table dialog's
-   * "Keep both" keeps BOTH, its "Cull" stages the loser, and a triage
-   * duel's "Keep this one" writes a targeted keep on the winner alone. */
+  /** Compare's one duel-carrying write (m0.8.8 F29): a targeted keep
+   * on the winner plus the duel row — the only verdict a duel carries. */
   | {
       kind: 'duel';
       groupId: number;
       winnerId: string;
       loserId: string;
-      mode: 'keepBoth' | 'cull' | 'keepWinner';
     }
   | { kind: 'makeSingle'; assetId: string; groupId: number }
   | { kind: 'keepMany'; assetIds: readonly string[] };
@@ -215,12 +213,8 @@ export function applyLocalAction(s: ReviewSnapshot, action: LocalAction): Review
     }
     case 'duel': {
       // The duel row itself is invisible to the queue snapshot — only
-      // the verdicts it carries patch anything.
-      return action.mode === 'keepBoth'
-        ? applyVerdict(applyVerdict(s, action.winnerId, 'kept'), action.loserId, 'kept')
-        : action.mode === 'cull'
-          ? applyVerdict(s, action.loserId, 'culled')
-          : applyVerdict(s, action.winnerId, 'kept');
+      // the keep it carries patches anything.
+      return applyVerdict(s, action.winnerId, 'kept');
     }
     case 'makeSingle': {
       const group = s.groups.find((g) => g.groupId === action.groupId);

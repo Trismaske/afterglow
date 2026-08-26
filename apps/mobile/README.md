@@ -8,6 +8,14 @@ Photos that need editing wait in an in-app queue that launches your editor.
 Usually those are keepers, but you can flag one before you have decided about it, when the edit is what tells you whether to keep it.
 A daily goal ring and per-day progress views carry you to inbox zero.
 
+> **What changed in 0.8.8:** the review deck.
+> **Zoom is pixel-perfect now, at any depth, on any photo** — the app decodes exactly the region you are looking at from the original file, so a 50 MP or 200 MP shot inspects like it does in the system gallery, and the maximum zoom adapts to each photo's real resolution (a 200 MP photo zooms far deeper than a 12 MP one).
+> Zooming, panning, and flinging while zoomed were rebuilt on one gesture core: the photo stays locked under your fingers through any pinch, pan, or finger change, and lifting your fingers after holding still moves nothing.
+> **Deciding a photo now advances to the nearest undecided one** — forward first, backward at the end of the group — instead of blindly stepping to the next slot.
+> **"Not related" moved into the verdict row** (Keep · Compare · Not related · Cull, one row in every deck), giving the photo more of the screen.
+> **Compare decides directly**: Keep (green) and Cull (red) both act immediately on the photo you are looking at, then one optional follow-up asks about the other photo — with a per-direction "remember this answer".
+> Your review data survives this upgrade (no schema change).
+
 > **What changed in 0.8.5:** the review loop.
 > Finishing a group no longer blanks the screen between units — the deck now moves to the next one in place, so the photo, the strip and the buttons never flash away.
 > The goal moment waits for you to see it instead of being cut off by the next group, and raising your goal above today's count lets you earn it again.
@@ -55,7 +63,7 @@ A daily goal ring and per-day progress views carry you to inbox zero.
 > A running scan shows its **percentage** again, on Home and in Settings, with the library total finally agreeing everywhere it appears.
 >
 > **Progress is rebuilt:** the state rows are compact chips you can tap to filter, and a capture histogram by month lets you jump straight to where the backlog sits.
-> Behind all of it, "to edit" stopped being a *state* and became a *flag on a keeper*.
+> Behind all of it, "to edit" stopped being a _state_ and became a _flag on a keeper_.
 > A photo is simply kept or culled, and any of edit / favourite / organize / share can be pending on it at once.
 > Bars now fill with exactly what you have decided, so the colour always matches the percentage beside it.
 >
@@ -78,7 +86,7 @@ A daily goal ring and per-day progress views carry you to inbox zero.
 > Re-opening the app no longer re-analyzes an unchanged library.
 > It checks one Android counter and skips straight to the queue, so an open takes seconds instead of minutes, and the battery cost of a re-open is gone.
 > Cold start to a usable Home is ~3-4 s (was ~40 s on an S10e-era phone), and the first full scan is roughly twice as fast.
-> The daily-goal ring now counts every photo you decide *today*, whenever it was taken, and you can now set any custom number as that target.
+> The daily-goal ring now counts every photo you decide _today_, whenever it was taken, and you can now set any custom number as that target.
 > New: a second goal, **Keeping up**, which asks that nothing be left unreviewed from the last day or two (or your whole library, if you want the 100% version).
 > It has its own Home card and its own Stats chart, and it runs alongside the daily count.
 > Also new: a Stats page, queue badges on every photo, a searchable album picker, and a reordered bottom bar (Edit · Favourite · **Home** · Organize · Share) with Home as the raised center button.
@@ -102,13 +110,13 @@ Videos are not reviewable yet.
 **RAW**, measured on real hardware.
 The "measured on" column says which devices we ran each row on: Samsung S23 (Android 16), Samsung S10e (Android 12), and an Android 11 emulator, which is the supported floor.
 
-| Format | Status | Measured on |
-|---|---|---|
-| DNG (incl. Samsung Expert RAW) | **Fully supported** — grouped, rendered, reviewable like any photo | S23 only |
-| NEF (Nikon) | **Fully supported** — Android does not extract its capture date, so Afterglow reads it from the file's own EXIF header at ingestion (0.8.3) and files the photo under its real day | S23, S10e, Android 11 |
-| ARW (Sony) | **Supported**, with one known wrinkle: Android dates these by the file's modification time rather than its EXIF capture time, so an ARW copied off a card can sort under the copy date. Afterglow shows what Android reports; the EXIF rescue above cannot correct it, because the photo arrives dated — just wrongly | S23, S10e, Android 11 |
-| CR3 (Canon) | **Not supported** — Android does not classify CR3 as an image, so these files are invisible to the app (they are not shown, counted, or touched) | S23, S10e, Android 11 |
-| Other RAW formats | Untested — the app shows whatever MediaStore indexes as an image | — |
+| Format                         | Status                                                                                                                                                                                                                                                                                                                | Measured on           |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| DNG (incl. Samsung Expert RAW) | **Fully supported** — grouped, rendered, reviewable like any photo                                                                                                                                                                                                                                                    | S23 only              |
+| NEF (Nikon)                    | **Fully supported** — Android does not extract its capture date, so Afterglow reads it from the file's own EXIF header at ingestion (0.8.3) and files the photo under its real day                                                                                                                                    | S23, S10e, Android 11 |
+| ARW (Sony)                     | **Supported**, with one known wrinkle: Android dates these by the file's modification time rather than its EXIF capture time, so an ARW copied off a card can sort under the copy date. Afterglow shows what Android reports; the EXIF rescue above cannot correct it, because the photo arrives dated — just wrongly | S23, S10e, Android 11 |
+| CR3 (Canon)                    | **Not supported** — Android does not classify CR3 as an image, so these files are invisible to the app (they are not shown, counted, or touched)                                                                                                                                                                      | S23, S10e, Android 11 |
+| Other RAW formats              | Untested — the app shows whatever MediaStore indexes as an image                                                                                                                                                                                                                                                      | —                     |
 
 Format handling is the OS's.
 Results can vary by device and Android version.
@@ -196,6 +204,7 @@ The on-device installer says only "App not installed".
    - a **Still to review** section: the 2 most recent older days with unreviewed photos, an **Unknown day** row for photos without a capture date, and an expandable older-days list
 
    History and Settings live as icons in the title row.
+
 2. **Bottom tabs**: **Edit · Favourite · Home · Organize · Share**, count-badged, with **Home as the raised center button**.
    The bar stays off the full-screen review surfaces.
 3. **Review queue**: cull groups (thumbnail strips, decision badges) plus the singles bucket, newest first.
@@ -203,10 +212,11 @@ The on-device installer says only "App not installed".
    Groups form by **image similarity**: the same subject seconds apart lands together, and a strictness control in Settings tunes how tight.
    Photos whose analysis failed attach by time only (badged with a clock).
 4. **Group review (swipe deck)**: swipe through the group.
-   The big three are **Keep / Compare / Cull**.
+   One verdict row: **Keep · Compare · Not related · Cull** (Not related is dimmed where it does not apply, so the row never shifts).
+   Deciding a photo advances to the **nearest undecided one** — forward first, backward at the end of the group.
    Culled shots **stay in the deck badged**, and the deck advances past them.
    The badge is the undo: tap the outlined Cull again to un-cull, with no time limit.
-   Below: the queue row **Edit · Favourite · Organize · Share**, then **Best** and **Not related**.
+   Below: the queue row **Edit · Favourite · Organize · Share**.
    **Not related** ejects a mis-grouped photo to singles, durably: the scan never regroups it.
    **Keep remaining (N)** finishes the group.
    Pinch or double-tap to zoom in place (double-tap again resets).
@@ -214,10 +224,8 @@ The on-device installer says only "App not installed".
 5. **Compare**: two candidates full-screen.
    Tap anywhere to flip between them, and pinch to zoom.
    The transform applies to both photos identically, so a flip while zoomed compares the exact same crop.
-   A duel decides verdicts only when it settles the whole table: any singles duel, or a group down to its last two undecided photos.
-   There, "is better" asks whether to keep both or cull the loser.
-   A duel with more photos still alive is triage: it stars the best-of-group and records the outcome, with no verdict.
-   Every duel records as compare history.
+   **Keep {photo}** and **Cull {photo}** decide the visible photo immediately; if the other photo is still undecided, one follow-up asks about it ("Cull the other photo?" after a keep, "Keep the other photo?" after a cull) — declining leaves it open, and "Remember this answer" makes either choice automatic per direction (Settings can reset both).
+   Every keep decided here records as compare history.
 6. **Singles**: the same deck over ungrouped photos.
    Staged culls stay in the feed badged.
    **Keep remaining** sweeps the rest.

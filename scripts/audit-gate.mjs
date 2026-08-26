@@ -34,7 +34,9 @@ const ALLOW = [
 
 let report;
 try {
-  report = JSON.parse(execSync('npm audit --json', { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
+  report = JSON.parse(
+    execSync('npm audit --json', { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }),
+  );
 } catch (error) {
   // npm audit exits non-zero when vulnerabilities exist — the JSON on
   // stdout is still the report. Anything unparseable is a real failure.
@@ -44,7 +46,10 @@ try {
 if (typeof report?.auditReportVersion !== 'number' || typeof report?.vulnerabilities !== 'object') {
   // A broken audit (missing lockfile, registry failure) must never
   // read as "clean" — fail closed on anything that is not a report.
-  console.error('audit-gate: npm audit did not produce a report:', JSON.stringify(report).slice(0, 300));
+  console.error(
+    'audit-gate: npm audit did not produce a report:',
+    JSON.stringify(report).slice(0, 300),
+  );
   process.exit(1);
 }
 
@@ -66,12 +71,17 @@ const stale = ALLOW.filter((entry) => !firing.has(entry.id));
 if (unexpected.length > 0) {
   console.error('audit-gate: high/critical advisories NOT on the allowlist:');
   for (const id of unexpected) console.error(`  https://github.com/advisories/${id}`);
-  console.error('Fix them (npm audit fix / upstream bump), or allowlist them here WITH a reason and removal condition.');
+  console.error(
+    'Fix them (npm audit fix / upstream bump), or allowlist them here WITH a reason and removal condition.',
+  );
   process.exit(1);
 }
 if (stale.length > 0) {
-  console.error('audit-gate: STALE allowlist entries — the advisory no longer fires at high/critical. Remove them:');
-  for (const entry of stale) console.error(`  ${entry.id} (${entry.pkg}) — removal condition was: ${entry.removeWhen}`);
+  console.error(
+    'audit-gate: STALE allowlist entries — the advisory no longer fires at high/critical. Remove them:',
+  );
+  for (const entry of stale)
+    console.error(`  ${entry.id} (${entry.pkg}) — removal condition was: ${entry.removeWhen}`);
   process.exit(1);
 }
 console.log(

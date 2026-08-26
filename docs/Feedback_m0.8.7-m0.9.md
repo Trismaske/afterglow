@@ -18,7 +18,7 @@ Reproduce an item whose cause is only **read** before you write its fix.
 | | Release | What it is | Items |
 |---|---|---|---|
 | **m0.8.7** | sources, badges, and the queues | **SHIPPED** — F21 F30, F27's undated-fallback fix, the share-before-edit confirm, and the stats-accuracy sweep; behavior recorded in PLAN.md's shipped entry | — |
-| **m0.8.8** | the review deck | **BUILT** — S10e-verified; tag gated on the S23 pass (G3). Distilled record in PLAN.md's shipped entry | F22 F23 F24 F28 F29 |
+| **m0.8.8** | the review deck | **SHIPPED** — distilled record in PLAN.md's shipped entry | F22 F23 F24 F28 F29 |
 | **m0.9** | media kinds | Videos and motion photos enter; every kind wears its chip; the scan explains itself; the stage's metadata grows and becomes configurable | F25 F26 · F27 (presentation) · F31 F32 F33 F34 · plus m0.9's previously planned items, unchanged |
 
 **m0.9.1** is the accessibility pass (moved from m0.8.8).
@@ -52,9 +52,9 @@ The S23 adb scan-log capture retires when the m0.8.7 build (whose in-app diagnos
 
 ---
 
-## m0.8.8 — the review deck (built)
+## m0.8.8 — the review deck (shipped)
 
-F22 F23 F24 F28 F29 are built and S10e-verified; the tag waits on the S23 device pass (the G3 ship gate, [docs/Plan_m0.8.8.md](Plan_m0.8.8.md)).
+Shipped 2026-08-26 after the S23 ship-gate pass (three judged reopen rounds).
 The distilled record lives in PLAN.md's shipped entry; the settled behavior in the three zoom surfaces' headers, `lib/regionZoom.ts`, `lib/zoomTarget.ts`, and `components/useRegionZoom.ts`.
 
 ---
@@ -164,7 +164,7 @@ Implementing it rewrites that header.
 3. **Whether the choices are per-surface.** The deck stage, the fullscreen viewer and Compare have different room. One shared set is fewer rows and one model; per-surface sets are truer to the complaint, which is about the stage.
 4. **Whether megapixels is its own row.** It is a second rendering of resolution, not a second fact, so it is a row only if F33 shows both.
 5. **How six-plus switches are carried.** A long switch list is the L6 concern the original refusal was made under, so it is answered rather than assumed away: a chip row or a "Metadata" sub-screen may carry it better than one row per item.
-6. **The zoom fail-soft notice joins the redesign** (m0.8.8 close-out, Tristan): the small "Full detail unavailable" chip the zoom overlay shows when the region pipeline rejects a photo (Plan_m0.8.8.md appendix 19) — review its copy, placement, and whether it belongs to the overlay vocabulary this section defines.
+6. **The zoom fail-soft notice joins the redesign** (m0.8.8 close-out, Tristan): the small "Full detail unavailable — image file can't be fully read" chip the zoom overlay shows when the region pipeline rejects a photo (unreadable EXIF, mirrored orientation, unopenable format — shipped in m0.8.8; the deck's `zoomNotice` comment carries the rationale) — review its copy, placement, and whether it belongs to the overlay vocabulary this section defines.
 
 ---
 

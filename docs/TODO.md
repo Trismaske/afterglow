@@ -147,7 +147,7 @@ Numbers change whenever an item closes, so **cross-references from code or other
     Entering a group of 50/200MP photos with a cold image cache leaves the pager stage AND the thumbnail strip black for ~5 s: expo-image (Glide) decodes each full 150–200MP JPEG to view size from the `file://` path — per photo, per surface.
     The region pipeline is uninvolved (nothing in the sink during the window); this is the URI layer.
     Fix direction for m0.9: serve grids, strips, and at-rest pages from `content://` MediaStore uris so the OS supplies its precomputed thumbnails (why Samsung Gallery opens the same photos instantly), keeping full decodes for the zoom pipeline only; alternatively a persisted app thumbnail cache.
-    Related: the `content://` switch interacts with TODO 12's cache-versioning design — decide them together.
+    Related: the `content://` switch interacts with the stale-pixels cache-versioning design (previous entry) — decide them together, and BOTH now feed [ImageCache_design.md](ImageCache_design.md), the urgent storage-growth requirement.
 
 15. **Nearest-neighbour rendering at extreme zoom (a pixel-grid mode)** (S23 device pass rounds, 2026-08-26).
     Past 1:1 every magnification step renders bilinear — soft gradient blobs — while sharpness adjudication between two near-identical shots (the tester's core Compare use) wants the honest per-pixel view: nearest-neighbour blocks, Lightroom's 8:1 look, where a crisp edge is a 1–2-block step and a soft edge a 3–4-block ramp.

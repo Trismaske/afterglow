@@ -61,7 +61,9 @@ The distilled record lives in PLAN.md's shipped entry; the settled behavior in t
 
 ## m0.9 — media kinds
 
-m0.9's previously planned items (per-ABI splits, visual group vet, all-time goal-days stat) are unchanged and not re-decided here.
+**The m0.9 pre-build grilling ran 2026-08-26 (23 questions) and settled every open item below**; the decisions and the build live in [docs/Plan_m0.9.md](Plan_m0.9.md) (decision table M1–M23).
+Supersessions from that grilling: G6's "looped" playback → play-once default under per-kind Once · Loop · Off rows (replacing G7's single Autoplay toggle); the animated-thumbnail parking (below) reversed — the subsystem is committed to m0.9 and **the L1 one-subsystem rule is deliberately dropped for this release**; per-ABI splits move to pre-v1 and the all-time goal-days stat to the event-log round (the visual group vet stays).
+The item sections below remain as the reports of record; their "Open" lists are settled in the plan.
 
 ### F26 · Show videos, muted by default
 
@@ -170,8 +172,9 @@ Implementing it rewrites that header.
 
 ## What this round adds to PLAN.md's trigger backlog
 
-- **Animated video/motion thumbnails** (Samsung-style sequential clips or a transcode-preview pipeline). Trigger: missing them once m0.9's looping full-view playback ships.
+- **Video pinch-zoom** (deferred from m0.9's grilling with the mechanism corrected — a GPU surface transform, never per-frame decode). Trigger: a tester asks while reviewing real videos.
 - **Loop/boomerang export as a new video file** (the only honest "make it loop" — no container stores playback settings). Trigger: a user asks.
+- **Animated video/motion thumbnails** were parked here originally; the m0.9 pre-build grilling reversed that — the subsystem is committed to m0.9.
 - **Share-dispatch-with-pending-edit confirm** ships in m0.8.7 (above), so it is *not* parked.
 
 ## Cross-release dependencies

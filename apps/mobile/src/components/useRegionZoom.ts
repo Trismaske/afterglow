@@ -248,6 +248,19 @@ export function useRegionZoom(
   stageSize: () => { width: number; height: number },
   /** JS-side reads of the surface's shared transform values. */
   readViewport: () => { scale: number; tx: number; ty: number },
+  /** PATCH decodes gate (m0.9 phase 1, S23 device pass): Compare's
+   * hidden pane keeps its BASE warm (instant flip) but stops decoding
+   * patches while hidden — the sink showed every viewport change
+   * costing PAIRED ~72–91 MB decodes, and the resulting bitmap churn
+   * plus trim pressure is what janks the visible pane's pan.
+   * Disabling CLEARS the pane's patch state (slots, plan, pending
+   * apply): keeping stale slots mounted rendered pre-hide regions as
+   * displaced sharp boxes over the post-flip view (S23 recording,
+   * 2026-08-27 — on a near-identical pair the box even made the flip
+   * look like it never happened). A hidden pane is base-only;
+   * re-enabling plans fresh on the next poll tick (~1 s to sharp
+   * after a deep-zoom flip — the accepted trade). */
+  patchesEnabled: boolean = true,
 ): RegionZoomState {
   const [baseSource, setBaseSource] = useState<RegionBitmap | null>(null);
   const [sourceSize, setSourceSize] = useState<{ width: number; height: number } | null>(null);
@@ -410,6 +423,10 @@ export function useRegionZoom(
   /** Decode the freshest plan; single-flight, newest supersedes. */
   const decodePlannedPatch = useCallback(async () => {
     const p = pipeline.current;
+    // A hidden pane plans nothing (the patchesEnabled doc) — this also
+    // stops the pendingPlan chain from decoding once more after a
+    // completion was discarded.
+    if (!patchesEnabledRef.current) return;
     if (p.handle === null || p.failed || p.decoding || p.baseDecoding) {
       p.pendingPlan = p.decoding ? true : p.pendingPlan;
       return;
@@ -494,6 +511,13 @@ export function useRegionZoom(
           `zoom patch ${plan.rect.width}x${plan.rect.height} s${plan.sample} ` +
           `${Math.round(plan.bytes / (1024 * 1024))}MB ${Date.now() - started}ms`,
       );
+      // A decode that completes after its pane hid is discarded — a
+      // stash would resurrect a stale region on the next flip (the
+      // patchesEnabled doc above).
+      if (!patchesEnabledRef.current) {
+        ref.release?.();
+        return;
+      }
       // Small patches apply IMMEDIATELY — even mid-gesture: with the
       // stable view tree an apply is a prop update (gestures untouched)
       // and a small texture uploads in a few ms, so deep zoom sharpens
@@ -536,6 +560,17 @@ export function useRegionZoom(
     }
   }, [stageSize, clearPatches, applyPatch]);
 
+  // Read by the poll interval without re-arming it on flips.
+  const patchesEnabledRef = useRef(patchesEnabled);
+  useEffect(() => {
+    patchesEnabledRef.current = patchesEnabled;
+    if (!patchesEnabled) {
+      // Hidden pane goes base-only (parameter doc above).
+      pipeline.current.plan = null;
+      clearPatches();
+    }
+  }, [patchesEnabled, clearPatches]);
+
   // The JS-side viewport poll (header: never runOnJS on this build).
   useEffect(() => {
     if (!enabled || photoId === null) return;
@@ -555,6 +590,12 @@ export function useRegionZoom(
           p.plan = null;
           clearPatches();
         }
+        return;
+      }
+      // A hidden Compare pane decodes nothing (patchesEnabled doc
+      // above); its mounted slots stay as they are.
+      if (!patchesEnabledRef.current) {
+        p.lastTickMoved = moved;
         return;
       }
       if (moved) {

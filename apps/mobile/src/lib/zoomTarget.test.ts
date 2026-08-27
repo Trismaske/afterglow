@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   DOUBLE_TAP_ZOOM_SCALE,
   ZOOM_TRACKING_START,
+  clampPan,
+  pairPanBounds,
   doubleTapZoomTarget,
   panBounds,
   touchFocal,
@@ -32,6 +34,37 @@ describe('panBounds', () => {
 
   it('falls back to stage-rect bounds while the aspect is unknown (0)', () => {
     expect(panBounds(W, H, 0, 2.5)).toEqual({ maxX: 750, maxY: 600 });
+  });
+});
+
+describe('pairPanBounds', () => {
+  it('equal aspects reduce exactly to panBounds', () => {
+    expect(pairPanBounds(W, H, PANO, PANO, 2)).toEqual(panBounds(W, H, PANO, 2));
+  });
+
+  it('takes the per-axis union of two different aspects', () => {
+    // 2:1 pano: rendered 1000×500 → at 2×: maxX 500, maxY 100.
+    // 1:1 square: rendered 800×800 → at 2×: maxX 300, maxY 400.
+    expect(pairPanBounds(W, H, PANO, 1, 2)).toEqual({ maxX: 500, maxY: 400 });
+  });
+
+  it('ignores an unknown (0) aspect while the other is known', () => {
+    expect(pairPanBounds(W, H, 0, PANO, 2)).toEqual(panBounds(W, H, PANO, 2));
+    expect(pairPanBounds(W, H, PANO, 0, 2)).toEqual(panBounds(W, H, PANO, 2));
+  });
+
+  it('falls back to the stage rectangle only when BOTH are unknown', () => {
+    expect(pairPanBounds(W, H, 0, 0, 2.5)).toEqual({ maxX: 750, maxY: 600 });
+  });
+});
+
+describe('clampPan', () => {
+  it('passes in-bound values through and clamps symmetrically to ±max', () => {
+    expect(clampPan(120, 500)).toBe(120);
+    expect(clampPan(-120, 500)).toBe(-120);
+    expect(clampPan(700, 500)).toBe(500);
+    expect(clampPan(-700, 500)).toBe(-500);
+    expect(clampPan(0, 0)).toBe(0);
   });
 });
 

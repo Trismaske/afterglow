@@ -85,6 +85,7 @@ One pass over the badge and preference layer, in this order (the feedback doc's 
 5. **The eye** becomes a master hide over the entire overlay set — metadata badge and position counter now included; one shared durable boolean; `badgePrefs.ts` rewrites its header to the two-layer contract, citing the fired trigger (M20).
 6. **One shared set** across the deck stage and viewer overlay; Compare inherits it, functional pane labels never hideable; the viewer facts panel stays outside the system, always complete (M21).
 7. **The zoom fail-soft notice is exempt and un-hideable** — a fidelity claim, not decoration; its copy and placement get their review inside this pass (M19).
+8. **Rider (phase-1 device pass):** the viewer's facts panel flashes on every page swipe — a photo change resets facts to loading and collapses the panel (F30's dimming covered same-photo re-reads only). Fix here, where the facts lines are rewritten anyway: keep the panel's layout stable across page changes with a quiet placeholder, never an unmount flash.
 8. Section placement: Overlay beside Appearance, Playback adjacent; both use row + subtext form.
 
 ### Phase 7 — Everything usable at scale (TODO 13, all prongs — M11)

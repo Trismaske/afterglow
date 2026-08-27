@@ -1,23 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Modal, PixelRatio, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
-import {
-  InterceptingGestureDetector,
-  State,
-  usePanGesture,
-  usePinchGesture,
-  useSimultaneousGestures,
-  VirtualGestureDetector,
-} from 'react-native-gesture-handler';
-import Animated, {
-  cancelAnimation,
-  useAnimatedStyle,
-  useSharedValue,
-  withDecay,
-  withTiming,
-} from 'react-native-reanimated';
+import { InterceptingGestureDetector, VirtualGestureDetector } from 'react-native-gesture-handler';
+import Animated, { withTiming } from 'react-native-reanimated';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { useReview } from '../review/ReviewContext';
@@ -32,19 +19,18 @@ import {
   type CompareAfterKeep,
 } from '../lib/comparePrefs';
 import { showToast } from '../lib/toast';
-import {
-  DOUBLE_TAP_MS,
-  FLICK_MIN_VELOCITY,
-  ZOOM_TRACKING_START,
-  zoomTouchFrame,
-} from '../lib/zoomTarget';
+import { DOUBLE_TAP_MS } from '../lib/zoomTarget';
 import { colors, touch, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded } from '../lib/format';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { isFavouriteSelected } from '../lib/favouriteState';
 import { ActionChip } from '../components/ActionChip';
-import { useRegionZoom } from '../components/useRegionZoom';
-import { MAX_SCALE_FLOOR, maxScaleFor } from '../lib/regionZoom';
+import { useStageMaxScale, useStageRegionZoom } from '../components/useStageZoom';
+import {
+  StagePaneLayers,
+  ZoomFailNotice,
+  useMediaStageSingleDriver,
+} from '../components/MediaStage';
 import { addToShareQueue, removeFromShareQueue } from '../db/shareStore';
 import { queueOrganize, unqueueOrganize } from '../db/organizeStore';
 import { useIsFocused } from '@react-navigation/native';
@@ -56,13 +42,10 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Compare'>;
 // and MAX_SCALE_CEILING — a fixed 16 stopped BEFORE 1:1 on a 200MP
 // photo, while deep fixed maxima on a 12MP photo are pure mush. `maxScaleFor` in
 // lib/regionZoom.ts owns the formula; Compare takes the MAX of its two
-// photos' ceilings (you zoom for the detailed one). panBounds clamps to the photo's
-// own edges, so a deep zoom cannot wander off the content.
-
-function clamp(value: number, max: number): number {
-  'worklet';
-  return Math.min(max, Math.max(-max, value));
-}
+// photos' ceilings (you zoom for the detailed one). Pans clamp to the
+// per-axis UNION of the two photos' rendered edges — the stacked pair
+// shares one transform, so the clamp must satisfy both photos at once
+// (pairPanBounds; useMediaStageSingleDriver's header).
 
 /** The write-error surface for Compare's DIRECT queue writes (Organize/
  * Share bypass the provider, so App.tsx's decision alert never fires for
@@ -312,21 +295,25 @@ export function CompareScreen({ navigation, route }: Props) {
     [dayList, groupInfo, singles],
   );
   // --- synchronized zoom state (shared by both stacked images) ----------
-  const scale = useSharedValue(1);
-  const savedScale = useSharedValue(1);
-  const tx = useSharedValue(0);
-  const ty = useSharedValue(0);
-  const savedTx = useSharedValue(0);
-  const savedTy = useSharedValue(0);
-  const stageW = useSharedValue(0);
-  /** Dynamic zoom ceiling: the MAX of the two photos' maxScaleFor —
-   * flicker comparison zooms for the more detailed side. */
-  const maxScale = useSharedValue<number>(MAX_SCALE_FLOOR);
-  const stageH = useSharedValue(0);
-  // ONE tracker for the whole pinch-pan (zoomTouchFrame, m0.8.8 —
-  // DeckScreen carries the rationale). Compare has no pager, so the PAN
-  // handler below is the single driver for scale AND translation.
-  const zoomTracking = useSharedValue(ZOOM_TRACKING_START);
+  // The single-driver pinch-pan (no pager, no zoom-only overlay; the
+  // stacked pair flips at every zoom level via the JS Pressable) is the
+  // shared MediaStage hook — drivers, shared values and zoomStyle in
+  // one place, with the m0.9 phase-1 drift fixes in
+  // (docs/MediaStage_design.md; rationale in the hook's header).
+  const stage = useMediaStageSingleDriver();
+  const {
+    scale,
+    savedScale,
+    tx,
+    ty,
+    savedTx,
+    savedTy,
+    stageW,
+    stageH,
+    maxScale,
+    composedGesture,
+    zoomStyle,
+  } = stage;
 
   const flip = useCallback(() => setShowB((v) => !v), []);
 
@@ -373,165 +360,33 @@ export function CompareScreen({ navigation, route }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flip]);
 
-  const pinchGesture = usePinchGesture({
-    // The pinch DETECTOR keeps the two-finger arbitration; the zoom
-    // itself is driven from the PAN handler's raw touch frames below
-    // (zoomTouchFrame — ONE tracker, DeckScreen carries the rationale).
-    onBegin: () => {
-      cancelAnimation(scale);
-      cancelAnimation(tx);
-      cancelAnimation(ty);
-    },
-    // onFinalize also fires when a pinch is CANCELLED, which onDeactivate
-    // does not — the anchor has to clear either way. The ZOOMED marker
-    // survives (codex round 1): the simultaneous pan outlives the pinch
-    // (it deactivates on the LAST finger, the pinch finalizes earlier),
-    // and its no-fling-after-zoom check reads this flag — a full reset
-    // here let a scale-changing stream end as a flick. The pan's own
-    // onBegin starts the next stream's tracking fresh.
-    onFinalize: () => {
-      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
-    },
-    onDeactivate: () => {
-      savedScale.value = scale.value;
-      savedTx.value = tx.value;
-      savedTy.value = ty.value;
-      if (scale.value <= 1.02) {
-        scale.value = withTiming(1);
-        savedScale.value = 1;
-        tx.value = withTiming(0);
-        ty.value = withTiming(0);
-        savedTx.value = 0;
-        savedTy.value = 0;
-      }
-    },
-  });
-
-  const panGesture = usePanGesture({
-    minPointers: 1,
-    maxPointers: 2,
-    // Only the release VELOCITY still reads the averaged pointer (the
-    // decay below); the translation itself is touch-position anchored
-    // (onTouchesMove).
-    averageTouches: true,
-    onBegin: () => {
-      // A finger landing mid-decay claims the photo wherever the decay
-      // carried it (DeckScreen carries the same rule).
-      // The decay itself must STOP here (codex device-pass round):
-      // left running it keeps moving the photo under the finger, and
-      // the first pan update then snaps back to this snapshot.
-      cancelAnimation(tx);
-      cancelAnimation(ty);
-      savedTx.value = tx.value;
-      savedTy.value = ty.value;
-      // A fresh touch stream: a fresh anchor, and whether it turns into
-      // a pinch is decided by the frames ahead of it (tracking.zoomed).
-      zoomTracking.value = ZOOM_TRACKING_START;
-    },
-    // The whole pinch-pan runs off the raw touch frames (zoomTouchFrame
-    // — m0.8.6 §10's touch-position anchoring, unified with the pinch
-    // in m0.8.8): a touch-set change re-anchors (down/up force it; the
-    // count check catches a same-count swap between move frames), so
-    // everything stays continuous across finger changes.
-    onTouchesDown: () => {
-      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
-    },
-    onTouchesUp: () => {
-      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
-    },
-    onTouchesMove: (event) => {
-      const step = zoomTouchFrame(
-        zoomTracking.value,
-        event.allTouches,
-        // Two fingers drive unconditionally — the initial pinch from
-        // scale 1 included (Compare has no pager to protect); a single
-        // finger needs the zoom AND activation, so a flip-tap's jitter
-        // cannot nudge the photo.
-        event.allTouches.length >= 2 || (scale.value > 1 && event.state === State.ACTIVE),
-        scale.value,
-        tx.value,
-        ty.value,
-        1,
-        maxScale.value,
-        stageW.value / 2,
-        stageH.value / 2,
-      );
-      zoomTracking.value = step.tracking;
-      if (step.transform === null) return;
-      scale.value = step.transform.scale;
-      // Compare clamps to the stage rectangle (its stacked pair shares
-      // one transform; per-photo edges are not meaningful here).
-      const maxX = (stageW.value * (step.transform.scale - 1)) / 2;
-      const maxY = (stageH.value * (step.transform.scale - 1)) / 2;
-      tx.value = clamp(step.transform.x, maxX);
-      ty.value = clamp(step.transform.y, maxY);
-    },
-    onDeactivate: (event) => {
-      savedTx.value = tx.value;
-      savedTy.value = ty.value;
-      if (scale.value <= 1) return;
-      // A stream that ZOOMED ends as a pinch, not a flick — momentum
-      // out of it flung the photo on every two-finger zoom (round 5).
-      if (zoomTracking.value.zoomed) return;
-      // The release keeps the flick's momentum — the standard gallery
-      // feel (m0.8.5 §10 check 9 round 3), inside the same bounds the
-      // drag was clamped to. Sub-flick velocities are lift-off noise
-      // (FLICK_MIN_VELOCITY): a hold-then-lift moves nothing.
-      const maxX = (stageW.value * (scale.value - 1)) / 2;
-      const maxY = (stageH.value * (scale.value - 1)) / 2;
-      if (Math.abs(event.velocityX) >= FLICK_MIN_VELOCITY) {
-        tx.value = withDecay({ velocity: event.velocityX, clamp: [-maxX, maxX] }, () => {
-          savedTx.value = tx.value;
-        });
-      }
-      if (Math.abs(event.velocityY) >= FLICK_MIN_VELOCITY) {
-        ty.value = withDecay({ velocity: event.velocityY, clamp: [-maxY, maxY] }, () => {
-          savedTy.value = ty.value;
-        });
-      }
-    },
-  });
-
-  const composedGesture = useSimultaneousGestures(pinchGesture, panGesture);
-
-  const zoomStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: tx.value }, { translateY: ty.value }, { scale: scale.value }],
-  }));
-
   // F22 (m0.8.8): the region-zoom pipeline for BOTH stacked photos —
   // flicker comparison is the point, so both stay warm (D2's guardrail
   // and the shared retention budget exist for exactly this pair). Each
   // hook plans against its own source dimensions under the one shared
-  // transform; the hooks poll shared values from JS (never runOnJS).
-  const regionStageSize = useCallback(
-    () => ({ width: stageW.value, height: stageH.value }),
-    [stageW, stageH],
-  );
-  const regionViewport = useCallback(
-    () => ({ scale: scale.value, tx: tx.value, ty: ty.value }),
-    [scale, tx, ty],
-  );
-  const regionZoomA = useRegionZoom(
+  // transform; the ceiling is the MAX of the pair. Wiring:
+  // components/useStageZoom.ts.
+  const stageZoomValues = { stageW, stageH, scale, tx, ty };
+  // Only the VISIBLE pane decodes patches (m0.9 phase 1, S23 pass):
+  // both bases stay warm so the flip is instant, and the hidden pane's
+  // last patches stay mounted (an unmoved flip-back is instantly
+  // sharp) — but the paired ~80 MB decodes per viewport change are
+  // gone, which is what janked the pan (useRegionZoom's parameter doc).
+  const regionZoomA = useStageRegionZoom(
+    stageZoomValues,
     pair?.a.id ?? null,
     pair?.a.uri ?? null,
-    pair !== null,
-    regionStageSize,
-    regionViewport,
+    pair !== null && isFocused,
+    !showB,
   );
-  const regionZoomB = useRegionZoom(
+  const regionZoomB = useStageRegionZoom(
+    stageZoomValues,
     pair?.b.id ?? null,
     pair?.b.uri ?? null,
-    pair !== null,
-    regionStageSize,
-    regionViewport,
+    pair !== null && isFocused,
+    showB,
   );
-  useEffect(() => {
-    const forSize = (size: { width: number; height: number } | null) =>
-      size
-        ? maxScaleFor(stageW.value, stageH.value, size.width, size.height, PixelRatio.get())
-        : MAX_SCALE_FLOOR;
-    maxScale.value = Math.max(forSize(regionZoomA.sourceSize), forSize(regionZoomB.sourceSize));
-  }, [regionZoomA.sourceSize, regionZoomB.sourceSize, maxScale, stageW, stageH]);
+  useStageMaxScale(maxScale, stageW, stageH, regionZoomA.sourceSize, regionZoomB.sourceSize);
 
   /** A READ failure on either load. It routes NOWHERE: the retry card
    * below renders instead of the missing-pair fallback, because a failed
@@ -814,92 +669,34 @@ export function CompareScreen({ navigation, route }: Props) {
                 {/* Per-photo layer groups (F22): each photo, its dwell-
                   warmed base, and its settled patch flip together under
                   the shared transform — both sides stay warm so the
-                  flicker comparison is sharp in both directions. */}
+                  flicker comparison is sharp in both directions. The
+                  layer stack (URI + base + patch slots, identity-gated
+                  on forPhotoId — m0.9 phase-1 drift fix) is the shared
+                  StagePaneLayers; no aspect feed, because Compare
+                  clamps to the stage rect. */}
                 <View style={StyleSheet.absoluteFill}>
-                  <Image
-                    source={{ uri: pair.a.uri }}
-                    style={StyleSheet.absoluteFill}
-                    contentFit="contain"
+                  <StagePaneLayers
+                    uri={pair.a.uri}
                     recyclingKey={pair.a.id}
+                    regionZoom={regionZoomA}
+                    sourcesOk={regionZoomA.forPhotoId === pair.a.id}
+                    onSourceLoad={(w, h) => {
+                      stage.aspectA.value = w / h;
+                    }}
                   />
-                  {/* ALWAYS MOUNTED, props-only (useRegionZoom header:
-                    a mid-gesture mount breaks RNGH pointer tracking). */}
-                  <Image
-                    source={regionZoomA.baseSource ?? undefined}
-                    style={StyleSheet.absoluteFill}
-                    contentFit="contain"
-                    transition={0}
-                    allowDownscaling={false}
-                  />
-                  {regionZoomA.patchSlots.map((slot, slotIndex) => (
-                    <Image
-                      key={slotIndex}
-                      source={slot?.source ?? undefined}
-                      style={{
-                        position: 'absolute',
-                        left: 0,
-                        top: 0,
-                        width: slot?.width ?? 1,
-                        height: slot?.height ?? 1,
-                        // Transform, not left/top: layout snaps to the pixel
-                        // grid, and a deep-zoom scale magnified that snap into
-                        // a visible content jump on every apply (S10e video 6).
-                        transform: [
-                          { translateX: slot?.left ?? 0 },
-                          { translateY: slot?.top ?? 0 },
-                        ],
-                        zIndex: slot?.z ?? 0,
-                        opacity: slot ? 1 : 0,
-                      }}
-                      contentFit="fill"
-                      transition={0}
-                      allowDownscaling={false}
-                    />
-                  ))}
                 </View>
                 {/* Stacked on top; opacity flip keeps both mounted so the zoom
                 transform (on the shared parent) applies to both at once. */}
                 <View style={[StyleSheet.absoluteFill, { opacity: showB ? 1 : 0 }]}>
-                  <Image
-                    source={{ uri: pair.b.uri }}
-                    style={StyleSheet.absoluteFill}
-                    contentFit="contain"
+                  <StagePaneLayers
+                    uri={pair.b.uri}
                     recyclingKey={pair.b.id}
+                    regionZoom={regionZoomB}
+                    sourcesOk={regionZoomB.forPhotoId === pair.b.id}
+                    onSourceLoad={(w, h) => {
+                      stage.aspectB.value = w / h;
+                    }}
                   />
-                  {/* ALWAYS MOUNTED, props-only (useRegionZoom header:
-                    a mid-gesture mount breaks RNGH pointer tracking). */}
-                  <Image
-                    source={regionZoomB.baseSource ?? undefined}
-                    style={StyleSheet.absoluteFill}
-                    contentFit="contain"
-                    transition={0}
-                    allowDownscaling={false}
-                  />
-                  {regionZoomB.patchSlots.map((slot, slotIndex) => (
-                    <Image
-                      key={slotIndex}
-                      source={slot?.source ?? undefined}
-                      style={{
-                        position: 'absolute',
-                        left: 0,
-                        top: 0,
-                        width: slot?.width ?? 1,
-                        height: slot?.height ?? 1,
-                        // Transform, not left/top: layout snaps to the pixel
-                        // grid, and a deep-zoom scale magnified that snap into
-                        // a visible content jump on every apply (S10e video 6).
-                        transform: [
-                          { translateX: slot?.left ?? 0 },
-                          { translateY: slot?.top ?? 0 },
-                        ],
-                        zIndex: slot?.z ?? 0,
-                        opacity: slot ? 1 : 0,
-                      }}
-                      contentFit="fill"
-                      transition={0}
-                      allowDownscaling={false}
-                    />
-                  ))}
                 </View>
               </Animated.View>
               <View style={styles.abBadge} pointerEvents="none">
@@ -907,17 +704,14 @@ export function CompareScreen({ navigation, route }: Props) {
                   {visibleLabel} · {formatClockPrecise(visible.timestamp, withMs)}
                 </Text>
               </View>
-              {/* Zoom fail-soft notice (DeckScreen's zoomNotice comment).
+              {/* Zoom fail-soft notice (ZoomFailNotice's header).
                   Compare has no zoom-only overlay, so it shows whenever
-                  the VISIBLE photo's pipeline rejected — reviewed with
-                  the m0.9 metadata-corner redesign. */}
-              {(showB ? regionZoomB : regionZoomA).failed && (
-                <View style={styles.zoomNotice} pointerEvents="none">
-                  <Text style={styles.zoomNoticeText}>
-                    Full detail unavailable — image file can't be fully read
-                  </Text>
-                </View>
-              )}
+                  the VISIBLE photo's pipeline rejected — identity-gated
+                  on forPhotoId like every source (m0.9 phase-1 drift
+                  fix: a pane swap could briefly show the notice for the
+                  WRONG photo). */}
+              {(showB ? regionZoomB : regionZoomA).failed &&
+                (showB ? regionZoomB : regionZoomA).forPhotoId === visible.id && <ZoomFailNotice />}
             </Pressable>
           </VirtualGestureDetector>
         </InterceptingGestureDetector>
@@ -1147,16 +941,6 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   /** The zoom fail-soft notice (DeckScreen's zoomNotice). */
-  zoomNotice: {
-    position: 'absolute',
-    bottom: 12,
-    alignSelf: 'center',
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    borderRadius: 6,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-  },
-  zoomNoticeText: { color: 'rgba(255,255,255,0.85)', fontSize: 12 },
   abBadgeText: {
     color: colors.text,
     fontSize: 13,

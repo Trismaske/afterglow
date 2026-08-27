@@ -9,29 +9,11 @@ import {
   Text,
   View,
   TextInput,
-  PixelRatio,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import {
-  InterceptingGestureDetector,
-  State,
-  usePanGesture,
-  usePinchGesture,
-  useSimultaneousGestures,
-  useTapGesture,
-  VirtualGestureDetector,
-} from 'react-native-gesture-handler';
-import Animated, {
-  cancelAnimation,
-  useAnimatedProps,
-  useAnimatedStyle,
-  useSharedValue,
-  withDecay,
-  withTiming,
-} from 'react-native-reanimated';
 import { useIsFocused } from '@react-navigation/native';
 import type {
   NativeStackNavigationProp,
@@ -66,16 +48,11 @@ import { useSQLiteContext } from 'expo-sqlite';
 import { addToShareQueue, removeFromShareQueue } from '../db/shareStore';
 import { queueOrganize, unqueueOrganize } from '../db/organizeStore';
 import { useDoubleTapZoom } from '../components/useDoubleTapZoom';
-import {
-  FLICK_MIN_VELOCITY,
-  ZOOM_TRACKING_START,
-  panBounds,
-  zoomTouchFrame,
-} from '../lib/zoomTarget';
 import { stripScrollOffset } from '../lib/stripScroll';
 import { nearestPendingIndex } from '../lib/deckAdvance';
-import { flushRegionZoomRetention, useRegionZoom } from '../components/useRegionZoom';
-import { MAX_SCALE_FLOOR, maxScaleFor } from '../lib/regionZoom';
+import { flushRegionZoomRetention } from '../components/useRegionZoom';
+import { useStageMaxScale, useStageRegionZoom } from '../components/useStageZoom';
+import { MediaStageView, useMediaStage } from '../components/MediaStage';
 import {
   deckUnitKey,
   paramsForUnit,
@@ -101,13 +78,10 @@ type SharedProps = {
 const THUMB = 52;
 const THUMB_GAP = 6;
 const THUMB_INSET = 2;
-// The max zoom is DYNAMIC per photo (m0.8.8, Tristan): enough to reach
-// 1:1 physical pixels plus inspection headroom, between MAX_SCALE_FLOOR
-// and MAX_SCALE_CEILING — a fixed 16 stopped BEFORE 1:1 on a 200MP
-// photo, while deep fixed maxima on a 12MP photo are pure mush. `maxScaleFor` in
-// lib/regionZoom.ts owns the formula; each surface carries it in a
-// shared value the pinch clamp reads. panBounds clamps to the photo's
-// own edges, so a deep zoom cannot wander off the content.
+// The max zoom is DYNAMIC per photo (m0.8.8): maxScaleFor in
+// lib/regionZoom.ts owns the formula, useStageMaxScale feeds it, and
+// pans clamp to the photo's own edges via panBounds — rationale in
+// components/useStageZoom.ts and MediaStage.tsx (m0.9 phase 1).
 
 /** F28 (m0.8.8, G9): ONE weighted verdict row — Keep · Compare · Not
  * related · Cull — in both deck kinds, reclaiming the group deck's
@@ -132,11 +106,6 @@ function surfaceQueueWriteError(error: unknown): void {
     'Change not saved',
     `Afterglow could not write the change to its database. Nothing was changed — please retry the action.\n\n${error instanceof Error ? error.message : String(error)}`,
   );
-}
-
-function clampPan(value: number, max: number): number {
-  'worklet';
-  return Math.min(max, Math.max(-max, value));
 }
 
 /**
@@ -612,322 +581,26 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   // ------------------------------------------------- pinch zoom (m0.5)
   // Two-pointer pinch zooms the current photo in an overlay; the pager
   // freezes while zoomed and resumes once the zoom springs back to 1.
-  const scale = useSharedValue(1);
-  const savedScale = useSharedValue(1);
-  const tx = useSharedValue(0);
-  const ty = useSharedValue(0);
-  const savedTx = useSharedValue(0);
-  const savedTy = useSharedValue(0);
-  const stageW = useSharedValue(0);
-  const stageH = useSharedValue(0);
-  /** The dynamic per-photo zoom ceiling (maxScaleFor) — a shared value
-   * so the pinch worklet clamps without touching the bridge. */
-  const maxScale = useSharedValue<number>(MAX_SCALE_FLOOR);
-  // Photo width / height, set by the overlay image's onLoad (JS → shared
-  // value, the safe bridge direction). Pans clamp to the photo's own
-  // rendered edges via panBounds — 0 means not yet loaded.
-  const imageAspect = useSharedValue(0);
-  // ONE tracker for the whole pinch-pan (zoomTouchFrame, m0.8.8): scale
-  // and translation share a single anchor, so they can never disagree —
-  // the two-tracker design made focal anchoring depend on the PAN
-  // gesture's activation state (S10e video 11).
-  const zoomTracking = useSharedValue(ZOOM_TRACKING_START);
-  /** The overlay's handlers own the current touch stream — the stage
-   * pinch (which can receive the same stream through the shared
-   * interceptor) stands down completely while this is set. */
-  const overlayOwnsStream = useSharedValue(false);
-
-  const resetZoom = useCallback(() => {
-    scale.value = 1;
-    savedScale.value = 1;
-    tx.value = 0;
-    ty.value = 0;
-    savedTx.value = 0;
-    savedTy.value = 0;
-    // The aspect belongs to the CURRENT photo: left stale across a photo
-    // change, a double tap before the new onLoad clamps pan bounds
-    // against the PREVIOUS photo's edges. 0 = not loaded, where
-    // panBounds falls back to stage-rect bounds (zoomTarget.ts).
-    imageAspect.value = 0;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // NO GESTURE CALLBACK MAY CROSS THE WORKLETS->JS BRIDGE. Any runOnJS
-  // call from a gesture worklet segfaults this build: SIGSEGV in
-  // AroundLock::utf8, a use-after-free of the serialized host function
-  // (reanimated #9776, worklets 0.10.2 — pinned by expo-modules-core).
-  // Reproduced and A/B'd on the S10e in release builds twice over: a
-  // single runOnJS'd tap callback killed the process on the 2nd double
-  // tap; removed, 8+ were clean. Dead ends, each verified: declaring
-  // worklets 0.11 over the pin ships TWO copies of a native library
-  // (worse), and asking for the JS thread outright (`runOnJS: true` in
-  // a gesture config) trades the segfault for a TypeError in
-  // onGestureHandlerEvent (the Babel plugin treats those callbacks
-  // differently).
-  //
-  // Gesture Handler 3 makes this a WRITING rule, not just a design one:
-  // the worklets Babel plugin only workletizes callbacks written INLINE
-  // in a gesture's config object. Extract one to a named function — or
-  // wrap it in useCallback/useMemo — and it silently becomes a JS-thread
-  // callback, which is the crash above. Every callback below is inline
-  // for that reason.
-  //
-  // So "is the deck zoomed?" lives ONLY in shared values:
-  // the overlay is always mounted and its visibility + touchability are
-  // animated props derived from `scale` on the UI thread, and the stage
-  // tap is a plain Pressable on the page (RN responder path, no
-  // worklets). Nothing here needs React state, so nothing needs the
-  // bridge — a design worth keeping even if a future worklets release
-  // fixes the crash.
-  //
-  // TWO detectors, and the split matters.
-  //
-  // An enabled Pan sitting in the same composition as the pager's scroll
-  // crashes the worklets runtime on a horizontal drag (same signature —
-  // reproduced and A/B'd on the S10e: pan enabled crashed on the 2nd
-  // swipe, pan disabled survived 14). So the pan does not live here at
-  // all. This composition is the pinch alone, built ONCE, never rebuilt
-  // (a gesture rebuilt while a touch is in flight is its own crash).
-  // Panning belongs to the zoom overlay, which only receives touches
-  // while zoomed (see `zoomedGesture`).
-  const stageGesture = usePinchGesture({
-    // The pinch DETECTOR exists to claim two-finger touches from the
-    // pager; the zoom itself is driven from the raw touch frames below
-    // (zoomTouchFrame — ONE tracker for scale AND translation, so a
-    // fresh pinch is focal-anchored from its first frame).
-    onBegin: () => {
-      // A zoomed stream belongs to the OVERLAY's handlers; the stage
-      // pinch may still receive it through the shared interceptor, and
-      // acting on it would fight the overlay over the one tracker
-      // (S10e video 13: single-finger pans froze into identity frames
-      // against the stage's per-frame re-anchor).
-      if (overlayOwnsStream.value) return;
-      cancelAnimation(scale);
-      cancelAnimation(tx);
-      cancelAnimation(ty);
-      zoomTracking.value = ZOOM_TRACKING_START;
-    },
-    onTouchesCancel: () => {
-      // The pager stole the stream — drop the anchor so nothing stale
-      // survives into the next touch.
-      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
-    },
-    onTouchesMove: (event) => {
-      if (overlayOwnsStream.value) return;
-      const step = zoomTouchFrame(
-        zoomTracking.value,
-        event.allTouches,
-        // One finger on the stage belongs to the pager — and so does
-        // the stream until the pinch ACTIVATES: activation is what
-        // claims it from the native scroll, and zooming before the
-        // claim let the pager steal the stream mid-zoom (S10e video
-        // 13's per-photo first-pinch freeze).
-        event.state === State.ACTIVE && event.allTouches.length >= 2,
-        scale.value,
-        tx.value,
-        ty.value,
-        1,
-        maxScale.value,
-        stageW.value / 2,
-        stageH.value / 2,
-      );
-      zoomTracking.value = step.tracking;
-      if (step.transform === null) return;
-      scale.value = step.transform.scale;
-      const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, step.transform.scale);
-      tx.value = clampPan(step.transform.x, bounds.maxX);
-      ty.value = clampPan(step.transform.y, bounds.maxY);
-    },
-    onDeactivate: () => {
-      if (overlayOwnsStream.value) return;
-      savedScale.value = scale.value;
-      savedTx.value = tx.value;
-      savedTy.value = ty.value;
-    },
-    // onFinalize (unlike onDeactivate) also fires on cancellation, so a
-    // broken gesture can never strand the overlay barely above scale 1,
-    // covering the pager.
-    onFinalize: () => {
-      if (overlayOwnsStream.value) return;
-      // The anchor belongs to ONE touch stream: left standing, the next
-      // two fingers down would resume mid-zoom from a stale base.
-      zoomTracking.value = ZOOM_TRACKING_START;
-      // Follows onBegin, so it fires for plain taps too — do nothing
-      // when there was never a zoom to unwind.
-      if (scale.value === 1 && savedScale.value === 1) return;
-      if (scale.value <= 1.02) {
-        scale.value = withTiming(1);
-        savedScale.value = 1;
-        tx.value = withTiming(0);
-        ty.value = withTiming(0);
-        savedTx.value = 0;
-        savedTy.value = 0;
-      }
-    },
-  });
-
-  /* Pan + double-tap, attached to the zoom overlay, which only receives
-   * touches while zoomed (animated pointerEvents) — so the pan never
-   * competes with the pager's scroll. */
-  const overlayPan = usePanGesture({
-    // A SECOND pinch (fingers lifted, then pinching again) lands on the
-    // overlay, whose detector has no pinch of its own — without this
-    // link an off-centre two-finger touch can activate the pan first
-    // and cancel the ancestor pinch, freezing the zoom level (codex
-    // r50). Simultaneous restores the pre-split behavior where pan and
-    // pinch shared one composition.
-    simultaneousWith: stageGesture,
-    minPointers: 1,
-    maxPointers: 2,
-    // Only the release VELOCITY still reads the averaged pointer (the
-    // decay below); the translation itself is touch-position anchored
-    // (onTouchesMove).
-    averageTouches: true,
-    onBegin: () => {
-      // A finger landing mid-decay claims the photo wherever the decay
-      // carried it — without this the next translation would snap back
-      // to the pre-decay position.
-      // The decay itself must STOP here (codex device-pass round):
-      // left running it keeps moving the photo under the finger, and
-      // the first pan update then snaps back to this snapshot.
-      cancelAnimation(tx);
-      cancelAnimation(ty);
-      savedTx.value = tx.value;
-      savedTy.value = ty.value;
-      // A fresh touch stream: a fresh anchor, and whether it turns into
-      // a pinch is decided by the frames ahead of it (tracking.zoomed).
-      zoomTracking.value = ZOOM_TRACKING_START;
-      // Claim the stream: the stage pinch stands down until finalize.
-      overlayOwnsStream.value = true;
-    },
-    onTouchesCancel: () => {
-      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
-    },
-    // The whole zoomed pinch-pan runs off the raw touch frames
-    // (zoomTouchFrame — m0.8.6 §10's touch-position anchoring, unified
-    // with the pinch in m0.8.8): a touch-set change re-anchors (down/up
-    // force it; the count check catches a same-count swap between move
-    // frames), so everything stays continuous across finger changes.
-    onTouchesDown: () => {
-      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
-    },
-    onTouchesUp: () => {
-      zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
-    },
-    onTouchesMove: (event) => {
-      const step = zoomTouchFrame(
-        zoomTracking.value,
-        event.allTouches,
-        // Two fingers drive unconditionally (a pinch must be focal-
-        // anchored from its FIRST frame — never gated on the pan
-        // gesture's activation distance); a single finger waits for
-        // activation so a tap's jitter cannot nudge the photo.
-        scale.value > 1 && (event.allTouches.length >= 2 || event.state === State.ACTIVE),
-        scale.value,
-        tx.value,
-        ty.value,
-        1,
-        maxScale.value,
-        stageW.value / 2,
-        stageH.value / 2,
-      );
-      zoomTracking.value = step.tracking;
-      if (step.transform === null) return;
-      scale.value = step.transform.scale;
-      const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, step.transform.scale);
-      tx.value = clampPan(step.transform.x, bounds.maxX);
-      ty.value = clampPan(step.transform.y, bounds.maxY);
-    },
-    onDeactivate: (event) => {
-      savedTx.value = tx.value;
-      savedTy.value = ty.value;
-      if (scale.value <= 1) return;
-      // A stream that ZOOMED ends as a pinch, not a flick — momentum
-      // out of it flung the photo on every two-finger zoom (round 5).
-      if (zoomTracking.value.zoomed) return;
-      // The release keeps the flick's momentum (§10 check 9 round 3 —
-      // the standard gallery feel), decaying inside the same pan
-      // bounds the drag was clamped to. Sub-flick velocities are noise
-      // (FLICK_MIN_VELOCITY): a hold-then-lift moves nothing.
-      const bounds = panBounds(stageW.value, stageH.value, imageAspect.value, scale.value);
-      if (Math.abs(event.velocityX) >= FLICK_MIN_VELOCITY) {
-        tx.value = withDecay(
-          { velocity: event.velocityX, clamp: [-bounds.maxX, bounds.maxX] },
-          () => {
-            savedTx.value = tx.value;
-          },
-        );
-      }
-      if (Math.abs(event.velocityY) >= FLICK_MIN_VELOCITY) {
-        ty.value = withDecay(
-          { velocity: event.velocityY, clamp: [-bounds.maxY, bounds.maxY] },
-          () => {
-            savedTy.value = ty.value;
-          },
-        );
-      }
-    },
-    // Overlay streams release their claim and unwind a barely-above-1
-    // zoom themselves — the stage's finalize (which used to do it) is
-    // gated off while the overlay owns the stream. onFinalize also
-    // fires on cancellation, so a broken stream can never keep the
-    // claim (which would dead-stick the stage pinch).
-    onFinalize: () => {
-      overlayOwnsStream.value = false;
-      zoomTracking.value = ZOOM_TRACKING_START;
-      if (scale.value === 1 && savedScale.value === 1) return;
-      if (scale.value <= 1.02) {
-        scale.value = withTiming(1);
-        savedScale.value = 1;
-        tx.value = withTiming(0);
-        ty.value = withTiming(0);
-        savedTx.value = 0;
-        savedTy.value = 0;
-      }
-    },
-  });
-  // m0.7 (#18): double-tap resets zoom. The timing animation carries
-  // scale back to exactly 1, which is what hides the overlay.
-  const overlayDoubleTap = useTapGesture({
-    numberOfTaps: 2,
-    // A walking pan's quick dabs must never read as a double tap
-    // (device pass, 2026-08-19: alternating thumbs zoomed the photo
-    // out mid-shove). The reset requires the pan to FAIL: a true
-    // double tap never drags past the pan's activation distance, so
-    // the pan fails at finger-up and the tap proceeds — while every
-    // dab of a walk activates the pan and blocks the tap outright.
-    requireToFail: overlayPan,
-    onDeactivate: () => {
-      scale.value = withTiming(1);
-      savedScale.value = 1;
-      tx.value = withTiming(0);
-      ty.value = withTiming(0);
-      savedTx.value = 0;
-      savedTy.value = 0;
-    },
-  });
-  const zoomedGesture = useSimultaneousGestures(overlayPan, overlayDoubleTap);
-
-  // The overlay's whole lifecycle is UI-thread-derived from `scale`: it
-  // fades in the moment a pinch pushes past 1 and swallows the pager's
-  // touches (pointerEvents) for exactly as long as it is visible. The
-  // pager needs no scrollEnabled toggle — while zoomed it simply cannot
-  // be reached.
-  const zoomStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: tx.value }, { translateY: ty.value }, { scale: scale.value }],
-  }));
-  const zoomOverlayStyle = useAnimatedStyle(() => ({
-    opacity: scale.value > 1 ? 1 : 0,
-  }));
-  // importantForAccessibility mirrors PhotoViewer's facts panel (codex
-  // r50): the always-mounted overlay is hidden by opacity +
-  // pointerEvents while unzoomed, but would otherwise stay in the
-  // accessibility tree.
-  const zoomOverlayProps = useAnimatedProps(() => ({
-    pointerEvents: (scale.value > 1 ? 'auto' : 'none') as 'auto' | 'none',
-    importantForAccessibility: (scale.value > 1 ? 'auto' : 'no-hide-descendants') as
-      'auto' | 'no-hide-descendants',
-  }));
+  // The whole driver set — shared values, the two-detector gesture
+  // split, stream arbitration, and the overlay's animated styles — is
+  // the deck-canonical MediaStage (m0.9 phase 1, moved VERBATIM from
+  // this file; docs/MediaStage_design.md). The bridge rule, the
+  // inline-callback rule, and the detector rationale live in its
+  // header and still bind everything below.
+  const stage = useMediaStage();
+  const {
+    scale,
+    savedScale,
+    tx,
+    ty,
+    savedTx,
+    savedTy,
+    stageW,
+    stageH,
+    maxScale,
+    imageAspect,
+    resetZoom,
+  } = stage;
 
   // Page taps — a plain Pressable press (RN responder system),
   // deliberately not a tap gesture (`useTapGesture`), so no worklet is
@@ -1534,41 +1207,20 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   // F22 (m0.8.8): the region-zoom pipeline for the current stage photo —
   // dwell-warmed base + settled patches over the zoom overlay. Keyed on
   // the LIVE current item, so a frozen (inert) view tears the pipeline
-  // down exactly when its controls go dead. The callbacks READ shared
-  // values from the JS side (the safe direction; the hook polls — never
-  // runOnJS, per the bridge comment above).
-  const regionStageSize = useCallback(
-    () => ({ width: stageW.value, height: stageH.value }),
-    [stageW, stageH],
-  );
-  const regionViewport = useCallback(
-    () => ({ scale: scale.value, tx: tx.value, ty: ty.value }),
-    [scale, tx, ty],
-  );
-  const regionZoom = useRegionZoom(
+  // down exactly when its controls go dead. Wiring (JS-side polling
+  // callbacks + the resolution-driven zoom ceiling) is shared:
+  // components/useStageZoom.ts.
+  const regionZoom = useStageRegionZoom(
+    { stageW, stageH, scale, tx, ty },
     isFocused ? (current?.id ?? null) : null,
     isFocused ? (current?.uri ?? null) : null,
     isFocused && current !== null,
-    regionStageSize,
-    regionViewport,
   );
   // D7: retained bases die with the unit (the new current stays warm).
   useEffect(() => {
     flushRegionZoomRetention(currentIdRef.current ?? undefined);
   }, [unitKey]);
-  // The photo's real resolution sets its zoom ceiling; unknown (pre-
-  // dwell, failed open) keeps the classic floor.
-  useEffect(() => {
-    maxScale.value = regionZoom.sourceSize
-      ? maxScaleFor(
-          stageW.value,
-          stageH.value,
-          regionZoom.sourceSize.width,
-          regionZoom.sourceSize.height,
-          PixelRatio.get(),
-        )
-      : MAX_SCALE_FLOOR;
-  }, [regionZoom.sourceSize, maxScale, stageW, stageH]);
+  useStageMaxScale(maxScale, stageW, stageH, regionZoom.sourceSize);
 
   // A failed unit read renders the inline retry INSTEAD of the empty
   // root below: the failure state routes nowhere (no effect consumes
@@ -1648,7 +1300,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     return (
       <View style={[styles.root, { paddingBottom: insets.bottom + 8 }]}>
         {lastPhotoRef.current !== null && (
-          <View style={styles.stage}>
+          <View style={styles.coldStage}>
             <Image
               source={{ uri: lastPhotoRef.current }}
               style={StyleSheet.absoluteFill}
@@ -1763,226 +1415,102 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
         <Text style={styles.headerHint}>{view.headerHint}</Text>
       </View>
 
-      {/* VIRTUAL detectors under ONE intercepting host (Gesture Handler
-          3). The plain `GestureDetector` is now a HOST component, and
-          two things in this tree cannot survive one: the pager's native
-          scroll (a host detector above it swallows the horizontal drag —
-          the deck could not be swiped at all, caught by the UI gate),
-          and the always-mounted zoom overlay, whose touchability is an
-          ANIMATED pointerEvents prop on the Animated.View — a host
-          detector wrapped around it is not covered by that prop, so it
-          would eat every stage touch while unzoomed. `VirtualGestureDetector`
-          is the RNGH2-shaped detector: it attaches gestures to the child
-          it already has instead of inserting a view, so the hierarchy —
-          and both behaviours above — stay exactly as they were. */}
-      {/* The decorative border lives on this OUTER frame, never on the
-          measured stage: Yoga insets absolutely-positioned children by
-          the parent's border while onLayout reports the border box, so
-          a bordered stage renders the overlay images in a box 2 dp
-          smaller than every consumer of stageW/stageH assumes. At deep
-          zoom that 2 dp is magnified by scale × density — measured as
-          an ~85 px content jump on every patch apply (S10e recording,
-          2026-08-25: the max-zoom snap, the lift-finger nudge, and the
-          momentum-pan tearing were all this one geometry error). */}
-      <View style={styles.stageFrame}>
-        <InterceptingGestureDetector>
-          <VirtualGestureDetector gesture={stageGesture}>
-            <View
-              style={styles.stage}
-              onLayout={(event) => {
-                setPageW(event.nativeEvent.layout.width);
-                stageW.value = event.nativeEvent.layout.width;
-                stageH.value = event.nativeEvent.layout.height;
-              }}
-            >
-              {pageW > 0 && (
-                <>
-                  <View style={styles.pager}>
-                    {/* Decode underlay: the page Image a data swap mounts
-                      starts transparent until its decode lands, and on
-                      the S10e that gap was a visible blank (§10 check
-                      3). The previous photo sits under the pager for
-                      exactly those frames. ALWAYS MOUNTED, visibility by
-                      opacity: mounting it on demand reproduced the blank
-                      (a freshly-mounted Image paints a frame late even
-                      from cache — emulator probe), while left visible it
-                      would ghost through every contained page's
-                      letterbox margins. */}
-                    {lastPhotoRef.current !== null && (
-                      <Image
-                        source={{ uri: lastPhotoRef.current }}
-                        style={[
-                          StyleSheet.absoluteFill,
-                          {
-                            opacity: inert || !loadedPagesRef.current.has(view.current.id) ? 1 : 0,
-                          },
-                        ]}
-                        contentFit="contain"
-                        transition={0}
-                      />
-                    )}
-                    <FlatList
-                      // Keyed by the DISPLAYED unit: a unit change swaps in
-                      // a fresh native list at its own first pending photo
-                      // (initialScrollIndex), and the outgoing list's
-                      // offsets, momentum and in-flight animations are
-                      // discarded with it — see DeckView.unitKey.
-                      key={view.unitKey}
-                      ref={listRef}
-                      data={view.items}
-                      keyExtractor={(i) => i.id}
-                      renderItem={renderPage}
-                      horizontal
-                      pagingEnabled
-                      // A FROZEN deck is fully inert (codex device-pass
-                      // round): a swipe would move the native offset while
-                      // every guard ignores it. A JUST-SWAPPED deck also
-                      // ignores swipes for its settle window — see
-                      // `pagerSettling`.
-                      scrollEnabled={!inert && !pagerSettling}
-                      showsHorizontalScrollIndicator={false}
-                      initialScrollIndex={Math.min(view.cursor, view.items.length - 1)}
-                      getItemLayout={(_data, index) => ({
-                        length: pageW,
-                        offset: pageW * index,
-                        index,
-                      })}
-                      onScroll={onPagerScroll}
-                      scrollEventThrottle={32}
-                      onScrollBeginDrag={() => {
-                        pagerAnimatingRef.current = false;
-                      }}
-                      onMomentumScrollEnd={onMomentumEnd}
-                    />
-                  </View>
-                </>
-              )}
-              {/* Always mounted; visibility + touchability are UI-thread
-                animated props (see zoomStyle/zoomOverlayProps). The image
-                is the same URI the pager page shows, so expo-image serves
-                it from cache rather than decoding twice. */}
-              <VirtualGestureDetector gesture={zoomedGesture}>
-                {/* The opaque backdrop lives on this UNtransformed layer, so
-                  it covers the stage by construction. On the transformed
-                  layer it was one rounding error away from leaking: for a
-                  photo that fills an axis, the content clamp is exactly
-                  the coverage bound, and pixel snapping let the pager's
-                  photo peek out in a sliver at the edge (device-observed
-                  on both phones). The photo transforms INSIDE it; a few-px
-                  edge miss now shows flat stage colour instead. */}
-                <Animated.View
-                  style={[
-                    StyleSheet.absoluteFill,
-                    { backgroundColor: colors.surface },
-                    zoomOverlayStyle,
-                  ]}
-                  animatedProps={zoomOverlayProps}
-                >
-                  <Animated.View style={[StyleSheet.absoluteFill, zoomStyle]}>
-                    <Image
-                      source={{ uri: view.current.uri }}
-                      style={StyleSheet.absoluteFill}
-                      contentFit="contain"
-                      recyclingKey={`zoom-${view.current.id}`}
-                      onLoad={(event) => {
-                        const { width, height } = event.source;
-                        if (width > 0 && height > 0) imageAspect.value = width / height;
-                      }}
-                    />
-                    {/* F22 (m0.8.8): dwell-warmed BASE + double-buffered
-                      PATCH slots. ALWAYS MOUNTED, props-only updates —
-                      mounting a view here mid-gesture breaks RNGH's
-                      pointer tracking (useRegionZoom header, the S10e
-                      recording). Identity-gated by PROP, on BOTH ids:
-                      the pipeline serves the LIVE current photo while a
-                      frozen view shows the HELD one, and forPhotoId
-                      covers the one commit where an in-place advance
-                      renders the NEW id before the hook's effect clears
-                      the OLD photo's sources (the deck decides while
-                      zoomed, so that frame is visible here) — sources
-                      go undefined on any mismatch, so no frame can
-                      blend two photos. */}
-                    <Image
-                      source={
-                        current?.id === view.current.id && regionZoom.forPhotoId === view.current.id
-                          ? (regionZoom.baseSource ?? undefined)
-                          : undefined
-                      }
-                      style={StyleSheet.absoluteFill}
-                      contentFit="contain"
-                      transition={0}
-                      allowDownscaling={false}
-                    />
-                    {regionZoom.patchSlots.map((slot, slotIndex) => (
-                      <Image
-                        key={slotIndex}
-                        source={
-                          current?.id === view.current.id &&
-                          regionZoom.forPhotoId === view.current.id
-                            ? (slot?.source ?? undefined)
-                            : undefined
-                        }
-                        style={{
-                          position: 'absolute',
-                          left: 0,
-                          top: 0,
-                          width: slot?.width ?? 1,
-                          height: slot?.height ?? 1,
-                          // Transform, not left/top: layout snaps to the pixel
-                          // grid, and a deep-zoom scale magnified that snap into
-                          // a visible content jump on every apply (S10e video 6).
-                          transform: [
-                            { translateX: slot?.left ?? 0 },
-                            { translateY: slot?.top ?? 0 },
-                          ],
-                          zIndex: slot?.z ?? 0,
-                          opacity: slot ? 1 : 0,
-                        }}
-                        contentFit="fill"
-                        transition={0}
-                        allowDownscaling={false}
-                      />
-                    ))}
-                  </Animated.View>
-                  {/* Zoom-time fail-soft notice (close-out grilling):
-                      the region pipeline rejected this photo
-                      (unreadable EXIF, mirrored orientation,
-                      unopenable format), so depth shows cached-image
-                      quality — say why, exactly when the user would
-                      wonder. On the UNtransformed layer so it never
-                      scales; visible only while the overlay is
-                      (zoomed). Flagged for the m0.9 metadata-corner
-                      redesign (F31/F33/F34). */}
-                  {regionZoom.failed && regionZoom.forPhotoId === view.current.id && (
-                    <View style={styles.zoomNotice} pointerEvents="none">
-                      <Text style={styles.zoomNoticeText}>
-                        Full detail unavailable — image file can't be fully read
-                      </Text>
-                    </View>
-                  )}
-                </Animated.View>
-              </VirtualGestureDetector>
-              <View style={styles.posBadge} pointerEvents="none">
-                <Text style={styles.posBadgeText}>
-                  {view.cursor + 1}/{view.keepCount}
-                </Text>
-              </View>
-              <View style={styles.timeBadge} pointerEvents="none">
-                {/* Day AND time (F17): a time with no date says nothing
-                  about WHEN in a library you are reviewing out of order.
-                  Rendered from `day`, NEVER from taken_at. */}
-                <Text style={styles.timeBadgeText}>
-                  {`${labelForDayKey(view.dayOf.get(view.current.id) ?? UNDATED_DAY_KEY)} · ${formatClockPrecise(
-                    view.current.timestamp,
-                    view.needMs[view.cursor] ?? false,
-                  )}`}
-                </Text>
-              </View>
-              <BadgeCluster badges={badgesFor(view.current)} size={24} style={styles.flagBadge} />
+      {/* The stage tree (detectors, measured borderless box, zoom
+          overlay, fail-soft notice) is the shared MediaStageView —
+          the virtual-detector and borderless-stage rationale lives in
+          MediaStage.tsx's header. The pager is the host content; the
+          badges ride the chrome slot until phase 6's overlay builder. */}
+      <MediaStageView
+        controller={stage}
+        frameStyle={styles.stageFrame}
+        onStageLayout={(width) => setPageW(width)}
+        overlayFor={view.current}
+        regionZoom={regionZoom}
+        identityOk={current?.id === view.current.id}
+        backdropColor={colors.surface}
+        chrome={
+          <>
+            <View style={styles.posBadge} pointerEvents="none">
+              <Text style={styles.posBadgeText}>
+                {view.cursor + 1}/{view.keepCount}
+              </Text>
             </View>
-          </VirtualGestureDetector>
-        </InterceptingGestureDetector>
-      </View>
+            <View style={styles.timeBadge} pointerEvents="none">
+              {/* Day AND time (F17): a time with no date says nothing
+                about WHEN in a library you are reviewing out of order.
+                Rendered from `day`, NEVER from taken_at. */}
+              <Text style={styles.timeBadgeText}>
+                {`${labelForDayKey(view.dayOf.get(view.current.id) ?? UNDATED_DAY_KEY)} · ${formatClockPrecise(
+                  view.current.timestamp,
+                  view.needMs[view.cursor] ?? false,
+                )}`}
+              </Text>
+            </View>
+            <BadgeCluster badges={badgesFor(view.current)} size={24} style={styles.flagBadge} />
+          </>
+        }
+      >
+        {pageW > 0 && (
+          <View style={styles.pager}>
+            {/* Decode underlay: the page Image a data swap mounts
+              starts transparent until its decode lands, and on
+              the S10e that gap was a visible blank (§10 check
+              3). The previous photo sits under the pager for
+              exactly those frames. ALWAYS MOUNTED, visibility by
+              opacity: mounting it on demand reproduced the blank
+              (a freshly-mounted Image paints a frame late even
+              from cache — emulator probe), while left visible it
+              would ghost through every contained page's
+              letterbox margins. */}
+            {lastPhotoRef.current !== null && (
+              <Image
+                source={{ uri: lastPhotoRef.current }}
+                style={[
+                  StyleSheet.absoluteFill,
+                  {
+                    opacity: inert || !loadedPagesRef.current.has(view.current.id) ? 1 : 0,
+                  },
+                ]}
+                contentFit="contain"
+                transition={0}
+              />
+            )}
+            <FlatList
+              // Keyed by the DISPLAYED unit: a unit change swaps in
+              // a fresh native list at its own first pending photo
+              // (initialScrollIndex), and the outgoing list's
+              // offsets, momentum and in-flight animations are
+              // discarded with it — see DeckView.unitKey.
+              key={view.unitKey}
+              ref={listRef}
+              data={view.items}
+              keyExtractor={(i) => i.id}
+              renderItem={renderPage}
+              horizontal
+              pagingEnabled
+              // A FROZEN deck is fully inert (codex device-pass
+              // round): a swipe would move the native offset while
+              // every guard ignores it. A JUST-SWAPPED deck also
+              // ignores swipes for its settle window — see
+              // `pagerSettling`.
+              scrollEnabled={!inert && !pagerSettling}
+              showsHorizontalScrollIndicator={false}
+              initialScrollIndex={Math.min(view.cursor, view.items.length - 1)}
+              getItemLayout={(_data, index) => ({
+                length: pageW,
+                offset: pageW * index,
+                index,
+              })}
+              onScroll={onPagerScroll}
+              scrollEventThrottle={32}
+              onScrollBeginDrag={() => {
+                pagerAnimatingRef.current = false;
+              }}
+              onMomentumScrollEnd={onMomentumEnd}
+            />
+          </View>
+        )}
+      </MediaStageView>
 
       {/* The strip FOLLOWS the current photo (m0.8.5, F7). It used to be
           a plain ScrollView with no ref, so past roughly the seventh
@@ -2302,19 +1830,10 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     overflow: 'hidden',
   },
-  stage: { flex: 1 },
   pager: { flex: 1 },
-  /** The zoom-time fail-soft notice (see the overlay render comment). */
-  zoomNotice: {
-    position: 'absolute',
-    bottom: 12,
-    alignSelf: 'center',
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    borderRadius: 6,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-  },
-  zoomNoticeText: { color: 'rgba(255,255,255,0.85)', fontSize: 12 },
+  /** The cold-open last-photo container — NOT the measured stage (that
+   * lives in MediaStageView); just a frameless flex box. */
+  coldStage: { flex: 1 },
   posBadge: {
     position: 'absolute',
     top: 10,

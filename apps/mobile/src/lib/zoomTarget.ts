@@ -222,6 +222,41 @@ export function panBounds(
   };
 }
 
+/** Pan bounds for Compare's stacked PAIR under one shared transform
+ * (m0.9 phase 1, S23 device pass): the clamp is the per-axis UNION of
+ * the two photos' own `panBounds` — maxX governed by the wider photo's
+ * rendered width, maxY by the taller's height — so neither photo can
+ * be panned past ITS edge further than the other photo's content
+ * requires. Equal aspects reduce exactly to `panBounds`. An aspect of
+ * 0 (image not yet loaded) contributes nothing while the other is
+ * known; with BOTH unknown the stage-rectangle fallback applies (the
+ * pre-fix behavior, which let a letterboxed photo pan fully into the
+ * background). */
+export function pairPanBounds(
+  stageW: number,
+  stageH: number,
+  aspectA: number,
+  aspectB: number,
+  scale: number,
+): { maxX: number; maxY: number } {
+  'worklet';
+  if (aspectA <= 0 && aspectB <= 0) return panBounds(stageW, stageH, 0, scale);
+  if (aspectA <= 0) return panBounds(stageW, stageH, aspectB, scale);
+  if (aspectB <= 0) return panBounds(stageW, stageH, aspectA, scale);
+  const a = panBounds(stageW, stageH, aspectA, scale);
+  const b = panBounds(stageW, stageH, aspectB, scale);
+  return { maxX: Math.max(a.maxX, b.maxX), maxY: Math.max(a.maxY, b.maxY) };
+}
+
+/** Symmetric clamp to ±max — the pan-axis clamp every zoom surface
+ * applies to a translation against its `panBounds` (or stage-rect)
+ * bound. Was triplicated as a module-local in each surface (m0.9
+ * phase 1 consolidation). */
+export function clampPan(value: number, max: number): number {
+  'worklet';
+  return Math.min(max, Math.max(-max, value));
+}
+
 /** Translation that keeps the tapped point (x, y) stationary while the
  * stage (width × height) scales about its centre, clamped to the pan
  * bounds of the target scale.

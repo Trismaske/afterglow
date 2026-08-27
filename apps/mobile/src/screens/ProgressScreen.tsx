@@ -1,6 +1,7 @@
 /**
  * Library progress page (m0.4 stage 3): the Day progress experience —
- * state summary + filtered grid + state editor — over the whole library
+ * state summary + filtered grid (tiles open the deck in list mode) —
+ * over the whole library
  * and the selected photo sources. Reached from the Home screen's
  * Progress row. No review CTA here: Home's "Continue reviewing" already
  * covers library-wide reviews.

@@ -245,7 +245,7 @@ describe("freshDecisions — the write counts the day's own work (m0.8.5, A3)", 
 
   it('counts an un-stage exactly like the redecision it mirrors (never fresh, gap 8)', async () => {
     // unstageCullDirect is the same culled → kept transition on another
-    // path (state editor, trash rollback) — both photos already carry
+    // path (re-decide, trash rollback) — both photos already carry
     // their first stamps, so neither re-transition is fresh work.
     const d = await fresh();
     await seed(d, ['1', '2']);

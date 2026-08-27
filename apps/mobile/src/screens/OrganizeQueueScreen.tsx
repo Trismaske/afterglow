@@ -3,7 +3,7 @@
  * The deck queues photos with NO target (its Organize chip is a toggle);
  * THIS screen assigns albums in batches over a selectable thumbnail grid
  * — the same selection language as the share queue: tap toggles,
- * long-press opens the viewer, nothing selected means "everyone".
+ * long-press opens the deck in list mode, nothing selected means "everyone".
  * "Choose album" runs the picker ONCE for the whole selection
  * (setOrganizeTargets); cells wear their album as a small amber tag
  * ("No album" until assigned; error rows badge red and retry on the next
@@ -97,7 +97,7 @@ export function OrganizeQueueScreen({ navigation }: Props) {
   // observe the CURRENT applying state, not a stale render.
   const busyRef = useRef(false);
   const [pickerOpen, setPickerOpen] = useState(false);
-  /** In-app full-screen viewer (gate 5) — long-press a thumbnail. */
+  /** Long-press opens the deck in list mode over this queue (gate 5). */
 
   // Selection follows the queue: ids that left it (moved away, removed
   // elsewhere) must not linger invisibly selected.

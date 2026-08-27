@@ -102,8 +102,9 @@ interface RetainedBase {
 /** The current photo each mounted surface wants kept warm on a trim —
  * and PINNED against byte-budget eviction while on screen (Compare
  * renders two at once; releasing a displayed ref blanks its Image).
- * REF-COUNTED (review pass): the viewer opening over the deck pins the
- * same photo twice — a Set lost the pin when either surface left. */
+ * REF-COUNTED (review pass): two surfaces showing the same photo (the
+ * deck under Compare) pin it twice — a Set lost the pin when either
+ * surface left. */
 const trimKeep = new Map<string, number>();
 
 function pinPhoto(id: string): void {
@@ -112,7 +113,7 @@ function pinPhoto(id: string): void {
 
 /** Refs evicted (replaced/dropped) while their photo was still PINNED —
  * i.e. possibly still rendered by a SIBLING surface whose state holds
- * the old ref (the deck under a viewer that just invalidated a stale
+ * the old ref (the deck under a sibling that just invalidated a stale
  * base — codex round 3: releasing on a timer detached a bitmap the
  * sibling still displayed). They release only when the photo's last
  * pin drops, when no mounted Image can be holding them. */
@@ -141,8 +142,8 @@ function unpinPhoto(id: string): void {
   } else trimKeep.set(id, count - 1);
 }
 
-/** Per-photo SINGLE-FLIGHT base decodes (codex round 1): the viewer
- * opening over the deck mounts two hooks on the same photo, and each
+/** Per-photo SINGLE-FLIGHT base decodes (codex round 1): two surfaces
+ * on the same photo (the deck under Compare) mount two hooks, and each
  * independently check-then-decoded — the loser's `retention.put`
  * replaced (and released) the winner's entry while a mounted Image
  * still rendered it. One shared flight per photo: whoever arrives
@@ -155,7 +156,7 @@ function unpinPhoto(id: string): void {
  * that opened the new ones. */
 const baseInflight = new Map<string, Promise<RetainedBase>>();
 
-/** One retention pool for ALL surfaces (deck, viewer, Compare's two
+/** One retention pool for ALL surfaces (the deck and Compare's two
  * panes share the budget — D7). */
 const retention = new BaseRetention<RetainedBase>(
   BASE_RETENTION_BUDGET_BYTES,

@@ -1,7 +1,8 @@
 /**
  * Day-scoped inbox-zero view (m0.2, rebuilt on the shared ProgressView
  * in m0.4 stage 3; m0.8: sessions are gone): tappable state summary,
- * filtered photo grid, state editor sheet, and a "Continue reviewing"
+ * filtered photo grid (tiles open the deck in list mode), and a
+ * "Continue reviewing"
  * CTA into the continuous review queue (the day's photos are already
  * grouped there by the scan). Gate 5: the day's cull groups list here
  * too — completed ones included — and reopen in the deck's
@@ -74,7 +75,8 @@ export function DayProgressScreen({ route, navigation }: Props) {
       return () => {
         cancelled = true;
       };
-      // version is a deliberate refresh trigger: viewer edits refresh the
+      // version is a deliberate refresh trigger: deck list-mode edits
+      // refresh the
       // review context, and the day's group list (badges, pending counts)
       // must follow without a leave-and-return (a closing Modal does not
       // refocus the screen).

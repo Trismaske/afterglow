@@ -324,12 +324,12 @@ describe('maxScaleFor (dynamic per-photo max zoom)', () => {
     expect(maxScaleFor(DECK_W, DECK_H, 60000, 4000, DENSITY)).toBe(240);
   });
 
-  it('shrinks on a bigger stage — the fullscreen viewer needs less scale to reach 1:1', () => {
+  it('shrinks on a bigger stage — the immersive fullscreen stage needs less scale to reach 1:1', () => {
     const deck = maxScaleFor(DECK_W, DECK_H, 9180, 16320, DENSITY);
     // Viewer stage 360×772: 1:1 at ~8.5×, headroom 10× → ~85.
-    const viewer = maxScaleFor(360, 772, 9180, 16320, DENSITY);
-    expect(viewer).toBeLessThan(deck);
-    expect(viewer).toBeGreaterThan(70);
-    expect(viewer).toBeLessThan(100);
+    const fullscreen = maxScaleFor(360, 772, 9180, 16320, DENSITY);
+    expect(fullscreen).toBeLessThan(deck);
+    expect(fullscreen).toBeGreaterThan(70);
+    expect(fullscreen).toBeLessThan(100);
   });
 });

@@ -834,6 +834,17 @@ export async function ejectNotRelated(
  * and hand back the targeted-rescan anchor so the caller can re-place it
  * in seconds. Clearing pairs touches no verdict, action, or stat.
  */
+/** How many cannot-link pairs this photo OWNS (ejected_id side — the
+ * judgments un-eject clears). The deck's Not-related slot inverts on a
+ * pair-carrying photo outside group review (m0.9 P2-5). */
+export async function getNotRelatedCount(db: SQLiteDatabase, assetId: string): Promise<number> {
+  const row = await db.getFirstAsync<{ n: number }>(
+    'SELECT COUNT(*) AS n FROM not_related WHERE ejected_id = ?',
+    assetId,
+  );
+  return Number(row?.n ?? 0);
+}
+
 export async function clearNotRelated(
   db: SQLiteDatabase,
   assetId: string,
@@ -1423,8 +1434,8 @@ export async function listGroupsForDay(
   return groups.sort((a, b) => newest(b) - newest(a));
 }
 
-/** Everything the standard photo viewer's detail panel shows for one
- * photo (gate 5); null when the photo was never tracked. */
+/** Everything the deck's details overlay shows for one photo
+ * (gate 5); null when the photo was never tracked. */
 export interface PhotoFacts {
   asset_id: string;
   uri: string;
@@ -1519,7 +1530,7 @@ export async function getPhotoFacts(
  *   reachable only from a staged cull, and rescuing a photo from
  *   deletion says "do not delete this", not "and cancel the edit I asked
  *   for". `unstageCullDirect` — the same culled -> kept transition from
- *   the state editor and the trash rollback — has always carried the
+ *   re-decide and the trash rollback — has always carried the
  *   edit across, and one transition must not mean two things.
  *   (Until m0.8.2 this abandoned the edit. That existed to escape the
  *   pre-v18 CASE ladder, where keep + flag bounced the verdict straight

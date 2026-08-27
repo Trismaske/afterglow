@@ -1,7 +1,8 @@
 /**
  * Shared selection-grid primitives of the share and organize queues
  * (m0.8.2, F7): both screens are a 4-column thumbnail grid with the same
- * selection language — tap toggles, long-press opens the viewer, a
+ * selection language — tap toggles, long-press opens the deck in list
+ * mode, a
  * selected cell takes an ACCENT OUTLINE plus a check (rule 4: never a
  * coloured fill), per-kind status renders as small overlay badges the
  * caller supplies. The chip is the screens' small header/action button.

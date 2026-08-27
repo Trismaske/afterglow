@@ -45,7 +45,7 @@ Numbers change whenever an item closes, so **cross-references from code or other
    Duel records have NO browse surface at all.
    They exist as data, and the append-only duels contract (m0.8.7) preserves every row for exactly this future.
    Wanted: action events in the History feed (queued/applied, with the same keyset paging discipline), and somewhere to SEE a group's Compare history.
-   This needs its own design pass: which actions are events vs noise, feed volume, and where duel history lives (viewer decision panel vs group sheet).
+   This needs its own design pass: which actions are events vs noise, feed volume, and where duel history lives (the deck's details overlay vs group sheet).
 
 5. **A favourite EVENT log** (narrowed 2026-07-31 from the m0.8.3 action-layer entry, whose other two parts went into m0.8.7).
    The favourite surfaces are directional current-state projections of one `photo_actions` row, which is the honest reading of that model.
@@ -76,7 +76,7 @@ Numbers change whenever an item closes, so **cross-references from code or other
    This needs its own design pass:
    - which time `photos.day` keys on (changing it re-days existing rows and re-windows their groups)
    - whether the offset gets stored (schema) and read natively (the rescue reads only `TAG_DATETIME_ORIGINAL` today)
-   - where the original zone surfaces (viewer decision panel vs deck header)
+   - where the original zone surfaces (the deck's details overlay vs deck header)
    - what an offset-less photo shows: the honest answer may be "no claim" rather than a guess
 
 8. **Goal notes do not survive process death** (codex, m0.8.5 device-pass review round 3).
@@ -124,7 +124,7 @@ Each entry names the event that promotes it: a user hitting it, field data arriv
 Same hygiene as above: promote on trigger, delete when answered.
 
 - **A drag-captured pager stream cannot become a pinch** (S23 device pass, 2026-08-27, screen recording; parked by Tristan).
-  If finger 1's drag crosses the touch slop before finger 2 lands, the deck/viewer pager's native scroll captures the stream and RNGH cancels the stage pinch — the forced two-finger activation (MediaStage.tsx) cannot reclaim a cancelled handler, the pager freezes at a partial offset under the two-pointer confusion, and lifting recovers; a clean retry works.
+  If finger 1's drag crosses the touch slop before finger 2 lands, the deck pager's native scroll captures the stream and RNGH cancels the stage pinch — the forced two-finger activation (MediaStage.tsx) cannot reclaim a cancelled handler, the pager freezes at a partial offset under the two-pointer confusion, and lifting recovers; a clean retry works.
   Fix shape: wrap the pager FlatList in an RNGH native handler (`useNativeGesture`) so activation can interrupt a captured scroll — an arbitration change to the canonical stage, so it needs its own device rounds.
   Trigger: the residual keeps irritating in daily use.
 - **A floor note in the GitHub Release body?** (m0.8.4; trigger: the tester group grows.)

@@ -32,7 +32,7 @@ import {
   type MergedPager,
   type PageFetcher,
 } from '../../lib/progressPager';
-import { fetchPhotoPageDesc, type LoadedPhoto } from '../../lib/media';
+import { createLibraryGridStream, type LibraryGridStream } from '../../lib/gridPager';
 import { rootKey, type SourceRoot } from '../../lib/sources';
 import {
   getGridPhotosByFilter,
@@ -54,7 +54,7 @@ import { UNDATED_DAY_KEY } from '../../lib/dates';
 import { colors, useTheme } from '../../theme';
 import { VERDICT_META } from './stateMeta';
 
-/** One grid tile: identity + what the state editor sheet needs. */
+/** One grid tile: identity + what the tile's badge rendering needs. */
 export interface GridPhoto {
   id: string;
   uri: string;
@@ -205,7 +205,7 @@ export function PhotoStateGrid({
   const genRef = useRef(0);
   const loadingGenRef = useRef<number | null>(null);
   const offsetRef = useRef(0);
-  const pagerRef = useRef<MergedPager<GridPagedItem> | null>(null);
+  const streamRef = useRef<LibraryGridStream | null>(null);
   const rootsKey = roots ? roots.map(rootKey).join('\0') : '';
   const albumsKey = albumIds ? albumIds.join('\0') : '';
   const scopeKey = scopeKeyOf(scope);
@@ -266,52 +266,22 @@ export function PhotoStateGrid({
           if (rows.length < BATCH && !failedRef.current) setExhausted(true);
           setItems((prev) => (reset ? photos : [...prev, ...photos]));
         } else {
-          const pager = pagerRef.current;
-          if (!pager) return;
+          const stream = streamRef.current;
+          if (!stream) return;
           const failedBefore = failedRef.current;
-          const collected: GridPhoto[] = [];
-          while (collected.length < BATCH && !pager.exhausted()) {
-            const raw = await pager.next(BATCH);
-            if (raw.length === 0) break;
-            // FAIL CLOSED like the page fetch beside it: a rejected
-            // state join must not fall through `finally` as a silently
-            // blank (or silently complete) grid — the same sticky
-            // failure state renders the footer/empty copy (codex r4).
-            const states = await getStateRowsForAssets(
-              db,
-              raw.map((p) => p.id),
-            ).catch((error: unknown) => {
-              console.warn('[progress] grid state join failed:', String(error));
-              if (gen === genRef.current) failedRef.current = true;
-              return null;
-            });
-            if (states === null) break;
-            if (!fresh()) return;
-            for (const p of raw) {
-              const row = states.get(p.id);
-              // A rescued photo streams twice (change 4): drop the
-              // MediaStore copy sitting at its mtime slot — the rescued
-              // stream carries it at its true taken_at.
-              if (row?.rescued && !p.fromDb) continue;
-              const effective = classifyPhotoState(row);
-              if (filter === 'all' || effective === filter) {
-                collected.push({
-                  id: p.id,
-                  uri: p.uri,
-                  // A tracked row's dates are the DB's truth (changes
-                  // 2+5); an untracked one has only MediaStore's, and
-                  // its `day` claim is undefined — unless MediaStore
-                  // itself reported it undated, which IS a null-day
-                  // claim (the timestamp is the mtime fallback).
-                  takenAt: row?.taken_at ?? p.timestamp,
-                  day: row !== undefined ? row.day : p.undated ? null : undefined,
-                  dbState: row?.state ?? null,
-                  effective,
-                });
-              }
-            }
-          }
+          // The engine itself (fetchers, merge, state join, filter,
+          // rescued-copy dedup) is the SHARED lib/gridPager.ts stream —
+          // the deck's library-grid list source pages the same code.
+          const pulled = await stream.collect(BATCH, filter);
           if (!fresh()) return;
+          const collected: GridPhoto[] = pulled.map((r) => ({
+            id: r.id,
+            uri: r.uri,
+            takenAt: r.takenAt,
+            day: r.day,
+            dbState: r.dbState,
+            effective: r.effective,
+          }));
           // FULL hydration on the MediaStore engine too (m0.8.7): the
           // All/Unreviewed paths used to render no action data at all.
           const weights = await hydrateActionWeights(db, collected);
@@ -324,7 +294,7 @@ export function PhotoStateGrid({
           // later page may mark exhaustion (the sticky flag keeps the
           // truncation visible in the footer either way).
           const failedThisPage = failedRef.current && !failedBefore;
-          if (pager.exhausted() && !failedThisPage) setExhausted(true);
+          if (stream.exhausted() && !failedThisPage) setExhausted(true);
           setItems((prev) => (reset ? collected : [...prev, ...collected]));
         }
       } finally {
@@ -347,75 +317,20 @@ export function PhotoStateGrid({
     setItems([]);
     setExhausted(false);
     if (isDbFilter(filter) || isDbScope(scope)) {
-      pagerRef.current = null;
+      streamRef.current = null;
     } else {
-      const buckets: (string | undefined)[] = albumIds ? [...albumIds] : [undefined];
-      const fetchers: PageFetcher<GridPagedItem, GridCursor>[] = buckets.map(
-        (album) => async (cursor: GridCursor | undefined, count: number) => {
-          // FAIL CLOSED (m0.8.2): an errored page used to become an
-          // empty exhausted one, so a MediaStore hiccup rendered "No
-          // photos in this state" — a confident, wrong answer about the
-          // user's library. Record the failure and say so instead.
-          const page = await fetchPhotoPageDesc(
-            startMs,
-            endMs,
-            album,
-            cursor as string | undefined,
-            count,
-          ).catch((error: unknown) => {
-            console.warn('[progress] photo page failed:', String(error));
-            if (gen === genRef.current) failedRef.current = true;
-            return { photos: [], endCursor: undefined, hasNext: false };
-          });
-          const items: GridPagedItem[] = page.photos.map((p: LoadedPhoto) => ({
-            id: p.item.id,
-            uri: p.item.uri,
-            timestamp: p.item.timestamp,
-            undated: p.undated,
-            fromDb: false,
-          }));
-          return {
-            items,
-            nextCursor: page.hasNext && page.endCursor !== undefined ? page.endCursor : null,
-          };
-        },
-      );
-      // One more merge source (m0.8.6 change 4): the DB's rescued rows
-      // at their TRUE taken_at. Change 2 alone fixes a rescued photo's
-      // printed date but not its slot — the merge position is decided
-      // before any state join runs. Same fail-closed rule as above.
-      fetchers.push(async (cursor: GridCursor | undefined, count: number) => {
-        const rows = await getRescuedPhotoPage(
-          db,
-          roots,
-          mounted ?? null,
-          cursor as { takenAt: number; assetId: string } | undefined,
-          count,
-        ).catch((error: unknown) => {
-          console.warn('[progress] rescued page failed:', String(error));
+      streamRef.current = createLibraryGridStream(db, {
+        startMs,
+        endMs,
+        albumIds: albumIds ?? null,
+        roots,
+        mounted: mounted ?? null,
+        // Gen-scoped (codex r3): a superseded pass's late rejection
+        // must not poison the replacement generation's failure flag.
+        onFailure: () => {
           if (gen === genRef.current) failedRef.current = true;
-          return [];
-        });
-        const items: GridPagedItem[] = rows.map((r) => ({
-          id: r.asset_id,
-          uri: r.uri,
-          timestamp: r.taken_at,
-          undated: false,
-          fromDb: true,
-        }));
-        const last = rows.length > 0 ? rows[rows.length - 1] : undefined;
-        return {
-          items,
-          nextCursor:
-            rows.length < count || last === undefined
-              ? null
-              : { takenAt: last.taken_at, assetId: last.asset_id },
-        };
+        },
       });
-      pagerRef.current = createMergedDescendingPager<GridPagedItem, GridCursor>(
-        fetchers,
-        (p) => p.timestamp,
-      );
     }
     // The DB engine pages the parent's world — before the first counts
     // load lands there is no world to page (the spinner shows); the

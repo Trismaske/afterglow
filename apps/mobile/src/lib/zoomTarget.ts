@@ -16,8 +16,8 @@
  * constraints, so its algebra lives here). Its header carries the
  * rationale and the formulas.
  *
- * The impure partners live in the screens: DeckScreen / PhotoViewer /
- * CompareScreen wire this into their gesture worklets and page
+ * The impure partners live in the screens: DeckScreen and CompareScreen
+ * wire this into their gesture worklets and page
  * Pressables (the double-tap Pressable arbitration is the shared hook
  * components/useDoubleTapZoom.ts) — taps stay off
  * Gesture.Tap because a gesture worklet may not cross the worklets→JS

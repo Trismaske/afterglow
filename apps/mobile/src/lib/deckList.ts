@@ -44,6 +44,7 @@ import {
   type PhotoScope,
 } from '../db/store';
 import type { PhotoState } from '@afterglow/core';
+import { dayKey } from './dates';
 import { getShareQueue } from '../db/shareStore';
 import { getOrganizeQueue } from '../db/organizeStore';
 import { getQueue } from '../db/actions';
@@ -60,10 +61,11 @@ export type DeckListDescriptor =
   | { source: 'history'; filter: HistoryFilter }
   | {
       source: 'grid';
-      /** Exactly one of day/month — the DB-backed grid scopes
-       * (PhotoStateGrid's isDbScope rule). The open-ended library
-       * scope rides the MediaStore merged pager and gets its own
-       * source variant when the Progress library grid rewires. */
+      /** At most one of day/month — the DB-backed grid scopes
+       * (PhotoStateGrid's isDbScope rule). NEITHER present = the
+       * open-ended LIBRARY scope, which rides the shared MediaStore
+       * merged-pager engine (lib/gridPager.ts) so untracked photos
+       * appear exactly as the Progress grid shows them. */
       day?: string;
       month?: string;
       filter: string;
@@ -149,6 +151,7 @@ export function listFromParams(value: unknown): DeckListDescriptor | null {
       return { source: 'grid', day: v.day, filter: v.filter };
     if (typeof v.month === 'string' && v.day === undefined)
       return { source: 'grid', month: v.month, filter: v.filter };
+    if (v.day === undefined && v.month === undefined) return { source: 'grid', filter: v.filter };
     return null;
   }
   return null;
@@ -162,7 +165,7 @@ export function deckListKey(descriptor: DeckListDescriptor): string {
     case 'history':
       return `list:history:${descriptor.filter}`;
     case 'grid':
-      return `list:grid:${descriptor.day ?? `m:${descriptor.month}`}:${descriptor.filter}`;
+      return `list:grid:${descriptor.day ?? (descriptor.month !== undefined ? `m:${descriptor.month}` : 'library')}:${descriptor.filter}`;
   }
 }
 
@@ -176,6 +179,9 @@ export async function resolveDeckListPage(
   cursor: DeckListCursor | null,
   mounted: readonly string[] | null,
   roots: readonly SourceRoot[] | null,
+  /** Bucket ids of the source selection (library-grid scope only) —
+   * null = all folders, exactly as ResolvedSources reports it. */
+  albumIds: readonly string[] | null = null,
 ): Promise<DeckListPage> {
   switch (descriptor.source) {
     case 'queue': {
@@ -287,11 +293,53 @@ export async function resolveDeckListPage(
       return { rows, next: page.next !== null ? { history: page.next } : null };
     }
     case 'grid': {
-      // Every day and month scope is DB-backed (m0.8.6 change 1 —
-      // PhotoStateGrid's isDbScope), every filter included; only the
-      // open-ended library scope rides the MediaStore merged pager,
-      // and that scope has no descriptor variant yet by design.
       const offset = cursor !== null && 'offset' in cursor ? cursor.offset : 0;
+      if (descriptor.day === undefined && descriptor.month === undefined) {
+        // LIBRARY scope: the shared MediaStore merged-pager engine.
+        // Stateless paging over a stateful stream: re-pull delivered +
+        // one page from a fresh stream each resolve and slice — the
+        // per-bucket cursor fetches are sub-millisecond, and the deck's
+        // version-bump reloads re-pull from scratch anyway.
+        // Lazy import: gridPager pulls lib/media (expo-media-library, a
+        // native module) — a static import would drag it into the node
+        // test env, where every OTHER source is exercisable. Only this
+        // on-device-only branch pays the load.
+        const { createLibraryGridStream } = await import('./gridPager');
+        const stream = createLibraryGridStream(db, {
+          startMs: 0,
+          endMs: Number.POSITIVE_INFINITY,
+          albumIds,
+          roots,
+          mounted,
+          // Fail closed by FAILING: a truncated browse list silently
+          // missing photos would masquerade as membership truth.
+          onFailure: () => {
+            throw new Error('deck list: library grid page failed');
+          },
+        });
+        const pulled = await stream.collect(offset + GRID_PAGE, descriptor.filter);
+        const page = pulled.slice(offset);
+        return {
+          rows: page.map((r) => ({
+            id: r.id,
+            uri: r.uri,
+            takenAt: r.takenAt,
+            // The tri-state collapses for the deck row: an untracked
+            // photo's only date claim is MediaStore's own timestamp —
+            // the same claim the grid tile renders — so the badge says
+            // that day rather than a false "Unknown day".
+            day: r.day !== undefined ? r.day : dayKey(r.takenAt),
+            state: r.dbState ?? 'unreviewed',
+            tracked: r.dbState !== null,
+          })),
+          next:
+            stream.exhausted() && pulled.length < offset + GRID_PAGE
+              ? null
+              : { offset: offset + page.length },
+        };
+      }
+      // Every day and month scope is DB-backed (m0.8.6 change 1 —
+      // PhotoStateGrid's isDbScope), every filter included.
       const scope: PhotoScope =
         descriptor.day !== undefined ? { day: descriptor.day } : { month: descriptor.month! };
       const rows = await getGridPhotosByFilter(

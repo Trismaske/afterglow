@@ -87,7 +87,8 @@ export type RootStackParamList = {
   Stats: undefined;
   /** Day-scoped inbox-zero progress. `day` is a local "YYYY-MM-DD" key. */
   DayProgress: { day: string };
-  /** Library progress: state summary / filtered grid / state editor.
+  /** Library progress: state summary / filtered grid (tiles open the
+   * deck in list mode).
    * PARAMLESS since m0.8.2 — the arbitrary date range it used to carry
    * was set by nothing after sessions were removed, and every caller
    * passed the whole library. A day is reached through DayProgress. */

@@ -327,7 +327,7 @@ export function CompareScreen({ navigation, route }: Props) {
   // exactly the old fails-fast behavior). Zoomed: a tap waits one
   // double-tap window so m0.7 (#18)'s double-tap-resets-zoom can win —
   // writing shared values FROM JS is the safe direction of the bridge.
-  // Deliberately NO double-tap-zoom here (unlike deck/viewer): the tap
+  // Deliberately NO double-tap-zoom here (unlike the deck): the tap
   // IS the flip, and buying a zoom gesture would tax every unzoomed
   // flip with the wait window. Zooming in Compare stays pinch-only.
   const pendingFlip = useRef<ReturnType<typeof setTimeout> | null>(null);

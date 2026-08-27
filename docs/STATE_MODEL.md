@@ -101,7 +101,7 @@ The third row is where every mistake in this area has come from.
 
 The first is a to-do count, and since m0.8.7 (F21) its suspension is **per kind**:
 
-- **Share and edit stay live on a staged cull.** "Delete it, but share it first" is a real flow, and an edit you asked for is still wanted while the photo waits in the cull queue — they list, count, dispatch, and stay addable from the deck and the state editor.
+- **Share and edit stay live on a staged cull.** "Delete it, but share it first" is a real flow, and an edit you asked for is still wanted while the photo waits in the cull queue — they list, count, dispatch, and stay addable from the deck.
 - **Favourite and organize suspend on a staged cull.** Decorating or filing a photo you are about to delete makes no sense; the rows survive (un-staging restores them), the lists hide them, and additions are refused.
 - **A trashed photo suspends everything** — the file is the OS's now.
 
@@ -169,7 +169,7 @@ Completed work is fact, whichever volume it lives on now, and whatever folders a
 The one scoped decided read is the intake chart's decided series, which must describe the same population as its captured partner (STATS_ACCURACY gap 6).
 
 **What a WRITE may touch while a card is out (the M5 rule, vetted m0.8.3):**
-Explicitly targeted actions (deck verdicts, viewer edits, selected queue removals) act on their targets regardless of mount state.
+Explicitly targeted actions (deck verdicts, deck action chips, selected queue removals) act on their targets regardless of mount state.
 The user asked for exactly those rows and would have gotten the same result before the eject.
 UNTARGETED bulk writes (keep-rest, share-all, queue clears, move/remove-all) bind to the rendered set intersected with a fresh reachable read.
 A re-read may SHRINK the write. It may never widen the write into photos the user never saw.
@@ -187,7 +187,7 @@ Enforcement is symmetric — the pair never shares a group in either direction, 
 Two lifecycle rules give the pairs their direction:
 
 - **Dissolution**: ejecting a photo first deletes every pair in which it is the *partner* — its own ejection revokes its standing as a proxy for the cluster it was ejected from, so photos ejected from the same group can reunite elsewhere.
-- **Un-eject** (state editor): deletes the pairs where the photo is the *ejected* side — its own judgments — never those naming it as a partner, then a targeted rescan re-places it.
+- **Un-eject** (the deck's "Not related · N" un-mark): deletes the pairs where the photo is the *ejected* side — its own judgments — never those naming it as a partner, then a targeted rescan re-places it.
 
 Pairs are membership constraints, never state: verdicts, actions and stats are untouched by recording or clearing them.
 

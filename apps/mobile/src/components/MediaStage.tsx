@@ -1,7 +1,7 @@
 /**
  * MediaStage — THE shared photo/video stage (m0.9 phase 1,
- * docs/Plan_m0.9.md). One component owns what DeckScreen,
- * PhotoViewer and CompareScreen each carried a near-copy of: the
+ * docs/Plan_m0.9.md). One component owns the stage machinery its two
+ * hosts (DeckScreen, CompareScreen) share: the
  * measured borderless stage box, the virtual-detector arrangement, the
  * pinch/pan/double-tap drivers over the ONE `zoomTouchFrame` tracker,
  * and the always-mounted zoom overlay stack (backdrop → URI image →
@@ -49,9 +49,9 @@
  *   `onTouchesCancel` so a stolen stream never leaves stale state.
  *
  * Playback slots (m0.9 phase 5) and the declarative chrome builder
- * (phase 7) land here — this is the one tree they must join; the
- * standalone viewer retires into the deck in phase 2 (M24), so this
- * stage is on its way to being the app's ONE photo surface.
+ * (phase 7) land here — this is the one tree they must join; with the
+ * standalone viewer retired into the deck (phase 2, M24), this stage is
+ * the app's ONE photo surface.
  */
 
 import React, { useCallback, useEffect } from 'react';
@@ -438,7 +438,7 @@ export interface MediaStageViewProps {
   controller: MediaStageController;
   /** Decoration (border, radius, background) for the OUTER frame — the
    * measured stage itself stays borderless (the rule in the header).
-   * Omit for an undecorated stage (PhotoViewer). */
+   * Omit for an undecorated stage. */
   frameStyle?: StyleProp<ViewStyle>;
   /** Fired after the internal stageW/stageH shared-value writes — for
    * hosts that also need the width as React state (the deck's pageW). */
@@ -453,16 +453,10 @@ export interface MediaStageViewProps {
    * swap while zoomed can never blend two photos. Default true. */
   identityOk?: boolean;
   /** The opaque backdrop color of the zoom overlay's UNtransformed
-   * layer (deck: colors.surface; viewer: '#000'). It covers the stage
+   * layer (the deck passes colors.surface). It covers the stage
    * by construction — on the transformed layer it was one rounding
    * error away from leaking the pager photo at the edge. */
   backdropColor: string;
-  /** Bottom offset of the fail-soft notice (viewer clears its facts
-   * panel with 96). */
-  noticeBottom?: number;
-  /** Rendered INSTEAD of the transformed image stack (the viewer's
-   * dead-photo placeholder) — the backdrop and notice still apply. */
-  deadContent?: React.ReactNode;
   /** Host chrome rendered inside the measured stage, above the overlay
    * (the deck's position/time badges + badge cluster; Compare's pane
    * label). Phase 6 replaces these with the declarative builder. */
@@ -483,8 +477,6 @@ export function MediaStageView({
   regionZoom,
   identityOk = true,
   backdropColor,
-  noticeBottom = 12,
-  deadContent,
   chrome,
   children,
 }: MediaStageViewProps) {
@@ -515,19 +507,17 @@ export function MediaStageView({
                 ]}
                 animatedProps={controller.zoomOverlayProps}
               >
-                {deadContent ?? (
-                  <Animated.View style={[StyleSheet.absoluteFill, controller.zoomStyle]}>
-                    <StagePaneLayers
-                      uri={overlayFor?.uri}
-                      recyclingKey={overlayFor ? `zoom-${overlayFor.id}` : undefined}
-                      regionZoom={regionZoom}
-                      sourcesOk={sourcesOk}
-                      onSourceLoad={(width, height) => {
-                        imageAspect.value = width / height;
-                      }}
-                    />
-                  </Animated.View>
-                )}
+                <Animated.View style={[StyleSheet.absoluteFill, controller.zoomStyle]}>
+                  <StagePaneLayers
+                    uri={overlayFor?.uri}
+                    recyclingKey={overlayFor ? `zoom-${overlayFor.id}` : undefined}
+                    regionZoom={regionZoom}
+                    sourcesOk={sourcesOk}
+                    onSourceLoad={(width, height) => {
+                      imageAspect.value = width / height;
+                    }}
+                  />
+                </Animated.View>
                 {/* Zoom-time fail-soft notice (m0.8.8 close-out): the
                     region pipeline rejected this photo (unreadable EXIF,
                     mirrored orientation, unopenable format), so depth
@@ -539,9 +529,7 @@ export function MediaStageView({
                     Overlay settings and the eye never govern it. */}
                 {regionZoom.failed &&
                   overlayFor !== null &&
-                  regionZoom.forPhotoId === overlayFor.id && (
-                    <ZoomFailNotice bottom={noticeBottom} />
-                  )}
+                  regionZoom.forPhotoId === overlayFor.id && <ZoomFailNotice />}
               </Animated.View>
             </VirtualGestureDetector>
             {chrome}
@@ -631,9 +619,9 @@ export function StagePaneLayers({
  * layer so it never scales. DELIBERATELY un-hideable: it is a fidelity
  * claim, not decoration (m0.9 grilling M19) — the Overlay settings and
  * the eye never govern it. */
-export function ZoomFailNotice({ bottom = 12 }: { bottom?: number }) {
+export function ZoomFailNotice() {
   return (
-    <View style={[styles.zoomNotice, { bottom }]} pointerEvents="none">
+    <View style={[styles.zoomNotice]} pointerEvents="none">
       <Text style={styles.zoomNoticeText}>
         Full detail unavailable — image file can't be fully read
       </Text>
@@ -867,6 +855,7 @@ const styles = StyleSheet.create({
   /** The zoom-time fail-soft notice (see the overlay render comment). */
   zoomNotice: {
     position: 'absolute',
+    bottom: 12,
     alignSelf: 'center',
     backgroundColor: 'rgba(0,0,0,0.55)',
     borderRadius: 6,

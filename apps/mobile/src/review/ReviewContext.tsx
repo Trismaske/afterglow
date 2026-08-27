@@ -36,8 +36,8 @@
  * reports how many rows went unreviewed → decided, and `write` notes that
  * count. Callers pass nothing and can forget nothing: before this, each
  * screen counted its own fresh decisions from a rendered member list, and
- * the screens that never learned to — the state editor, History
- * re-decides — simply did not count, so a goal crossed there celebrated
+ * surfaces that never learned to — History re-decides among them —
+ * simply did not count, so a goal crossed there celebrated
  * on the next deck decision instead. Paths that cannot produce a fresh
  * decision return void deliberately: `applyRedecision` and the un-stage
  * paths are gated in SQL to already-decided states.
@@ -1112,7 +1112,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
    * and show nothing — and then fire stale, hours later, on whatever
    * review surface happened to focus next. Since the count is now
    * sourced from the write itself, crossings can happen on surfaces that
-   * host no overlay at all (the state editor, History), so this stopped
+   * host no overlay at all (History), so this stopped
    * being theoretical.
    *
    * A registered host means arm the overlay; none means say it plainly
@@ -1296,7 +1296,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
         // The goal is credited HERE, from what the write committed
         // (m0.8.5, A3). Every verdict path that returns its result is
         // counted, so a new surface cannot quietly fail to celebrate the
-        // way the state editor and History re-decides did.
+        // way History re-decides once did.
         if (result) noteDecisions(result.freshDecisions);
         const action = typeof patch === 'function' ? patch() : patch;
         if (action) patchLocal(action);

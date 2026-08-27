@@ -66,8 +66,8 @@ Run it on a test device or emulator, never on a phone whose review state matters
 - Compare: a tap on the stage flips between the two photos, through the opponent picker when more than two candidates are eligible.
   The stage is a `Pressable` under the gesture detector, a different arrangement from the deck's, which can break on its own.
   The step leaves via "Close — no verdict", so it decides nothing.
-- The standard viewer's own pager: opened from a History row and swiped, with an assertion that the position advances.
-  It is a second pager under a second gesture stack, and the deck's swipe passing says nothing about it.
+- The deck's list mode: opened from a History row and swiped, with an assertion that the position advances.
+  Same pager as the deck walk, but the list plumbing (resolver, anchor contract) is its own code path.
 - Organize queue: hosts the album picker (open and cancel, mutation-free), where album assignment lives.
 
 Responsiveness budgets are wall-clock from the tap to the expected UI state appearing in a `uiautomator` dump (~0.3–0.8 s per dump).
@@ -110,7 +110,7 @@ They are the specification for extending this gate script; until then, an agent 
 3. **Grouping truth: eject, dissolve, un-eject, re-mint.**
    Seed a 5-variant burst (§6.3) → it must group as one unit.
    Eject two members ("Not related" ×2): each fires `sink 'targeted rescan'`, and the Timeline must then show BOTH a 3-shot core and a 2-shot group of the ejected pair (the dissolution rule).
-   Viewer facts must read "not related to N photos"; the editor's Un-mark clears it and the targeted rescan lands a legal regroup.
+   The deck's details overlay must read "not related to N photos"; the deck's "Not related · N" un-mark clears it and the targeted rescan lands a legal regroup.
    Land a 6th variant while the deck is open: the delta regroups beneath it, the deck holds its unit, and a verdict tap still writes cleanly.
 4. **Strictness confirm (R8).**
    Tap a strictness chip → the dialog must carry the exact copy ("Regroups your whole library… never touched"); confirm → full pass; afterwards every count that encodes a decision (ring, day rows, staged culls) must be unchanged.
@@ -137,7 +137,7 @@ They are the specification for extending this gate script; until then, an agent 
 - Upgrade in place: `adb install -r` of the new APK over the previous release must succeed (CI only ever installs onto a clean device).
 - For a release touching mount or scan code: walk one SD eject/remount cycle (Home banner with counts, frozen groups, remount restores state byte-for-byte).
 - Visual taste: the raised Home circle (filled on Home, outlined elsewhere), the goal-ring arc against its label, and badge/cradle rendering on both test DPIs.
-- **PINCH, on all three zoom surfaces** (deck, viewer, Compare).
+- **PINCH, on both zoom surfaces** (deck — list mode included, Compare).
   `adb` drives one finger only, so no multi-touch gesture can be automated at all.
   Pinch to zoom, pan while zoomed, and double-tap to reset.
   Then test the two-pinch case: zoom, lift both fingers, and pinch again.

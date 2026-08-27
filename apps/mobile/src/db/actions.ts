@@ -392,7 +392,7 @@ export async function getActionsForPhotos(
   return byPhoto;
 }
 
-/** One photo's actions (the viewer's detail panel). */
+/** One photo's actions (the deck's details overlay). */
 export async function getPhotoActions(db: SQLiteDatabase, photoId: string): Promise<PhotoAction[]> {
   return (await getActionsForPhotos(db, [photoId])).get(photoId) ?? [];
 }

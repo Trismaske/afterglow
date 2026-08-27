@@ -75,8 +75,8 @@ export function FavouritesQueueScreen() {
       return actions.map((action) => ({
         asset_id: action.photoId,
         uri: byId.get(action.photoId)?.uri ?? '',
-        // The photo's CAPTURE time, not when it was queued: the standard
-        // viewer renders this as the day and clock the shot was taken.
+        // The photo's CAPTURE time, not when it was queued: the deck's
+        // corner renders this as the day and clock the shot was taken.
         taken_at: byId.get(action.photoId)?.takenAt ?? action.queuedAt,
         day: byId.get(action.photoId)?.day ?? null,
         favourite_target: decodeFavouriteTarget(action.target) === false ? 0 : 1,
@@ -86,7 +86,7 @@ export function FavouritesQueueScreen() {
     'favourite',
   );
   const [busyTarget, setBusyTarget] = useState<boolean | null>(null);
-  /** In-app full-screen viewer (gate 5) — thumbnail tap. */
+  /** Thumbnail tap opens the deck in list mode over this queue (gate 5). */
 
   const applyRows = useMemo(() => (rows ?? []).filter((row) => row.favourite_target === 1), [rows]);
   const removeRows = useMemo(

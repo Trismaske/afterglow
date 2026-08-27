@@ -191,7 +191,7 @@ function doubleTapStage() {
   shell(`input tap ${x} ${y} & (sleep 0.12; input tap ${x} ${y}); wait`);
 }
 
-/** The deck/viewer pager position as [current, total], or null when no
+/** The deck pager position as [current, total], or null when no
  * indicator is on screen. */
 function pagerPosition(nodes = dumpUi()) {
   const node = findNode(nodes, /^\d+\/\d+$/);
@@ -1151,13 +1151,14 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
     shell('input keyevent KEYCODE_BACK');
   });
 
-  // The STANDARD VIEWER's own pager (PhotoViewer — the one every grid,
-  // queue and History row opens). It is a second pager under a second
-  // gesture stack, and nothing else in this walk touches it: the deck's
-  // swipe passing says nothing about it. Reached through History because
-  // its rows are addressable by their date text, and by this point the
-  // walk's own decisions have put rows there.
-  await step('the standard viewer pages between photos', null, async () => {
+  // The deck's LIST MODE (m0.9 phase 2 — the retired standard viewer's
+  // successor: every grid, queue and History row opens the deck over its
+  // own list). Same pager, different list plumbing (the resolver table,
+  // the anchor contract), and nothing else in this walk touches it.
+  // Reached through History because its rows are addressable by their
+  // date text, and by this point the walk's own decisions have put rows
+  // there.
+  await step('deck list mode pages between photos', null, async () => {
     await tapText(/^History$/, 20000);
     await waitFor(/^History$/, 20000, 'history screen');
     // Match the row by its "· HH:MM" tail, never by the date's word
@@ -1169,7 +1170,7 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
     const row = findNode(dumpUi(), / · \d{1,2}:\d{2}/);
     if (!row) throw new Error('history feed showed no photo rows');
     tap(row);
-    const opened = await waitFor(/^\d+\/\d+$/, 20000, 'viewer pager indicator');
+    const opened = await waitFor(/^\d+\/\d+$/, 20000, 'deck list position indicator');
     const [pos, total] = opened.node.text.split('/').map(Number);
     if (total >= 2) {
       const { width, height } = screenSize();
@@ -1181,7 +1182,7 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
         const now = pagerPosition();
         if (now && now[0] !== pos) break;
         if (swipes >= 2 || Date.now() > deadline)
-          throw new Error(`viewer stuck at ${pos}/${total} — its pager cannot be swiped`);
+          throw new Error(`deck list stuck at ${pos}/${total} — its pager cannot be swiped`);
       }
     }
     shell('input keyevent KEYCODE_BACK');

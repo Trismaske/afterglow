@@ -1,6 +1,7 @@
 /**
  * Shared progress page body (m0.4 stage 3): state summary (tappable
- * filters) + filtered photo grid + per-photo state editor sheet. Used by
+ * filters) + filtered photo grid (tiles open the deck in list mode).
+ * Used by
  * the Day progress screen (one local day, plus a "Review this day" CTA)
  * and the library-wide Progress screen — same accounting, same
  * components.
@@ -71,7 +72,6 @@ import {
 import { PhotoStateGrid, type GridPhoto } from './PhotoStateGrid';
 import { useExternalRefresh } from '../useExternalRefresh';
 import { perfLog } from '../../lib/perfLog';
-import { PhotoViewer, type ViewerItem } from '../PhotoViewer';
 
 interface ResolvedSrc {
   roots: SourceRoot[] | null;
@@ -389,7 +389,6 @@ export function ProgressView({
   const [filter, setFilter] = useState<ProgressFilter>('all');
   // P2-2: DB-scope grid taps navigate to the deck's list mode.
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const [viewer, setViewer] = useState<{ items: ViewerItem[]; index: number } | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   /** The counts loader's mounted snapshot, handed to the grid so the
    * chips and the population they label page ONE world (final cycle
@@ -404,6 +403,19 @@ export function ProgressView({
   // (final cycle N4/O6). Foreground return bumps the same tick the state
   // editor uses, reloading counts and resetting the grid together.
   useExternalRefresh(() => setRefreshTick((t) => t + 1));
+  // Returning from the deck's list mode re-reads counts AND grid (P2-3:
+  // decisions made there must land here; the first focus after mount is
+  // skipped — the initial load already ran).
+  const focusedOnceRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!focusedOnceRef.current) {
+        focusedOnceRef.current = true;
+        return;
+      }
+      setRefreshTick((t) => t + 1);
+    }, []),
+  );
   // A pass completing under an open page re-reads too (grilling Q8):
   // the "still being analyzed" line must clear — and the fresh photos
   // appear — without a leave-and-return.
@@ -749,34 +761,19 @@ export function ProgressView({
         mounted={gridMounted}
         header={header}
         bottomInset={insets.bottom}
-        onPhotoPress={(photo, siblings, index) => {
-          // P2-2: DB-backed scopes (day/month) browse in the deck's
-          // list mode. The open-ended library scope still rides the
-          // MediaStore pager and holds the viewer until its list
-          // source lands (the pager-engine extraction).
+        onPhotoPress={(photo) => {
+          // P2-2: every grid tap browses in the deck's list mode — the
+          // library scope pages the SAME engine the grid itself uses
+          // (lib/gridPager.ts), so membership and order match the grid
+          // by construction.
           const gridScope =
-            'day' in scope ? { day: scope.day } : 'month' in scope ? { month: scope.month } : null;
-          if (gridScope !== null) {
-            navigation.navigate('Deck', {
-              list: { source: 'grid', ...gridScope, filter },
-              anchorId: photo.id,
-            });
-            return;
-          }
-          setViewer({
-            items: siblings.map((g) => ({ id: g.id, uri: g.uri, takenAt: g.takenAt, day: g.day })),
-            index,
+            'day' in scope ? { day: scope.day } : 'month' in scope ? { month: scope.month } : {};
+          navigation.navigate('Deck', {
+            list: { source: 'grid', ...gridScope, filter },
+            anchorId: photo.id,
           });
         }}
       />
-      {viewer && (
-        <PhotoViewer
-          items={viewer.items}
-          initialIndex={viewer.index}
-          onClose={() => setViewer(null)}
-          onChanged={onChanged}
-        />
-      )}
     </>
   );
 }

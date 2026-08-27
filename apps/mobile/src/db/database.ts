@@ -228,7 +228,7 @@ export const BASELINE_DDL = `
   --   the PARTNER (its own ejection revokes its standing as a proxy for
   --   the cluster it was ejected from), so photos ejected from the same
   --   group may reunite elsewhere;
-  --   un-eject — the state editor deletes the pairs where the photo is
+  --   un-eject — the deck's un-mark deletes the pairs where the photo is
   --   the EJECTED side (its own judgments), never those naming it as a
   --   partner (other photos' judgments).
   -- No FK to photos: a pair may outlive a tombstoned endpoint and simply

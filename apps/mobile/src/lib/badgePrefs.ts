@@ -8,10 +8,9 @@
  *
  * Module-scope observable, same shape as the scan status: BadgeCluster
  * subscribes, so ONE setting flips every surface at once, and the
- * durable row makes the choice survive restarts. Two access points,
- * same toggle (vetted 2026-08-21): the deck header's eye and the
- * PhotoViewer top bar's — the two surfaces where badges visually
- * compete with the photo.
+ * durable row makes the choice survive restarts. One access point
+ * (m0.9 phase 2 — the deck is the one review-and-browse surface): the
+ * deck header's eye, where badges visually compete with the photo.
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { showToast } from './toast';

@@ -52,7 +52,7 @@ export function EditQueueScreen({ navigation }: Props) {
   // Gate-0 (m0.7 item A): the editor-launch diagnostic matrix, opened from
   // the failure alert or by long-pressing Edit (proactive/emulator path).
   const [matrixAssetId, setMatrixAssetId] = useState<string | null>(null);
-  /** In-app full-screen viewer (gate 5) — thumbnail tap. */
+  /** Thumbnail tap opens the deck in list mode over this queue (gate 5). */
 
   const markDone = useCallback(
     async (assetId: string) => {

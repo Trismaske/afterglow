@@ -1,7 +1,7 @@
 /**
  * Progress accounting (v18) — the three-layer model in numbers
- * (docs/STATE_MODEL.md): verdict counts, the grouped ANNOTATION counted
- * per verdict, and what the state editor may offer.
+ * (docs/STATE_MODEL.md): verdict counts and the grouped ANNOTATION
+ * counted per verdict.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -9,7 +9,6 @@ import {
   computeBreakdown,
   reviewedOf,
   reviewedPct,
-  editorOffer,
   isActionFilter,
   remainingReviewable,
   progressRemainder,
@@ -173,79 +172,5 @@ describe('isActionFilter', () => {
     expect(isActionFilter('act:edit')).toBe(true);
     expect(isActionFilter('kept')).toBe(false);
     expect(isActionFilter('all')).toBe(false);
-  });
-});
-
-describe('editorOffer (F9: the state model made touchable)', () => {
-  const base = {
-    state: 'kept' as const,
-    editPending: false,
-    favouriteQueued: null,
-    favouriteApplied: false,
-    shareQueued: false,
-    organizeQueued: false,
-  };
-
-  it('undecided and kept photos get the full offer — all four rows addable', () => {
-    for (const state of ['unreviewed', 'kept'] as const) {
-      const offer = editorOffer({ ...base, state });
-      expect(offer.readOnly).toBeNull();
-      expect(offer.verdict).toBe(state);
-      expect(offer.edit).toBe('add');
-      expect(offer.favourite).toBe('add');
-      expect(offer.share).toBe('add');
-      expect(offer.organize).toBe('add');
-    }
-  });
-
-  it('a STAGED cull suspends per kind (F21): share/edit addable, favourite/organize refused', () => {
-    const offer = editorOffer({ ...base, state: 'culled' });
-    expect(offer.readOnly).toBeNull();
-    expect(offer.verdict).toBe('culled');
-    expect(offer.edit).toBe('add');
-    expect(offer.share).toBe('add');
-    expect(offer.favourite).toBe('suspended');
-    expect(offer.organize).toBe('suspended');
-  });
-
-  it('EXISTING queued work on a staged cull stays cancellable — removing work is always safe', () => {
-    const offer = editorOffer({
-      ...base,
-      state: 'culled',
-      favouriteQueued: 1,
-      organizeQueued: true,
-    });
-    expect(offer.favourite).toBe('cancel_add');
-    expect(offer.organize).toBe('remove');
-  });
-
-  it('queued work flips each row to its removal', () => {
-    const offer = editorOffer({
-      ...base,
-      editPending: true,
-      favouriteQueued: 1,
-      shareQueued: true,
-      organizeQueued: true,
-    });
-    expect(offer.edit).toBe('queued');
-    expect(offer.favourite).toBe('cancel_add');
-    expect(offer.share).toBe('remove');
-    expect(offer.organize).toBe('remove');
-  });
-
-  it('an APPLIED favourite is removable; a queued removal is cancellable', () => {
-    expect(editorOffer({ ...base, favouriteApplied: true }).favourite).toBe('remove_applied');
-    expect(editorOffer({ ...base, favouriteQueued: 0, favouriteApplied: true }).favourite).toBe(
-      'cancel_remove',
-    );
-  });
-
-  it("the honest refusals: trashed is the OS's, untracked is the scan's", () => {
-    const trashed = editorOffer({ ...base, state: 'trashed' });
-    expect(trashed.readOnly).toBe('trashed');
-    expect(trashed.verdict).toBeNull();
-    expect(trashed.edit).toBeNull();
-    const untracked = editorOffer({ ...base, state: null });
-    expect(untracked.readOnly).toBe('untracked');
   });
 });

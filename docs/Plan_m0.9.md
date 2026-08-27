@@ -42,6 +42,8 @@ Sequencing rationale: consolidation first (everything else touches those surface
 
 ### Phase 2 — the viewer retires into the deck (M24)
 
+**Status: BUILT (2026-08-28) — awaiting the phase-2 device pass.** All seven decisions implemented; `PhotoViewer.tsx`, `StateEditorSheet.tsx`, `QueueViewer.tsx` deleted with a full sole-consumer sweep (`editorOffer` and dead `MediaStage` props removed with them — appendix); every host rewired; the docs/comments sweep done (AGENTS.md maps, STATE_MODEL, the gate doc + script, README); gate 33/33 on device; 940 tests; net −826 lines.
+
 **Decision (Tristan, 2026-08-27, at the phase-1 close): the deck becomes the ONE review-and-browse surface.**
 Post-consolidation the viewer was a thin shell whose remaining roles the deck can absorb; sequenced HERE — while the phase-1 deck work is fresh — so no later phase touches a doomed surface, and every phase after this one builds in exactly one place.
 The design pass and six-question grilling ran 2026-08-27/28; every decision below is settled.
@@ -198,3 +200,8 @@ Related parallel work, not in this release: the **DocsAudit** ([DocsAudit.md](Do
 
 Numbered as implemented; get each human-vetted at the close-out grilling.
 Pre-flagged latitude from the grilling: exact v23 column names and marker shapes (existing patterns); the video hash-cost mechanism on the edit-detection path; dialog and subtext copy (the app's voice); Overlay/Playback section placement details; chrome geometry tunables (device pass).
+
+1. **(Phase 2) `editorOffer` deleted, not ported.** The deck's existing disabled logic already encodes the refusal matrix (staged cull suspends favourite/organize, share/edit stay live; untracked disables everything; trashed rows are excluded by every list source's own query — verified: `livePhotoClause`, History's filter, the grids' presence clauses). Porting the pure function would have added an abstraction with one inline consumer. One accepted divergence, deck-canonical: on a staged cull the deck disables the favourite chip entirely, where the sheet still offered cancelling a QUEUED favourite; recovery is un-stage → cancel → re-cull.
+2. **(Phase 2) The library-scope grid engine extracted to `lib/gridPager.ts`** (MediaStore merged pager + state join + rescued-copy dedup, verbatim from PhotoStateGrid), shared by the Progress grid and the deck's library list — parity by construction. The deck side pages it statelessly (re-pull + slice per resolve; the per-bucket fetches are sub-millisecond), failing closed by throwing rather than truncating.
+3. **(Phase 2) An untracked-but-dated list row shows MediaStore's own day** (`dayKey(takenAt)` — the same claim its grid tile renders), not a false "Unknown day"; the corner appends "Not analyzed yet".
+4. **(Phase 2) Un-mark confirm copy** (pre-flagged latitude): 'Un-mark "not related"? This photo never groups with N photos you separated it from. Un-marking lets the scan group them again.'

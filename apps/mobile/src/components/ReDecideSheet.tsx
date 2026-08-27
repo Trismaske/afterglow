@@ -2,7 +2,7 @@
  * Re-decide sheet (m0.5 reversible decisions): tap a DECIDED photo
  * anywhere it is visible — group strips, completed-group browse, the
  * cull list — and change your mind, until the final cull confirmation.
- * Wraps ReviewContext.redecideStaged; the chrome follows StateEditorSheet.
+ * Wraps ReviewContext.redecideStaged.
  *
  * The three chips are a PRESENTATION of two layers (docs/STATE_MODEL.md),
  * not three verdicts: "To edit" means kept with an edit queued, which is

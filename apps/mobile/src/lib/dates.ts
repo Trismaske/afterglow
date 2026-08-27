@@ -81,7 +81,7 @@ export function monthDayBounds(month: string): { fromDay: string; toDayExclusive
  *
  * The chokepoint for every day label in the app — Home's day rows, the
  * timeline's group and singles cards, DayProgress headings, the Edit
- * queue and PhotoViewer all render through here. */
+ * queue and the deck's corner all render through here. */
 export function labelForDayKey(key: string, now: Date = new Date()): string {
   if (key === UNDATED_DAY_KEY) return 'Unknown day';
   if (key === dayKey(now.getTime())) return 'Today';

@@ -161,7 +161,7 @@ export function ShareQueueScreen({ navigation }: Props) {
   }, []);
   const [labelText, setLabelText] = useState('');
   const [labelChips, setLabelChips] = useState<string[]>([]);
-  /** In-app full-screen viewer (gate 5) — long-press a thumbnail
+  /** Long-press opens the deck in list mode over this queue (gate 5)
    * (a plain tap toggles pass selection). */
 
   // Selection follows the queue: ids that left it (shared away, removed

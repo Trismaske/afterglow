@@ -258,7 +258,7 @@ The on-device installer says only "App not installed".
     - a composition bar whose fill is exactly what you have decided
     - a capture histogram by month that filters the grid
     - one-line library insights
-    - a filterable photo grid and the per-photo state editor
+    - a filterable photo grid; tapping a photo opens it in the review deck
     - the day's groups (completed ones reopen in browse mode)
 
     "Unknown day" is a first-class page for photos without a capture date.

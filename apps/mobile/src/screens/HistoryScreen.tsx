@@ -2,8 +2,8 @@
  * History (m0.7 item G, #4): a reverse-chronological, filterable
  * current-state feed of decisions, with share-sheet events interleaved.
  * Ordered by activity_at with two-stream keyset pagination (C#15);
- * tapping a photo row opens the standard full-screen viewer
- * (PhotoViewer — gate 5), whose detail panel hosts the state editor.
+ * tapping a photo row opens the deck in list mode over the same
+ * filtered feed (m0.9 phase 2 — gate 5), anchored at the tapped row.
  *
  * TOMBSTONES (m0.8.6 D9): decided photos whose bytes are gone — a
  * forgotten card's keeps, executed culls — stay on the record as
@@ -11,7 +11,7 @@
  * is the complete record of review work. A Trashed chip completes the
  * verdict-chip family. Placeholders are expected-gone, so the per-page
  * MediaStore reconcile skips them (running it would "discover" their
- * absence and re-conclude it); they open no viewer — there is nothing
+ * absence and re-conclude it); they open no deck — there is nothing
  * to show. Photos deleted outside Afterglow while UNDECIDED still drop
  * out through the reconcile, exactly as before.
  */

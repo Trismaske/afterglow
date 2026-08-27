@@ -48,8 +48,10 @@
  *   stage handlers down completely; both drivers reset their anchor on
  *   `onTouchesCancel` so a stolen stream never leaves stale state.
  *
- * Playback slots (m0.9 phase 4) and the declarative chrome builder
- * (phase 6) land here — this is the one tree they must join.
+ * Playback slots (m0.9 phase 5) and the declarative chrome builder
+ * (phase 7) land here — this is the one tree they must join; the
+ * standalone viewer retires into the deck in phase 2 (M24), so this
+ * stage is on its way to being the app's ONE photo surface.
  */
 
 import React, { useCallback, useEffect } from 'react';

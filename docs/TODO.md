@@ -117,11 +117,6 @@ Numbers change whenever an item closes, so **cross-references from code or other
    The read-source half of the same family is related: "A D15-rescued photo's date does not reach the Progress library scope".
    That item was designed and shipped in m0.8.6.
 
-13. **Does the standalone PhotoViewer survive long-term?** (Tristan, m0.9 phase-1 device pass, 2026-08-27.)
-    Post-MediaStage the viewer is a thin shell (~540 lines) whose remaining content is mostly unique: arbitrary host lists (queues, History's reorder-safe anchored feed, Progress days — the deck can only show review UNITS, so a deck replacement loses "next in this queue" swiping), the facts panel (the state model's detail surface; F31/F33/M17/M21 build on it), the video full-transport tier (Q4), and modal-over-host semantics.
-    The considered successor: the deck grows an arbitrary-list mode and the facts panel becomes a pull-up sheet — a redesign with real browse-UX regressions to weigh against deleting one surface.
-    Decide with tester feedback after m0.9 ships; the duplication that originally motivated the question is already gone.
-
 ## Waiting for a trigger
 
 This section holds fixes whose shape is known but whose value is unproven, and questions whose answer needs evidence that does not exist yet.

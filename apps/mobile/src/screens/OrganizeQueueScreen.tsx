@@ -462,11 +462,11 @@ export function OrganizeQueueScreen({ navigation }: Props) {
             ? 'Queue photos with Organize during review, then assign albums here.'
             : selectionMode
               ? `${selected.size} selected · choose their album, or remove them`
-              : `${count} queued${untargetedCount > 0 ? ` · ${untargetedCount} need an album` : ''}${errorCount > 0 ? ` · ${errorCount} failed, retried on the next move` : ''}`}
+              : // The long-press door was invisible (device pass
+                // 2026-08-28) — say it, on the same subtitle (vertical
+                // space is the scarcest thing on these screens).
+                `${count} queued${untargetedCount > 0 ? ` · ${untargetedCount} need an album` : ''}${errorCount > 0 ? ` · ${errorCount} failed, retried on the next move` : ''}\nLong-press a photo to open it`}
       </Text>
-      {/* Device pass 2026-08-28: the long-press door was invisible —
-          say it (tap is taken by selection on this grid). */}
-      {count > 0 && <Text style={styles.subtitle}>Long-press a photo to open it</Text>}
       {count > 0 ? (
         <View style={styles.chips}>
           <Chip

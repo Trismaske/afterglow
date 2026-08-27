@@ -449,11 +449,11 @@ export function ShareQueueScreen({ navigation }: Props) {
             ? 'Queue photos with Share during review, then send them in passes.'
             : selectionMode
               ? `${selected.size} selected · ✓ marks photos already shared this cycle`
-              : `${count} queued · share overlapping sets to different people`}
+              : // The long-press door was invisible (device pass
+                // 2026-08-28) — say it, on the same subtitle (vertical
+                // space is the scarcest thing on these screens).
+                `${count} queued · share overlapping sets to different people\nLong-press a photo to open it`}
       </Text>
-      {/* Device pass 2026-08-28: the long-press door was invisible —
-          say it (tap is taken by selection on this grid). */}
-      {count > 0 && <Text style={styles.subtitle}>Long-press a photo to open it</Text>}
       {count > 0 ? (
         <View style={styles.chips}>
           <Chip

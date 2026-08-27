@@ -586,6 +586,37 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   }, [listMode, listKey, unitKey, version, loadTick, externalTick, listPagesWanted, db]);
   const listRowsLoad = listLoad.unit === unitKey ? listLoad.rows : null;
   const listRows = useMemo(() => (Array.isArray(listRowsLoad) ? listRowsLoad : []), [listRowsLoad]);
+  /** List-mode verdict writes land optimistically (device pass
+   * 2026-08-28): unit decks get instant state through the provider's
+   * patches, but list rows re-resolve ASYNC — until they land, every
+   * verdict tap read the STALE row state, so taps looked dead and
+   * follow-up taps computed the wrong transition. The overlay is the
+   * just-written truth; fresh rows clear it. */
+  const [listStateOverride, setListStateOverride] = useState<
+    ReadonlyMap<string, ReviewMemberRow['state']>
+  >(new Map());
+  // An override clears ONLY when the photo's own fresh row arrives — a
+  // cleared decision drops the row from its feed (History), the pin
+  // then renders the HELD copy whose state froze at capture time, and
+  // a wholesale clear regressed stateOf to that stale verdict (caught
+  // by the scripted retest: keep-after-clear read as still unreviewed).
+  useEffect(() => {
+    setListStateOverride((m) => {
+      if (m.size === 0) return m;
+      const present = new Set(listRows.map((r) => r.id));
+      let changed = false;
+      const next = new Map(m);
+      for (const id of [...next.keys()])
+        if (present.has(id)) {
+          next.delete(id);
+          changed = true;
+        }
+      return changed ? next : m;
+    });
+  }, [listRowsLoad, listRows]);
+  useEffect(() => {
+    setListStateOverride((m) => (m.size > 0 ? new Map() : m));
+  }, [unitKey]);
   const listReady = listMode && Array.isArray(listRowsLoad);
   const listNext = listLoad.unit === unitKey ? listLoad.next : null;
   /** Pager end reached (list mode): pull the next page in. */
@@ -643,8 +674,9 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     if (group) for (const m of group.members) map.set(m.asset_id, m.state);
     for (const m of singleRows) map.set(m.asset_id, m.state);
     for (const r of shownListRows) map.set(r.id, r.state);
+    if (listMode) for (const [id, st] of listStateOverride) map.set(id, st);
     return map;
-  }, [group, singleRows, shownListRows]);
+  }, [group, singleRows, shownListRows, listMode, listStateOverride]);
   /**
    * Each photo's CAPTURE DAY, for the time badge (m0.8.5, F17).
    *
@@ -814,18 +846,26 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       immersiveFlightRef.current = true;
       RNAnimated.timing(immersiveFade, {
         toValue: 1,
-        duration: 110,
+        duration: 130,
         useNativeDriver: true,
       }).start(() => {
         setImmersive(next);
         resetZoom();
-        RNAnimated.timing(immersiveFade, {
-          toValue: 0,
-          duration: 220,
-          useNativeDriver: true,
-        }).start(() => {
-          immersiveFlightRef.current = false;
-        });
+        // HOLD at black before the reveal (device pass 2026-08-28):
+        // the native header removal and the status-bar hide land
+        // ASYNC, each reflowing the stage a beat after the React
+        // commit — revealed immediately, the photo settled twice (the
+        // "second flash"). The hold lets both native reflows land
+        // under cover; the slower fade-out is the delicate reveal.
+        setTimeout(() => {
+          RNAnimated.timing(immersiveFade, {
+            toValue: 0,
+            duration: 320,
+            useNativeDriver: true,
+          }).start(() => {
+            immersiveFlightRef.current = false;
+          });
+        }, 240);
       });
     },
     [immersiveFade, resetZoom],
@@ -1762,6 +1802,12 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     const targetVerdict = target === 'cull' ? 'culled' : 'kept';
     const advances = activeTarget !== target && (prior === 'unreviewed' || targetVerdict !== prior);
     const applied = await redecide(current.id, target);
+    // The optimistic overlay (see listStateOverride): the write is
+    // durable by now — show it before the slow list re-resolve lands.
+    if (listMode) {
+      const next = activeTarget === target ? 'unreviewed' : targetVerdict;
+      setListStateOverride((m) => new Map(m).set(current.id, next));
+    }
     if (!advances || !applied) return;
     // Same pending predicate as unit entry; the just-decided photo is
     // `from` and never a candidate, so a state row that has not
@@ -2080,10 +2126,13 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
 
           <View style={styles.secondaryRow}>
             {/* The Edit chip is the block's ONE per-mode behaviour fork:
-            live is a FLAG toggle (the verdict layer untouched); browse
-            RE-DECIDES (kept + fresh edit cycle, the state-aware path) —
-            EXCEPT on a staged cull, where it flag-toggles too: queueing
-            the edit must not silently rescue the cull.
+            live and LIST decks FLAG-toggle (the verdict layer untouched
+            — the retired state editor's edit row; the browse re-decide
+            here wrote kept + a fresh cycle on every tap and could never
+            toggle OFF, the device-pass History bug 2026-08-28); unit
+            browse RE-DECIDES (kept + fresh edit cycle, the state-aware
+            path) — EXCEPT on a staged cull, where it flag-toggles too:
+            queueing the edit must not silently rescue the cull.
             Per-kind suspension (m0.8.7, F21): edit and share stay
             actionable on a staged cull — "delete it, but share it
             first" is the flow; favourite and organize stay disabled
@@ -2094,7 +2143,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               disabled={busy || inert || currentUntracked}
               onPress={() =>
                 void run(() =>
-                  view.browseControls && currentState !== 'culled'
+                  !view.listMode && view.browseControls && currentState !== 'culled'
                     ? decideCurrent('to_edit')
                     : toggleNeedsEdit(current.id),
                 )

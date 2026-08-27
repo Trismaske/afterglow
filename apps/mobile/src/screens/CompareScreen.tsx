@@ -299,7 +299,7 @@ export function CompareScreen({ navigation, route }: Props) {
   // stacked pair flips at every zoom level via the JS Pressable) is the
   // shared MediaStage hook — drivers, shared values and zoomStyle in
   // one place, with the m0.9 phase-1 drift fixes in
-  // (docs/MediaStage_design.md; rationale in the hook's header).
+  // (docs/Plan_m0.9.md; rationale in the hook's header).
   const stage = useMediaStageSingleDriver();
   const {
     scale,

@@ -1,6 +1,6 @@
 /**
  * The shared stage↔region-zoom wiring (m0.9 phase 1 consolidation —
- * docs/MediaStage_design.md). Every zoom surface carried a verbatim
+ * docs/Plan_m0.9.md). Every zoom surface carried a verbatim
  * copy of two things this file now owns once:
  *
  * 1. `useStageRegionZoom` — the JS-side callback pair feeding

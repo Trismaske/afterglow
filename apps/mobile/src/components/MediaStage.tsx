@@ -1,6 +1,6 @@
 /**
  * MediaStage — THE shared photo/video stage (m0.9 phase 1,
- * docs/MediaStage_design.md). One component owns what DeckScreen,
+ * docs/Plan_m0.9.md). One component owns what DeckScreen,
  * PhotoViewer and CompareScreen each carried a near-copy of: the
  * measured borderless stage box, the virtual-detector arrangement, the
  * pinch/pan/double-tap drivers over the ONE `zoomTouchFrame` tracker,

@@ -120,7 +120,7 @@ export function PhotoViewer({
   // ------------------------------------------------------ pinch zoom
   // The whole driver set — shared values, gestures, overlay styles —
   // is the deck-canonical MediaStage (m0.9 phase 1,
-  // docs/MediaStage_design.md; the bridge/worklet rules live in its
+  // docs/Plan_m0.9.md; the bridge/worklet rules live in its
   // header). The viewer's former explicit pager link (useNativeGesture
   // + simultaneousWith) is dropped in the alignment: the stage pinch
   // claims two-finger streams from the pager by ACTIVATION, exactly

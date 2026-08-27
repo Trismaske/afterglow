@@ -482,6 +482,7 @@ Schema v22 → v23, one destructive reset, DDL finalized after the animated-thum
 - **Visual vet of live groups** (deferred since m0.8): a contact sheet from a device DB's actual continuous groups, to eyeball the fitted curve's real-world behavior.
 
 **m0.9.1 — the accessibility pass** (moved from m0.8.8, deliberately after the UI stops moving; Tristan, m0.8.6 closing grilling).
+Also carries the **pixel-honest deep zoom build** (the m0.9 spike's memo, 2026-08-27: nearest pre-scale is structurally dead; the unfiltered-paint native view is the mechanism — threshold/toggle/Compare-only decided at its device pass).
 A dedicated release: OS font-scale changes measured across both test devices, full UI gates at each scale to assess the impact across the whole app, and the resulting policy for every pinned-height surface (the uniform timeline card, its footer note, and whatever else the measurements implicate).
 Until then the pinned surfaces deliberately ellipsize at extreme scales rather than break the exact-geometry landings.
 

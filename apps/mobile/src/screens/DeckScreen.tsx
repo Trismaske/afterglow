@@ -584,7 +584,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   // The whole driver set — shared values, the two-detector gesture
   // split, stream arbitration, and the overlay's animated styles — is
   // the deck-canonical MediaStage (m0.9 phase 1, moved VERBATIM from
-  // this file; docs/MediaStage_design.md). The bridge rule, the
+  // this file; docs/Plan_m0.9.md). The bridge rule, the
   // inline-callback rule, and the detector rationale live in its
   // header and still bind everything below.
   const stage = useMediaStage();

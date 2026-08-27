@@ -673,15 +673,6 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     return rows;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listMode, stableListRows, browseCursor]);
-  // Capture the anchored photo's row while the list still carries it —
-  // the copy the pin above renders after the row leaves.
-  useEffect(() => {
-    if (!listMode) return;
-    const anchored = listAnchorRef.current;
-    if (anchored === null) return;
-    const index = stableListRows.findIndex((r) => r.id === anchored);
-    if (index >= 0) heldRowRef.current = { row: stableListRows[index], index };
-  }, [listMode, stableListRows, browseCursor]);
   /** P2-5: ids the scan has not ingested (tracked=false list rows). */
   const untrackedIds = useMemo(() => {
     const set = new Set<string>();
@@ -788,6 +779,22 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * the cursor value itself does not change. */
   const [cursorAppliedFor, setCursorAppliedFor] = useState<string | null>(null);
   const cursor = Math.min(browseCursor, Math.max(0, deckItems.length - 1));
+  // Capture the CURRENT photo's row while the list still carries it —
+  // the copy the pin above renders after the row leaves. Computed from
+  // the cursor, NOT read from listAnchorRef: this effect runs before
+  // the anchor-stamp effect in the same commit, so the ref is one
+  // navigation behind here — capturing "the anchored photo" held the
+  // PREVIOUS photo after a swipe, the pin's identity check then failed
+  // when the current row vanished, and a Keep-undo in a filtered
+  // History list re-anchored to the neighbour (S23 regression,
+  // 2026-08-28).
+  useEffect(() => {
+    if (!listMode) return;
+    const id = deckItems[cursor]?.id ?? listAnchorRef.current;
+    if (id == null) return;
+    const index = stableListRows.findIndex((r) => r.id === id);
+    if (index >= 0) heldRowRef.current = { row: stableListRows[index], index };
+  }, [listMode, stableListRows, deckItems, cursor]);
   const current: MediaItem | null = deckItems[cursor] ?? null;
   const currentId = current?.id ?? null;
   /**

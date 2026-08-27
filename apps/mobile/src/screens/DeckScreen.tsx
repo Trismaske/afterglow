@@ -50,6 +50,17 @@ import { queueOrganize, unqueueOrganize } from '../db/organizeStore';
 import { useDoubleTapZoom } from '../components/useDoubleTapZoom';
 import { stripScrollOffset } from '../lib/stripScroll';
 import { nearestPendingIndex } from '../lib/deckAdvance';
+import {
+  deckListKey,
+  listFromParams,
+  resolveDeckListPage,
+  type DeckListCursor,
+  type DeckListDescriptor,
+  type DeckListRow,
+} from '../lib/deckList';
+import { mountedVolumeSet } from '../lib/mountedVolumes';
+import { resolveSources } from '../lib/sourceCatalog';
+import { useExternalRefresh } from '../components/useExternalRefresh';
 import { flushRegionZoomRetention } from '../components/useRegionZoom';
 import { useStageMaxScale, useStageRegionZoom } from '../components/useStageZoom';
 import { MediaStageView, useMediaStage } from '../components/MediaStage';
@@ -67,12 +78,18 @@ type BusyOwner = 'finish' | 'other';
 
 type DeckProps = NativeStackScreenProps<RootStackParamList, 'Deck'>;
 
+/** A browse list handed over by a host (m0.9 phase 2, P2-1/P2-2):
+ * the deck resolves rows itself through lib/deckList.ts. */
+type DeckListEntry = { descriptor: DeckListDescriptor; anchorId: string | null };
+
 type SharedProps = {
   navigation: NativeStackNavigationProp<RootStackParamList>;
   /** The unit to review. Replacing it advances the deck in place. */
   unit: DeckUnit;
   /** Advance to another unit without leaving the route. */
   advanceTo: (unit: DeckUnit) => void;
+  /** Non-null = LIST MODE: browse `list` instead of the unit. */
+  list: DeckListEntry | null;
 };
 
 const THUMB = 52;
@@ -161,7 +178,35 @@ function surfaceQueueWriteError(error: unknown): void {
  * from Home or the Timeline re-seeds the deck even when it names the
  * unit the route was opened on.
  */
+/** The list-mode navigation title per source (P2-2: one route, mode by
+ * params; the in-page header hides in list mode, so this is the one
+ * place the list names itself). */
+function listTitle(descriptor: DeckListDescriptor): string {
+  switch (descriptor.source) {
+    case 'queue':
+      return {
+        edit: 'Edit queue',
+        favourite: 'Favourites',
+        share: 'Share queue',
+        organize: 'Organize queue',
+      }[descriptor.queue];
+    case 'history':
+      return 'History';
+    case 'grid':
+      return labelForDayKey(descriptor.day);
+  }
+}
+
 export function DeckScreen({ navigation, route }: DeckProps) {
+  // LIST MODE (P2-1): a valid descriptor in the params wins over the
+  // unit machinery entirely; a malformed one falls back to unit params
+  // (fail-closed decode in lib/deckList.ts).
+  const listParam = route.params?.list;
+  const listAnchor = route.params?.anchorId ?? null;
+  const list = useMemo<DeckListEntry | null>(() => {
+    const descriptor = listFromParams(listParam);
+    return descriptor ? { descriptor, anchorId: listAnchor } : null;
+  }, [listParam, listAnchor]);
   const [unit, setUnit] = useState<DeckUnit>(() => unitFromParams(route.params));
   /** The params this screen has already consumed. Its own advances write
    * here too, so the adopt-params effect below reacts to EXTERNAL
@@ -198,7 +243,11 @@ export function DeckScreen({ navigation, route }: DeckProps) {
   useEffect(() => subscribeBadgesHidden(setHideBadges), []);
   useEffect(() => {
     navigation.setOptions({
-      title: unit.kind === 'run' ? 'Singles review' : 'Group review',
+      title: list
+        ? listTitle(list.descriptor)
+        : unit.kind === 'run'
+          ? 'Singles review'
+          : 'Group review',
       headerRight: () => (
         <Pressable
           onPress={() => void setBadgesHidden(db, !badgesHidden())}
@@ -213,9 +262,9 @@ export function DeckScreen({ navigation, route }: DeckProps) {
         </Pressable>
       ),
     });
-  }, [navigation, unit.kind, db, hideBadges]);
+  }, [navigation, unit.kind, list, db, hideBadges]);
 
-  return <ReviewDeck navigation={navigation} unit={unit} advanceTo={advanceTo} />;
+  return <ReviewDeck navigation={navigation} unit={unit} advanceTo={advanceTo} list={list} />;
 }
 
 /**
@@ -247,12 +296,18 @@ interface DeckView {
   headerHint: string;
   browseControls: boolean;
   keepCount: number;
+  /** P2: browse-list render — hides the in-page header, strip and
+   * finish button; Compare and Not related stay disabled. */
+  listMode: boolean;
   /** What the finish button counts (pending singles / alive members). */
   finishCount: number;
 }
 
-function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
-  const singlesMode = unit.kind === 'run';
+function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
+  const db = useSQLiteContext();
+  const listMode = list !== null;
+  const listKey = listMode ? deckListKey(list.descriptor) : null;
+  const singlesMode = !listMode && unit.kind === 'run';
   const day = unit.kind === 'run' ? unit.day : undefined;
   // Referentially stable: `unit` is state, replaced only by an advance,
   // so this object identity is safe in the loaders' dependency arrays.
@@ -286,6 +341,8 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     celebrationSettling,
     celebrationPending,
     consumeCelebration,
+    hydrateBadges,
+    queuesChanged,
   } = useReview();
   const [busy, setBusy] = useState(false);
   /** Which control owns the in-flight write (see `run`). */
@@ -321,13 +378,13 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   // when it is a group, redirected to its run deck by the routing effect
   // when it is not (m0.8.2 merged timeline).
   const groupId = useMemo(() => {
-    if (singlesMode) return null;
+    if (listMode || singlesMode) return null;
     if (explicitGroupId) return explicitGroupId;
     // First PENDING unit, not timeline[0]: a cull-only run (or a fully
     // browsed head card) is not review work (lib/timeline.ts).
     const first = firstPendingUnit(timeline);
     return first?.kind === 'group' ? String(first.group.groupId) : null;
-  }, [explicitGroupId, timeline, singlesMode]);
+  }, [explicitGroupId, timeline, singlesMode, listMode]);
   /**
    * The RESOLVED unit's identity — the linear flow's group is bound
    * above, so this changes when the deck lands on a real group.
@@ -337,15 +394,18 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
    * revisit), and it STAMPS the async row state below, so rows read for
    * a previous unit can never be mistaken for this one's.
    */
-  const unitKey = singlesMode
-    ? `r:${day ?? ''}:${range?.from ?? ''}:${range?.to ?? ''}`
-    : `g:${groupId ?? ''}`;
+  const unitKey = listMode
+    ? listKey!
+    : singlesMode
+      ? `r:${day ?? ''}:${range?.from ?? ''}:${range?.to ?? ''}`
+      : `g:${groupId ?? ''}`;
   /** How THIS deck names itself against the timeline (advance flow). */
   const unitRef = useMemo<UnitRef | null>(() => {
+    if (listMode) return null;
     if (singlesMode)
       return day && range ? { kind: 'run', day, from: range.from, to: range.to } : null;
     return groupId ? { kind: 'group', groupId } : null;
-  }, [singlesMode, day, range, groupId]);
+  }, [singlesMode, day, range, groupId, listMode]);
   /**
    * Send the deck where the advance flow points (m0.8.5, L4).
    *
@@ -387,7 +447,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   const [loadTick, setLoadTick] = useState(0);
   useEffect(() => {
     let cancelled = false;
-    if (singlesMode || !explicitGroupId || queueGroup) {
+    if (listMode || singlesMode || !explicitGroupId || queueGroup) {
       setGroupLoad({ unit: unitKey, value: 'loading' });
       return;
     }
@@ -403,7 +463,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     return () => {
       cancelled = true;
     };
-  }, [explicitGroupId, queueGroup, loadGroup, singlesMode, version, loadTick, unitKey]);
+  }, [explicitGroupId, queueGroup, loadGroup, singlesMode, listMode, version, loadTick, unitKey]);
   const group: ReviewGroupRow | null =
     queueGroup ?? (typeof loadedGroup === 'object' ? loadedGroup : null);
   // m0.8.3 §5 (D9): a group straddling volumes shows only reachable
@@ -426,7 +486,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   }>({ unit: unitKey, rows: null });
   const deckSingles = singlesLoad.unit === unitKey ? singlesLoad.rows : null;
   useEffect(() => {
-    if (!singlesMode || !day) return;
+    if (listMode || !singlesMode || !day) return;
     let cancelled = false;
     void loadDeckSingles(day, range ?? null).then(
       (rows) => {
@@ -445,9 +505,72 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     return () => {
       cancelled = true;
     };
-  }, [day, range, singlesMode, loadDeckSingles, version, loadTick, unitKey]);
+  }, [day, range, singlesMode, listMode, loadDeckSingles, version, loadTick, unitKey]);
   /** The rows this deck reviews (singles mode). */
   const singleRows = useMemo(() => (Array.isArray(deckSingles) ? deckSingles : []), [deckSingles]);
+  // -------------------------------------------------- list mode (P2)
+  /** LIST rows, resolved through lib/deckList.ts (P2-1) and stamped
+   * exactly like the unit loads. Liveness is the source's own truth
+   * (P2-3): version bumps and external refresh re-resolve, and the
+   * photo-anchored cursor bridges every change. The loader reloads to
+   * the user's paged depth so the anchor's photo stays in the set. */
+  const [listLoad, setListLoad] = useState<{
+    unit: string;
+    rows: DeckListRow[] | 'failed' | null;
+    next: DeckListCursor | null;
+  }>({ unit: unitKey, rows: null, next: null });
+  const listPagesRef = useRef(1);
+  const [listPagesWanted, setListPagesWanted] = useState(1);
+  const [externalTick, setExternalTick] = useState(0);
+  useExternalRefresh(() => setExternalTick((t) => t + 1));
+  useEffect(() => {
+    if (!listMode) return;
+    let cancelled = false;
+    void (async () => {
+      const mounted = await mountedVolumeSet();
+      const roots = (await resolveSources(db)).roots ?? null;
+      const rows: DeckListRow[] = [];
+      let cursor: DeckListCursor | null = null;
+      let next: DeckListCursor | null = null;
+      for (let page = 0; page < listPagesRef.current; page += 1) {
+        const result = await resolveDeckListPage(db, list!.descriptor, cursor, mounted, roots);
+        rows.push(...result.rows);
+        next = result.next;
+        if (next === null) break;
+        cursor = next;
+      }
+      if (cancelled) return;
+      setListLoad({ unit: unitKey, rows, next });
+      // P2-4: the badge refs must know these ids, or the chips render
+      // "not queued/flagged" for photos that are — and the edit toggle
+      // would write the wrong direction (the StateEditorSheet lesson).
+      await hydrateBadges(rows.map((r) => r.id)).catch((error: unknown) =>
+        console.warn('[deck] list badge hydration failed:', String(error)),
+      );
+    })().catch((error: unknown) => {
+      console.warn('[deck] list load failed:', String(error));
+      if (!cancelled) setListLoad({ unit: unitKey, rows: 'failed', next: null });
+    });
+    return () => {
+      cancelled = true;
+    };
+    // `list` is identity-stable per listKey (the wrapper's memo).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listMode, listKey, unitKey, version, loadTick, externalTick, listPagesWanted, db]);
+  const listRowsLoad = listLoad.unit === unitKey ? listLoad.rows : null;
+  const listRows = useMemo(() => (Array.isArray(listRowsLoad) ? listRowsLoad : []), [listRowsLoad]);
+  const listReady = listMode && Array.isArray(listRowsLoad);
+  const listNext = listLoad.unit === unitKey ? listLoad.next : null;
+  /** Pager end reached (list mode): pull the next page in. */
+  const loadMoreList = useCallback(() => {
+    if (!listMode || listNext === null) return;
+    listPagesRef.current += 1;
+    setListPagesWanted(listPagesRef.current);
+  }, [listMode, listNext]);
+  /** The photo the cursor is ANCHORED to (the retired viewer's
+   * contract, ported verbatim): moves only on user navigation; a
+   * vanished photo re-anchors to the clamped neighbour. */
+  const listAnchorRef = useRef<string | null>(list?.anchorId ?? null);
   // Derived deck info (the old core groupInfo shape, DB-backed): a group
   // absent from the queue but explicitly opened is COMPLETE (browse mode)
   // — the queue only lists groups with unreviewed members.
@@ -455,8 +578,9 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     const map = new Map<string, ReviewMemberRow['state']>();
     if (group) for (const m of group.members) map.set(m.asset_id, m.state);
     for (const m of singleRows) map.set(m.asset_id, m.state);
+    for (const r of listRows) map.set(r.id, r.state);
     return map;
-  }, [group, singleRows]);
+  }, [group, singleRows, listRows]);
   /**
    * Each photo's CAPTURE DAY, for the time badge (m0.8.5, F17).
    *
@@ -471,8 +595,9 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     const map = new Map<string, string | null>();
     if (group) for (const m of group.members) map.set(m.asset_id, m.day);
     for (const m of singleRows) map.set(m.asset_id, m.day);
+    for (const r of listRows) map.set(r.id, r.day);
     return map;
-  }, [group, singleRows]);
+  }, [group, singleRows, listRows]);
   const info = useMemo(() => {
     if (!group) return null;
     const aliveIds = group.members.filter((m) => m.state === 'unreviewed').map((m) => m.asset_id);
@@ -492,9 +617,11 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   // BROWSE = nothing pending in this deck (m0.8.2 unification: a
   // fully-reviewed singles run browses exactly like a completed group —
   // decided photos stay in place badged and re-decide via the chips).
-  const browse = singlesMode
-    ? singlesReady && singleRows.length > 0 && singlesPending === 0
-    : (info?.complete ?? false);
+  const browse = listMode
+    ? listReady && listRows.length > 0
+    : singlesMode
+      ? singlesReady && singleRows.length > 0 && singlesPending === 0
+      : (info?.complete ?? false);
   // `index` remembers the visited unit's TIMELINE position so a unit
   // that left the list (completed elsewhere, dissolved pair, regrouped
   // run) can still advance from its former spot.
@@ -525,7 +652,11 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     () => (singlesMode ? singleRows.map(toItem) : []),
     [singleRows, singlesMode],
   );
-  const deckItems = singlesMode ? singlesItems : groupItems;
+  const listItems: MediaItem[] = useMemo(
+    () => listRows.map((r) => ({ id: r.id, timestamp: r.takenAt, uri: r.uri, kind: 'photo' })),
+    [listRows],
+  );
+  const deckItems = listMode ? listItems : singlesMode ? singlesItems : groupItems;
 
   // The deck cursor is screen-local everywhere (m0.8: derived model — the
   // DB has no cursor; a decision shrinks the alive deck and the cursor
@@ -551,7 +682,8 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
    * goal barrier held. Logic below this line must keep reading the LIVE
    * stamped values; only the render reads the frozen view.
    */
-  const holding = !current || (!singlesMode && (!groupId || !info)) || cursorAppliedFor !== unitKey;
+  const holding =
+    !current || (!listMode && !singlesMode && (!groupId || !info)) || cursorAppliedFor !== unitKey;
   /**
    * A fresh unit's pager ignores swipes for its first moments (grilling
    * Q3, Tristan's rule): a newly loaded unit opens on its first pending
@@ -656,13 +788,35 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   // its rows are actually there (the singles fetch is async).
   useEffect(() => {
     if (cursorAppliedFor === unitKey) return;
-    if (singlesMode ? !singlesReady : !group) return;
+    if (listMode ? !listReady : singlesMode ? !singlesReady : !group) return;
+    if (listMode) {
+      // P2-3: the list opens on the tapped photo (the anchor), not on
+      // first-pending — browsing has no "work" to land on.
+      const anchorIndex = listAnchorRef.current
+        ? deckItems.findIndex((i) => i.id === listAnchorRef.current)
+        : -1;
+      const start = anchorIndex >= 0 ? anchorIndex : 0;
+      listAnchorRef.current = deckItems[start]?.id ?? null;
+      setBrowseCursor(start);
+      setCursorAppliedFor(unitKey);
+      return;
+    }
     const firstPending = deckItems.findIndex(
       (i) => (stateOf.get(i.id) ?? 'unreviewed') === 'unreviewed',
     );
     setBrowseCursor(firstPending > 0 ? firstPending : 0);
     setCursorAppliedFor(unitKey);
-  }, [unitKey, cursorAppliedFor, singlesMode, singlesReady, group, deckItems, stateOf]);
+  }, [
+    unitKey,
+    cursorAppliedFor,
+    listMode,
+    listReady,
+    singlesMode,
+    singlesReady,
+    group,
+    deckItems,
+    stateOf,
+  ]);
   // The thumbnail strip's live geometry. Refs, not state: these change
   // on every scroll frame and nothing renders from them.
   const stripRef = useRef<ScrollView>(null);
@@ -743,7 +897,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   // Linear flow follows the timeline's first unit. Explicitly opening an
   // ALREADY completed group still permits browse/re-decide mode.
   useEffect(() => {
-    if (singlesMode) return;
+    if (listMode || singlesMode) return;
     if (explicitGroupId) {
       if (!group && loadedGroup === 'missing') {
         // A pair DISSOLVES during this visit when "Not related" ejects
@@ -776,6 +930,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     if (first) goToDestination(unitDestination(first));
     else navigation.replace('CullList');
   }, [
+    listMode,
     groupId,
     explicitGroupId,
     group,
@@ -1070,6 +1225,35 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     [pageW],
   );
 
+  // -------------------- list-mode anchor plumbing (P2-3) --------------
+  // User navigation moves the anchor (and ONLY user navigation plus the
+  // photo-left re-anchor below — the retired viewer's contract).
+  useEffect(() => {
+    if (!listMode || holding) return;
+    const at = deckItems[cursor]?.id;
+    if (at !== undefined) listAnchorRef.current = at;
+  }, [listMode, cursor, deckItems, holding]);
+  // Rows changed under the cursor: follow the anchored photo; a photo
+  // that left the list re-anchors to the clamped neighbour.
+  useEffect(() => {
+    if (!listMode || cursorAppliedFor !== unitKey || deckItems.length === 0) return;
+    const anchored = listAnchorRef.current;
+    if (anchored === null) return;
+    const index = deckItems.findIndex((i) => i.id === anchored);
+    if (index >= 0) {
+      if (index !== browseCursor) jumpTo(index);
+      return;
+    }
+    const clamped = Math.min(browseCursor, deckItems.length - 1);
+    listAnchorRef.current = deckItems[clamped]?.id ?? null;
+    if (clamped !== browseCursor) jumpTo(clamped);
+  }, [listMode, cursorAppliedFor, unitKey, deckItems, browseCursor, jumpTo]);
+  // An emptied list quietly goes back to its host (the whole-day
+  // precedent).
+  useEffect(() => {
+    if (listMode && listReady && listRows.length === 0) navigation.goBack();
+  }, [listMode, listReady, listRows.length, navigation]);
+
   const run = useCallback(
     /** `owner` names the control that started the write, so a control can
      * show ITS OWN progress instead of borrowing the screen's. Without
@@ -1099,8 +1283,8 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   // somewhere"; the album is assigned in the queue screen, batch-wise).
   // Both read the provider's badge maps (m0.8.1 round 4) — the same
   // membership the photo's share/organize badges show, so a per-photo
-  // query here would be a second, divergent truth.
-  const db = useSQLiteContext();
+  // query here would be a second, divergent truth (db hoisted to the
+  // top of the body — the list loader needs it earlier).
 
   const toggleShare = useCallback(async () => {
     if (!current) return;
@@ -1117,8 +1301,15 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       surfaceQueueWriteError(error);
       return;
     }
-    await refreshQueuedFor().catch(() => {});
-  }, [db, current, queuedFor, refreshQueuedFor]);
+    // P2-4: a list photo can sit outside the provider's queue pages —
+    // refreshQueuedFor would never re-read it. The StateEditorSheet
+    // funnel (hydrate the one id, signal the tab badges) is the
+    // off-page-correct path; unit decks keep the scoped refresh.
+    if (listMode) {
+      await hydrateBadges([id]).catch(() => {});
+      queuesChanged();
+    } else await refreshQueuedFor().catch(() => {});
+  }, [db, current, queuedFor, refreshQueuedFor, listMode, hydrateBadges, queuesChanged]);
 
   const toggleOrganize = useCallback(async () => {
     if (!current) return;
@@ -1136,8 +1327,11 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       surfaceQueueWriteError(error); // codex r7 — see toggleShare
       return;
     }
-    await refreshQueuedFor().catch(() => {});
-  }, [db, current, queuedFor, refreshQueuedFor]);
+    if (listMode) {
+      await hydrateBadges([id]).catch(() => {});
+      queuesChanged();
+    } else await refreshQueuedFor().catch(() => {});
+  }, [db, current, queuedFor, refreshQueuedFor, listMode, hydrateBadges, queuesChanged]);
 
   const finishGroup = useCallback(() => {
     if (!group) return;
@@ -1226,7 +1420,11 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
   // root below: the failure state routes nowhere (no effect consumes
   // 'failed'), so the unit stays open until the read succeeds or the
   // user leaves. Genuinely missing/empty units keep their routing above.
-  const loadFailed = singlesMode ? deckSingles === 'failed' : !group && loadedGroup === 'failed';
+  const loadFailed = listMode
+    ? listRowsLoad === 'failed'
+    : singlesMode
+      ? deckSingles === 'failed'
+      : !group && loadedGroup === 'failed';
   if (loadFailed) {
     return (
       <View style={[styles.root, styles.loadFailedRoot]}>
@@ -1265,23 +1463,28 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
           stateOf,
           dayOf,
           needMs,
-          isGroup: !singlesMode && !!groupId,
-          headerTitle: singlesMode
-            ? `${range || !day ? 'Singles' : `${labelForDayKey(day)} · singles`} · ${deckItems.length - singlesPending} of ${deckItems.length} reviewed${
-                range ? ` · ${queueCounts.singles.toLocaleString()} left in library` : ''
-              }`
-            : browse
-              ? `Group · ${deckItems.length} reviewed${unreachableSuffix}`
-              : `Group · ${deckItems.length - aliveItems.length} of ${deckItems.length} reviewed · ${queueCounts.groups.toLocaleString()} groups left${unreachableSuffix}`,
-          headerHint: browse
-            ? singlesMode
-              ? 'Reviewed singles — change any decision until the final delete confirmation.'
-              : 'Reviewed group — change any decision until the final delete confirmation.'
+          isGroup: !singlesMode && !listMode && !!groupId,
+          listMode,
+          headerTitle: listMode
+            ? ''
             : singlesMode
-              ? range
-                ? 'Swipe through the run · decided shots stay badged (tap the same verdict to undo) · Keep remaining finishes.'
-                : "This day's ungrouped shots · decided shots stay badged (tap the same verdict to undo)."
-              : 'Swipe through the group · decided shots stay badged (tap the same verdict to undo) · Keep rest finishes.',
+              ? `${range || !day ? 'Singles' : `${labelForDayKey(day)} · singles`} · ${deckItems.length - singlesPending} of ${deckItems.length} reviewed${
+                  range ? ` · ${queueCounts.singles.toLocaleString()} left in library` : ''
+                }`
+              : browse
+                ? `Group · ${deckItems.length} reviewed${unreachableSuffix}`
+                : `Group · ${deckItems.length - aliveItems.length} of ${deckItems.length} reviewed · ${queueCounts.groups.toLocaleString()} groups left${unreachableSuffix}`,
+          headerHint: listMode
+            ? ''
+            : browse
+              ? singlesMode
+                ? 'Reviewed singles — change any decision until the final delete confirmation.'
+                : 'Reviewed group — change any decision until the final delete confirmation.'
+              : singlesMode
+                ? range
+                  ? 'Swipe through the run · decided shots stay badged (tap the same verdict to undo) · Keep remaining finishes.'
+                  : "This day's ungrouped shots · decided shots stay badged (tap the same verdict to undo)."
+                : 'Swipe through the group · decided shots stay badged (tap the same verdict to undo) · Keep rest finishes.',
           browseControls,
           keepCount: deckItems.length,
           finishCount: singlesMode ? singlesPending : aliveItems.length,
@@ -1320,6 +1523,7 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
     compareStates.includes(view.stateOf.get(i.id) ?? 'unreviewed'),
   ).length;
   const compareEligible =
+    !view.listMode &&
     compareCandidateCount >= 2 &&
     compareStates.includes(view.stateOf.get(view.current.id) ?? 'unreviewed');
 
@@ -1367,7 +1571,11 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
       // and the pager must not jump off an unchanged photo.
       return (await redecideDecided(id, target)) > 0;
     }
-    await decide(id, target, singlesMode ? null : (group?.groupId ?? undefined));
+    await decide(
+      id,
+      target,
+      listMode ? undefined : singlesMode ? null : (group?.groupId ?? undefined),
+    );
     return true;
   };
 
@@ -1407,13 +1615,17 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
 
   return (
     <View style={[styles.root, { paddingBottom: insets.bottom + 8 }]}>
-      <View style={styles.header}>
-        {/* Truthful numbers only (m0.8.2, F12): the unit's own progress
+      {/* P2: list mode has no unit story to tell — the navigation title
+          names the source and the stage takes the space. */}
+      {!view.listMode && (
+        <View style={styles.header}>
+          {/* Truthful numbers only (m0.8.2, F12): the unit's own progress
             over its FIXED membership, plus the library-wide remainder
             from the DB counts — never a page-position ordinal. */}
-        <Text style={styles.headerTitle}>{view.headerTitle}</Text>
-        <Text style={styles.headerHint}>{view.headerHint}</Text>
-      </View>
+          <Text style={styles.headerTitle}>{view.headerTitle}</Text>
+          <Text style={styles.headerHint}>{view.headerHint}</Text>
+        </View>
+      )}
 
       {/* The stage tree (detectors, measured borderless box, zoom
           overlay, fail-soft notice) is the shared MediaStageView —
@@ -1507,6 +1719,8 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
                 pagerAnimatingRef.current = false;
               }}
               onMomentumScrollEnd={onMomentumEnd}
+              onEndReached={view.listMode ? loadMoreList : undefined}
+              onEndReachedThreshold={2}
             />
           </View>
         )}
@@ -1517,59 +1731,62 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
           photo of a run the thumbnail you were on sat off-screen while
           the pager tracked the cursor perfectly. Geometry in, offset out
           — the rule and its edge cases live in lib/stripScroll.ts. */}
-      <ScrollView
-        ref={stripRef}
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.thumbStrip}
-        contentContainerStyle={styles.thumbStripContent}
-        scrollEventThrottle={16}
-        onScroll={(event) => {
-          stripOffsetRef.current = event.nativeEvent.contentOffset.x;
-        }}
-        onLayout={(event) => {
-          if (stripViewportRef.current === event.nativeEvent.layout.width) return;
-          stripViewportRef.current = event.nativeEvent.layout.width;
-          setStripMeasured((n) => n + 1);
-        }}
-        onContentSizeChange={(width) => {
-          if (stripContentRef.current === width) return;
-          stripContentRef.current = width;
-          setStripMeasured((n) => n + 1);
-        }}
-      >
-        {view.items.map((item, index) => (
-          <Pressable
-            key={item.id}
-            onPress={() => {
-              if (!inert) jumpTo(index);
-            }}
-            onLongPress={() => {
-              // Compare via long-press works in browse too (F11): two
-              // KEPT members are a legitimate duel — the dialog can
-              // re-decide one.
-              if (!inert && item.id !== view.current.id) openCompare(item.id);
-            }}
-          >
-            <Image
-              source={{ uri: item.uri }}
-              style={[
-                styles.thumb,
-                // The LIVE pager index (§10 check 8): the highlight moves
-                // with the page crossing, not at momentum end. A frozen
-                // deck keeps its own settled cursor.
-                index === (inert ? view.cursor : pagerIndex) && styles.thumbActive,
-              ]}
-              contentFit="cover"
-              recyclingKey={item.id}
-            />
-            {/* Small badges wrapping into rows: a 52 px thumbnail fits
-                three per row, so a fully-flagged photo shows all of
-                them stacked instead of hiding any. */}
-            <BadgeCluster badges={badgesFor(item)} size={14} style={styles.thumbBadges} />
-          </Pressable>
-        ))}
-      </ScrollView>
+      {/* P2: flat lists hide the strip — the stage grows. */}
+      {!view.listMode && (
+        <ScrollView
+          ref={stripRef}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.thumbStrip}
+          contentContainerStyle={styles.thumbStripContent}
+          scrollEventThrottle={16}
+          onScroll={(event) => {
+            stripOffsetRef.current = event.nativeEvent.contentOffset.x;
+          }}
+          onLayout={(event) => {
+            if (stripViewportRef.current === event.nativeEvent.layout.width) return;
+            stripViewportRef.current = event.nativeEvent.layout.width;
+            setStripMeasured((n) => n + 1);
+          }}
+          onContentSizeChange={(width) => {
+            if (stripContentRef.current === width) return;
+            stripContentRef.current = width;
+            setStripMeasured((n) => n + 1);
+          }}
+        >
+          {view.items.map((item, index) => (
+            <Pressable
+              key={item.id}
+              onPress={() => {
+                if (!inert) jumpTo(index);
+              }}
+              onLongPress={() => {
+                // Compare via long-press works in browse too (F11): two
+                // KEPT members are a legitimate duel — the dialog can
+                // re-decide one.
+                if (!inert && item.id !== view.current.id) openCompare(item.id);
+              }}
+            >
+              <Image
+                source={{ uri: item.uri }}
+                style={[
+                  styles.thumb,
+                  // The LIVE pager index (§10 check 8): the highlight moves
+                  // with the page crossing, not at momentum end. A frozen
+                  // deck keeps its own settled cursor.
+                  index === (inert ? view.cursor : pagerIndex) && styles.thumbActive,
+                ]}
+                contentFit="cover"
+                recyclingKey={item.id}
+              />
+              {/* Small badges wrapping into rows: a 52 px thumbnail fits
+                  three per row, so a fully-flagged photo shows all of
+                  them stacked instead of hiding any. */}
+              <BadgeCluster badges={badgesFor(item)} size={14} style={styles.thumbBadges} />
+            </Pressable>
+          ))}
+        </ScrollView>
+      )}
 
       {/* ONE control block for BOTH modes (m0.8.6 §9, the browse-swap
           unify): the browse/live swap used to replace this whole region,
@@ -1698,30 +1915,34 @@ function ReviewDeck({ navigation, unit, advanceTo }: SharedProps) {
         />
       </View>
 
-      <BigButton
-        // "Saving…" only once the write has actually run long (§10
-        // check 2): a fast finish advances before the timer fires,
-        // so the label no longer flashes through two texts on every
-        // normal finish. The button still disables instantly — the
-        // press must land exactly once either way.
-        label={finishSlow ? 'Saving…' : `Keep remaining (${view.finishCount})`}
-        color={colors.keep}
-        // The LOCK includes the transient `busy`; the LOOK does not
-        // (m0.8.6 N2, ActionChip's dimmed split): the dim tracks durable
-        // state — an empty remainder, an inert frozen deck — and the
-        // button's OWN write (`finishing`), so a chip or verdict write
-        // elsewhere no longer flickers it.
-        disabled={busy || inert || view.finishCount === 0}
-        dimmed={inert || view.finishCount === 0 || finishing}
-        // F28: the deck's finish cedes 64→56 for stage space; every
-        // other BigButton keeps `touch.action`.
-        style={{ minHeight: FINISH_MIN_HEIGHT }}
-        onPress={() =>
-          singlesMode
-            ? day && void run(() => keepAllSingles(day, range ?? null).then(() => {}), 'finish')
-            : finishGroup()
-        }
-      />
+      {/* P2-4: no honest "keep the rest of this list" verb exists —
+          the finish button is a unit concept. */}
+      {!view.listMode && (
+        <BigButton
+          // "Saving…" only once the write has actually run long (§10
+          // check 2): a fast finish advances before the timer fires,
+          // so the label no longer flashes through two texts on every
+          // normal finish. The button still disables instantly — the
+          // press must land exactly once either way.
+          label={finishSlow ? 'Saving…' : `Keep remaining (${view.finishCount})`}
+          color={colors.keep}
+          // The LOCK includes the transient `busy`; the LOOK does not
+          // (m0.8.6 N2, ActionChip's dimmed split): the dim tracks durable
+          // state — an empty remainder, an inert frozen deck — and the
+          // button's OWN write (`finishing`), so a chip or verdict write
+          // elsewhere no longer flickers it.
+          disabled={busy || inert || view.finishCount === 0}
+          dimmed={inert || view.finishCount === 0 || finishing}
+          // F28: the deck's finish cedes 64→56 for stage space; every
+          // other BigButton keeps `touch.action`.
+          style={{ minHeight: FINISH_MIN_HEIGHT }}
+          onPress={() =>
+            singlesMode
+              ? day && void run(() => keepAllSingles(day, range ?? null).then(() => {}), 'finish')
+              : finishGroup()
+          }
+        />
+      )}
 
       {viewerOpen && (
         <PhotoViewer

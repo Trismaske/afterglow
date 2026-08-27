@@ -17,7 +17,6 @@ import { describeEditLaunchFailure } from '../lib/editLaunchFailures';
 import type { EditLaunchStage } from '../lib/edit';
 import { probeEditLaunch, type ProbeLaunchResult } from '../../modules/media-store-actions';
 import { EditDiagnosticsSheet } from '../components/EditDiagnosticsSheet';
-import { QueueViewer } from '../components/QueueViewer';
 import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
 import { QueueRemoveChip } from '../components/QueueRemoveChip';
 import { showToast } from '../lib/toast';
@@ -36,7 +35,7 @@ type Props = MainTabScreenProps<'EditQueue'>;
  * own edit button has its own write powers (Samsung Gallery-style). Mark
  * done is always available manually (edit *detection* is m0.3).
  */
-export function EditQueueScreen(_props: Props) {
+export function EditQueueScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const db = useSQLiteContext();
@@ -54,7 +53,6 @@ export function EditQueueScreen(_props: Props) {
   // the failure alert or by long-pressing Edit (proactive/emulator path).
   const [matrixAssetId, setMatrixAssetId] = useState<string | null>(null);
   /** In-app full-screen viewer (gate 5) — thumbnail tap. */
-  const [viewerId, setViewerId] = useState<string | null>(null);
 
   const markDone = useCallback(
     async (assetId: string) => {
@@ -185,7 +183,16 @@ export function EditQueueScreen(_props: Props) {
   const renderItem = useCallback(
     ({ item }: { item: ToEditRow }) => (
       <View style={styles.row}>
-        <Pressable onPress={() => setViewerId(item.asset_id)}>
+        <Pressable
+          // P2-2: the deck IS the browse surface — one route, list mode
+          // by params; the queue re-resolves as the deck's own source.
+          onPress={() =>
+            navigation.navigate('Deck', {
+              list: { source: 'queue', queue: 'edit' },
+              anchorId: item.asset_id,
+            })
+          }
+        >
           <Image
             source={{ uri: item.uri }}
             style={styles.thumb}
@@ -273,17 +280,6 @@ export function EditQueueScreen(_props: Props) {
               Flag keepers with “needs edit” during review and they show up here.
             </Text>
           ) : null
-        }
-      />
-      <QueueViewer
-        rows={rows}
-        viewerId={viewerId}
-        toItem={(r) => ({ id: r.asset_id, uri: r.uri, takenAt: r.taken_at, day: r.day })}
-        onClose={() => setViewerId(null)}
-        onChanged={() =>
-          void reload()
-            .then(refresh)
-            .catch(() => {})
         }
       />
       {matrixAssetId !== null ? (

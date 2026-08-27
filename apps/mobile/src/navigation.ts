@@ -1,4 +1,5 @@
 /** Route params. Screens read review data from ReviewContext (m0.8). */
+import type { DeckListDescriptor } from './lib/deckList';
 import type { CompositeScreenProps, NavigatorScreenParams } from '@react-navigation/native';
 import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -46,7 +47,19 @@ export type RootStackParamList = {
    * Read them through `unitFromParams` (screens/DeckScreen.tsx) rather
    * than by hand: it is the one place that discriminates the shapes.
    */
-  Deck: { groupId?: string; day?: string; from?: number; to?: number } | undefined;
+  Deck:
+    | {
+        groupId?: string;
+        day?: string;
+        from?: number;
+        to?: number;
+        /** m0.9 P2-1: a serializable list descriptor switches the deck
+         * into LIST MODE (lib/deckList.ts owns the shape; fail-closed
+         * decode). anchorId = the photo the list opens on. */
+        list?: DeckListDescriptor;
+        anchorId?: string;
+      }
+    | undefined;
   /**
    * On-demand A/B flip + synced-zoom compare tool for two deck photos.
    * The verdict buttons record a compare (DuelRecord-shaped) and may

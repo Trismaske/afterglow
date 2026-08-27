@@ -60,7 +60,8 @@ import {
 import { mountedVolumeSet } from '../lib/mountedVolumes';
 import { resolveSources } from '../lib/sourceCatalog';
 import { useExternalRefresh } from '../components/useExternalRefresh';
-import { BackHandler, LayoutAnimation } from 'react-native';
+import { Animated as RNAnimated, BackHandler } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
 import { clearNotRelated, getNotRelatedCount } from '../db/store';
 import { requestTargetedRescan } from '../scan/scanRunner';
 import { withUserWritePriority } from '../lib/writePriority';
@@ -384,8 +385,9 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   /** P2-7: fullscreen immersive — a single stage tap collapses every
    * sibling chrome row IN PLACE (flex reflow; contain-fit grows the
-   * photo into the freed space; one LayoutAnimation call animates it).
-   * Never a navigate: no remount, no zoom-pipeline re-warm. */
+   * photo into the freed, edge-to-edge black screen; the dip-to-black
+   * in `immersiveFlip` masks the reflow). Never a navigate: no
+   * remount, no zoom-pipeline re-warm. */
   const [immersive, setImmersive] = useState(false);
   const listRef = useRef<FlatList<MediaItem>>(null);
 
@@ -593,15 +595,46 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     setListPagesWanted(listPagesRef.current);
   }, [listMode, listNext]);
   /** The photo the cursor is ANCHORED to (the retired viewer's
-   * contract, ported verbatim): moves only on user navigation; a
-   * vanished photo re-anchors to the clamped neighbour. */
+   * contract): moves only on user navigation. */
   const listAnchorRef = useRef<string | null>(list?.anchorId ?? null);
+  /** P2-3 (revised, device pass 2026-08-28): the CURRENT photo never
+   * leaves the deck under you. Acting on a photo can remove it from its
+   * own list (mark edit done in the Edit queue) — the row is HELD at
+   * its old position and keeps rendering until you navigate away; the
+   * next re-resolve after that drops it. Neighbours may change; the
+   * photo on the stage may not. */
+  const heldRowRef = useRef<{ row: DeckListRow; index: number } | null>(null);
+  const [browseCursor, setBrowseCursor] = useState(0);
+  /** The rows the deck actually shows: the source's rows, plus the held
+   * current row spliced back in when a re-resolve dropped it (the pin
+   * above). `browseCursor` is a dependency so the pin re-evaluates when
+   * navigation moves the anchor off a held photo. */
+  const shownListRows = useMemo(() => {
+    if (!listMode) return listRows;
+    const anchored = listAnchorRef.current;
+    const held = heldRowRef.current;
+    if (anchored === null || held === null || held.row.id !== anchored) return listRows;
+    if (listRows.some((r) => r.id === anchored)) return listRows;
+    const rows = [...listRows];
+    rows.splice(Math.min(held.index, rows.length), 0, held.row);
+    return rows;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listMode, listRows, browseCursor]);
+  // Capture the anchored photo's row while the list still carries it —
+  // the copy the pin above renders after the row leaves.
+  useEffect(() => {
+    if (!listMode) return;
+    const anchored = listAnchorRef.current;
+    if (anchored === null) return;
+    const index = listRows.findIndex((r) => r.id === anchored);
+    if (index >= 0) heldRowRef.current = { row: listRows[index], index };
+  }, [listMode, listRows, browseCursor]);
   /** P2-5: ids the scan has not ingested (tracked=false list rows). */
   const untrackedIds = useMemo(() => {
     const set = new Set<string>();
-    for (const r of listRows) if (!r.tracked) set.add(r.id);
+    for (const r of shownListRows) if (!r.tracked) set.add(r.id);
     return set;
-  }, [listRows]);
+  }, [shownListRows]);
   // Derived deck info (the old core groupInfo shape, DB-backed): a group
   // absent from the queue but explicitly opened is COMPLETE (browse mode)
   // — the queue only lists groups with unreviewed members.
@@ -609,9 +642,9 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     const map = new Map<string, ReviewMemberRow['state']>();
     if (group) for (const m of group.members) map.set(m.asset_id, m.state);
     for (const m of singleRows) map.set(m.asset_id, m.state);
-    for (const r of listRows) map.set(r.id, r.state);
+    for (const r of shownListRows) map.set(r.id, r.state);
     return map;
-  }, [group, singleRows, listRows]);
+  }, [group, singleRows, shownListRows]);
   /**
    * Each photo's CAPTURE DAY, for the time badge (m0.8.5, F17).
    *
@@ -626,9 +659,9 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     const map = new Map<string, string | null>();
     if (group) for (const m of group.members) map.set(m.asset_id, m.day);
     for (const m of singleRows) map.set(m.asset_id, m.day);
-    for (const r of listRows) map.set(r.id, r.day);
+    for (const r of shownListRows) map.set(r.id, r.day);
     return map;
-  }, [group, singleRows, listRows]);
+  }, [group, singleRows, shownListRows]);
   const info = useMemo(() => {
     if (!group) return null;
     const aliveIds = group.members.filter((m) => m.state === 'unreviewed').map((m) => m.asset_id);
@@ -684,15 +717,14 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     [singleRows, singlesMode],
   );
   const listItems: MediaItem[] = useMemo(
-    () => listRows.map((r) => ({ id: r.id, timestamp: r.takenAt, uri: r.uri, kind: 'photo' })),
-    [listRows],
+    () => shownListRows.map((r) => ({ id: r.id, timestamp: r.takenAt, uri: r.uri, kind: 'photo' })),
+    [shownListRows],
   );
   const deckItems = listMode ? listItems : singlesMode ? singlesItems : groupItems;
 
   // The deck cursor is screen-local everywhere (m0.8: derived model — the
   // DB has no cursor; a decision shrinks the alive deck and the cursor
   // clamps to the next photo).
-  const [browseCursor, setBrowseCursor] = useState(0);
   /** The unit whose first-pending cursor has been applied (the effect
    * below the strip refs). STATE, not a ref (codex round 2): `holding`
    * reads it — rows landing do not end the hold until the successor's
@@ -766,6 +798,38 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     resetZoom,
   } = stage;
 
+  /** P2-7 (revised, device pass 2026-08-28): the toggle re-lays-out the
+   * whole tree at once (chrome unmounts, pageW grows to the screen
+   * edge, the FlatList re-paginates) — frame-tweening that with
+   * LayoutAnimation left the photo itself snapping, which read as no
+   * animation at all. A DIP TO BLACK masks the reflow instead: fade a
+   * black cover in, flip the layout under it, fade out. Plain RN
+   * Animated with the native driver — opacity only, no worklets, no
+   * layout involvement. */
+  const immersiveFade = useRef(new RNAnimated.Value(0)).current;
+  const immersiveFlightRef = useRef(false);
+  const immersiveFlip = useCallback(
+    (next: boolean) => {
+      if (immersiveFlightRef.current) return;
+      immersiveFlightRef.current = true;
+      RNAnimated.timing(immersiveFade, {
+        toValue: 1,
+        duration: 110,
+        useNativeDriver: true,
+      }).start(() => {
+        setImmersive(next);
+        resetZoom();
+        RNAnimated.timing(immersiveFade, {
+          toValue: 0,
+          duration: 220,
+          useNativeDriver: true,
+        }).start(() => {
+          immersiveFlightRef.current = false;
+        });
+      });
+    },
+    [immersiveFade, resetZoom],
+  );
   // Page taps — a plain Pressable press (RN responder system),
   // deliberately not a tap gesture (`useTapGesture`), so no worklet is
   // involved (see the bridge comment above). Double tap zooms to the
@@ -778,14 +842,8 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     // zoomed stage keeps taps to itself anyway via pointerEvents.
     // P2-7: a single tap toggles fullscreen immersive, BOTH modes —
     // the gallery idiom (the m0.8.x viewer-open died with the viewer).
-    // A FROZEN deck (rows loading) toggles nothing. The toggle
-    // re-lays-out the stage (pageW + zoom bounds change), so the zoom
-    // resets/re-clamps with it.
-    if (scale.value === 1 && !holding) {
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      setImmersive((v) => !v);
-      resetZoom();
-    }
+    // A FROZEN deck (rows loading) toggles nothing.
+    if (scale.value === 1 && !holding) immersiveFlip(!immersive);
   };
   const fireStageTap = useCallback(() => stageTapRef.current(), []);
   // P2-5: the dead Not-related slot INVERTS on a pair-carrying photo
@@ -823,13 +881,11 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   useEffect(() => {
     if (!immersive) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      setImmersive(false);
-      resetZoom();
+      immersiveFlip(false);
       return true;
     });
     return () => sub.remove();
-  }, [immersive, resetZoom]);
+  }, [immersive, immersiveFlip]);
   // currentId scopes the tap window to one photo: the hook serves every
   // pager page, so without it tap A → swipe → tap B inside the window
   // read as a double tap on B.
@@ -1305,33 +1361,50 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   );
 
   // -------------------- list-mode anchor plumbing (P2-3) --------------
-  // User navigation moves the anchor (and ONLY user navigation plus the
-  // photo-left re-anchor below — the retired viewer's contract).
+  // User navigation moves the anchor — and ONLY user navigation (the
+  // retired viewer's contract). Guarded on a REAL cursor change: this
+  // effect also fires when the rows change under a stationary cursor
+  // (a share/edit write reordering History), and stamping then reads a
+  // stale index and re-anchors to whatever photo slid into it — the
+  // device-pass bug where acting on a photo swapped it off the stage.
+  const stampedCursorRef = useRef(cursor);
   useEffect(() => {
     if (!listMode || holding) return;
+    if (cursor === stampedCursorRef.current) return;
+    stampedCursorRef.current = cursor;
     const at = deckItems[cursor]?.id;
     if (at !== undefined) listAnchorRef.current = at;
   }, [listMode, cursor, deckItems, holding]);
-  // Rows changed under the cursor: follow the anchored photo; a photo
-  // that left the list re-anchors to the clamped neighbour.
+  // Rows changed under the cursor: follow the anchored photo — a snap,
+  // not a jumpTo (the deck must not visibly fly across thirty pages
+  // because a write reordered the feed; the alignment effect re-scrolls
+  // unanimated). The pin above means the anchored photo is normally
+  // still present; the clamped-neighbour fallback remains only for an
+  // anchor the list never carried (a stale params anchorId).
   useEffect(() => {
     if (!listMode || cursorAppliedFor !== unitKey || deckItems.length === 0) return;
     const anchored = listAnchorRef.current;
     if (anchored === null) return;
     const index = deckItems.findIndex((i) => i.id === anchored);
     if (index >= 0) {
-      if (index !== browseCursor) jumpTo(index);
+      if (index !== browseCursor) {
+        stampedCursorRef.current = index;
+        setBrowseCursor(index);
+      }
       return;
     }
     const clamped = Math.min(browseCursor, deckItems.length - 1);
     listAnchorRef.current = deckItems[clamped]?.id ?? null;
-    if (clamped !== browseCursor) jumpTo(clamped);
-  }, [listMode, cursorAppliedFor, unitKey, deckItems, browseCursor, jumpTo]);
+    if (clamped !== browseCursor) {
+      stampedCursorRef.current = clamped;
+      setBrowseCursor(clamped);
+    }
+  }, [listMode, cursorAppliedFor, unitKey, deckItems, browseCursor]);
   // An emptied list quietly goes back to its host (the whole-day
   // precedent).
   useEffect(() => {
-    if (listMode && listReady && listRows.length === 0) navigation.goBack();
-  }, [listMode, listReady, listRows.length, navigation]);
+    if (listMode && listReady && shownListRows.length === 0) navigation.goBack();
+  }, [listMode, listReady, shownListRows.length, navigation]);
 
   const run = useCallback(
     /** `owner` names the control that started the write, so a control can
@@ -1701,7 +1774,12 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   };
 
   return (
-    <View style={[styles.root, { paddingBottom: insets.bottom + 8 }]}>
+    <View
+      style={immersive ? styles.rootImmersive : [styles.root, { paddingBottom: insets.bottom + 8 }]}
+    >
+      {/* P2-7: immersive is the GALLERY look — edge-to-edge black, no
+          frame, no OS status bar; the photo owns the screen. */}
+      <StatusBar hidden={immersive} style="light" />
       {/* P2: list mode has no unit story to tell — the navigation title
           names the source and the stage takes the space. */}
       {!view.listMode && !immersive && (
@@ -1721,12 +1799,12 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
           badges ride the chrome slot until phase 6's overlay builder. */}
       <MediaStageView
         controller={stage}
-        frameStyle={styles.stageFrame}
+        frameStyle={immersive ? styles.stageFrameImmersive : styles.stageFrame}
         onStageLayout={(width) => setPageW(width)}
         overlayFor={view.current}
         regionZoom={regionZoom}
         identityOk={current?.id === view.current.id}
-        backdropColor={colors.surface}
+        backdropColor={immersive ? '#000' : colors.surface}
         chrome={
           <>
             <View style={styles.posBadge} pointerEvents="none">
@@ -1917,7 +1995,11 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               <Text style={styles.actionText}>Keep</Text>
             </Pressable>
             <Pressable
-              style={[styles.actionButton, styles.middleButton]}
+              style={[
+                styles.actionButton,
+                styles.middleButton,
+                !compareEligible && styles.middleButtonDead,
+              ]}
               // Compare works on UNDECIDED photos only (its verdicts can
               // cull a loser) — decided photos stay in the deck, so the
               // button goes dead on them, and in browse mode (all decided)
@@ -2133,6 +2215,14 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
           onDone={() => setCelebrating(false)}
         />
       )}
+
+      {/* P2-7: the immersive flip's dip-to-black cover (see
+          immersiveFlip). Always mounted, opacity-driven, never
+          touchable. */}
+      <RNAnimated.View
+        pointerEvents="none"
+        style={[StyleSheet.absoluteFill, styles.immersiveFadeCover, { opacity: immersiveFade }]}
+      />
     </View>
   );
 }
@@ -2164,6 +2254,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     overflow: 'hidden',
   },
+  /** P2-7 immersive: the Gallery look — black, borderless, edge to
+   * edge (the root drops its padding with it). */
+  stageFrameImmersive: { flex: 1, backgroundColor: '#000', overflow: 'hidden' },
+  rootImmersive: { flex: 1, backgroundColor: '#000' },
+  immersiveFadeCover: { backgroundColor: '#000', zIndex: 20, elevation: 20 },
   pager: { flex: 1 },
   /** The cold-open last-photo container — NOT the measured stage (that
    * lives in MediaStageView); just a frameless flex box. */

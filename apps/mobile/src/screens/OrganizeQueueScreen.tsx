@@ -464,6 +464,9 @@ export function OrganizeQueueScreen({ navigation }: Props) {
               ? `${selected.size} selected · choose their album, or remove them`
               : `${count} queued${untargetedCount > 0 ? ` · ${untargetedCount} need an album` : ''}${errorCount > 0 ? ` · ${errorCount} failed, retried on the next move` : ''}`}
       </Text>
+      {/* Device pass 2026-08-28: the long-press door was invisible —
+          say it (tap is taken by selection on this grid). */}
+      {count > 0 && <Text style={styles.subtitle}>Long-press a photo to open it</Text>}
       {count > 0 ? (
         <View style={styles.chips}>
           <Chip

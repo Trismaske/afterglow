@@ -625,6 +625,28 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     listPagesRef.current += 1;
     setListPagesWanted(listPagesRef.current);
   }, [listMode, listNext]);
+  /** ORDER STABILITY (device pass 2026-08-28): while the deck is open,
+   * row ORDER freezes at entry — membership and state stay live, but a
+   * write that reorders the source (every action bumps History's
+   * activity_at) must not shuffle the pager mid-view: the live follow
+   * snapped the cursor across the deck and flashed a blank rebound
+   * page (frame-captured). Rows that vanish drop; unseen rows append
+   * (the next pagination page, or a row a reorder pushed into the
+   * loaded window). The fresh order applies on re-entry. */
+  const listOrderRef = useRef<{ unit: string; ids: string[] }>({ unit: '', ids: [] });
+  const stableListRows = useMemo(() => {
+    if (!listMode) return listRows;
+    if (listOrderRef.current.unit !== unitKey) {
+      listOrderRef.current = { unit: unitKey, ids: listRows.map((r) => r.id) };
+      return listRows;
+    }
+    const byId = new Map(listRows.map((r) => [r.id, r]));
+    const kept = listOrderRef.current.ids.filter((id) => byId.has(id));
+    const seen = new Set(kept);
+    const ids = [...kept, ...listRows.map((r) => r.id).filter((id) => !seen.has(id))];
+    listOrderRef.current = { unit: unitKey, ids };
+    return ids.map((id) => byId.get(id)!);
+  }, [listMode, listRows, unitKey]);
   /** The photo the cursor is ANCHORED to (the retired viewer's
    * contract): moves only on user navigation. */
   const listAnchorRef = useRef<string | null>(list?.anchorId ?? null);
@@ -641,25 +663,25 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * above). `browseCursor` is a dependency so the pin re-evaluates when
    * navigation moves the anchor off a held photo. */
   const shownListRows = useMemo(() => {
-    if (!listMode) return listRows;
+    if (!listMode) return stableListRows;
     const anchored = listAnchorRef.current;
     const held = heldRowRef.current;
-    if (anchored === null || held === null || held.row.id !== anchored) return listRows;
-    if (listRows.some((r) => r.id === anchored)) return listRows;
-    const rows = [...listRows];
+    if (anchored === null || held === null || held.row.id !== anchored) return stableListRows;
+    if (stableListRows.some((r) => r.id === anchored)) return stableListRows;
+    const rows = [...stableListRows];
     rows.splice(Math.min(held.index, rows.length), 0, held.row);
     return rows;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listMode, listRows, browseCursor]);
+  }, [listMode, stableListRows, browseCursor]);
   // Capture the anchored photo's row while the list still carries it —
   // the copy the pin above renders after the row leaves.
   useEffect(() => {
     if (!listMode) return;
     const anchored = listAnchorRef.current;
     if (anchored === null) return;
-    const index = listRows.findIndex((r) => r.id === anchored);
-    if (index >= 0) heldRowRef.current = { row: listRows[index], index };
-  }, [listMode, listRows, browseCursor]);
+    const index = stableListRows.findIndex((r) => r.id === anchored);
+    if (index >= 0) heldRowRef.current = { row: stableListRows[index], index };
+  }, [listMode, stableListRows, browseCursor]);
   /** P2-5: ids the scan has not ingested (tracked=false list rows). */
   const untrackedIds = useMemo(() => {
     const set = new Set<string>();
@@ -918,14 +940,26 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   useEffect(() => {
     navigation.setOptions({ headerShown: !immersive });
   }, [navigation, immersive]);
+  // One ALWAYS-MOUNTED handler (device pass 2026-08-28, the S23 frozen
+  // pop): the old immersive-only subscription unmounted at the flip's
+  // black midpoint, so a second back landed while the header and
+  // status bar were still restoring — a pop colliding with those
+  // native reflows is the prime suspect for the stuck transition.
+  // Backs during the whole flight are swallowed; the pop waits for a
+  // quiet screen.
+  const immersiveRef = useRef(false);
+  immersiveRef.current = immersive;
   useEffect(() => {
-    if (!immersive) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      immersiveFlip(false);
-      return true;
+      if (immersiveFlightRef.current) return true;
+      if (immersiveRef.current) {
+        immersiveFlip(false);
+        return true;
+      }
+      return false;
     });
     return () => sub.remove();
-  }, [immersive, immersiveFlip]);
+  }, [immersiveFlip]);
   // currentId scopes the tap window to one photo: the hook serves every
   // pager page, so without it tap A → swipe → tap B inside the window
   // read as a double tap on B.

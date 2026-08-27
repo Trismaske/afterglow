@@ -97,6 +97,10 @@ Use the hardware serial as the selector when two connected devices have the same
 The phone remembers the pairing, but wireless debugging can turn off after a reboot, a network change, or inactivity.
 Connection ports are deliberately dynamic.
 Never save one in a script.
+
+**LAN unreachable, phone fine (S23):** the phone's mDNS advertisement can outlive its LAN reachability (packets drop, connects hang while the ad still lists).
+Fall back to the tailnet: `tailscale status` names the phone (e.g. `tristans-s23-ultra-1`) with its tailnet IP, then `adb connect TAILNET_IP:PORT` with the port shown on the phone's Wireless debugging screen.
+Read the IP from `tailscale status`, not from the phone or from memory — a one-digit misread reports "network unreachable".
 After you reinstall the workstation, you must pair its new ADB key again.
 You can remove the old entry from the phone's **Paired devices** list.
 

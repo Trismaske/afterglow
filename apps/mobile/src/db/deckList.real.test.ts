@@ -190,11 +190,20 @@ describe('grid source', () => {
     expect(page.next).toBeNull();
   });
 
-  it('rejects pager-backed filters on a dated day EARLY and named', async () => {
+  it("day-scope 'all' is DB-backed (m0.8.6) and includes unreviewed photos", async () => {
     const d = await fresh();
-    await seed(d, ['1']);
-    await expect(
-      resolveDeckListPage(asExpo(d), { source: 'grid', day: DAY, filter: 'all' }, null, null, null),
-    ).rejects.toThrow(/pager-backed/);
+    await seed(d, ['1', '2']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 10);
+    const page = await resolveDeckListPage(
+      asExpo(d),
+      { source: 'grid', day: DAY, filter: 'all' },
+      null,
+      null,
+      null,
+    );
+    expect(page.rows.map((r) => r.id).sort()).toEqual([id('1'), id('2')].sort());
+    const states = new Map(page.rows.map((r) => [r.id, r.state]));
+    expect(states.get(id('1'))).toBe('kept');
+    expect(states.get(id('2'))).toBe('unreviewed');
   });
 });

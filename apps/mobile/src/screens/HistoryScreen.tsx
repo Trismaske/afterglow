@@ -38,7 +38,6 @@ import { formatClock, formatDayClock, plural } from '../lib/format';
 import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { DecisionBadge } from '../components/DecisionBadge';
 import { demoteForState, photoBadges, type BadgeWeight, type PhotoBadge } from '../lib/photoBadges';
-import { PhotoViewer } from '../components/PhotoViewer';
 import { useReview } from '../review/ReviewContext';
 import { colors, touch, useTheme } from '../theme';
 
@@ -85,7 +84,7 @@ function badgesOf(row: Extract<HistoryRow, { kind: 'photo' }>): PhotoBadge[] {
   });
 }
 
-export function HistoryScreen(_props: Props) {
+export function HistoryScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const db = useSQLiteContext();
@@ -101,7 +100,6 @@ export function HistoryScreen(_props: Props) {
   // rows present → a quiet footer says the feed may be truncated), and
   // the next successful read clears it.
   const [failed, setFailed] = useState(false);
-  const [viewerId, setViewerId] = useState<string | null>(null);
   // Monotonic request token: a reload invalidates every in-flight fetch
   // (an older filter's result finishing last must not win the state).
   const requestRef = useRef(0);
@@ -229,67 +227,82 @@ export function HistoryScreen(_props: Props) {
     }
   }, [db, filter, next, loadingMore, reconcilePage]);
 
-  const renderItem = useCallback(({ item }: { item: HistoryRow }) => {
-    if (item.kind === 'share') {
+  const renderItem = useCallback(
+    ({ item }: { item: HistoryRow }) => {
+      if (item.kind === 'share') {
+        return (
+          <View style={styles.shareRow}>
+            <View style={styles.shareThumbs}>
+              {item.thumb_uris.slice(0, 3).map((uri, i) => (
+                <Image
+                  key={`${item.batch_id}-${i}`}
+                  source={{ uri }}
+                  style={[styles.shareThumb, { left: i * 14 }]}
+                  contentFit="cover"
+                />
+              ))}
+            </View>
+            <View style={styles.rowBody}>
+              <Text style={styles.rowTitle}>
+                Shared · {plural(item.member_count, 'photo')}
+                {item.label ? ` · “${item.label}”` : ''}
+              </Text>
+              <Text style={styles.rowTime}>{formatDayClock(item.chosen_at)}</Text>
+            </View>
+            <MaterialCommunityIcons name="share-variant" size={20} color={colors.share} />
+          </View>
+        );
+      }
+      const badges = badgesOf(item);
+      // A TOMBSTONE (D9): the bytes are gone, so a grey cell stands in for
+      // the thumbnail and the row opens nothing — the verdict badge and
+      // the original date are the record.
+      const tombstone = item.is_present === 0 || item.state === 'trashed';
       return (
-        <View style={styles.shareRow}>
-          <View style={styles.shareThumbs}>
-            {item.thumb_uris.slice(0, 3).map((uri, i) => (
-              <Image
-                key={`${item.batch_id}-${i}`}
-                source={{ uri }}
-                style={[styles.shareThumb, { left: i * 14 }]}
-                contentFit="cover"
-              />
-            ))}
-          </View>
+        <Pressable
+          style={styles.row}
+          disabled={tombstone}
+          // P2-2: the deck IS the browse surface — the history source
+          // re-resolves the feed (tombstones filtered) with this photo
+          // as the anchor.
+          onPress={() =>
+            navigation.navigate('Deck', {
+              list: { source: 'history', filter },
+              anchorId: item.asset_id,
+            })
+          }
+        >
+          {tombstone ? (
+            <View style={[styles.thumb, styles.tombstone]}>
+              <MaterialCommunityIcons name="image-off-outline" size={22} color={colors.textDim} />
+            </View>
+          ) : (
+            <Image source={{ uri: item.uri }} style={styles.thumb} contentFit="cover" />
+          )}
           <View style={styles.rowBody}>
-            <Text style={styles.rowTitle}>
-              Shared · {plural(item.member_count, 'photo')}
-              {item.label ? ` · “${item.label}”` : ''}
-            </Text>
-            <Text style={styles.rowTime}>{formatDayClock(item.chosen_at)}</Text>
-          </View>
-          <MaterialCommunityIcons name="share-variant" size={20} color={colors.share} />
-        </View>
-      );
-    }
-    const badges = badgesOf(item);
-    // A TOMBSTONE (D9): the bytes are gone, so a grey cell stands in for
-    // the thumbnail and the row opens nothing — the verdict badge and
-    // the original date are the record.
-    const tombstone = item.is_present === 0 || item.state === 'trashed';
-    return (
-      <Pressable style={styles.row} disabled={tombstone} onPress={() => setViewerId(item.asset_id)}>
-        {tombstone ? (
-          <View style={[styles.thumb, styles.tombstone]}>
-            <MaterialCommunityIcons name="image-off-outline" size={22} color={colors.textDim} />
-          </View>
-        ) : (
-          <Image source={{ uri: item.uri }} style={styles.thumb} contentFit="cover" />
-        )}
-        <View style={styles.rowBody}>
-          {/* A tombstone's line is the photo's ORIGINAL date (D9) — the
+            {/* A tombstone's line is the photo's ORIGINAL date (D9) — the
               capture day plus clock, or the honest Unknown day — never
               the activity time a live row shows (codex r1): an executed
               cull's activity_at is when the trash concluded, not when
               the photo was taken. */}
-          <Text style={styles.rowTime}>
-            {tombstone
-              ? item.day === null
-                ? labelForDayKey(UNDATED_DAY_KEY)
-                : `${labelForDayKey(item.day)} ${formatClock(item.taken_at)}`
-              : formatDayClock(item.activity_at)}
-          </Text>
-          <View style={styles.badges}>
-            {badges.map((badge) => (
-              <DecisionBadge key={badge.kind} kind={badge.kind} size={20} weight={badge.weight} />
-            ))}
+            <Text style={styles.rowTime}>
+              {tombstone
+                ? item.day === null
+                  ? labelForDayKey(UNDATED_DAY_KEY)
+                  : `${labelForDayKey(item.day)} ${formatClock(item.taken_at)}`
+                : formatDayClock(item.activity_at)}
+            </Text>
+            <View style={styles.badges}>
+              {badges.map((badge) => (
+                <DecisionBadge key={badge.kind} kind={badge.kind} size={20} weight={badge.weight} />
+              ))}
+            </View>
           </View>
-        </View>
-      </Pressable>
-    );
-  }, []);
+        </Pressable>
+      );
+    },
+    [filter, navigation],
+  );
 
   return (
     <View style={styles.root}>
@@ -355,30 +368,6 @@ export function HistoryScreen(_props: Props) {
           ) : null
         }
       />
-      {viewerId !== null &&
-        (() => {
-          // Tombstones open no viewer (D9) and must not sit in its
-          // item list either — a swipe would land on a gone photo.
-          const photoRows = (rows ?? []).filter(
-            (r): r is Extract<HistoryRow, { kind: 'photo' }> =>
-              r.kind === 'photo' && r.is_present === 1 && r.state !== 'trashed',
-          );
-          const index = photoRows.findIndex((r) => r.asset_id === viewerId);
-          if (index < 0) return null;
-          return (
-            <PhotoViewer
-              items={photoRows.map((r) => ({
-                id: r.asset_id,
-                uri: r.uri,
-                takenAt: r.taken_at,
-                day: r.day,
-              }))}
-              initialIndex={index}
-              onClose={() => setViewerId(null)}
-              onChanged={() => void reload(filter).catch(() => {})}
-            />
-          );
-        })()}
     </View>
   );
 }

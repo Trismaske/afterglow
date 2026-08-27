@@ -53,14 +53,13 @@ import { describeShareFailure } from '../lib/shareFailures';
 import { showToast } from '../lib/toast';
 import { colors, touch, useTheme } from '../theme';
 import { Chip, QueueGridCell } from '../components/QueueGrid';
-import { QueueViewer } from '../components/QueueViewer';
 import { QueueRemoveChip } from '../components/QueueRemoveChip';
 import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
 import { useReview } from '../review/ReviewContext';
 
 type Props = MainTabScreenProps<'ShareQueue'>;
 
-export function ShareQueueScreen(_props: Props) {
+export function ShareQueueScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const db = useSQLiteContext();
@@ -164,7 +163,6 @@ export function ShareQueueScreen(_props: Props) {
   const [labelChips, setLabelChips] = useState<string[]>([]);
   /** In-app full-screen viewer (gate 5) — long-press a thumbnail
    * (a plain tap toggles pass selection). */
-  const [viewerId, setViewerId] = useState<string | null>(null);
 
   // Selection follows the queue: ids that left it (shared away, removed
   // elsewhere) must not linger invisibly selected.
@@ -416,7 +414,12 @@ export function ShareQueueScreen(_props: Props) {
         selected={selected.has(item.photo_id)}
         accent={theme.accent}
         onPress={() => toggle(item.photo_id)}
-        onLongPress={() => setViewerId(item.photo_id)}
+        onLongPress={() =>
+          navigation.navigate('Deck', {
+            list: { source: 'queue', queue: 'share' },
+            anchorId: item.photo_id,
+          })
+        }
       >
         {item.pass_count > 0 ? (
           <View style={styles.passBadge}>
@@ -428,7 +431,7 @@ export function ShareQueueScreen(_props: Props) {
         ) : null}
       </QueueGridCell>
     ),
-    [selected, theme.accent, toggle],
+    [selected, theme.accent, toggle, navigation],
   );
 
   const count = rows?.length ?? 0;
@@ -480,13 +483,6 @@ export function ShareQueueScreen(_props: Props) {
         renderItem={renderItem}
         contentContainerStyle={{ paddingBottom: 140, gap: 4 }}
         columnWrapperStyle={{ gap: 4 }}
-      />
-      <QueueViewer
-        rows={rows}
-        viewerId={viewerId}
-        toItem={(r) => ({ id: r.photo_id, uri: r.uri, takenAt: r.taken_at, day: r.day })}
-        onClose={() => setViewerId(null)}
-        onChanged={() => void reload().catch(() => {})}
       />
       {count > 0 ? (
         <View style={styles.actions}>

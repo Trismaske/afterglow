@@ -193,7 +193,9 @@ function listTitle(descriptor: DeckListDescriptor): string {
     case 'history':
       return 'History';
     case 'grid':
-      return labelForDayKey(descriptor.day);
+      return descriptor.day !== undefined
+        ? labelForDayKey(descriptor.day)
+        : (descriptor.month ?? 'Browse');
   }
 }
 

@@ -41,7 +41,6 @@ import { describeOrganizeFailures, type OrganizeFailure } from '../lib/organizeF
 import { colors, touch, useTheme } from '../theme';
 import { AlbumPicker } from '../components/AlbumPicker';
 import { Chip, QueueGridCell } from '../components/QueueGrid';
-import { QueueViewer } from '../components/QueueViewer';
 import { QueueRemoveChip } from '../components/QueueRemoveChip';
 import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
 import { useReview } from '../review/ReviewContext';
@@ -68,7 +67,7 @@ function surfaceQueueWriteError(detail: string, error: unknown): void {
   );
 }
 
-export function OrganizeQueueScreen(_props: Props) {
+export function OrganizeQueueScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const db = useSQLiteContext();
@@ -99,7 +98,6 @@ export function OrganizeQueueScreen(_props: Props) {
   const busyRef = useRef(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   /** In-app full-screen viewer (gate 5) — long-press a thumbnail. */
-  const [viewerId, setViewerId] = useState<string | null>(null);
 
   // Selection follows the queue: ids that left it (moved away, removed
   // elsewhere) must not linger invisibly selected.
@@ -418,7 +416,12 @@ export function OrganizeQueueScreen(_props: Props) {
         selected={selected.has(item.photo_id)}
         accent={theme.accent}
         onPress={() => toggle(item.photo_id)}
-        onLongPress={() => setViewerId(item.photo_id)}
+        onLongPress={() =>
+          navigation.navigate('Deck', {
+            list: { source: 'queue', queue: 'organize' },
+            anchorId: item.photo_id,
+          })
+        }
       >
         <View style={[styles.targetTag, item.organize_path === null && styles.targetTagEmpty]}>
           <MaterialCommunityIcons
@@ -440,7 +443,7 @@ export function OrganizeQueueScreen(_props: Props) {
         ) : null}
       </QueueGridCell>
     ),
-    [selected, theme.accent, toggle],
+    [selected, theme.accent, toggle, navigation],
   );
 
   const count = rows?.length ?? 0;
@@ -491,13 +494,6 @@ export function OrganizeQueueScreen(_props: Props) {
         renderItem={renderItem}
         contentContainerStyle={{ paddingBottom: 150, gap: 4 }}
         columnWrapperStyle={{ gap: 4 }}
-      />
-      <QueueViewer
-        rows={rows}
-        viewerId={viewerId}
-        toItem={(r) => ({ id: r.photo_id, uri: r.uri, takenAt: r.taken_at, day: r.day })}
-        onClose={() => setViewerId(null)}
-        onChanged={() => void reload().catch(() => {})}
       />
       {count > 0 ? (
         <View style={styles.actions}>

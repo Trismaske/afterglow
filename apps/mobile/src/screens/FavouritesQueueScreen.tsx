@@ -10,6 +10,9 @@ import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSQLiteContext } from 'expo-sqlite';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../navigation';
 import { invalidateMountedVolumes, mountedVolumeSet } from '../lib/mountedVolumes';
 import { resolveSources } from '../lib/sourceCatalog';
 import { getPhotoQueueFacts } from '../db/store';
@@ -21,7 +24,6 @@ import { BigButton } from '../components/BigButton';
 import { showToast } from '../lib/toast';
 import { colors, touch, useTheme } from '../theme';
 import { useReview } from '../review/ReviewContext';
-import { QueueViewer } from '../components/QueueViewer';
 import {
   decodeFavouriteTarget,
   encodeFavouriteTarget,
@@ -49,6 +51,8 @@ interface FavouriteQueueRow {
 }
 
 export function FavouritesQueueScreen() {
+  // P2-2: browse taps navigate to the deck's list mode.
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const db = useSQLiteContext();
   const insets = useSafeAreaInsets();
   const theme = useTheme();
@@ -83,7 +87,6 @@ export function FavouritesQueueScreen() {
   );
   const [busyTarget, setBusyTarget] = useState<boolean | null>(null);
   /** In-app full-screen viewer (gate 5) — thumbnail tap. */
-  const [viewerId, setViewerId] = useState<string | null>(null);
 
   const applyRows = useMemo(() => (rows ?? []).filter((row) => row.favourite_target === 1), [rows]);
   const removeRows = useMemo(
@@ -295,7 +298,14 @@ export function FavouritesQueueScreen() {
         }
         renderItem={({ item }) => (
           <View style={styles.row}>
-            <Pressable onPress={() => setViewerId(item.asset_id)}>
+            <Pressable
+              onPress={() =>
+                navigation.navigate('Deck', {
+                  list: { source: 'queue', queue: 'favourite' },
+                  anchorId: item.asset_id,
+                })
+              }
+            >
               <Image source={{ uri: item.uri }} style={styles.thumb} contentFit="cover" />
             </Pressable>
             <MaterialCommunityIcons
@@ -313,13 +323,6 @@ export function FavouritesQueueScreen() {
             </View>
           </View>
         )}
-      />
-      <QueueViewer
-        rows={rows}
-        viewerId={viewerId}
-        toItem={(r) => ({ id: r.asset_id, uri: r.uri, takenAt: r.taken_at, day: r.day })}
-        onClose={() => setViewerId(null)}
-        onChanged={() => void reload().catch(() => {})}
       />
       <View style={styles.actions}>
         {applyRows.length > 0 && (

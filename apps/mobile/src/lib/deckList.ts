@@ -48,7 +48,6 @@ import { getShareQueue } from '../db/shareStore';
 import { getOrganizeQueue } from '../db/organizeStore';
 import { getQueue } from '../db/actions';
 import type { SourceRoot } from './sources';
-import { UNDATED_DAY_KEY } from './dates';
 
 /** The four action queues, by their photo_actions kind. */
 export type DeckListQueue = 'edit' | 'favourite' | 'share' | 'organize';
@@ -59,7 +58,16 @@ export type DeckListQueue = 'edit' | 'favourite' | 'share' | 'organize';
 export type DeckListDescriptor =
   | { source: 'queue'; queue: DeckListQueue }
   | { source: 'history'; filter: HistoryFilter }
-  | { source: 'grid'; day: string; filter: string };
+  | {
+      source: 'grid';
+      /** Exactly one of day/month — the DB-backed grid scopes
+       * (PhotoStateGrid's isDbScope rule). The open-ended library
+       * scope rides the MediaStore merged pager and gets its own
+       * source variant when the Progress library grid rewires. */
+      day?: string;
+      month?: string;
+      filter: string;
+    };
 
 /** What the deck renders per list photo — the retired ViewerItem
  * contract plus the tracked flag (P2-5: untracked photos, reachable
@@ -100,11 +108,6 @@ const QUEUES: readonly DeckListQueue[] = ['edit', 'favourite', 'share', 'organiz
 /** DB-filter grid page size — mirrors the grids' own incremental loads. */
 const GRID_PAGE = 120;
 
-/** GRID_FILTER_SQL's own rule (db/store.ts): these two are DB-backed
- * only for the Unknown day; everywhere else they ride the MediaStore
- * merged pager. */
-const PAGER_BACKED_FILTERS: readonly string[] = ['all', 'unreviewed'];
-
 /** One batched verdict read for sources whose queries do not select
  * `state` (the queue lists); grid and History rows carry their own. */
 async function statesFor(
@@ -141,9 +144,12 @@ export function listFromParams(value: unknown): DeckListDescriptor | null {
       : null;
   }
   if (v.source === 'grid') {
-    return typeof v.day === 'string' && typeof v.filter === 'string'
-      ? { source: 'grid', day: v.day, filter: v.filter }
-      : null;
+    if (typeof v.filter !== 'string') return null;
+    if (typeof v.day === 'string' && v.month === undefined)
+      return { source: 'grid', day: v.day, filter: v.filter };
+    if (typeof v.month === 'string' && v.day === undefined)
+      return { source: 'grid', month: v.month, filter: v.filter };
+    return null;
   }
   return null;
 }
@@ -156,7 +162,7 @@ export function deckListKey(descriptor: DeckListDescriptor): string {
     case 'history':
       return `list:history:${descriptor.filter}`;
     case 'grid':
-      return `list:grid:${descriptor.day}:${descriptor.filter}`;
+      return `list:grid:${descriptor.day ?? `m:${descriptor.month}`}:${descriptor.filter}`;
   }
 }
 
@@ -281,17 +287,13 @@ export async function resolveDeckListPage(
       return { rows, next: page.next !== null ? { history: page.next } : null };
     }
     case 'grid': {
-      // DB-filter grids page SQLite; 'all'/'unreviewed' are DB-backed
-      // ONLY for the Unknown day (GRID_FILTER_SQL's own rule) — the
-      // MediaStore-pager-backed variants land with the Progress host
-      // rewire, and until then this fails EARLY and named.
-      if (PAGER_BACKED_FILTERS.includes(descriptor.filter) && descriptor.day !== UNDATED_DAY_KEY) {
-        throw new Error(
-          `deck list: grid filter '${descriptor.filter}' is MediaStore-pager-backed — wired with the Progress host rewire`,
-        );
-      }
+      // Every day and month scope is DB-backed (m0.8.6 change 1 —
+      // PhotoStateGrid's isDbScope), every filter included; only the
+      // open-ended library scope rides the MediaStore merged pager,
+      // and that scope has no descriptor variant yet by design.
       const offset = cursor !== null && 'offset' in cursor ? cursor.offset : 0;
-      const scope: PhotoScope = { day: descriptor.day };
+      const scope: PhotoScope =
+        descriptor.day !== undefined ? { day: descriptor.day } : { month: descriptor.month! };
       const rows = await getGridPhotosByFilter(
         db,
         scope,

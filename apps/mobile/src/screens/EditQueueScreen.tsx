@@ -235,7 +235,7 @@ export function EditQueueScreen({ navigation }: Props) {
         </View>
       </View>
     ),
-    [busyId, openEditor, openGallery, markDone, theme.accent],
+    [busyId, openEditor, openGallery, markDone, theme.accent, navigation],
   );
 
   return (

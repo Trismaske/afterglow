@@ -11,6 +11,9 @@
  * are three views of one fact), and the library caller passed the whole
  * library in all three — the range was a parameter nothing varied.
  */
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../../navigation';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -384,6 +387,8 @@ export function ProgressView({
     analyzing: number;
   } | null>(null);
   const [filter, setFilter] = useState<ProgressFilter>('all');
+  // P2-2: DB-scope grid taps navigate to the deck's list mode.
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [viewer, setViewer] = useState<{ items: ViewerItem[]; index: number } | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   /** The counts loader's mounted snapshot, handed to the grid so the
@@ -744,12 +749,25 @@ export function ProgressView({
         mounted={gridMounted}
         header={header}
         bottomInset={insets.bottom}
-        onPhotoPress={(_photo, siblings, index) =>
+        onPhotoPress={(photo, siblings, index) => {
+          // P2-2: DB-backed scopes (day/month) browse in the deck's
+          // list mode. The open-ended library scope still rides the
+          // MediaStore pager and holds the viewer until its list
+          // source lands (the pager-engine extraction).
+          const gridScope =
+            'day' in scope ? { day: scope.day } : 'month' in scope ? { month: scope.month } : null;
+          if (gridScope !== null) {
+            navigation.navigate('Deck', {
+              list: { source: 'grid', ...gridScope, filter },
+              anchorId: photo.id,
+            });
+            return;
+          }
           setViewer({
             items: siblings.map((g) => ({ id: g.id, uri: g.uri, takenAt: g.takenAt, day: g.day })),
             index,
-          })
-        }
+          });
+        }}
       />
       {viewer && (
         <PhotoViewer

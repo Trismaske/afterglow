@@ -1838,10 +1838,16 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     // too — queuing work on the photo you are looking at must not yank
     // the pager off it. The state is read only to route the pager; the
     // goal credit comes from the write itself (m0.8.5, A3).
+    // NEVER in list mode (S23 device pass 2026-08-29): a list deck is a
+    // browse surface, so every decision acts in place — unit browse
+    // only LOOKED exempt because a finished group has no pending member
+    // to jump to, while History lists carry unreviewed rows, and a
+    // staged-cull rescue animated a long jump to the nearest one.
     const prior = stateOf.get(current.id) ?? 'unreviewed';
     const activeTarget = prior === 'culled' ? 'cull' : prior === 'kept' ? 'keep' : null;
     const targetVerdict = target === 'cull' ? 'culled' : 'kept';
-    const advances = activeTarget !== target && (prior === 'unreviewed' || targetVerdict !== prior);
+    const advances =
+      !listMode && activeTarget !== target && (prior === 'unreviewed' || targetVerdict !== prior);
     const applied = await redecide(current.id, target);
     // The optimistic overlay (see listStateOverride): the write is
     // durable by now — show it before the slow list re-resolve lands.

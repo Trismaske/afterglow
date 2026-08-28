@@ -1,10 +1,17 @@
 /**
  * The ONE badge-visibility control (m0.8.7, F19/L6): a durable persisted
- * setting that hides EVERY photo badge — verdicts, actions, and the two
- * annotation badges — for an unobstructed look at the photo. No
+ * setting that hides the STAGE's badge cluster — verdicts, actions, and
+ * the two annotation badges — for an unobstructed look at the photo. No
  * per-badge settings (vetted 2026-08-21: a settings row earned by a
  * guess; if the cluster still feels noisy with the toggle in hand, that
  * complaint arrives with evidence).
+ *
+ * SCOPE narrowed to the stage (m0.9, autonomous — pending vet): the
+ * thumbnail-scale inspection dots (StateDots — grid tiles, the deck
+ * strip, Timeline/DayProgress cards) are exempt. The eye once hid the
+ * strip's markers while the grid's dots stayed, which read as a bug on
+ * the S23 (2026-08-29): those marks are wayfinding, not photo
+ * obstruction — only the stage cluster competes with the photo.
  *
  * Module-scope observable, same shape as the scan status: BadgeCluster
  * subscribes, so ONE setting flips every surface at once, and the

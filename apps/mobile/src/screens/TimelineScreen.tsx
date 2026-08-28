@@ -34,10 +34,11 @@ import type { RootStackParamList } from '../navigation';
 import { useReview } from '../review/ReviewContext';
 import { BigButton } from '../components/BigButton';
 import { UNIT_CARD_HEIGHT, UnitCard } from '../components/UnitCard';
-import { BadgeCluster } from '../components/DecisionBadge';
+import { StateDots } from '../components/DecisionBadge';
 import { colors, useTheme } from '../theme';
 import { formatClock, plural } from '../lib/format';
 import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
+import { classifyPhotoState } from '../lib/progress';
 import {
   anchorIndexIn,
   appendBrowseItems,
@@ -658,7 +659,13 @@ export function TimelineScreen({ navigation }: Props) {
           members={group.members}
           onPress={() => openUnit(unit)}
           renderOverlay={(id) => (
-            <BadgeCluster badges={badgesFor(id)} size={14} style={styles.badges} />
+            <StateDots
+              effective={classifyPhotoState({
+                state: group.members.find((m) => m.asset_id === id)?.state ?? 'unreviewed',
+              })}
+              badges={badgesFor(id)}
+              style={styles.badges}
+            />
           )}
         />
       );
@@ -672,7 +679,13 @@ export function TimelineScreen({ navigation }: Props) {
         members={unit.members}
         onPress={() => openUnit(unit)}
         renderOverlay={(id) => (
-          <BadgeCluster badges={badgesFor(id)} size={14} style={styles.badges} />
+          <StateDots
+            effective={classifyPhotoState({
+              state: unit.members.find((m) => m.asset_id === id)?.state ?? 'unreviewed',
+            })}
+            badges={badgesFor(id)}
+            style={styles.badges}
+          />
         )}
       />
     );

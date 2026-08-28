@@ -4,6 +4,8 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors } from '../theme';
 import { badgesHidden, subscribeBadgesHidden } from '../lib/badgePrefs';
 import type { BadgeWeight, PhotoBadge } from '../lib/photoBadges';
+import type { EffectiveState } from '../lib/progress';
+import { VERDICT_META } from './progress/stateMeta';
 
 /**
  * The one icon language for photo decisions (m0.6): a small circular badge
@@ -182,7 +184,56 @@ export function BadgeCluster({
   );
 }
 
+/**
+ * The INSPECTION-DOT row (m0.9, tester request 2026-08-29): the
+ * Progress grid's state language, shared verbatim by every
+ * thumbnail-scale surface — grid tiles, the deck's film strip, Timeline
+ * and DayProgress cards. The VERDICT is a colored dot (VERDICT_META);
+ * actions ride beside it as the weighted glyph badges. Verdict GLYPHS
+ * and the folder pill stay out — the dot already carries the verdict,
+ * and a pill outgrows a thumbnail. (The trashed glyph stays: browse
+ * decks can hold tombstoned members the dot's effective-state palette
+ * cannot express.)
+ *
+ * Deliberately EXEMPT from the F19 eye (autonomous, pending vet): the
+ * eye clears the STAGE for an unobstructed look at the photo — these
+ * corner marks are wayfinding on thumbnails, and the eye hiding the
+ * strip's markers while the grid's dots stayed read as a bug on the
+ * S23. The eye now governs the stage cluster; inspection dots always
+ * show.
+ */
+export function StateDots({
+  effective,
+  badges,
+  size = 13,
+  style,
+}: {
+  effective: EffectiveState;
+  badges: readonly PhotoBadge[];
+  size?: number;
+  style?: StyleProp<ViewStyle>;
+}) {
+  return (
+    <View style={[styles.dotsRow, style]} pointerEvents="none">
+      <View style={[styles.stateDot, { backgroundColor: VERDICT_META[effective].color }]} />
+      {badges
+        .filter((b) => b.kind !== 'folder' && b.kind !== 'keep' && b.kind !== 'cull')
+        .map((b) => (
+          <DecisionBadge key={b.kind} kind={b.kind} size={size} weight={b.weight} />
+        ))}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  dotsRow: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  stateDot: {
+    width: 11,
+    height: 11,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: colors.background,
+  },
   badge: { alignItems: 'center', justifyContent: 'center' },
   pill: {
     justifyContent: 'center',

@@ -27,6 +27,7 @@ import { BigButton } from '../components/BigButton';
 import { colors, touch, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded, plural } from '../lib/format';
 import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
+import { classifyPhotoState } from '../lib/progress';
 import {
   completedDuringVisit,
   destinationAfterUnit,
@@ -38,7 +39,12 @@ import {
 } from '../lib/timeline';
 import { ActionChip } from '../components/ActionChip';
 import { GoalCelebration } from '../components/GoalCelebration';
-import { BadgeCluster, DecisionBadge, DECISION_GLYPHS } from '../components/DecisionBadge';
+import {
+  BadgeCluster,
+  DecisionBadge,
+  DECISION_GLYPHS,
+  StateDots,
+} from '../components/DecisionBadge';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { isFavouriteSelected } from '../lib/favouriteState';
 import { folderNameOfUri, isSdPhoto, photoBadges, type PhotoBadge } from '../lib/photoBadges';
@@ -2052,7 +2058,16 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               {/* Small badges wrapping into rows: a 52 px thumbnail fits
                   three per row, so a fully-flagged photo shows all of
                   them stacked instead of hiding any. */}
-              <BadgeCluster badges={badgesFor(item)} size={14} style={styles.thumbBadges} />
+              {/* The shared inspection dots (StateDots' header) — the
+                  Progress grid's language on the strip; eye-exempt by
+                  that component's rule (the eye clears the STAGE). */}
+              <StateDots
+                effective={classifyPhotoState({
+                  state: view.stateOf.get(item.id) ?? 'unreviewed',
+                })}
+                badges={badgesFor(item)}
+                style={styles.thumbBadges}
+              />
             </Pressable>
           ))}
         </ScrollView>

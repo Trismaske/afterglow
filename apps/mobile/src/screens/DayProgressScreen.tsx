@@ -18,12 +18,12 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { formatClock } from '../lib/format';
 import { UNDATED_DAY_KEY } from '../lib/dates';
-import { remainingReviewable, type StateBreakdown } from '../lib/progress';
+import { remainingReviewable, type StateBreakdown, classifyPhotoState } from '../lib/progress';
 import { listGroupsForDay, type ReviewGroupRow } from '../db/store';
 import { resolveSources } from '../lib/sourceCatalog';
 import { ProgressView } from '../components/progress/ProgressView';
 import { useReview } from '../review/ReviewContext';
-import { BadgeCluster } from '../components/DecisionBadge';
+import { StateDots } from '../components/DecisionBadge';
 import { isSdPhoto, photoBadges, type PhotoBadge } from '../lib/photoBadges';
 import { UnitCard } from '../components/UnitCard';
 import { BigButton } from '../components/BigButton';
@@ -196,7 +196,11 @@ export function DayProgressScreen({ route, navigation }: Props) {
                     renderOverlay={(assetId) => {
                       const member = group.members.find((m) => m.asset_id === assetId);
                       return member ? (
-                        <BadgeCluster badges={badgesFor(member)} size={14} style={styles.badges} />
+                        <StateDots
+                          effective={classifyPhotoState({ state: member.state })}
+                          badges={badgesFor(member)}
+                          style={styles.badges}
+                        />
                       ) : null;
                     }}
                   />

@@ -49,10 +49,9 @@ import {
   photoBadges,
   type WeightedActionSet,
 } from '../../lib/photoBadges';
-import { DecisionBadge } from '../DecisionBadge';
+import { StateDots } from '../DecisionBadge';
 import { UNDATED_DAY_KEY } from '../../lib/dates';
 import { colors, useTheme } from '../../theme';
-import { VERDICT_META } from './stateMeta';
 
 /** One grid tile: identity + what the tile's badge rendering needs. */
 export interface GridPhoto {
@@ -351,31 +350,22 @@ export function PhotoStateGrid({
           contentFit="cover"
           recyclingKey={item.id}
         />
-        <View style={styles.dots}>
-          {/* Verdict dot first (the grid's primary state signal), then
-              the WEIGHTED actions as mini glyph badges (m0.8.7 — a dot
-              cannot render the heart-off glyph, so the dot scale is
-              retired for actions; glyphs carry weight and direction).
-              These are state-inspection marks, the grid's content — the
-              F19 hide toggle deliberately does not reach them. */}
-          <View style={[styles.dot, { backgroundColor: VERDICT_META[item.effective].color }]} />
-          {item.actions !== undefined &&
-            photoBadges({
-              state: item.dbState ?? 'unreviewed',
-              ...item.actions,
-              sdCard: isSdPhoto(item.id),
-            })
-              .filter(
-                (badge) =>
-                  badge.kind !== 'folder' &&
-                  badge.kind !== 'cull' &&
-                  badge.kind !== 'keep' &&
-                  badge.kind !== 'trashed',
-              )
-              .map((badge) => (
-                <DecisionBadge key={badge.kind} kind={badge.kind} size={13} weight={badge.weight} />
-              ))}
-        </View>
+        {/* The shared inspection-dot row (StateDots' header): verdict
+            dot + weighted action glyphs, the same marks the deck strip
+            and the timeline cards wear. */}
+        <StateDots
+          effective={item.effective}
+          style={styles.dots}
+          badges={
+            item.actions !== undefined
+              ? photoBadges({
+                  state: item.dbState ?? 'unreviewed',
+                  ...item.actions,
+                  sdCard: isSdPhoto(item.id),
+                })
+              : []
+          }
+        />
       </Pressable>
     ),
     [onPhotoPress, items],
@@ -430,14 +420,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: colors.surfaceRaised,
   },
-  dots: { position: 'absolute', right: 7, bottom: 7, flexDirection: 'row', gap: 3 },
-  dot: {
-    width: 11,
-    height: 11,
-    borderRadius: 6,
-    borderWidth: 1.5,
-    borderColor: colors.background,
-  },
+  dots: { position: 'absolute', right: 7, bottom: 7 },
   empty: { color: colors.textDim, fontSize: 14, textAlign: 'center', marginVertical: 24 },
   footer: { marginVertical: 16 },
 });

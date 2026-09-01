@@ -2229,6 +2229,10 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 styles.actionButton,
                 { backgroundColor: colors.keepDim },
                 currentState === 'kept' && { borderWidth: 2, borderColor: colors.keep },
+                // RN styles nothing for `disabled` — every dead control
+                // pairs the prop with the dead look (the Compare lesson,
+                // 2026-08-28; untracked caught the same way, 2026-09-01).
+                currentUntracked && styles.middleButtonDead,
               ]}
               disabled={busy || inert || currentUntracked}
               // `redecide` (inside decideCurrent) carries the whole rule
@@ -2316,6 +2320,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 styles.actionButton,
                 styles.cullButton,
                 currentState === 'culled' && { borderWidth: 2, borderColor: colors.cull },
+                currentUntracked && styles.middleButtonDead,
               ]}
               disabled={busy || inert || currentUntracked}
               onPress={() => void run(() => decideCurrent('cull'))}
@@ -2342,6 +2347,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               kind="edit"
               active={flagged}
               disabled={busy || inert || currentUntracked}
+              dimmed={currentUntracked}
               onPress={() =>
                 void run(() =>
                   !view.listMode && view.browseControls && currentState !== 'culled'
@@ -2354,20 +2360,21 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               kind="favourite"
               active={favourite}
               disabled={busy || inert || currentState === 'culled' || currentUntracked}
-              dimmed={currentState === 'culled'}
+              dimmed={currentState === 'culled' || currentUntracked}
               onPress={() => void run(() => toggleFavourite(current.id))}
             />
             <ActionChip
               kind="organize"
               active={organizeQueued}
               disabled={busy || inert || currentState === 'culled' || currentUntracked}
-              dimmed={currentState === 'culled'}
+              dimmed={currentState === 'culled' || currentUntracked}
               onPress={() => void run(toggleOrganize)}
             />
             <ActionChip
               kind="share"
               active={shareQueued}
               disabled={busy || inert || currentUntracked}
+              dimmed={currentUntracked}
               onPress={() => void run(toggleShare)}
             />
           </View>

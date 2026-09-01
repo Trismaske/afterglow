@@ -190,6 +190,35 @@ describe('grid source', () => {
     expect(page.next).toBeNull();
   });
 
+  it('library-scope verdict and action filters take the DB engine (engine parity)', async () => {
+    // The S23 bug (2026-09-01): a Progress 'favourite' tile opened a
+    // deck that streamed MediaStore against an action filter the stream
+    // can never match. The MediaStore engine cannot even load here (a
+    // native import), so a resolved page IS the proof of the DB route.
+    const d = await fresh();
+    await seed(d, ['1', '2', '3']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 10, {
+      needsEditChanges: [{ assetId: id('2'), needsEdit: true }],
+    });
+    const edits = await resolveDeckListPage(
+      asExpo(d),
+      { source: 'grid', filter: 'act:edit' },
+      null,
+      null,
+      null,
+    );
+    expect(edits.rows.map((r) => r.id)).toEqual([id('2')]);
+    const kept = await resolveDeckListPage(
+      asExpo(d),
+      { source: 'grid', filter: 'kept' },
+      null,
+      null,
+      null,
+    );
+    expect(kept.rows.map((r) => r.id)).toEqual([id('1')]);
+    expect(kept.rows[0]?.tracked).toBe(true);
+  });
+
   it("day-scope 'all' is DB-backed (m0.8.6) and includes unreviewed photos", async () => {
     const d = await fresh();
     await seed(d, ['1', '2']);

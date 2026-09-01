@@ -27,6 +27,8 @@ import { BigButton } from '../components/BigButton';
 import { colors, touch, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded, plural } from '../lib/format';
 import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
+import { checkMediaPresence } from '../lib/media';
+import { showToast } from '../lib/toast';
 import { classifyPhotoState } from '../lib/progress';
 import {
   completedDuringVisit,
@@ -61,6 +63,7 @@ import {
   listFromParams,
   resolveDeckListPage,
   type DeckListCursor,
+  type PresenceProbe,
   type DeckListDescriptor,
   type DeckListRow,
 } from '../lib/deckList';
@@ -550,14 +553,33 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
      * stableListRows), and only the load itself knows which resolve
      * answered which request. */
     pages: number;
-  }>({ unit: unitKey, rows: null, next: null, pages: 0 });
+    /** The write generation this load STARTED at (see listWriteGenRef):
+     * an optimistic verdict override yields only to a load that began
+     * after its write — a pre-tap read landing late must not clear the
+     * just-written truth back to stale rows (codex, 2026-09-01). */
+    gen: number;
+  }>({ unit: unitKey, rows: null, next: null, pages: 0, gen: 0 });
+  const listWriteGenRef = useRef(0);
   const listPagesRef = useRef(1);
   const [listPagesWanted, setListPagesWanted] = useState(1);
   const [externalTick, setExternalTick] = useState(0);
   useExternalRefresh(() => setExternalTick((t) => t + 1));
+  // The History source's native presence seam (deckList.ts,
+  // PresenceProbe): the host's per-page MediaStore reconcile, now run
+  // by the resolver for every page the DECK loads, not only the ones
+  // the host had fetched.
+  const presenceProbe = useMemo<PresenceProbe>(
+    () => ({
+      checkPresence: checkMediaPresence,
+      now: Date.now,
+      onRemoved: () => void refresh().catch(() => {}),
+    }),
+    [refresh],
+  );
   useEffect(() => {
     if (!listMode) return;
     let cancelled = false;
+    const gen = listWriteGenRef.current;
     void (async () => {
       const mounted = await mountedVolumeSet();
       const src = await resolveSources(db);
@@ -574,24 +596,38 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
           mounted,
           roots,
           albumIds,
+          presenceProbe,
         );
         rows.push(...result.rows);
         next = result.next;
         if (next === null) break;
         cursor = next;
       }
+      // P2-4: the badge refs must know these ids BEFORE the rows are
+      // actionable, or the chips render "not queued/flagged" for photos
+      // that are — and the first toggle writes the wrong direction (the
+      // retired state editor's lesson). Publishing first and hydrating
+      // after left exactly that window open (codex, 2026-09-01); a
+      // failed hydration now fails the load — wrong controls are worse
+      // than no deck.
+      await hydrateBadges(rows.map((r) => r.id));
       if (cancelled) return;
-      setListLoad({ unit: unitKey, rows, next, pages: listPagesWanted });
-      // P2-4: the badge refs must know these ids, or the chips render
-      // "not queued/flagged" for photos that are — and the edit toggle
-      // would write the wrong direction (the retired state editor's lesson).
-      await hydrateBadges(rows.map((r) => r.id)).catch((error: unknown) =>
-        console.warn('[deck] list badge hydration failed:', String(error)),
-      );
+      setListLoad({ unit: unitKey, rows, next, pages: listPagesWanted, gen });
     })().catch((error: unknown) => {
       console.warn('[deck] list load failed:', String(error));
-      if (!cancelled)
-        setListLoad({ unit: unitKey, rows: 'failed', next: null, pages: listPagesWanted });
+      if (cancelled) return;
+      // A failed RE-resolve keeps the last good rows on the stage (the
+      // current photo never leaves under its own action — a transient
+      // read failure right after that action is no exception); only a
+      // first load with nothing to show becomes the retry card. Loud
+      // once, never silent.
+      setListLoad((prev) => {
+        if (prev.unit === unitKey && Array.isArray(prev.rows)) {
+          showToast('Could not refresh this list — showing the last read');
+          return prev;
+        }
+        return { unit: unitKey, rows: 'failed', next: null, pages: listPagesWanted, gen };
+      });
     });
     return () => {
       cancelled = true;
@@ -600,6 +636,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listMode, listKey, unitKey, version, loadTick, externalTick, listPagesWanted, db]);
   const listRowsLoad = listLoad.unit === unitKey ? listLoad.rows : null;
+  const listLoadGen = listLoad.unit === unitKey ? listLoad.gen : -1;
   const listRows = useMemo(() => (Array.isArray(listRowsLoad) ? listRowsLoad : []), [listRowsLoad]);
   /** List-mode verdict writes land optimistically (device pass
    * 2026-08-28): unit decks get instant state through the provider's
@@ -608,27 +645,29 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * follow-up taps computed the wrong transition. The overlay is the
    * just-written truth; fresh rows clear it. */
   const [listStateOverride, setListStateOverride] = useState<
-    ReadonlyMap<string, ReviewMemberRow['state']>
+    ReadonlyMap<string, { state: ReviewMemberRow['state']; gen: number }>
   >(new Map());
   // An override clears ONLY when the photo's own fresh row arrives — a
   // cleared decision drops the row from its feed (History), the pin
   // then renders the HELD copy whose state froze at capture time, and
   // a wholesale clear regressed stateOf to that stale verdict (caught
   // by the scripted retest: keep-after-clear read as still unreviewed).
+  // ... and only to a load that STARTED after the write (the gen fence
+  // — see listLoad.gen): the row must be post-write evidence.
   useEffect(() => {
     setListStateOverride((m) => {
       if (m.size === 0) return m;
       const present = new Set(listRows.map((r) => r.id));
       let changed = false;
       const next = new Map(m);
-      for (const id of [...next.keys()])
-        if (present.has(id)) {
+      for (const [id, entry] of [...next])
+        if (present.has(id) && entry.gen <= listLoadGen) {
           next.delete(id);
           changed = true;
         }
       return changed ? next : m;
     });
-  }, [listRowsLoad, listRows]);
+  }, [listRowsLoad, listRows, listLoadGen]);
   useEffect(() => {
     setListStateOverride((m) => (m.size > 0 ? new Map() : m));
   }, [unitKey]);
@@ -656,6 +695,11 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   const listLoadPages = listLoad.unit === unitKey ? listLoad.pages : 0;
   const stableListRows = useMemo(() => {
     if (!listMode) return listRows;
+    // A load that is not rows yet (null) or failed must not touch the
+    // frozen order: feeding its empty array through would keep nothing
+    // and stamp the page count, so the retry — same count — appended
+    // nothing and the deck stayed empty (self-review, 2026-09-01).
+    if (!Array.isArray(listRowsLoad)) return [];
     if (listOrderRef.current.unit !== unitKey) {
       listOrderRef.current = {
         unit: unitKey,
@@ -665,21 +709,26 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       return listRows;
     }
     const byId = new Map(listRows.map((r) => [r.id, r]));
-    const kept = listOrderRef.current.ids.filter((id) => byId.has(id));
     // Unseen rows append ONLY when a page was asked for (S23,
     // 2026-09-01): a write-triggered re-resolve refills the page
     // window — dropping a row slides the next one in — and appending
     // it then made the count climb on an undo. The row shows on the
     // next page request (its re-resolve appends every unseen id) or on
     // re-entry.
-    const paged = listLoadPages > listOrderRef.current.pages;
-    const seen = new Set(kept);
+    // The REGISTRY keeps every id it has seen, present or not (codex,
+    // 2026-09-01): a row that leaves and returns before you navigate
+    // away (Keep-undo, then Keep again) reclaims its frozen slot instead
+    // of counting as unseen — which, at the same page count, kept it
+    // out until the next page request. Projection filters by presence.
+    const paged = listLoadPages !== listOrderRef.current.pages;
+    const seenIds = listOrderRef.current.ids;
+    const seen = new Set(seenIds);
     const ids = paged
-      ? [...kept, ...listRows.map((r) => r.id).filter((id) => !seen.has(id))]
-      : kept;
+      ? [...seenIds, ...listRows.map((r) => r.id).filter((id) => !seen.has(id))]
+      : seenIds;
     listOrderRef.current = { unit: unitKey, ids, pages: listLoadPages };
-    return ids.map((id) => byId.get(id)!);
-  }, [listMode, listRows, unitKey, listLoadPages]);
+    return ids.filter((id) => byId.has(id)).map((id) => byId.get(id)!);
+  }, [listMode, listRows, listRowsLoad, unitKey, listLoadPages]);
   /** The photo the cursor is ANCHORED to (the retired viewer's
    * contract): moves only on user navigation. */
   const listAnchorRef = useRef<string | null>(list?.anchorId ?? null);
@@ -721,7 +770,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     if (group) for (const m of group.members) map.set(m.asset_id, m.state);
     for (const m of singleRows) map.set(m.asset_id, m.state);
     for (const r of shownListRows) map.set(r.id, r.state);
-    if (listMode) for (const [id, st] of listStateOverride) map.set(id, st);
+    if (listMode) for (const [id, entry] of listStateOverride) map.set(id, entry.state);
     return map;
   }, [group, singleRows, shownListRows, listMode, listStateOverride]);
   /**
@@ -1509,8 +1558,19 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     // back onto a photo that should have been gone, and the count
     // updated a swipe late (2026-08-31). The reconcile below re-snaps
     // the cursor onto the photo just landed on.
-    if (left !== null && left !== at && !stableListRows.some((r) => r.id === left))
+    if (left !== null && left !== at && !stableListRows.some((r) => r.id === left)) {
+      // The cursor moves in the SAME batch as the drop (codex,
+      // 2026-09-01): dropping a row that sat BEFORE the cursor shifts
+      // the destination down one slot, and letting the reconcile catch
+      // up a render later staged the wrong photo — with live controls —
+      // in between.
+      const leftIndex = deckItems.findIndex((i) => i.id === left);
+      if (leftIndex >= 0 && leftIndex < cursor) {
+        stampedCursorRef.current = cursor - 1;
+        setBrowseCursor(cursor - 1);
+      }
       setPinTick((t) => t + 1);
+    }
   }, [listMode, cursor, deckItems, holding, stableListRows]);
   // Rows changed under the cursor: follow the anchored photo — a snap,
   // not a jumpTo (the deck must not visibly fly across thirty pages
@@ -1539,9 +1599,14 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   }, [listMode, cursorAppliedFor, unitKey, deckItems, browseCursor]);
   // An emptied list quietly goes back to its host (the whole-day
   // precedent).
+  // ... and only once the feed is EXHAUSTED: a History page can hold
+  // nothing browsable (share events, tombstones) while the tapped photo
+  // sits on a later page the anchor hunt has just requested (codex,
+  // 2026-09-01).
   useEffect(() => {
-    if (listMode && listReady && shownListRows.length === 0) navigation.goBack();
-  }, [listMode, listReady, shownListRows.length, navigation]);
+    if (listMode && listReady && shownListRows.length === 0 && listNext === null)
+      navigation.goBack();
+  }, [listMode, listReady, shownListRows.length, listNext, navigation]);
 
   const run = useCallback(
     /** `owner` names the control that started the write, so a control can
@@ -1852,7 +1917,13 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   // UNDECIDED photo
   // takes the ordinary verdict path, where "to edit" keeps it AND queues
   // the edit in one transaction.
-  const redecide = async (id: string, target: RedecideTarget): Promise<boolean> => {
+  /** 'undo' = the active verdict cleared; 'applied' = a verdict landed;
+   * 'noop' = the stale-row guard refused (nothing changed). The caller
+   * must not paint a verdict for a no-op (codex, 2026-09-01). */
+  const redecide = async (
+    id: string,
+    target: RedecideTarget,
+  ): Promise<'undo' | 'applied' | 'noop'> => {
     const state = stateOf.get(id) ?? 'unreviewed';
     // v18: 'to edit' is no longer a verdict, so the active target is
     // kept-vs-cull; the edit flag is read separately.
@@ -1860,20 +1931,20 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       state === 'culled' ? 'cull' : state === 'kept' ? 'keep' : null;
     if (activeTarget === target) {
       await clearDecision(id);
-      return false; // an undo never advances
+      return 'undo'; // an undo never advances
     }
     if (state !== 'unreviewed' && (target === 'keep' || target === 'to_edit')) {
       // The DURABLE result gates the advance (codex r6, D11): a row
       // gone stale between render and tap makes this a guarded no-op,
       // and the pager must not jump off an unchanged photo.
-      return (await redecideDecided(id, target)) > 0;
+      return (await redecideDecided(id, target)) > 0 ? 'applied' : 'noop';
     }
     await decide(
       id,
       target,
       listMode ? undefined : singlesMode ? null : (group?.groupId ?? undefined),
     );
-    return true;
+    return 'applied';
   };
 
   /** ONE decide handler for both deck kinds (m0.8.2 unification, F10):
@@ -1904,14 +1975,20 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     const targetVerdict = target === 'cull' ? 'culled' : 'kept';
     const advances =
       !listMode && activeTarget !== target && (prior === 'unreviewed' || targetVerdict !== prior);
-    const applied = await redecide(current.id, target);
+    const outcome = await redecide(current.id, target);
     // The optimistic overlay (see listStateOverride): the write is
     // durable by now — show it before the slow list re-resolve lands.
-    if (listMode) {
-      const next = activeTarget === target ? 'unreviewed' : targetVerdict;
-      setListStateOverride((m) => new Map(m).set(current.id, next));
+    // Never for a guarded no-op: nothing committed, so nothing to paint.
+    // The gen advances AFTER the write, so a load started before the
+    // tap can never clear this entry (the fence).
+    if (listMode && outcome !== 'noop') {
+      listWriteGenRef.current += 1;
+      const next = outcome === 'undo' ? 'unreviewed' : targetVerdict;
+      setListStateOverride((m) =>
+        new Map(m).set(current.id, { state: next, gen: listWriteGenRef.current }),
+      );
     }
-    if (!advances || !applied) return;
+    if (!advances || outcome !== 'applied') return;
     // Same pending predicate as unit entry; the just-decided photo is
     // `from` and never a candidate, so a state row that has not
     // refreshed yet cannot bounce the cursor back onto it.

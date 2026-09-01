@@ -19,6 +19,14 @@ describe('listFromParams (fail-closed param decode)', () => {
     expect(listFromParams({ source: 'queue', queue: 'trash' })).toBeNull();
     expect(listFromParams({ source: 'history', filter: 'everything' })).toBeNull();
     expect(listFromParams({ source: 'grid', day: 42, filter: 'kept' })).toBeNull();
+    // The grid filter is validated against the finite vocabulary: an
+    // unprefixed action name is not a filter (it would stream a library
+    // to exhaustion and read as empty).
+    expect(listFromParams({ source: 'grid', filter: 'favourite' })).toBeNull();
+    expect(listFromParams({ source: 'grid', filter: 'act:favourite' })).toEqual({
+      source: 'grid',
+      filter: 'act:favourite',
+    });
     expect(listFromParams({ source: 'timeline' })).toBeNull();
     expect(listFromParams('list:queue:share')).toBeNull();
     expect(listFromParams(null)).toBeNull();

@@ -37,6 +37,7 @@ import {
   getGridPhotosByFilter,
   getHistoryPage,
   getPhotoQueueFacts,
+  getStatesForAssets,
   getToEditPhotos,
   type HistoryCursor,
   type HistoryFilter,
@@ -44,6 +45,9 @@ import {
   type PhotoScope,
 } from '../db/store';
 import type { PhotoState } from '@afterglow/core';
+import { reconcileExternallyRemoved } from '../db/trashStore';
+import { mapWithConcurrency } from './concurrency';
+import { isDbFilter, isProgressFilter, type ProgressFilter } from './progress';
 import { dayKey } from './dates';
 import { getShareQueue } from '../db/shareStore';
 import { getOrganizeQueue } from '../db/organizeStore';
@@ -68,7 +72,7 @@ export type DeckListDescriptor =
        * appear exactly as the Progress grid shows them. */
       day?: string;
       month?: string;
-      filter: string;
+      filter: ProgressFilter;
     };
 
 /** What the deck renders per list photo — the retired ViewerItem
@@ -110,21 +114,11 @@ const QUEUES: readonly DeckListQueue[] = ['edit', 'favourite', 'share', 'organiz
 /** DB-filter grid page size — mirrors the grids' own incremental loads. */
 const GRID_PAGE = 120;
 
-/** One batched verdict read for sources whose queries do not select
- * `state` (the queue lists); grid and History rows carry their own. */
-async function statesFor(
-  db: SQLiteDatabase,
-  ids: readonly string[],
-): Promise<Map<string, PhotoState>> {
-  const map = new Map<string, PhotoState>();
-  if (ids.length === 0) return map;
-  const rows = await db.getAllAsync<{ asset_id: string; state: PhotoState }>(
-    `SELECT asset_id, state FROM photos WHERE asset_id IN (${ids.map(() => '?').join(',')})`,
-    ...ids,
-  );
-  for (const r of rows) map.set(r.asset_id, r.state);
-  return map;
-}
+/** The queue lists' verdict read: their queries do not select `state`
+ * (grid and History rows carry their own). The store's CHUNKED reader —
+ * a queue is unbounded, and one IN (...) per row tripped SQLite's
+ * variable floor past ~999 items (codex, 2026-09-01). */
+const statesFor = getStatesForAssets;
 
 /**
  * Fail-closed param decode: navigation params are outside our type
@@ -146,7 +140,7 @@ export function listFromParams(value: unknown): DeckListDescriptor | null {
       : null;
   }
   if (v.source === 'grid') {
-    if (typeof v.filter !== 'string') return null;
+    if (typeof v.filter !== 'string' || !isProgressFilter(v.filter)) return null;
     if (typeof v.day === 'string' && v.month === undefined)
       return { source: 'grid', day: v.day, filter: v.filter };
     if (typeof v.month === 'string' && v.day === undefined)
@@ -173,6 +167,18 @@ export function deckListKey(descriptor: DeckListDescriptor): string {
  * roots) are EXPLICIT inputs — the deck's list loader re-reads them per
  * resolve exactly as every host screen does per load, and the tests
  * pass them plainly (no native imports in this module). */
+/** The History source's presence seam (P2-1: the host's per-page
+ * MediaStore reconcile moves into the resolver). Native, so the DECK
+ * supplies it; the node tests pass none and read the DB as-is — a
+ * deliberate, visible omission, never a fallback the app takes. */
+export interface PresenceProbe {
+  checkPresence: typeof import('./media').checkMediaPresence;
+  now: () => number;
+  /** The reconcile may dissolve a cached group — the review queue must
+   * observe it (the host calls its provider refresh here). */
+  onRemoved: () => void;
+}
+
 export async function resolveDeckListPage(
   db: SQLiteDatabase,
   descriptor: DeckListDescriptor,
@@ -182,6 +188,7 @@ export async function resolveDeckListPage(
   /** Bucket ids of the source selection (library-grid scope only) —
    * null = all folders, exactly as ResolvedSources reports it. */
   albumIds: readonly string[] | null = null,
+  probe: PresenceProbe | null = null,
 ): Promise<DeckListPage> {
   switch (descriptor.source) {
     case 'queue': {
@@ -277,25 +284,47 @@ export async function resolveDeckListPage(
       );
       // The HistoryScreen pager filter, verbatim: photo rows only, and
       // never a gone photo — a swipe must not land on a tombstone.
-      const rows = page.rows
-        .filter(
-          (r): r is HistoryPhotoRow =>
-            r.kind === 'photo' && r.is_present === 1 && r.state !== 'trashed',
-        )
-        .map((r) => ({
-          id: r.asset_id,
-          uri: r.uri,
-          takenAt: r.taken_at,
-          day: r.day,
-          state: r.state,
-          tracked: true,
-        }));
+      let live = page.rows.filter(
+        (r): r is HistoryPhotoRow =>
+          r.kind === 'photo' && r.is_present === 1 && r.state !== 'trashed',
+      );
+      // The host's per-page presence reconcile (its screen contract):
+      // photos deleted or trashed OUTSIDE Afterglow drop out — only an
+      // authoritative 'trashed'/'absent' converges a row, 'unknown'
+      // changes nothing (fail-closed). Bounded concurrency: the check
+      // is two native calls per photo.
+      if (probe !== null && live.length > 0) {
+        const ids = live.map((r) => r.asset_id);
+        const presences = await mapWithConcurrency(ids, 6, (id) => probe.checkPresence(id));
+        const gone = new Set(
+          ids.filter((_, i) => presences[i] === 'trashed' || presences[i] === 'absent'),
+        );
+        if (gone.size > 0) {
+          await reconcileExternallyRemoved(db, [...gone], probe.now(), mounted);
+          probe.onRemoved();
+          live = live.filter((r) => !gone.has(r.asset_id));
+        }
+      }
+      const rows = live.map((r) => ({
+        id: r.asset_id,
+        uri: r.uri,
+        takenAt: r.taken_at,
+        day: r.day,
+        state: r.state,
+        tracked: true,
+      }));
       return { rows, next: page.next !== null ? { history: page.next } : null };
     }
     case 'grid': {
       const offset = cursor !== null && 'offset' in cursor ? cursor.offset : 0;
-      if (descriptor.day === undefined && descriptor.month === undefined) {
-        // LIBRARY scope: the shared MediaStore merged-pager engine.
+      if (
+        descriptor.day === undefined &&
+        descriptor.month === undefined &&
+        !isDbFilter(descriptor.filter)
+      ) {
+        // LIBRARY scope, 'all' / 'unreviewed': the shared MediaStore
+        // merged-pager engine (PhotoStateGrid's engine choice — one
+        // predicate, lib/progress isDbFilter).
         // Stateless paging over a stateful stream: re-pull delivered +
         // one page from a fresh stream each resolve and slice — the
         // per-bucket cursor fetches are sub-millisecond, and the deck's
@@ -339,9 +368,17 @@ export async function resolveDeckListPage(
         };
       }
       // Every day and month scope is DB-backed (m0.8.6 change 1 —
-      // PhotoStateGrid's isDbScope), every filter included.
+      // PhotoStateGrid's isDbScope), every filter included — and so is
+      // the LIBRARY scope under a verdict or action filter (S23,
+      // 2026-09-01: a Progress 'favourite' tile opened a deck that
+      // streamed MediaStore against a filter the stream can never
+      // match, resolved empty, and bounced straight back to the grid).
       const scope: PhotoScope =
-        descriptor.day !== undefined ? { day: descriptor.day } : { month: descriptor.month! };
+        descriptor.day !== undefined
+          ? { day: descriptor.day }
+          : descriptor.month !== undefined
+            ? { month: descriptor.month }
+            : { startMs: 0, endMs: Number.POSITIVE_INFINITY };
       const rows = await getGridPhotosByFilter(
         db,
         scope,

@@ -23,7 +23,7 @@ import { useSQLiteContext } from 'expo-sqlite';
 import type { PhotoState } from '@afterglow/core';
 import {
   classifyPhotoState,
-  isActionFilter,
+  isDbFilter,
   type EffectiveState,
   type ProgressFilter,
 } from '../../lib/progress';
@@ -76,14 +76,6 @@ export interface GridPhoto {
 }
 
 const BATCH = 48;
-/** Filters the DB can answer directly. 'unreviewed' is the exception:
- * it includes photos MediaStore has that the scan has never tracked, so
- * it must be paged from MediaStore instead (v18). */
-const DB_FILTERS = ['kept', 'staged'] as const;
-
-function isDbFilter(filter: ProgressFilter): boolean {
-  return (DB_FILTERS as readonly string[]).includes(filter) || isActionFilter(filter);
-}
 
 /** EVERY day scope — and since m0.8.6 every MONTH scope (change 1) —
  * pages EVERY filter from SQLite (m0.8.3, D16 — decided with Tristan):

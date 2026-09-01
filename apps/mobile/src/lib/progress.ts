@@ -154,6 +154,34 @@ export function isActionFilter(filter: ProgressFilter): filter is ActionFilter {
   return filter.startsWith('act:');
 }
 
+/** The finite filter vocabulary — the deck's list-descriptor decoder
+ * validates route params against it (a malformed filter must fail
+ * closed, not scan a library to exhaustion). */
+export const PROGRESS_FILTERS: readonly ProgressFilter[] = [
+  'all',
+  'unreviewed',
+  'kept',
+  'staged',
+  'act:edit',
+  'act:favourite',
+  'act:organize',
+  'act:share',
+];
+
+export function isProgressFilter(value: string): value is ProgressFilter {
+  return (PROGRESS_FILTERS as readonly string[]).includes(value);
+}
+
+/** Filters the DB answers directly. 'unreviewed' is the exception: it
+ * includes photos MediaStore has that the scan has never tracked, so it
+ * pages from MediaStore instead (v18). ONE predicate for the Progress
+ * grid and the deck's list resolver — engine parity by construction
+ * (codex, 2026-09-01: the resolver had its own idea and streamed
+ * MediaStore against action filters it can never match). */
+export function isDbFilter(filter: ProgressFilter): boolean {
+  return filter === 'kept' || filter === 'staged' || isActionFilter(filter);
+}
+
 /**
  * Verdict of an alive MediaStore photo given its DB row (absent row =
  * never tracked = unreviewed). Trashed converges with kept: the work is

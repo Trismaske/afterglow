@@ -545,7 +545,12 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     unit: string;
     rows: DeckListRow[] | 'failed' | null;
     next: DeckListCursor | null;
-  }>({ unit: unitKey, rows: null, next: null });
+    /** The page count this row set was resolved FOR — the order-stable
+     * projection appends unseen rows only when it grows (see
+     * stableListRows), and only the load itself knows which resolve
+     * answered which request. */
+    pages: number;
+  }>({ unit: unitKey, rows: null, next: null, pages: 0 });
   const listPagesRef = useRef(1);
   const [listPagesWanted, setListPagesWanted] = useState(1);
   const [externalTick, setExternalTick] = useState(0);
@@ -576,7 +581,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
         cursor = next;
       }
       if (cancelled) return;
-      setListLoad({ unit: unitKey, rows, next });
+      setListLoad({ unit: unitKey, rows, next, pages: listPagesWanted });
       // P2-4: the badge refs must know these ids, or the chips render
       // "not queued/flagged" for photos that are — and the edit toggle
       // would write the wrong direction (the retired state editor's lesson).
@@ -585,7 +590,8 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       );
     })().catch((error: unknown) => {
       console.warn('[deck] list load failed:', String(error));
-      if (!cancelled) setListLoad({ unit: unitKey, rows: 'failed', next: null });
+      if (!cancelled)
+        setListLoad({ unit: unitKey, rows: 'failed', next: null, pages: listPagesWanted });
     });
     return () => {
       cancelled = true;
@@ -642,20 +648,38 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * page (frame-captured). Rows that vanish drop; unseen rows append
    * (the next pagination page, or a row a reorder pushed into the
    * loaded window). The fresh order applies on re-entry. */
-  const listOrderRef = useRef<{ unit: string; ids: string[] }>({ unit: '', ids: [] });
+  const listOrderRef = useRef<{ unit: string; ids: string[]; pages: number }>({
+    unit: '',
+    ids: [],
+    pages: 0,
+  });
+  const listLoadPages = listLoad.unit === unitKey ? listLoad.pages : 0;
   const stableListRows = useMemo(() => {
     if (!listMode) return listRows;
     if (listOrderRef.current.unit !== unitKey) {
-      listOrderRef.current = { unit: unitKey, ids: listRows.map((r) => r.id) };
+      listOrderRef.current = {
+        unit: unitKey,
+        ids: listRows.map((r) => r.id),
+        pages: listLoadPages,
+      };
       return listRows;
     }
     const byId = new Map(listRows.map((r) => [r.id, r]));
     const kept = listOrderRef.current.ids.filter((id) => byId.has(id));
+    // Unseen rows append ONLY when a page was asked for (S23,
+    // 2026-09-01): a write-triggered re-resolve refills the page
+    // window — dropping a row slides the next one in — and appending
+    // it then made the count climb on an undo. The row shows on the
+    // next page request (its re-resolve appends every unseen id) or on
+    // re-entry.
+    const paged = listLoadPages > listOrderRef.current.pages;
     const seen = new Set(kept);
-    const ids = [...kept, ...listRows.map((r) => r.id).filter((id) => !seen.has(id))];
-    listOrderRef.current = { unit: unitKey, ids };
+    const ids = paged
+      ? [...kept, ...listRows.map((r) => r.id).filter((id) => !seen.has(id))]
+      : kept;
+    listOrderRef.current = { unit: unitKey, ids, pages: listLoadPages };
     return ids.map((id) => byId.get(id)!);
-  }, [listMode, listRows, unitKey]);
+  }, [listMode, listRows, unitKey, listLoadPages]);
   /** The photo the cursor is ANCHORED to (the retired viewer's
    * contract): moves only on user navigation. */
   const listAnchorRef = useRef<string | null>(list?.anchorId ?? null);
@@ -1021,6 +1045,17 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       const anchorIndex = listAnchorRef.current
         ? deckItems.findIndex((i) => i.id === listAnchorRef.current)
         : -1;
+      // The anchor may sit beyond the loaded pages (S23, 2026-09-01: a
+      // staged cull scrolled to deep in History opened photo 1 — the
+      // first page had no such row and the fallback silently took
+      // index 0). Page on until it turns up; only an exhausted feed
+      // falls back. The row was on the host's screen, so the hunt is
+      // bounded by what the host itself had paged.
+      if (anchorIndex < 0 && listAnchorRef.current && listNext !== null) {
+        listPagesRef.current += 1;
+        setListPagesWanted(listPagesRef.current);
+        return;
+      }
       const start = anchorIndex >= 0 ? anchorIndex : 0;
       listAnchorRef.current = deckItems[start]?.id ?? null;
       setBrowseCursor(start);
@@ -1037,6 +1072,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     cursorAppliedFor,
     listMode,
     listReady,
+    listNext,
     singlesMode,
     singlesReady,
     group,

@@ -44,6 +44,7 @@ import {
   DecisionBadge,
   DECISION_GLYPHS,
   StateDots,
+  useBadgesHidden,
 } from '../components/DecisionBadge';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { isFavouriteSelected } from '../lib/favouriteState';
@@ -389,6 +390,8 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   const [comparePicker, setComparePicker] = useState(false);
   /** P2-6: the details overlay — the metadata corner's tap target. */
   const [detailsOpen, setDetailsOpen] = useState(false);
+  /** The F19 eye, as the stage sees it: everything on the stage goes. */
+  const stageHidden = useBadgesHidden();
   /** P2-7: fullscreen immersive — a single stage tap collapses every
    * sibling chrome row IN PLACE (flex reflow; contain-fit grows the
    * photo into the freed, edge-to-edge black screen; the dip-to-black
@@ -668,6 +671,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * current row spliced back in when a re-resolve dropped it (the pin
    * above). `browseCursor` is a dependency so the pin re-evaluates when
    * navigation moves the anchor off a held photo. */
+  const [pinTick, setPinTick] = useState(0);
   const shownListRows = useMemo(() => {
     if (!listMode) return stableListRows;
     const anchored = listAnchorRef.current;
@@ -678,7 +682,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     rows.splice(Math.min(held.index, rows.length), 0, held.row);
     return rows;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listMode, stableListRows, browseCursor]);
+  }, [listMode, stableListRows, browseCursor, pinTick]);
   /** P2-5: ids the scan has not ingested (tracked=false list rows). */
   const untrackedIds = useMemo(() => {
     const set = new Set<string>();
@@ -1460,8 +1464,18 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     if (cursor === stampedCursorRef.current) return;
     stampedCursorRef.current = cursor;
     const at = deckItems[cursor]?.id;
-    if (at !== undefined) listAnchorRef.current = at;
-  }, [listMode, cursor, deckItems, holding]);
+    if (at === undefined) return;
+    const left = listAnchorRef.current;
+    listAnchorRef.current = at;
+    // Leaving a PINNED photo (one the list no longer carries) drops it
+    // NOW: the pin memo reads refs, so without this nudge it stayed in
+    // the pager until the next unrelated recompute — the tester swiped
+    // back onto a photo that should have been gone, and the count
+    // updated a swipe late (2026-08-31). The reconcile below re-snaps
+    // the cursor onto the photo just landed on.
+    if (left !== null && left !== at && !stableListRows.some((r) => r.id === left))
+      setPinTick((t) => t + 1);
+  }, [listMode, cursor, deckItems, holding, stableListRows]);
   // Rows changed under the cursor: follow the anchored photo — a snap,
   // not a jumpTo (the deck must not visibly fly across thirty pages
   // because a write reordered the feed; the alignment effect re-scrolls
@@ -1906,29 +1920,41 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
         backdropColor={immersive ? '#000' : colors.surface}
         chrome={
           <>
-            <View style={styles.posBadge} pointerEvents="none">
-              <Text style={styles.posBadgeText}>
-                {view.cursor + 1}/{view.keepCount}
-              </Text>
-            </View>
-            {/* P2-6: the corner is the GLANCE; tapping it (or the badge
-                cluster) opens the details overlay with the complete
-                truth. Day AND time (F17): rendered from `day`, NEVER
-                from taken_at. */}
-            <Pressable
-              style={styles.timeBadge}
-              onPress={() => setDetailsOpen(true)}
-              accessibilityLabel="Show photo details"
-            >
-              <Text style={styles.timeBadgeText}>{cornerLabel}</Text>
-            </Pressable>
-            <Pressable
-              style={styles.flagBadge}
-              onPress={() => setDetailsOpen(true)}
-              accessibilityLabel="Show photo details"
-            >
-              <BadgeCluster badges={badgesFor(view.current)} size={24} />
-            </Pressable>
+            {/* The eye clears the WHOLE stage (tester, 2026-08-31): the
+                photo purely as it is — position, corner, and the badge
+                pill all go, not just the cluster inside its pill (the
+                pill's own dark backdrop had stayed behind as a mark).
+                The fail-soft zoom notice alone survives: a fidelity
+                claim, not decoration (M19). The details overlay stays
+                mounted; with the corner gone it simply has no opener
+                until the eye reopens. */}
+            {!stageHidden && (
+              <>
+                <View style={styles.posBadge} pointerEvents="none">
+                  <Text style={styles.posBadgeText}>
+                    {view.cursor + 1}/{view.keepCount}
+                  </Text>
+                </View>
+                {/* P2-6: the corner is the GLANCE; tapping it (or the
+                    badge cluster) opens the details overlay with the
+                    complete truth. Day AND time (F17): rendered from
+                    `day`, NEVER from taken_at. */}
+                <Pressable
+                  style={styles.timeBadge}
+                  onPress={() => setDetailsOpen(true)}
+                  accessibilityLabel="Show photo details"
+                >
+                  <Text style={styles.timeBadgeText}>{cornerLabel}</Text>
+                </Pressable>
+                <Pressable
+                  style={styles.flagBadge}
+                  onPress={() => setDetailsOpen(true)}
+                  accessibilityLabel="Show photo details"
+                >
+                  <BadgeCluster badges={badgesFor(view.current)} size={24} />
+                </Pressable>
+              </>
+            )}
             <DeckDetailsOverlay
               open={detailsOpen}
               photoId={view.current.id}

@@ -141,7 +141,7 @@ function FolderPill({ label, size }: { label: string; size: number }) {
 
 /** The one hide-all control's read side (m0.8.7, F19/L6): a durable
  * setting flips every cluster at once for an unobstructed photo. */
-function useBadgesHidden(): boolean {
+export function useBadgesHidden(): boolean {
   const [hidden, setHidden] = useState(badgesHidden);
   useEffect(() => subscribeBadgesHidden(setHidden), []);
   return hidden;
@@ -195,6 +195,10 @@ export function BadgeCluster({
  * decks can hold tombstoned members the dot's effective-state palette
  * cannot express.)
  *
+ * An UNREVIEWED photo wears no dot (tester, 2026-08-31): only a
+ * decision or an action earns a mark, so a plain thumbnail says
+ * "nothing here yet" by itself.
+ *
  * Deliberately EXEMPT from the F19 eye (autonomous, pending vet): the
  * eye clears the STAGE for an unobstructed look at the photo — these
  * corner marks are wayfinding on thumbnails, and the eye hiding the
@@ -213,14 +217,16 @@ export function StateDots({
   size?: number;
   style?: StyleProp<ViewStyle>;
 }) {
+  const shown = badges.filter((b) => b.kind !== 'folder' && b.kind !== 'keep' && b.kind !== 'cull');
+  if (effective === 'unreviewed' && shown.length === 0) return null;
   return (
     <View style={[styles.dotsRow, style]} pointerEvents="none">
-      <View style={[styles.stateDot, { backgroundColor: VERDICT_META[effective].color }]} />
-      {badges
-        .filter((b) => b.kind !== 'folder' && b.kind !== 'keep' && b.kind !== 'cull')
-        .map((b) => (
-          <DecisionBadge key={b.kind} kind={b.kind} size={size} weight={b.weight} />
-        ))}
+      {effective !== 'unreviewed' && (
+        <View style={[styles.stateDot, { backgroundColor: VERDICT_META[effective].color }]} />
+      )}
+      {shown.map((b) => (
+        <DecisionBadge key={b.kind} kind={b.kind} size={size} weight={b.weight} />
+      ))}
     </View>
   );
 }

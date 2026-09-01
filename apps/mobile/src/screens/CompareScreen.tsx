@@ -674,7 +674,13 @@ export function CompareScreen({ navigation, route }: Props) {
                   on forPhotoId — m0.9 phase-1 drift fix) is the shared
                   StagePaneLayers; no aspect feed, because Compare
                   clamps to the stage rect. */}
-                <View style={StyleSheet.absoluteFill}>
+                {/* A hides while B shows (S23, 2026-08-31): B is stacked
+                  on top with no opaque backdrop, so a contain-fitted
+                  landscape B over a portrait A left A visible through
+                  the letterbox — two photos at once. Same-aspect pairs
+                  happened to cover it. Opacity, never unmount: both
+                  stay warm under the shared transform. */}
+                <View style={[StyleSheet.absoluteFill, { opacity: showB ? 0 : 1 }]}>
                   <StagePaneLayers
                     uri={pair.a.uri}
                     recyclingKey={pair.a.id}

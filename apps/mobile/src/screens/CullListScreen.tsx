@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { plural } from '../lib/format';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { PixelRatio, useWindowDimensions } from 'react-native';
+import { OsThumbnail } from '../components/OsThumbnail';
+import { thumbBucketPx } from '../lib/thumbnailSize';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -225,6 +228,8 @@ export function CullListScreen({ navigation, route }: Props) {
   // Every staged row IS the durable truth; the sheet re-decides directly.
   const currentOf = useCallback((_id: string): DecidedState => 'culled', []);
 
+  const { width: windowWidth } = useWindowDimensions();
+  const tilePx = thumbBucketPx(windowWidth / 3, PixelRatio.get());
   const onTilePress = useCallback((item: MediaItem) => {
     setRedecideItem(item);
   }, []);
@@ -232,18 +237,13 @@ export function CullListScreen({ navigation, route }: Props) {
   const renderItem = useCallback(
     ({ item }: { item: MediaItem }) => (
       <Pressable style={styles.tile} onPress={() => onTilePress(item)} disabled={busy}>
-        <Image
-          source={{ uri: item.uri }}
-          style={styles.tileImage}
-          contentFit="cover"
-          recyclingKey={item.id}
-        />
+        <OsThumbnail assetId={item.id} uri={item.uri} px={tilePx} style={styles.tileImage} />
         <View style={styles.tileBadge}>
           <Text style={styles.tileBadgeText}>tap to change</Text>
         </View>
       </Pressable>
     ),
-    [busy, onTilePress],
+    [busy, onTilePress, tilePx],
   );
 
   return (

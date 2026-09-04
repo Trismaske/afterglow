@@ -7,6 +7,10 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { plural } from '../lib/format';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { PixelRatio } from 'react-native';
+import { OsThumbnail } from '../components/OsThumbnail';
+import { thumbBucketPx } from '../lib/thumbnailSize';
+const ROW_THUMB_PX = thumbBucketPx(52, PixelRatio.get());
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -306,7 +310,12 @@ export function FavouritesQueueScreen() {
                 })
               }
             >
-              <Image source={{ uri: item.uri }} style={styles.thumb} contentFit="cover" />
+              <OsThumbnail
+                assetId={item.asset_id}
+                uri={item.uri}
+                px={ROW_THUMB_PX}
+                style={styles.thumb}
+              />
             </Pressable>
             <MaterialCommunityIcons
               name={item.favourite_target === 1 ? 'heart-plus' : 'heart-minus'}

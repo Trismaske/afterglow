@@ -1,5 +1,9 @@
 import React, { useCallback, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { PixelRatio } from 'react-native';
+import { OsThumbnail } from '../components/OsThumbnail';
+import { thumbBucketPx } from '../lib/thumbnailSize';
+const ROW_THUMB_PX = thumbBucketPx(84, PixelRatio.get());
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -193,11 +197,11 @@ export function EditQueueScreen({ navigation }: Props) {
             })
           }
         >
-          <Image
-            source={{ uri: item.uri }}
+          <OsThumbnail
+            assetId={item.asset_id}
+            uri={item.uri}
+            px={ROW_THUMB_PX}
             style={styles.thumb}
-            contentFit="cover"
-            recyclingKey={item.asset_id}
           />
         </Pressable>
         <View style={styles.rowBody}>

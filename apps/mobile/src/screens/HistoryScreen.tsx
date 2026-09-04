@@ -17,6 +17,10 @@
  */
 import React, { useCallback, useRef, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { PixelRatio } from 'react-native';
+import { OsThumbnail } from '../components/OsThumbnail';
+import { thumbBucketPx } from '../lib/thumbnailSize';
+const ROW_THUMB_PX = thumbBucketPx(56, PixelRatio.get());
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -233,6 +237,9 @@ export function HistoryScreen({ navigation }: Props) {
         return (
           <View style={styles.shareRow}>
             <View style={styles.shareThumbs}>
+              {/* Share-event thumbs stay on the URI path: the event row
+                  stores only uris, no asset ids for the OS thumbnail
+                  store (phase 3, item 2 — the one named exception). */}
               {item.thumb_uris.slice(0, 3).map((uri, i) => (
                 <Image
                   key={`${item.batch_id}-${i}`}
@@ -277,7 +284,12 @@ export function HistoryScreen({ navigation }: Props) {
               <MaterialCommunityIcons name="image-off-outline" size={22} color={colors.textDim} />
             </View>
           ) : (
-            <Image source={{ uri: item.uri }} style={styles.thumb} contentFit="cover" />
+            <OsThumbnail
+              assetId={item.asset_id}
+              uri={item.uri}
+              px={ROW_THUMB_PX}
+              style={styles.thumb}
+            />
           )}
           <View style={styles.rowBody}>
             {/* A tombstone's line is the photo's ORIGINAL date (D9) — the

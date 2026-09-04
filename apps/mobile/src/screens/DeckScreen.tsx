@@ -117,6 +117,7 @@ const THUMB = 52;
  * full decode as soon as it lands. */
 const STRIP_THUMB_PX = thumbBucketPx(THUMB, PixelRatio.get());
 const STAGE_THUMB_PX = 512;
+const PICKER_THUMB_PX = thumbBucketPx(72, PixelRatio.get());
 const THUMB_GAP = 6;
 const THUMB_INSET = 2;
 // The max zoom is DYNAMIC per photo (m0.8.8): maxScaleFor in
@@ -2453,11 +2454,11 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 .map(({ item, deckIndex }) =>
                   item.id === view.current.id ? null : (
                     <Pressable key={item.id} onPress={() => openCompare(item.id)}>
-                      <Image
-                        source={{ uri: item.uri }}
+                      <OsThumbnail
+                        assetId={item.id}
+                        uri={item.uri}
+                        px={PICKER_THUMB_PX}
                         style={styles.pickerThumb}
-                        contentFit="cover"
-                        recyclingKey={item.id}
                       />
                       <View style={styles.pickerIndex}>
                         <Text style={styles.pickerIndexText}>{deckIndex + 1}</Text>

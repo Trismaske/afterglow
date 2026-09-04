@@ -11,6 +11,10 @@
  */
 import React, { useCallback, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { PixelRatio } from 'react-native';
+import { OsThumbnail } from './OsThumbnail';
+import { thumbBucketPx } from '../lib/thumbnailSize';
+const SHEET_THUMB_PX = thumbBucketPx(72, PixelRatio.get());
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { MediaItem } from '@afterglow/core';
@@ -79,11 +83,11 @@ export function ReDecideSheet({
         {/* Stop backdrop-press from closing when tapping the card. */}
         <Pressable style={[styles.card, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
           <View style={styles.header}>
-            <Image
-              source={{ uri: item.uri }}
+            <OsThumbnail
+              assetId={item.id}
+              uri={item.uri}
+              px={SHEET_THUMB_PX}
               style={styles.thumb}
-              contentFit="cover"
-              recyclingKey={item.id}
             />
             <View style={styles.headerBody}>
               <Text style={styles.stateLabel}>{STATE_LABEL[current]}</Text>

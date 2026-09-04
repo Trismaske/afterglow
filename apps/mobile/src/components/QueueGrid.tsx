@@ -9,6 +9,9 @@
  */
 import React from 'react';
 import { Pressable, StyleSheet, Text, type StyleProp, type ViewStyle } from 'react-native';
+import { PixelRatio, useWindowDimensions } from 'react-native';
+import { OsThumbnail } from './OsThumbnail';
+import { thumbBucketPx } from '../lib/thumbnailSize';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors } from '../theme';
@@ -31,13 +34,16 @@ export function QueueGridCell({
   /** Absolutely-positioned status badges (pass ✓, target, error). */
   children?: React.ReactNode;
 }) {
+  // Four cells across the screen (the grid contract) at device scale.
+  const { width } = useWindowDimensions();
+  const cellPx = thumbBucketPx(width / 4, PixelRatio.get());
   return (
     <Pressable style={styles.cell} onPress={onPress} onLongPress={onLongPress}>
-      <Image
-        source={{ uri }}
+      <OsThumbnail
+        assetId={id}
+        uri={uri}
+        px={cellPx}
         style={[styles.thumb, selected && { borderColor: accent }]}
-        contentFit="cover"
-        recyclingKey={id}
       />
       {children}
       {selected ? (

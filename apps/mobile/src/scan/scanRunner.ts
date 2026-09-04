@@ -27,6 +27,7 @@
  * consumes it; until then it also feeds dev logging).
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
+import { logFootprint } from '../lib/footprint';
 import { ADJACENT_MERGE_MAX_GAP_MS, groupByEmbedding, MOMENTS_GAP_MS } from '@afterglow/core';
 import { MODEL_SHA256 } from '../../modules/image-embedder';
 import { dayKey, exifDateTimeToMs } from '../lib/dates';
@@ -1062,6 +1063,7 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
         `[scan] delta done: ${status.scanned} in ${decision.ranges.length} ranges, ` +
           `embedded ${status.embedded} fresh, ${status.windowsGrouped} windows grouped`,
       );
+      logFootprint('delta done');
       return;
     }
     // Loud, and repaired NOW rather than queued: the library is provably
@@ -1201,6 +1203,7 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     `[scan] done: scanned ${status.scanned}, embedded ${status.embedded} fresh, ` +
       `${status.windowsGrouped} windows grouped`,
   );
+  logFootprint('scan done');
 }
 
 /**

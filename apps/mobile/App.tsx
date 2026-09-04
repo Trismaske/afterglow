@@ -14,6 +14,7 @@ import { loadBadgePrefs } from './src/lib/badgePrefs';
 import { mountedVolumeSet, onVolumesChanged } from './src/lib/mountedVolumes';
 import { resolveSources } from './src/lib/sourceCatalog';
 import { DATABASE_NAME, migrateDatabase } from './src/db/database';
+import { logFootprint } from './src/lib/footprint';
 import { installShareResolution } from './src/lib/shareResolution';
 import { ReviewProvider, useReview } from './src/review/ReviewContext';
 import { HomeScreen } from './src/screens/HomeScreen';
@@ -175,6 +176,12 @@ function ThemedNavigator() {
   useEffect(() => {
     void loadBadgePrefs(db);
   }, [db]);
+  // Phase-3 spike (a): one footprint line per cold start, off the
+  // startup critical path (footprint.ts header).
+  useEffect(() => {
+    const t = setTimeout(() => logFootprint('app start'), 5000);
+    return () => clearTimeout(t);
+  }, []);
   useEffect(() => {
     if (!writeError) return;
     Alert.alert(

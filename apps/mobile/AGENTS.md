@@ -73,6 +73,7 @@ Both removal affordances use the local `modules/media-store-actions` trash reque
 | stripScroll.ts                                                                                           | Keeping the deck's thumbnail strip on the current photo (F7)                                                                                                        |
 | diagLog.ts / diagShape.ts                                                                                | On-device diagnostics: the console/crash hook wiring / its pure line shaping + suppressor                                                                           |
 | hash.ts / concurrency.ts / format.ts / toast.ts / accentTheme.ts                                         | Content-hash fallback id, bounded-parallel map, formatting, toasts, accent tokens                                                                                   |
+| footprint.ts                                                                                             | Phase-3 storage-composition instrument: the `[perf] footprint` bucket line (db/WAL/image-cache/rest)                                                                |
 
 `src/db/`: `database.ts` (schema + the fresh-baseline destructive reset), `store.ts` (verdict writes + queue reads), `actions.ts` (the one four-action queue shape), `trashStore.ts`, `shareStore.ts`, `organizeStore.ts`, `embeddingStore.ts` (the model-SHA pin), `volumeLifecycle.ts` ("Forget this card").
 `src/scan/scanRunner.ts` is the continuous-scan orchestrator.

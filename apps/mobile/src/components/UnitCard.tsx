@@ -18,7 +18,9 @@
  */
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { Image } from 'expo-image';
+import { PixelRatio } from 'react-native';
+import { OsThumbnail } from './OsThumbnail';
+import { thumbBucketPx } from '../lib/thumbnailSize';
 import { colors, touch } from '../theme';
 
 /** Thumbs per row; a card with more members shows STRIP_THUMBS - 1 plus
@@ -26,6 +28,9 @@ import { colors, touch } from '../theme';
  * device; three left the chip crowding two photos). */
 const STRIP_THUMBS = 5;
 const THUMB_H = 56;
+/** A card thumb is at most a quarter of the card wide (~100 dp), taller
+ * than THUMB_H never — bucket on the wider side at device scale. */
+const CARD_THUMB_PX = thumbBucketPx(100, PixelRatio.get());
 const HEADER_H = 20;
 const CARD_PAD = 12;
 const CARD_GAP = 10;
@@ -73,11 +78,11 @@ export function UnitCard({
       <View style={styles.strip}>
         {members.slice(0, shown).map((member) => (
           <View key={member.asset_id} style={styles.thumbWrap} pointerEvents="none">
-            <Image
-              source={{ uri: member.uri }}
+            <OsThumbnail
+              assetId={member.asset_id}
+              uri={member.uri}
+              px={CARD_THUMB_PX}
               style={styles.thumb}
-              contentFit="cover"
-              recyclingKey={member.asset_id}
             />
             {renderOverlay?.(member.asset_id)}
           </View>

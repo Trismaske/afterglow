@@ -38,6 +38,7 @@ interface NativeApi {
   setFavourite(uris: string[], value: boolean): Promise<{ status: MediaStoreActionStatus }>;
   isFavourite(uri: string): Promise<boolean | null>;
   mediaPresence(uri: string): Promise<'present' | 'trashed' | 'absent' | 'unknown'>;
+  loadThumbnail(uri: string, size: number): Promise<RegionBitmap>;
   editDiagnostics(uri: string): Promise<EditDiagnosticsReport>;
   probeLaunch(uri: string, action: string, withWrite: boolean): Promise<ProbeLaunchResult>;
   requestWriteAccess(uris: string[]): Promise<{ status: MediaStoreActionStatus }>;
@@ -222,6 +223,16 @@ export async function getMediaPresence(
 }
 
 // ---- Gate-0 editor-launch diagnostic matrix (m0.7 item A) ----------------
+
+/** The OS thumbnail store (phase-3 item 2 — the module's own comment on
+ * `loadThumbnail`): MediaStore's thumbnail for a photo at `size` px
+ * (longest side), as a SharedRef bitmap the caller must release. Rejects
+ * when the store cannot serve the photo (unsupported format, gone file)
+ * — the caller's fallback is the URI path, logged once. */
+export async function loadOsThumbnail(contentUri: string, size: number): Promise<RegionBitmap> {
+  if (!available()) throw new Error('MediaStore actions unavailable');
+  return native!.loadThumbnail(contentUris([contentUri])[0], size);
+}
 
 export async function runEditDiagnostics(uri: string): Promise<EditDiagnosticsReport | null> {
   if (!available()) return null;

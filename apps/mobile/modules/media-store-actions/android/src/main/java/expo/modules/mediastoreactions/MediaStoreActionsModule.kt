@@ -12,6 +12,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Process
+import android.util.Size
 import android.provider.MediaStore
 import androidx.core.content.ContextCompat
 import androidx.exifinterface.media.ExifInterface
@@ -149,6 +150,22 @@ class MediaStoreActionsModule : Module() {
     // transient failure for a deleted photo.
     AsyncFunction("mediaPresence") Coroutine { uri: Uri ->
       mediaPresenceOf(uri)
+    }
+
+    // The OS THUMBNAIL SOURCE (m0.9 phase 3, item 2): MediaStore's own
+    // thumbnail store — the one the Gallery reads — via
+    // ContentResolver.loadThumbnail (API 29+; minSdk is 30). Measured
+    // on the S23's 200 MP tier at 14–23 ms cold / 7–8 ms warm against
+    // ~1.5 s for any Glide decode of the same file. The bitmap crosses
+    // as a SharedRef<Bitmap> exactly like the F22 region pipeline's
+    // (RegionBitmapRef): expo-image renders it zero-copy and JS owns
+    // the release. Dispatchers.IO like every decode here.
+    AsyncFunction("loadThumbnail") Coroutine { uri: Uri, size: Int ->
+      withContext(Dispatchers.IO) {
+        val context = appContext.reactContext
+          ?: throw IllegalStateException("Android context unavailable")
+        RegionBitmapRef(context.contentResolver.loadThumbnail(uri, Size(size, size), null), appContext)
+      }
     }
 
     // ---- The F22 region-zoom pipeline (m0.8.8, G3 + D1–D7). All

@@ -18,7 +18,9 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Image } from 'expo-image';
+import { OsThumbnail } from '../OsThumbnail';
+import { thumbBucketPx } from '../../lib/thumbnailSize';
+import { PixelRatio, useWindowDimensions } from 'react-native';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { PhotoState } from '@afterglow/core';
 import {
@@ -184,6 +186,8 @@ export function PhotoStateGrid({
   bottomInset: number;
   onPhotoPress: (photo: GridPhoto, siblings: GridPhoto[], index: number) => void;
 }) {
+  const { width: windowWidth } = useWindowDimensions();
+  const tilePx = thumbBucketPx(windowWidth / 3, PixelRatio.get());
   const db = useSQLiteContext();
   const { accent } = useTheme();
   const [items, setItems] = useState<GridPhoto[]>([]);
@@ -336,12 +340,9 @@ export function PhotoStateGrid({
   const renderItem = useCallback(
     ({ item, index }: { item: GridPhoto; index: number }) => (
       <Pressable style={styles.tileWrap} onPress={() => onPhotoPress(item, items, index)}>
-        <Image
-          source={{ uri: item.uri }}
-          style={styles.tile}
-          contentFit="cover"
-          recyclingKey={item.id}
-        />
+        {/* The OS thumbnail source (phase 3, item 2): a third of the
+            screen at device scale, bucketed. */}
+        <OsThumbnail assetId={item.id} uri={item.uri} px={tilePx} style={styles.tile} />
         {/* The shared inspection-dot row (StateDots' header): verdict
             dot + weighted action glyphs, the same marks the deck strip
             and the timeline cards wear. */}
@@ -360,7 +361,7 @@ export function PhotoStateGrid({
         />
       </Pressable>
     ),
-    [onPhotoPress, items],
+    [onPhotoPress, items, tilePx],
   );
 
   return (

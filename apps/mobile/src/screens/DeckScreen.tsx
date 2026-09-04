@@ -3,6 +3,7 @@ import {
   Alert,
   FlatList,
   Modal,
+  PixelRatio,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -27,6 +28,8 @@ import { BigButton } from '../components/BigButton';
 import { colors, touch, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded, plural } from '../lib/format';
 import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
+import { OsThumbnail } from '../components/OsThumbnail';
+import { thumbBucketPx } from '../lib/thumbnailSize';
 import { checkMediaPresence } from '../lib/media';
 import { showToast } from '../lib/toast';
 import { classifyPhotoState } from '../lib/progress';
@@ -108,6 +111,12 @@ type SharedProps = {
 };
 
 const THUMB = 52;
+/** OS-thumbnail request buckets (lib/thumbnailSize): the strip thumb at
+ * device scale; the at-rest stage paint at 512 — the largest size the
+ * store serves from cache on every device we measured, replaced by the
+ * full decode as soon as it lands. */
+const STRIP_THUMB_PX = thumbBucketPx(THUMB, PixelRatio.get());
+const STAGE_THUMB_PX = 512;
 const THUMB_GAP = 6;
 const THUMB_INSET = 2;
 // The max zoom is DYNAMIC per photo (m0.8.8): maxScaleFor in
@@ -1185,14 +1194,13 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   const loadedPagesRef = useRef<Set<string>>(new Set());
   const [decodedTick, setDecodedTick] = useState(0);
   const currentIdRef = useRef<string | null>(null);
-  /** The photo the stage last actually PAINTED. It backs the pager's
-   * underlay: while a freshly-swapped page's Image still decodes, the
-   * previous photo shows through instead of a blank stage (§10 check 3
-   * — decode latency was visible on the S10e even with the chrome
-   * mounted). Only PAINTED uris are captured (codex device-pass round):
-   * capturing live `current` advanced the underlay to the incoming,
-   * still-decoding uri whenever an unrelated render landed mid-decode,
-   * reopening the blank window this exists to close. */
+  /** The photo the stage last actually PAINTED. It backs the COLD-OPEN
+   * stage only now: the session's first deck reading its rows shows the
+   * outgoing photo instead of a blank (§10 check 3). The pager's own
+   * underlay moved to the current photo's OS thumbnail (phase 3, item
+   * 2). Only PAINTED uris are captured (codex device-pass round):
+   * capturing live `current` advanced it to a still-decoding uri
+   * whenever an unrelated render landed mid-decode. */
   const lastPhotoRef = useRef<string | null>(null);
   useEffect(() => {
     if (current && loadedPagesRef.current.has(current.id)) lastPhotoRef.current = current.uri;
@@ -2089,19 +2097,24 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               from cache — emulator probe), while left visible it
               would ghost through every contained page's
               letterbox margins. */}
-            {lastPhotoRef.current !== null && (
-              <Image
-                source={{ uri: lastPhotoRef.current }}
-                style={[
-                  StyleSheet.absoluteFill,
-                  {
-                    opacity: inert || !loadedPagesRef.current.has(view.current.id) ? 1 : 0,
-                  },
-                ]}
-                contentFit="contain"
-                transition={0}
-              />
-            )}
+            {/* Phase 3, item 2 (Tristan, 2026-09-04): the underlay is now
+                THIS photo's OS thumbnail — the at-rest page's instant
+                first paint (7–23 ms measured) under the full decode,
+                which replaces it on arrival. The previous-photo ghost
+                it replaces covered the same frames with the wrong
+                picture. */}
+            <OsThumbnail
+              assetId={view.current.id}
+              uri={view.current.uri}
+              px={STAGE_THUMB_PX}
+              contentFit="contain"
+              style={[
+                StyleSheet.absoluteFill,
+                {
+                  opacity: inert || !loadedPagesRef.current.has(view.current.id) ? 1 : 0,
+                },
+              ]}
+            />
             <FlatList
               // Keyed by the DISPLAYED unit: a unit change swaps in
               // a fresh native list at its own first pending photo
@@ -2182,8 +2195,10 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 if (!inert && item.id !== view.current.id) openCompare(item.id);
               }}
             >
-              <Image
-                source={{ uri: item.uri }}
+              <OsThumbnail
+                assetId={item.id}
+                uri={item.uri}
+                px={STRIP_THUMB_PX}
                 style={[
                   styles.thumb,
                   // The LIVE pager index (§10 check 8): the highlight moves
@@ -2191,8 +2206,6 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                   // deck keeps its own settled cursor.
                   index === (inert ? view.cursor : pagerIndex) && styles.thumbActive,
                 ]}
-                contentFit="cover"
-                recyclingKey={item.id}
               />
               {/* Small badges wrapping into rows: a 52 px thumbnail fits
                   three per row, so a fully-flagged photo shows all of

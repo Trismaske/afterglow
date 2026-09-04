@@ -199,7 +199,7 @@ export function BadgeCluster({
  * decision or an action earns a mark, so a plain thumbnail says
  * "nothing here yet" by itself.
  *
- * Deliberately EXEMPT from the F19 eye (autonomous, pending vet): the
+ * Deliberately EXEMPT from the F19 eye (vetted 2026-09-01): the
  * eye clears the STAGE for an unobstructed look at the photo — these
  * corner marks are wayfinding on thumbnails, and the eye hiding the
  * strip's markers while the grid's dots stayed read as a bug on the

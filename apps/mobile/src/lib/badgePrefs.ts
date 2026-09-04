@@ -6,7 +6,7 @@
  * guess; if the cluster still feels noisy with the toggle in hand, that
  * complaint arrives with evidence).
  *
- * SCOPE narrowed to the stage (m0.9, autonomous — pending vet): the
+ * SCOPE narrowed to the stage (m0.9, vetted 2026-09-01): the
  * thumbnail-scale inspection dots (StateDots — grid tiles, the deck
  * strip, Timeline/DayProgress cards) are exempt. The eye once hid the
  * strip's markers while the grid's dots stayed, which read as a bug on

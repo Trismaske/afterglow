@@ -32,7 +32,7 @@ export const DATABASE_NAME = 'afterglow.db';
  * When one release's destructive DDL lands across multiple phases, bump
  * once PER destructive phase (not once per release), so a mid-release
  * install self-heals by rebuild instead of by a manual data wipe. */
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 23;
 
 export const BASELINE_DDL = `
   CREATE TABLE photos (
@@ -47,6 +47,18 @@ export const BASELINE_DDL = `
       CHECK (state IN ('unreviewed', 'kept', 'culled', 'trashed')),
     mod_time             INTEGER,
     content_hash         TEXT,
+    -- The IMAGE CACHE VERSION (v23, m0.9 phase 3 item 3): every surface
+    -- keys its decoded pixels by asset_id + COALESCE(file_generation,
+    -- file_mtime), so an in-place edit can never serve pre-edit pixels
+    -- past the next scan. file_generation is MediaStore's
+    -- GENERATION_MODIFIED (bumps on any change, mtime-preserving editors
+    -- included) when the ingest path had it — the native per-photo
+    -- query; NULL from the expo-media-library full pass — and the
+    -- upsert keeps a known generation when a later pass passes NULL.
+    -- file_mtime is the file's mtime (ms) from every path. mod_time
+    -- above stays the edit detector's baseline and is NOT a version.
+    file_generation      INTEGER,
+    file_mtime           INTEGER,
     day                  TEXT,
     -- File size at last scan (v14): NULL until scanned post-migration.
     -- Powers the EXACT reclaimable-bytes sum (vetted: no estimates).

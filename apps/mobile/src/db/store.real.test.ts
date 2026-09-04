@@ -76,6 +76,8 @@ function upsert(rawId: string, takenAt = AT - 3_600_000): ContinuousPhotoUpsert 
     uri: `file:///dcim/${rawId}.jpg`,
     takenAt,
     modTime: takenAt,
+    fileGeneration: null,
+    fileMtime: takenAt,
     day: '2026-07-20',
     volumeName: 'external_primary',
     rawId,

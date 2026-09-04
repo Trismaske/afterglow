@@ -46,11 +46,14 @@ const stateToTarget: Record<DecidedState, RedecideTarget> = {
 
 export function ReDecideSheet({
   item,
+  version,
   current,
   onClose,
 }: {
   /** Null hides the sheet. */
   item: MediaItem | null;
+  /** The photo's image cache version (item 3). */
+  version: number;
   current: DecidedState;
   onClose: () => void;
 }) {
@@ -86,6 +89,7 @@ export function ReDecideSheet({
             <OsThumbnail
               assetId={item.id}
               uri={item.uri}
+              version={version}
               px={SHEET_THUMB_PX}
               style={styles.thumb}
             />

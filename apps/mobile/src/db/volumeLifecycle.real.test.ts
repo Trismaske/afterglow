@@ -39,6 +39,8 @@ function photo(volume: string, rawId: string, takenAt = AT - 3_600_000): Continu
     uri: `file:///storage/${volume === PRIMARY ? 'emulated/0' : '0A91-E18D'}/DCIM/${rawId}.jpg`,
     takenAt,
     modTime: takenAt,
+    fileGeneration: null,
+    fileMtime: takenAt,
     day: '2027-01-15',
     volumeName: volume,
     rawId,

@@ -22,6 +22,7 @@ import { showToast } from '../lib/toast';
 import { DOUBLE_TAP_MS } from '../lib/zoomTarget';
 import { colors, touch, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded } from '../lib/format';
+import { imageCacheKey } from '../lib/imageKeys';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { isFavouriteSelected } from '../lib/favouriteState';
 import { ActionChip } from '../components/ActionChip';
@@ -629,6 +630,11 @@ export function CompareScreen({ navigation, route }: Props) {
 
   // Seconds always; millis when the two candidates share a second and the
   // data has sub-second resolution (same rule as the deck labels).
+  /** The pair's image versions (item 3) from the rows that carry them. */
+  const versionOf = (id: string): number =>
+    group?.members.find((m) => m.asset_id === id)?.image_version ??
+    dayList?.find((m) => m.asset_id === id)?.image_version ??
+    0;
   const needMs = millisNeeded([pair.a.timestamp, pair.b.timestamp].sort((x, y) => x - y));
   const withMs = needMs[0] || needMs[1];
 
@@ -683,6 +689,7 @@ export function CompareScreen({ navigation, route }: Props) {
                 <View style={[StyleSheet.absoluteFill, { opacity: showB ? 0 : 1 }]}>
                   <StagePaneLayers
                     uri={pair.a.uri}
+                    cacheKey={imageCacheKey(pair.a.id, versionOf(pair.a.id))}
                     recyclingKey={pair.a.id}
                     regionZoom={regionZoomA}
                     sourcesOk={regionZoomA.forPhotoId === pair.a.id}
@@ -696,6 +703,7 @@ export function CompareScreen({ navigation, route }: Props) {
                 <View style={[StyleSheet.absoluteFill, { opacity: showB ? 1 : 0 }]}>
                   <StagePaneLayers
                     uri={pair.b.uri}
+                    cacheKey={imageCacheKey(pair.b.id, versionOf(pair.b.id))}
                     recyclingKey={pair.b.id}
                     regionZoom={regionZoomB}
                     sourcesOk={regionZoomB.forPhotoId === pair.b.id}

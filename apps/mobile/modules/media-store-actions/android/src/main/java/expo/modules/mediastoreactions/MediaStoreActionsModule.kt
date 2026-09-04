@@ -487,6 +487,7 @@ class MediaStoreActionsModule : Module() {
             MediaStore.MediaColumns.DISPLAY_NAME,
             MediaStore.MediaColumns.DATE_TAKEN,
             MediaStore.MediaColumns.DATE_MODIFIED,
+            MediaStore.MediaColumns.GENERATION_MODIFIED,
             MediaStore.MediaColumns.WIDTH,
             MediaStore.MediaColumns.HEIGHT,
           ),
@@ -510,6 +511,12 @@ class MediaStoreActionsModule : Module() {
               "dateModifiedSec" to cursor.getLong(
                 cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED),
               ),
+              // The image cache version (m0.9 phase 3, item 3): bumps on
+              // ANY content or metadata change, mtime-preserving editors
+              // included.
+              "generationModified" to cursor.getLong(
+                cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.GENERATION_MODIFIED),
+              ).toDouble(),
               "width" to cursor.getInt(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.WIDTH)),
               "height" to cursor.getInt(
                 cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.HEIGHT),

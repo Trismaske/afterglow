@@ -44,6 +44,8 @@ import { QueueRemoveChip } from '../components/QueueRemoveChip';
 interface FavouriteQueueRow {
   asset_id: string;
   uri: string;
+  /** The image cache version (item 3). */
+  image_version: number;
   taken_at: number;
   /** Capture day; null = honestly undated (m0.8.6 change 5). */
   day: string | null;
@@ -82,6 +84,7 @@ export function FavouritesQueueScreen() {
         // The photo's CAPTURE time, not when it was queued: the deck's
         // corner renders this as the day and clock the shot was taken.
         taken_at: byId.get(action.photoId)?.takenAt ?? action.queuedAt,
+        image_version: byId.get(action.photoId)?.imageVersion ?? 0,
         day: byId.get(action.photoId)?.day ?? null,
         favourite_target: decodeFavouriteTarget(action.target) === false ? 0 : 1,
         state: action.state,
@@ -313,6 +316,7 @@ export function FavouritesQueueScreen() {
               <OsThumbnail
                 assetId={item.asset_id}
                 uri={item.uri}
+                version={item.image_version}
                 px={ROW_THUMB_PX}
                 style={styles.thumb}
               />

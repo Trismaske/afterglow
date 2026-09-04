@@ -447,6 +447,8 @@ export interface MediaStageViewProps {
    * the deck passes its frozen view's photo). Null renders an empty
    * overlay. */
   overlayFor: { id: string; uri: string } | null;
+  /** The overlay URI layer's cache key (lib/imageKeys, item 3). */
+  overlayCacheKey?: string;
   regionZoom: RegionZoomState;
   /** Extra identity gate ANDed into the base/patch source condition —
    * the deck passes `live current === frozen view current` so a unit
@@ -474,6 +476,7 @@ export function MediaStageView({
   frameStyle,
   onStageLayout,
   overlayFor,
+  overlayCacheKey,
   regionZoom,
   identityOk = true,
   backdropColor,
@@ -510,6 +513,7 @@ export function MediaStageView({
                 <Animated.View style={[StyleSheet.absoluteFill, controller.zoomStyle]}>
                   <StagePaneLayers
                     uri={overlayFor?.uri}
+                    cacheKey={overlayCacheKey}
                     recyclingKey={overlayFor ? `zoom-${overlayFor.id}` : undefined}
                     regionZoom={regionZoom}
                     sourcesOk={sourcesOk}
@@ -550,12 +554,15 @@ export function MediaStageView({
  * overlay; Compare's stacked pair uses it once per pane). */
 export function StagePaneLayers({
   uri,
+  cacheKey,
   recyclingKey,
   regionZoom,
   sourcesOk,
   onSourceLoad,
 }: {
   uri: string | undefined;
+  /** The image cache key (lib/imageKeys, item 3) for the URI layer. */
+  cacheKey?: string;
   recyclingKey: string | undefined;
   regionZoom: RegionZoomState;
   sourcesOk: boolean;
@@ -566,7 +573,7 @@ export function StagePaneLayers({
   return (
     <>
       <Image
-        source={uri ? { uri } : undefined}
+        source={uri ? { uri, cacheKey } : undefined}
         style={StyleSheet.absoluteFill}
         contentFit="contain"
         recyclingKey={recyclingKey}

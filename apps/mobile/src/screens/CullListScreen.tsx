@@ -103,6 +103,12 @@ export function CullListScreen({ navigation, route }: Props) {
       })),
     [globalRows],
   );
+  /** Each staged photo's image cache version (item 3) — the tiles and
+   * the re-decide sheet key their thumbnails by it. */
+  const versionOf = useMemo(
+    () => new Map((globalRows ?? []).map((row) => [row.asset_id, row.image_version])),
+    [globalRows],
+  );
 
   const runConfirm = useCallback(async () => {
     if (busy) return;
@@ -237,13 +243,19 @@ export function CullListScreen({ navigation, route }: Props) {
   const renderItem = useCallback(
     ({ item }: { item: MediaItem }) => (
       <Pressable style={styles.tile} onPress={() => onTilePress(item)} disabled={busy}>
-        <OsThumbnail assetId={item.id} uri={item.uri} px={tilePx} style={styles.tileImage} />
+        <OsThumbnail
+          assetId={item.id}
+          uri={item.uri}
+          version={versionOf.get(item.id) ?? 0}
+          px={tilePx}
+          style={styles.tileImage}
+        />
         <View style={styles.tileBadge}>
           <Text style={styles.tileBadgeText}>tap to change</Text>
         </View>
       </Pressable>
     ),
-    [busy, onTilePress, tilePx],
+    [busy, onTilePress, tilePx, versionOf],
   );
 
   return (
@@ -290,6 +302,7 @@ export function CullListScreen({ navigation, route }: Props) {
       {redecideItem && (
         <ReDecideSheet
           item={redecideItem}
+          version={versionOf.get(redecideItem.id) ?? 0}
           current={currentOf(redecideItem.id)}
           onClose={() => setRedecideItem(null)}
         />

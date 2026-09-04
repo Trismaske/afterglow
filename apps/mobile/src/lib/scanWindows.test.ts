@@ -11,6 +11,7 @@ function photo(id: string, timestamp: number): LoadedPhoto {
     volumeName: 'external_primary',
     filename: `${id}.jpg`,
     modTime: timestamp,
+    generation: null,
     width: 4000,
     height: 3000,
     undated: false,

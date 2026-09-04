@@ -19,6 +19,7 @@ import { colors } from '../theme';
 export function QueueGridCell({
   id,
   uri,
+  version,
   selected,
   accent,
   onPress,
@@ -27,6 +28,8 @@ export function QueueGridCell({
 }: {
   id: string;
   uri: string;
+  /** The image cache version (item 3). */
+  version: number;
   selected: boolean;
   accent: string;
   onPress: () => void;
@@ -42,6 +45,7 @@ export function QueueGridCell({
       <OsThumbnail
         assetId={id}
         uri={uri}
+        version={version}
         px={cellPx}
         style={[styles.thumb, selected && { borderColor: accent }]}
       />

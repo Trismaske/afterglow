@@ -49,6 +49,9 @@ export type GridCursor = string | { takenAt: number; assetId: string };
 export interface LibraryGridPhoto {
   id: string;
   uri: string;
+  /** The image cache version (item 3): the DB row's, else MediaStore's
+   * own timestamp for an untracked photo. */
+  version: number;
   /** A tracked row's dates are the DB's truth; an untracked one has
    * only MediaStore's. */
   takenAt: number;
@@ -178,6 +181,7 @@ export function createLibraryGridStream(
             collected.push({
               id: p.id,
               uri: p.uri,
+              version: row?.image_version ?? p.timestamp,
               takenAt: row?.taken_at ?? p.timestamp,
               day: row !== undefined ? row.day : p.undated ? null : undefined,
               dbState: row?.state ?? null,

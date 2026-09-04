@@ -24,6 +24,7 @@ import { loadOsThumbnail, type RegionBitmap } from '../../modules/media-store-ac
 import { BaseRetention } from '../lib/regionZoom';
 import { canonicalContentUri } from '../lib/mediaIdentity';
 import { perfAggregate } from '../lib/perfLog';
+import { imageCacheKey } from '../lib/imageKeys';
 
 /** Thumbnails are small (≤ 1024² × 4 bytes); a budget that keeps a
  * screenful of grid tiles plus the strip and a few pager first paints. */
@@ -80,8 +81,11 @@ export type OsThumbnailState =
 
 /** The OS thumbnail for `assetId` at `px` (a lib/thumbnailSize bucket).
  * Synchronous on a retained hit; the ref stays valid while mounted. */
-export function useOsThumbnail(assetId: string, px: number): OsThumbnailState {
-  const key = `${assetId}@${px}`;
+export function useOsThumbnail(assetId: string, px: number, version: number): OsThumbnailState {
+  // The version (item 3) is part of the key: the OS store regenerates
+  // its thumbnail on an in-place edit, and our retained ref must not
+  // outlive that.
+  const key = `${imageCacheKey(assetId, version)}@${px}`;
   const [state, setState] = useState<OsThumbnailState>(() => {
     const hit = retention.get(key);
     if (hit) return { status: 'ready', ref: hit };
@@ -118,6 +122,6 @@ export function useOsThumbnail(assetId: string, px: number): OsThumbnailState {
       cancelled = true;
       unpin(key);
     };
-  }, [assetId, px, key]);
+  }, [assetId, px, version, key]);
   return state;
 }

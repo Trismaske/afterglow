@@ -42,6 +42,8 @@ function upsert(rawId: string, takenAt = AT - 3_600_000): ContinuousPhotoUpsert 
     uri: `file:///dcim/${rawId}.jpg`,
     takenAt,
     modTime: takenAt,
+    fileGeneration: null,
+    fileMtime: takenAt,
     day: '2027-01-15',
     volumeName: 'external_primary',
     rawId,
@@ -128,6 +130,8 @@ describe('writeContinuousGroups', () => {
       ...upsert('1'),
       takenAt: AT - 100,
       modTime: AT + 5,
+      fileGeneration: null,
+      fileMtime: AT + 5,
       uri: 'file:///dcim/1-v2.jpg',
     };
     await writeContinuousGroups(

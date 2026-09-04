@@ -30,6 +30,7 @@ import { formatClockPrecise, millisNeeded, plural } from '../lib/format';
 import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { OsThumbnail } from '../components/OsThumbnail';
 import { thumbBucketPx } from '../lib/thumbnailSize';
+import { imageCacheKey } from '../lib/imageKeys';
 import { checkMediaPresence } from '../lib/media';
 import { showToast } from '../lib/toast';
 import { classifyPhotoState } from '../lib/progress';
@@ -315,6 +316,7 @@ interface DeckView {
   cursor: number;
   current: MediaItem;
   stateOf: Map<string, ReviewMemberRow['state']>;
+  versionOf: Map<string, number>;
   dayOf: Map<string, string | null>;
   needMs: boolean[];
   /** Group-only controls (Not related) render. */
@@ -800,6 +802,15 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     for (const r of shownListRows) map.set(r.id, r.day);
     return map;
   }, [group, singleRows, shownListRows]);
+  /** Each photo's IMAGE VERSION (item 3, lib/imageKeys): the pager's
+   * Glide key and the OS-thumbnail retention key both carry it. */
+  const versionOf = useMemo(() => {
+    const map = new Map<string, number>();
+    if (group) for (const m of group.members) map.set(m.asset_id, m.image_version);
+    for (const m of singleRows) map.set(m.asset_id, m.image_version);
+    for (const r of shownListRows) map.set(r.id, r.version);
+    return map;
+  }, [group, singleRows, shownListRows]);
   const info = useMemo(() => {
     if (!group) return null;
     const aliveIds = group.members.filter((m) => m.state === 'unreviewed').map((m) => m.asset_id);
@@ -1195,6 +1206,8 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   const loadedPagesRef = useRef<Set<string>>(new Set());
   const [decodedTick, setDecodedTick] = useState(0);
   const currentIdRef = useRef<string | null>(null);
+  /** renderPage is memoized on pageW alone — the versions ride a ref. */
+  const versionOfRef = useRef<Map<string, number>>(new Map());
   /** The photo the stage last actually PAINTED. It backs the COLD-OPEN
    * stage only now: the session's first deck reading its rows shows the
    * outgoing photo instead of a blank (§10 check 3). The pager's own
@@ -1742,7 +1755,12 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       // hands over to the pager's scroll exactly like any list row.
       <Pressable style={{ width: pageW, height: '100%' }} onPress={onPagePress}>
         <Image
-          source={{ uri: item.uri }}
+          // The version-carrying key (item 3): an in-place edit lands
+          // fresh pixels on the next scan, never Glide's pre-edit entry.
+          source={{
+            uri: item.uri,
+            cacheKey: imageCacheKey(item.id, versionOfRef.current.get(item.id) ?? 0),
+          }}
           style={StyleSheet.absoluteFill}
           contentFit="contain"
           recyclingKey={item.id}
@@ -1825,6 +1843,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
           current,
           stateOf,
           dayOf,
+          versionOf,
           needMs,
           isGroup: !singlesMode && !listMode && !!groupId,
           listMode,
@@ -1860,6 +1879,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   // What the stage is SHOWING this render — the id whose page paint the
   // underlay waits for (render-time, so the swap frame reads the new id).
   currentIdRef.current = view?.current.id ?? null;
+  if (view) versionOfRef.current = view.versionOf;
   if (view === null) {
     // Nothing to freeze — the session's very first deck is still
     // reading its rows. The outgoing-photo stage (or a blank breath on
@@ -2037,6 +2057,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
         frameStyle={immersive ? styles.stageFrameImmersive : styles.stageFrame}
         onStageLayout={(width) => setPageW(width)}
         overlayFor={view.current}
+        overlayCacheKey={imageCacheKey(view.current.id, view.versionOf.get(view.current.id) ?? 0)}
         regionZoom={regionZoom}
         identityOk={current?.id === view.current.id}
         backdropColor={immersive ? '#000' : colors.surface}
@@ -2107,6 +2128,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
             <OsThumbnail
               assetId={view.current.id}
               uri={view.current.uri}
+              version={view.versionOf.get(view.current.id) ?? 0}
               px={STAGE_THUMB_PX}
               contentFit="contain"
               style={[
@@ -2199,6 +2221,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               <OsThumbnail
                 assetId={item.id}
                 uri={item.uri}
+                version={view.versionOf.get(item.id) ?? 0}
                 px={STRIP_THUMB_PX}
                 style={[
                   styles.thumb,
@@ -2457,6 +2480,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                       <OsThumbnail
                         assetId={item.id}
                         uri={item.uri}
+                        version={view.versionOf.get(item.id) ?? 0}
                         px={PICKER_THUMB_PX}
                         style={styles.pickerThumb}
                       />

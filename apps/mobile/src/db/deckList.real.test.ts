@@ -41,6 +41,8 @@ function upsert(rawId: string, takenAt: number): ContinuousPhotoUpsert {
     assetId: id(rawId),
     uri: `file:///dcim/${rawId}.jpg`,
     takenAt,
+    fileGeneration: null,
+    fileMtime: AT,
     modTime: takenAt,
     day: DAY,
     volumeName: 'external_primary',
@@ -84,6 +86,9 @@ describe('queue sources', () => {
     expect(page.rows[0]).toEqual({
       id: id('3'),
       uri: 'file:///dcim/3.jpg',
+      // The image cache version (item 3): the seed writes no generation,
+      // so it is the mtime the upsert carried.
+      version: AT,
       takenAt: AT - 3_600_000 + 2 * 60_000,
       day: DAY,
       state: 'unreviewed',
@@ -188,6 +193,23 @@ describe('grid source', () => {
     expect(page.rows.map((r) => r.id).sort()).toEqual([id('1'), id('3')].sort());
     expect(page.rows.every((r) => r.tracked && r.state === 'kept')).toBe(true);
     expect(page.next).toBeNull();
+  });
+
+  it('rows carry the image cache version — generation when known, else mtime (item 3)', async () => {
+    const d = await fresh();
+    await seed(d, ['1', '2']);
+    await applyReviewDecisions(asExpo(d), [[id('1'), 'kept']], AT + 10);
+    const page = await resolveDeckListPage(
+      asExpo(d),
+      { source: 'grid', day: DAY, filter: 'all' },
+      null,
+      null,
+      null,
+    );
+    const versions = new Map(page.rows.map((r) => [r.id, r.version]));
+    // seed() writes no generation: the version is the mtime the upsert carried.
+    expect(versions.get(id('1'))).toBe(AT);
+    expect(versions.get(id('2'))).toBe(AT);
   });
 
   it('library-scope verdict and action filters take the DB engine (engine parity)', async () => {

@@ -200,6 +200,7 @@ export function EditQueueScreen({ navigation }: Props) {
           <OsThumbnail
             assetId={item.asset_id}
             uri={item.uri}
+            version={item.image_version}
             px={ROW_THUMB_PX}
             style={styles.thumb}
           />

@@ -111,6 +111,7 @@ export function newAlbumPath(name: string): string | null {
 export interface OrganizeQueueRow {
   photo_id: string;
   uri: string;
+  image_version: number;
   taken_at: number;
   day: string | null;
   /** NULL until an album is assigned in the queue (m0.8.2, F6). */
@@ -262,7 +263,7 @@ export async function getOrganizeQueue(
   // NULL-safe target projection: an untargeted row (m0.8.2) comes back
   // with NULL volume/path rather than substr() noise.
   return db.getAllAsync<OrganizeQueueRow>(
-    `SELECT p.asset_id AS photo_id, p.uri, p.taken_at, p.day, pa.state,
+    `SELECT p.asset_id AS photo_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, pa.state,
             CASE WHEN pa.target IS NULL THEN NULL
                  ELSE substr(pa.target, 1, instr(pa.target, char(10)) - 1) END AS organize_volume,
             CASE WHEN pa.target IS NULL THEN NULL

@@ -60,6 +60,10 @@ export interface LoadedPhoto {
   volumeName: string;
   filename: string;
   modTime: number;
+  /** MediaStore GENERATION_MODIFIED when the load path had it (the
+   * native per-photo query); null on the expo-media-library path. The
+   * image cache version (item 3) is this, else modTime. */
+  generation: number | null;
   width: number;
   height: number;
   /** MediaStore has no DATE_TAKEN for it — `item.timestamp` is the
@@ -109,6 +113,7 @@ function toLoadedPhoto(asset: MediaLibrary.Asset): LoadedPhoto | null {
     volumeName,
     filename: asset.filename,
     modTime: asset.modificationTime,
+    generation: null,
     undated: !asset.creationTime,
     width: asset.width,
     height: asset.height,
@@ -383,6 +388,7 @@ export async function loadPhotoById(assetId: string): Promise<LoadedPhoto | null
       volumeName: volumeOf(assetId),
       filename: row.displayName ?? row.dataPath.slice(row.dataPath.lastIndexOf('/') + 1),
       modTime: row.dateModifiedSec * 1000,
+      generation: row.generationModified ?? null,
       undated: row.dateTakenMs === null,
       width: row.width,
       height: row.height,

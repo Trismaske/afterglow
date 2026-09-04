@@ -317,6 +317,8 @@ export interface NativeImageRow {
   dateModifiedSec: number;
   width: number;
   height: number;
+  /** MediaStore GENERATION_MODIFIED — the image cache version (item 3). */
+  generationModified?: number | null;
 }
 export async function loadImageByVolumeId(
   volume: string,

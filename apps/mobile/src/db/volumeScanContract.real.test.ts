@@ -55,6 +55,8 @@ function photo(volume: string, rawId: string, takenAt = AT - 3_600_000): Continu
         : `file:///storage/0A91-E18D/DCIM/100MSDCF/${rawId}.jpg`,
     takenAt,
     modTime: takenAt,
+    fileGeneration: null,
+    fileMtime: takenAt,
     day: '2027-01-15',
     volumeName: volume,
     rawId,

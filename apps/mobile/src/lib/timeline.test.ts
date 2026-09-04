@@ -31,6 +31,7 @@ const member = (
 ): ReviewMemberRow => ({
   asset_id: id,
   uri: `file://${id}`,
+  image_version: 0,
   taken_at: takenAt,
   day,
   state,

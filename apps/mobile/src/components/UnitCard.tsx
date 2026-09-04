@@ -43,6 +43,8 @@ export const UNIT_CARD_HEIGHT = CARD_PAD * 2 + HEADER_H + CARD_GAP + THUMB_H + 2
 export interface UnitCardMember {
   asset_id: string;
   uri: string;
+  /** The image cache version (item 3). */
+  image_version: number;
 }
 
 export function UnitCard({
@@ -81,6 +83,7 @@ export function UnitCard({
             <OsThumbnail
               assetId={member.asset_id}
               uri={member.uri}
+              version={member.image_version}
               px={CARD_THUMB_PX}
               style={styles.thumb}
             />

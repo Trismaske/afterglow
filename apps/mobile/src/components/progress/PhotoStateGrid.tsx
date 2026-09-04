@@ -59,6 +59,8 @@ import { colors, useTheme } from '../../theme';
 export interface GridPhoto {
   id: string;
   uri: string;
+  /** The image cache version (item 3). */
+  version: number;
   takenAt: number;
   /** Capture day (m0.8.6 change 5): a string day from the DB; null =
    * TRACKED and honestly undated (takenAt is the mtime fallback —
@@ -245,6 +247,7 @@ export function PhotoStateGrid({
           const photos: GridPhoto[] = rows.map((r) => ({
             id: r.asset_id,
             uri: r.uri,
+            version: r.image_version,
             takenAt: r.taken_at,
             day: r.day,
             dbState: r.state,
@@ -272,6 +275,7 @@ export function PhotoStateGrid({
           const collected: GridPhoto[] = pulled.map((r) => ({
             id: r.id,
             uri: r.uri,
+            version: r.version,
             takenAt: r.takenAt,
             day: r.day,
             dbState: r.dbState,
@@ -342,7 +346,13 @@ export function PhotoStateGrid({
       <Pressable style={styles.tileWrap} onPress={() => onPhotoPress(item, items, index)}>
         {/* The OS thumbnail source (phase 3, item 2): a third of the
             screen at device scale, bucketed. */}
-        <OsThumbnail assetId={item.id} uri={item.uri} px={tilePx} style={styles.tile} />
+        <OsThumbnail
+          assetId={item.id}
+          uri={item.uri}
+          version={item.version}
+          px={tilePx}
+          style={styles.tile}
+        />
         {/* The shared inspection-dot row (StateDots' header): verdict
             dot + weighted action glyphs, the same marks the deck strip
             and the timeline cards wear. */}

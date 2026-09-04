@@ -413,6 +413,7 @@ export function OrganizeQueueScreen({ navigation }: Props) {
       <QueueGridCell
         id={item.photo_id}
         uri={item.uri}
+        version={item.image_version}
         selected={selected.has(item.photo_id)}
         accent={theme.accent}
         onPress={() => toggle(item.photo_id)}

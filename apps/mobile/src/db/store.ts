@@ -261,6 +261,8 @@ export async function countStagedCullsWithUnsentIntents(
 export interface StagedCullRow {
   asset_id: string;
   uri: string;
+  /** The image cache version (v23, item 3): COALESCE(file_generation, file_mtime). */
+  image_version: number;
   taken_at: number;
   day: string | null;
 }
@@ -283,7 +285,7 @@ export async function getStagedCulls(
   const reach = reachClause(mounted);
   const src = sourceClause(roots);
   return db.getAllAsync<StagedCullRow>(
-    `SELECT asset_id, uri, taken_at, day FROM photos
+    `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, taken_at, day FROM photos
      WHERE state = 'culled' AND is_present = 1${reach.sql}${src.sql}
      ORDER BY taken_at ASC${limit === undefined ? '' : ' LIMIT ?'}`,
     ...reach.params,
@@ -869,6 +871,8 @@ export async function clearNotRelated(
 export interface ReviewMemberRow {
   asset_id: string;
   uri: string;
+  /** The image cache version (v23, item 3). */
+  image_version: number;
   taken_at: number;
   /** Local capture-day key (photos.day); null = undated. The timeline
    * splits singles runs on it (lib/timeline.ts). */
@@ -954,7 +958,7 @@ async function listReviewGroupsIn(
     // newer SD member must not pull a group ahead of what the page
     // actually shows — the timeline's anchors come from visible members.
     const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
-      `SELECT a.group_id, p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+      `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id IN (${groups.map(() => '?').join(',')}) AND p.is_present = 1${reach.sql}
@@ -983,6 +987,7 @@ async function listReviewGroupsIn(
       const row: ReviewMemberRow = {
         asset_id: m.asset_id,
         uri: m.uri,
+        image_version: m.image_version,
         taken_at: m.taken_at,
         day: m.day,
         state: m.state,
@@ -1086,7 +1091,7 @@ export async function fetchBrowseGroupsPage(
     const ids = heads.map((h) => Number(h.id));
     const placeholders = ids.map(() => '?').join(',');
     const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
-      `SELECT a.group_id, p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+      `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
          FROM photo_group_assignments a
          JOIN photos p ON p.asset_id = a.photo_id
         WHERE a.group_id IN (${placeholders}) AND p.is_present = 1 AND p.state <> 'trashed'${reach.sql}
@@ -1115,6 +1120,7 @@ export async function fetchBrowseGroupsPage(
       const row: ReviewMemberRow = {
         asset_id: m.asset_id,
         uri: m.uri,
+        image_version: m.image_version,
         taken_at: m.taken_at,
         day: m.day,
         state: m.state,
@@ -1160,7 +1166,7 @@ export async function fetchBrowseSinglesPage(
     before === undefined ? '' : ' AND (p.taken_at < ? OR (p.taken_at = ? AND p.asset_id < ?))';
   const keysetParams = before === undefined ? [] : [before.takenAt, before.takenAt, before.assetId];
   return db.getAllAsync<ReviewMemberRow>(
-    `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
       WHERE a.group_id IS NULL AND p.is_present = 1 AND p.state <> 'trashed'${src.sql}${reach.sql}${keyset}
@@ -1193,7 +1199,7 @@ export async function getReviewGroup(
     );
     if (!group) return;
     const members = await txn.getAllAsync<ReviewMemberRow>(
-      `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+      `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id = ? AND p.is_present = 1${reach.sql}
@@ -1241,7 +1247,7 @@ async function listSinglesFeedIn(
   const src = sourceClause(roots, 'p.uri');
   const reach = reachClause(mounted, 'p.volume_name');
   const page = await txn.getAllAsync<ReviewMemberRow>(
-    `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
      WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled') AND p.is_present = 1${src.sql}${reach.sql}
@@ -1262,7 +1268,7 @@ async function listSinglesFeedIn(
   if (page.length >= limit && !page.some((row) => row.state === 'unreviewed')) {
     const tail = page[page.length - 1];
     const pending = await txn.getAllAsync<ReviewMemberRow>(
-      `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+      `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id IS NULL AND p.state = 'unreviewed' AND p.is_present = 1${src.sql}${reach.sql}
@@ -1330,7 +1336,7 @@ export async function listSinglesForDeck(
   // run's inclusive range).
   const rangePredicate = range ? ' AND p.taken_at BETWEEN ? AND ?' : '';
   return db.getAllAsync<ReviewMemberRow>(
-    `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
      WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled', 'kept') AND p.is_present = 1${src.sql}${reach.sql}${dayPredicate}${rangePredicate}
@@ -1394,7 +1400,7 @@ export async function listGroupsForDay(
         ...batch,
       );
       const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
-        `SELECT a.group_id, p.asset_id, p.uri, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, ${memberInSource.sql} AS in_source
+        `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, ${memberInSource.sql} AS in_source
          FROM photo_group_assignments a
          JOIN photos p ON p.asset_id = a.photo_id
          WHERE a.group_id IN (${placeholders}) AND p.is_present = 1${reach.sql}
@@ -1408,6 +1414,7 @@ export async function listGroupsForDay(
         const row: ReviewMemberRow = {
           asset_id: m.asset_id,
           uri: m.uri,
+          image_version: m.image_version,
           taken_at: m.taken_at,
           day: m.day,
           state: m.state,
@@ -1489,7 +1496,7 @@ export async function getPhotoFacts(
   assetId: string,
 ): Promise<PhotoFacts | null> {
   return db.getFirstAsync<PhotoFacts>(
-    `SELECT p.asset_id, p.uri, p.taken_at, p.day, p.state, p.reviewed_at,
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, p.reviewed_at,
             (EXISTS (SELECT 1 FROM photo_actions e WHERE e.photo_id = p.asset_id
                       AND e.kind = 'edit' AND e.state IN ('queued', 'error'))) AS needs_edit,
             (SELECT CAST(f.target AS INTEGER) FROM photo_actions f
@@ -1946,6 +1953,11 @@ export interface ContinuousPhotoUpsert {
   uri: string;
   takenAt: number;
   modTime: number;
+  /** The image cache version inputs (v23, item 3): MediaStore's
+   * GENERATION_MODIFIED when the load path had it, and the file mtime
+   * (ms) always. */
+  fileGeneration: number | null;
+  fileMtime: number;
   /** Local day key — NULL for UNDATED photos (no DATE_TAKEN): their
    * taken_at is only the mtime fallback, and finite MediaStore day/range
    * queries exclude them, so the DB day surfaces must too. They stay
@@ -2048,11 +2060,16 @@ export async function writeContinuousGroups(
     for (const photo of write.photos) {
       await txn.runAsync(
         `INSERT INTO photos (asset_id, uri, taken_at, state, mod_time, day,
-                             volume_name, raw_id, size_bytes, exif_checked_mod_time)
-         VALUES (?, ?, ?, 'unreviewed', ?, ?, ?, ?, ?, ?)
+                             volume_name, raw_id, size_bytes, exif_checked_mod_time,
+                             file_generation, file_mtime)
+         VALUES (?, ?, ?, 'unreviewed', ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(asset_id) DO UPDATE SET
            uri = excluded.uri,
            taken_at = excluded.taken_at,
+           -- The cache version (v23): a known generation survives a pass
+           -- that could not read one; the mtime always refreshes.
+           file_generation = COALESCE(excluded.file_generation, photos.file_generation),
+           file_mtime = excluded.file_mtime,
            -- A scanned photo IS present, whatever marked it absent —
            -- including a "Forget this card, keep history" assertion whose
            -- card came back (m0.8.3 §7): the honest edge in that flow's
@@ -2091,6 +2108,8 @@ export async function writeContinuousGroups(
         photo.rawId,
         photo.sizeBytes,
         photo.exifCheckedModTime ?? null,
+        photo.fileGeneration,
+        photo.fileMtime,
       );
     }
     // Revalidate the plan INSIDE the transaction: the runner computed it
@@ -2415,22 +2434,33 @@ export async function getPhotoUris(
 export async function getPhotoQueueFacts(
   db: SQLiteDatabase,
   assetIds: readonly string[],
-): Promise<Map<string, { uri: string; takenAt: number; day: string | null }>> {
-  const facts = new Map<string, { uri: string; takenAt: number; day: string | null }>();
+): Promise<
+  Map<string, { uri: string; takenAt: number; day: string | null; imageVersion: number }>
+> {
+  const facts = new Map<
+    string,
+    { uri: string; takenAt: number; day: string | null; imageVersion: number }
+  >();
   for (const ids of chunk(assetIds, IN_CHUNK)) {
     if (ids.length === 0) continue;
     const placeholders = ids.map(() => '?').join(',');
     const rows = await db.getAllAsync<{
       asset_id: string;
       uri: string;
+      image_version: number;
       taken_at: number;
       day: string | null;
     }>(
-      `SELECT asset_id, uri, taken_at, day FROM photos WHERE asset_id IN (${placeholders})`,
+      `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, taken_at, day FROM photos WHERE asset_id IN (${placeholders})`,
       ...ids,
     );
     for (const row of rows) {
-      facts.set(row.asset_id, { uri: row.uri, takenAt: Number(row.taken_at), day: row.day });
+      facts.set(row.asset_id, {
+        uri: row.uri,
+        takenAt: Number(row.taken_at),
+        day: row.day,
+        imageVersion: row.image_version,
+      });
     }
   }
   return facts;
@@ -2509,6 +2539,7 @@ export async function getQueuedForAssets(
 export interface ToEditRow {
   asset_id: string;
   uri: string;
+  image_version: number;
   taken_at: number;
   day: string | null;
 }
@@ -2530,7 +2561,7 @@ export async function getToEditPhotos(
   const reach = reachClause(mounted, 'p.volume_name');
   const src = sourceClause(roots, 'p.uri');
   return db.getAllAsync<ToEditRow>(
-    `SELECT p.asset_id, p.uri, p.taken_at, p.day FROM photos p
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day FROM photos p
        JOIN photo_actions pa ON pa.photo_id = p.asset_id
       WHERE pa.kind = 'edit' AND pa.state IN ('queued', 'error')
         AND ${livePhotoClause('p.asset_id', 'edit')}${reach.sql}${src.sql}
@@ -2558,7 +2589,7 @@ export async function getEditDetectionRows(
 ): Promise<EditDetectionRow[]> {
   const reach = reachClause(mounted, 'p.volume_name');
   return db.getAllAsync<EditDetectionRow>(
-    `SELECT p.asset_id, p.uri, p.taken_at, p.mod_time, p.content_hash,
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.mod_time, p.content_hash,
             pa.queued_at AS to_edit_at
        FROM photos p
        JOIN photo_actions pa ON pa.photo_id = p.asset_id
@@ -2728,6 +2759,7 @@ export interface HistoryPhotoRow {
   kind: 'photo';
   asset_id: string;
   uri: string;
+  image_version: number;
   taken_at: number;
   state: PhotoState;
   /** Per-kind LIVE (`state IN ('queued','error')`; favourite additionally
@@ -2885,7 +2917,7 @@ export async function getHistoryPage(
     photoPos === 'end'
       ? []
       : await db.getAllAsync<Omit<HistoryPhotoRow, 'kind'>>(
-          `SELECT asset_id, uri, taken_at, state, day, activity_at, is_present,
+          `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, taken_at, state, day, activity_at, is_present,
                   EXISTS (SELECT 1 FROM photo_actions pa_edit WHERE pa_edit.photo_id = photos.asset_id AND pa_edit.kind = 'edit' AND pa_edit.state IN ('queued', 'error')) AS needs_edit,
                   EXISTS (SELECT 1 FROM photo_actions pc_edit WHERE pc_edit.photo_id = photos.asset_id AND pc_edit.kind = 'edit' AND pc_edit.resolved_at IS NOT NULL) AS edit_applied,
                   EXISTS (SELECT 1 FROM photo_actions pl_fav WHERE pl_fav.photo_id = photos.asset_id AND pl_fav.kind = 'favourite' AND pl_fav.state IN ('queued', 'error') AND pl_fav.target = '1') AS favourite_live,
@@ -3104,6 +3136,9 @@ export interface AssetStateRow {
   taken_at: number;
   day: string | null;
   rescued: boolean;
+  /** The image cache version (v23, item 3) — the library grid's join
+   * carries it for tracked rows. */
+  image_version: number;
 }
 
 export async function getStateRowsForAssets(
@@ -3120,11 +3155,12 @@ export async function getStateRowsForAssets(
       taken_at: number;
       day: string | null;
       rescued: number;
+      image_version: number;
     }>(
       `SELECT asset_id, state, taken_at, day,
               (exif_checked_mod_time IS NOT NULL AND day IS NOT NULL) AS rescued,
               EXISTS (SELECT 1 FROM photo_group_assignments a
-                      WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped
+                      WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped, COALESCE(file_generation, file_mtime) AS image_version
        FROM photos WHERE asset_id IN (${placeholders})`,
       ...ids,
     );
@@ -3135,6 +3171,7 @@ export async function getStateRowsForAssets(
         taken_at: row.taken_at,
         day: row.day,
         rescued: !!row.rescued,
+        image_version: row.image_version,
       });
   }
   return out;
@@ -3147,6 +3184,7 @@ export async function getStateRowsForAssets(
 export interface RescuedPhotoRow {
   asset_id: string;
   uri: string;
+  image_version: number;
   taken_at: number;
   day: string;
 }
@@ -3171,7 +3209,7 @@ export async function getRescuedPhotoPage(
     before === undefined ? '' : ' AND (taken_at < ? OR (taken_at = ? AND asset_id < ?))';
   const keysetParams = before === undefined ? [] : [before.takenAt, before.takenAt, before.assetId];
   return db.getAllAsync<RescuedPhotoRow>(
-    `SELECT asset_id, uri, taken_at, day
+    `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, taken_at, day
        FROM photos
       WHERE exif_checked_mod_time IS NOT NULL AND day IS NOT NULL
         AND state <> 'trashed' AND is_present = 1${src.sql}${reach.sql}${keyset}
@@ -3191,6 +3229,7 @@ export interface GridPhotoRow {
   needs_edit: number;
   asset_id: string;
   uri: string;
+  image_version: number;
   taken_at: number;
   /** Capture day; NULL = honestly undated (taken_at is the mtime
    * fallback then — surfaces must say "Unknown day", m0.8.6 change 5). */
@@ -3249,7 +3288,7 @@ export async function getGridPhotosByFilter(
   const filterSql = GRID_FILTER_SQL[filter];
   if (filterSql === undefined) throw new Error(`unknown grid filter: ${filter}`);
   return db.getAllAsync<GridPhotoRow>(
-    `SELECT asset_id, uri, taken_at, day, state,
+    `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, taken_at, day, state,
             EXISTS (SELECT 1 FROM photo_group_assignments a
                     WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped,
             EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = photos.asset_id

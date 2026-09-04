@@ -81,6 +81,8 @@ export type DeckListDescriptor =
 export interface DeckListRow {
   id: string;
   uri: string;
+  /** The image cache version (item 3): the row's COALESCE(file_generation, file_mtime). */
+  version: number;
   takenAt: number;
   /** Capture day; null = tracked and honestly undated ("Unknown day",
    * no clock — takenAt is the mtime fallback there). */
@@ -203,6 +205,7 @@ export async function resolveDeckListPage(
             rows: rows.map((r) => ({
               id: r.asset_id,
               uri: r.uri,
+              version: r.image_version,
               takenAt: r.taken_at,
               day: r.day,
               state: states.get(r.asset_id) ?? 'unreviewed',
@@ -221,6 +224,7 @@ export async function resolveDeckListPage(
             rows: rows.map((r) => ({
               id: r.photo_id,
               uri: r.uri,
+              version: r.image_version,
               takenAt: r.taken_at,
               day: r.day,
               state: states.get(r.photo_id) ?? 'unreviewed',
@@ -239,6 +243,7 @@ export async function resolveDeckListPage(
             rows: rows.map((r) => ({
               id: r.photo_id,
               uri: r.uri,
+              version: r.image_version,
               takenAt: r.taken_at,
               day: r.day,
               state: states.get(r.photo_id) ?? 'unreviewed',
@@ -264,6 +269,7 @@ export async function resolveDeckListPage(
             rows: actions.map((action) => ({
               id: action.photoId,
               uri: byId.get(action.photoId)?.uri ?? '',
+              version: byId.get(action.photoId)?.imageVersion ?? 0,
               takenAt: byId.get(action.photoId)?.takenAt ?? action.queuedAt,
               day: byId.get(action.photoId)?.day ?? null,
               state: states.get(action.photoId) ?? 'unreviewed',
@@ -308,6 +314,7 @@ export async function resolveDeckListPage(
       const rows = live.map((r) => ({
         id: r.asset_id,
         uri: r.uri,
+        version: r.image_version,
         takenAt: r.taken_at,
         day: r.day,
         state: r.state,
@@ -352,6 +359,7 @@ export async function resolveDeckListPage(
           rows: page.map((r) => ({
             id: r.id,
             uri: r.uri,
+            version: r.version,
             takenAt: r.takenAt,
             // The tri-state collapses for the deck row: an untracked
             // photo's only date claim is MediaStore's own timestamp —
@@ -392,6 +400,7 @@ export async function resolveDeckListPage(
         rows: rows.map((r) => ({
           id: r.asset_id,
           uri: r.uri,
+          version: r.image_version,
           takenAt: r.taken_at,
           day: r.day,
           state: r.state,

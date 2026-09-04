@@ -12,15 +12,19 @@ import React from 'react';
 import { Image, type ImageContentFit, type ImageStyle } from 'expo-image';
 import type { StyleProp } from 'react-native';
 import { useOsThumbnail } from './useOsThumbnail';
+import { imageCacheKey } from '../lib/imageKeys';
 
 export function OsThumbnail({
   assetId,
   uri,
+  version,
   px,
   style,
   contentFit = 'cover',
 }: {
   assetId: string;
+  /** The row's image version (item 3) — keys both caches. */
+  version: number;
   /** The file URI — the fallback source when the OS store cannot serve. */
   uri: string;
   /** A lib/thumbnailSize bucket. */
@@ -28,11 +32,15 @@ export function OsThumbnail({
   style?: StyleProp<ImageStyle>;
   contentFit?: ImageContentFit;
 }) {
-  const thumb = useOsThumbnail(assetId, px);
+  const thumb = useOsThumbnail(assetId, px, version);
   return (
     <Image
       source={
-        thumb.status === 'ready' ? thumb.ref : thumb.status === 'failed' ? { uri } : undefined
+        thumb.status === 'ready'
+          ? thumb.ref
+          : thumb.status === 'failed'
+            ? { uri, cacheKey: imageCacheKey(assetId, version) }
+            : undefined
       }
       style={style}
       contentFit={contentFit}

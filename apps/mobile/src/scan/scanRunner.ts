@@ -174,6 +174,12 @@ export function subscribeScanStatus(listener: (status: ScanStatus) => void): () 
 function update(patch: Partial<ScanStatus>): void {
   status = { ...status, ...patch };
   for (const listener of listeners) listener(status);
+  // Phase-3 spike (b): the WAL curve DURING a scan — the embedding-heavy
+  // initial pass is the suspected checkpoint-starvation window, and the
+  // end-of-scan line alone cannot show a mid-scan balloon. logFootprint
+  // self-throttles to one line a minute, so this costs one cheap early
+  // return per status tick.
+  if (status.phase === 'scanning') logFootprint('scan progress');
 }
 
 let flight: Promise<void> | null = null;

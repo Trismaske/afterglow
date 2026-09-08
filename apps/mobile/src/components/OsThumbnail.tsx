@@ -12,7 +12,7 @@ import React from 'react';
 import { Image, type ImageContentFit, type ImageStyle } from 'expo-image';
 import type { StyleProp } from 'react-native';
 import { useOsThumbnail } from './useOsThumbnail';
-import { imageCacheKey } from '../lib/imageKeys';
+import { imageCacheKey, versionedUri } from '../lib/imageKeys';
 
 export function OsThumbnail({
   assetId,
@@ -39,12 +39,12 @@ export function OsThumbnail({
         thumb.status === 'ready'
           ? thumb.ref
           : thumb.status === 'failed'
-            ? { uri, cacheKey: imageCacheKey(assetId, version) }
+            ? { uri: versionedUri(uri, version) }
             : undefined
       }
       style={style}
       contentFit={contentFit}
-      recyclingKey={assetId}
+      recyclingKey={imageCacheKey(assetId, version)}
       transition={0}
     />
   );

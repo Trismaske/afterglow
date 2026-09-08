@@ -22,7 +22,7 @@ import { showToast } from '../lib/toast';
 import { DOUBLE_TAP_MS } from '../lib/zoomTarget';
 import { colors, touch, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded } from '../lib/format';
-import { imageCacheKey } from '../lib/imageKeys';
+import { imageCacheKey, versionedUri } from '../lib/imageKeys';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { isFavouriteSelected } from '../lib/favouriteState';
 import { ActionChip } from '../components/ActionChip';
@@ -688,9 +688,8 @@ export function CompareScreen({ navigation, route }: Props) {
                   stay warm under the shared transform. */}
                 <View style={[StyleSheet.absoluteFill, { opacity: showB ? 0 : 1 }]}>
                   <StagePaneLayers
-                    uri={pair.a.uri}
-                    cacheKey={imageCacheKey(pair.a.id, versionOf(pair.a.id))}
-                    recyclingKey={pair.a.id}
+                    uri={versionedUri(pair.a.uri, versionOf(pair.a.id))}
+                    recyclingKey={imageCacheKey(pair.a.id, versionOf(pair.a.id))}
                     regionZoom={regionZoomA}
                     sourcesOk={regionZoomA.forPhotoId === pair.a.id}
                     onSourceLoad={(w, h) => {
@@ -702,9 +701,8 @@ export function CompareScreen({ navigation, route }: Props) {
                 transform (on the shared parent) applies to both at once. */}
                 <View style={[StyleSheet.absoluteFill, { opacity: showB ? 1 : 0 }]}>
                   <StagePaneLayers
-                    uri={pair.b.uri}
-                    cacheKey={imageCacheKey(pair.b.id, versionOf(pair.b.id))}
-                    recyclingKey={pair.b.id}
+                    uri={versionedUri(pair.b.uri, versionOf(pair.b.id))}
+                    recyclingKey={imageCacheKey(pair.b.id, versionOf(pair.b.id))}
                     regionZoom={regionZoomB}
                     sourcesOk={regionZoomB.forPhotoId === pair.b.id}
                     onSourceLoad={(w, h) => {

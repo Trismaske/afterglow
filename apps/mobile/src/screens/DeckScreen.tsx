@@ -21,6 +21,13 @@ import type {
   NativeStackScreenProps,
 } from '@react-navigation/native-stack';
 import type { MediaItem } from '@afterglow/core';
+/** A deck page item: the core DeckItem plus its IMAGE VERSION (phase 3
+ * item 3). The version rides the item, not a ref, so a page renders its
+ * key from the data it was rendered for — and it is part of the
+ * `recyclingKey`: expo-image keeps a recycled view's pixels when uri and
+ * recyclingKey match, so a bumped cacheKey alone left the STAGE on the
+ * pre-edit picture while the strip had moved on (S23, 2026-09-08). */
+type DeckItem = MediaItem & { version: number };
 import type { RootStackParamList } from '../navigation';
 import { useReview, type RedecideTarget } from '../review/ReviewContext';
 import type { ReviewGroupRow, ReviewMemberRow } from '../db/store';
@@ -30,7 +37,7 @@ import { formatClockPrecise, millisNeeded, plural } from '../lib/format';
 import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { OsThumbnail } from '../components/OsThumbnail';
 import { thumbBucketPx } from '../lib/thumbnailSize';
-import { imageCacheKey } from '../lib/imageKeys';
+import { imageCacheKey, versionedUri } from '../lib/imageKeys';
 import { checkMediaPresence } from '../lib/media';
 import { showToast } from '../lib/toast';
 import { classifyPhotoState } from '../lib/progress';
@@ -312,11 +319,10 @@ interface DeckView {
    * patch. A fresh list is born directly on its unit's first pending
    * photo and stale physical state dies with the old list. */
   unitKey: string;
-  items: MediaItem[];
+  items: DeckItem[];
   cursor: number;
-  current: MediaItem;
+  current: DeckItem;
   stateOf: Map<string, ReviewMemberRow['state']>;
-  versionOf: Map<string, number>;
   dayOf: Map<string, string | null>;
   needMs: boolean[];
   /** Group-only controls (Not related) render. */
@@ -413,7 +419,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * in `immersiveFlip` masks the reflow). Never a navigate: no
    * remount, no zoom-pipeline re-warm. */
   const [immersive, setImmersive] = useState(false);
-  const listRef = useRef<FlatList<MediaItem>>(null);
+  const listRef = useRef<FlatList<DeckItem>>(null);
 
   // m0.5: an explicit group (overview tap) pins the deck to it; the
   // paramless linear flow follows the timeline's FIRST unit — bound here
@@ -802,15 +808,6 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     for (const r of shownListRows) map.set(r.id, r.day);
     return map;
   }, [group, singleRows, shownListRows]);
-  /** Each photo's IMAGE VERSION (item 3, lib/imageKeys): the pager's
-   * Glide key and the OS-thumbnail retention key both carry it. */
-  const versionOf = useMemo(() => {
-    const map = new Map<string, number>();
-    if (group) for (const m of group.members) map.set(m.asset_id, m.image_version);
-    for (const m of singleRows) map.set(m.asset_id, m.image_version);
-    for (const r of shownListRows) map.set(r.id, r.version);
-    return map;
-  }, [group, singleRows, shownListRows]);
   const info = useMemo(() => {
     if (!group) return null;
     const aliveIds = group.members.filter((m) => m.state === 'unreviewed').map((m) => m.asset_id);
@@ -844,13 +841,14 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     index: unitRef ? findUnitIndex(timeline, unitRef) : -1,
   });
 
-  const toItem = (m: ReviewMemberRow): MediaItem => ({
+  const toItem = (m: ReviewMemberRow): DeckItem => ({
     id: m.asset_id,
     timestamp: m.taken_at,
     uri: m.uri,
     kind: 'photo',
+    version: m.image_version,
   });
-  const aliveItems: MediaItem[] = useMemo(
+  const aliveItems: DeckItem[] = useMemo(
     () => (group ? group.members.filter((m) => m.state === 'unreviewed').map(toItem) : []),
     [group],
   );
@@ -858,15 +856,22 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   // round 4): a decided photo stays in place badged with its verdict —
   // Keep behaves exactly like Cull, and re-tapping the active verdict
   // clears it. Nothing leaves until the final delete confirmation.
-  const groupItems: MediaItem[] = useMemo(() => (group ? group.members.map(toItem) : []), [group]);
+  const groupItems: DeckItem[] = useMemo(() => (group ? group.members.map(toItem) : []), [group]);
   // A singles deck's rows: every non-trashed state, decided photos
   // badged in place (m0.8.2 unification — group-deck parity).
-  const singlesItems: MediaItem[] = useMemo(
+  const singlesItems: DeckItem[] = useMemo(
     () => (singlesMode ? singleRows.map(toItem) : []),
     [singleRows, singlesMode],
   );
-  const listItems: MediaItem[] = useMemo(
-    () => shownListRows.map((r) => ({ id: r.id, timestamp: r.takenAt, uri: r.uri, kind: 'photo' })),
+  const listItems: DeckItem[] = useMemo(
+    () =>
+      shownListRows.map((r): DeckItem => ({
+        id: r.id,
+        timestamp: r.takenAt,
+        uri: r.uri,
+        kind: 'photo',
+        version: r.version,
+      })),
     [shownListRows],
   );
   const deckItems = listMode ? listItems : singlesMode ? singlesItems : groupItems;
@@ -899,7 +904,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     const index = stableListRows.findIndex((r) => r.id === id);
     if (index >= 0) heldRowRef.current = { row: stableListRows[index], index };
   }, [listMode, stableListRows, deckItems, cursor]);
-  const current: MediaItem | null = deckItems[cursor] ?? null;
+  const current: DeckItem | null = deckItems[cursor] ?? null;
   const currentId = current?.id ?? null;
   /**
    * The unit's rows are not here yet (an in-place advance changes the
@@ -1206,8 +1211,6 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   const loadedPagesRef = useRef<Set<string>>(new Set());
   const [decodedTick, setDecodedTick] = useState(0);
   const currentIdRef = useRef<string | null>(null);
-  /** renderPage is memoized on pageW alone — the versions ride a ref. */
-  const versionOfRef = useRef<Map<string, number>>(new Map());
   /** The photo the stage last actually PAINTED. It backs the COLD-OPEN
    * stage only now: the session's first deck reading its rows shows the
    * outgoing photo instead of a blank (§10 check 3). The pager's own
@@ -1749,7 +1752,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   );
 
   const renderPage = useCallback(
-    ({ item }: { item: MediaItem }) => (
+    ({ item }: { item: DeckItem }) => (
       // Pressable, not a tap gesture: presses fire on the JS thread with
       // no worklets bridge (crash class above), and a horizontal drag
       // hands over to the pager's scroll exactly like any list row.
@@ -1757,13 +1760,12 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
         <Image
           // The version-carrying key (item 3): an in-place edit lands
           // fresh pixels on the next scan, never Glide's pre-edit entry.
-          source={{
-            uri: item.uri,
-            cacheKey: imageCacheKey(item.id, versionOfRef.current.get(item.id) ?? 0),
-          }}
+          source={{ uri: versionedUri(item.uri, item.version) }}
           style={StyleSheet.absoluteFill}
           contentFit="contain"
-          recyclingKey={item.id}
+          // The version is part of the recycling identity (DeckItem's
+          // doc): an edited photo is a NEW image to expo-image.
+          recyclingKey={imageCacheKey(item.id, item.version)}
           transition={40}
           onLoad={() => {
             // This page has painted — the decode underlay may drop for
@@ -1843,7 +1845,6 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
           current,
           stateOf,
           dayOf,
-          versionOf,
           needMs,
           isGroup: !singlesMode && !listMode && !!groupId,
           listMode,
@@ -1879,7 +1880,6 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   // What the stage is SHOWING this render — the id whose page paint the
   // underlay waits for (render-time, so the swap frame reads the new id).
   currentIdRef.current = view?.current.id ?? null;
-  if (view) versionOfRef.current = view.versionOf;
   if (view === null) {
     // Nothing to freeze — the session's very first deck is still
     // reading its rows. The outgoing-photo stage (or a blank breath on
@@ -1927,7 +1927,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * while it waits for you, quiet once the photo carries it (m0.8.2).
    * The verdict rides into actionWeights so a staged cull's retained
    * actions badge quiet — they left the queues with it. */
-  const badgesFor = (item: MediaItem): PhotoBadge[] => {
+  const badgesFor = (item: DeckItem): PhotoBadge[] => {
     const state = view.stateOf.get(item.id) ?? 'unreviewed';
     return photoBadges({
       state,
@@ -2057,7 +2057,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
         frameStyle={immersive ? styles.stageFrameImmersive : styles.stageFrame}
         onStageLayout={(width) => setPageW(width)}
         overlayFor={view.current}
-        overlayCacheKey={imageCacheKey(view.current.id, view.versionOf.get(view.current.id) ?? 0)}
+        overlayUri={versionedUri(view.current.uri, view.current.version)}
         regionZoom={regionZoom}
         identityOk={current?.id === view.current.id}
         backdropColor={immersive ? '#000' : colors.surface}
@@ -2128,7 +2128,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
             <OsThumbnail
               assetId={view.current.id}
               uri={view.current.uri}
-              version={view.versionOf.get(view.current.id) ?? 0}
+              version={view.current.version}
               px={STAGE_THUMB_PX}
               contentFit="contain"
               style={[
@@ -2221,7 +2221,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               <OsThumbnail
                 assetId={item.id}
                 uri={item.uri}
-                version={view.versionOf.get(item.id) ?? 0}
+                version={item.version}
                 px={STRIP_THUMB_PX}
                 style={[
                   styles.thumb,
@@ -2480,7 +2480,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                       <OsThumbnail
                         assetId={item.id}
                         uri={item.uri}
-                        version={view.versionOf.get(item.id) ?? 0}
+                        version={item.version}
                         px={PICKER_THUMB_PX}
                         style={styles.pickerThumb}
                       />

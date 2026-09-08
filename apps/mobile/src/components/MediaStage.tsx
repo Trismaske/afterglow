@@ -447,8 +447,9 @@ export interface MediaStageViewProps {
    * the deck passes its frozen view's photo). Null renders an empty
    * overlay. */
   overlayFor: { id: string; uri: string } | null;
-  /** The overlay URI layer's cache key (lib/imageKeys, item 3). */
-  overlayCacheKey?: string;
+  /** The overlay URI layer's VERSIONED uri (lib/imageKeys versionedUri,
+   * item 3) — Glide keys a local file by its uri text. */
+  overlayUri?: string;
   regionZoom: RegionZoomState;
   /** Extra identity gate ANDed into the base/patch source condition —
    * the deck passes `live current === frozen view current` so a unit
@@ -476,7 +477,7 @@ export function MediaStageView({
   frameStyle,
   onStageLayout,
   overlayFor,
-  overlayCacheKey,
+  overlayUri,
   regionZoom,
   identityOk = true,
   backdropColor,
@@ -512,9 +513,8 @@ export function MediaStageView({
               >
                 <Animated.View style={[StyleSheet.absoluteFill, controller.zoomStyle]}>
                   <StagePaneLayers
-                    uri={overlayFor?.uri}
-                    cacheKey={overlayCacheKey}
-                    recyclingKey={overlayFor ? `zoom-${overlayFor.id}` : undefined}
+                    uri={overlayUri ?? overlayFor?.uri}
+                    recyclingKey={overlayFor ? `zoom-${overlayUri ?? overlayFor.id}` : undefined}
                     regionZoom={regionZoom}
                     sourcesOk={sourcesOk}
                     onSourceLoad={(width, height) => {
@@ -554,15 +554,14 @@ export function MediaStageView({
  * overlay; Compare's stacked pair uses it once per pane). */
 export function StagePaneLayers({
   uri,
-  cacheKey,
   recyclingKey,
   regionZoom,
   sourcesOk,
   onSourceLoad,
 }: {
+  /** The photo's VERSIONED uri (lib/imageKeys) on surfaces that carry
+   * one — Glide keys a local file by its uri text (item 3). */
   uri: string | undefined;
-  /** The image cache key (lib/imageKeys, item 3) for the URI layer. */
-  cacheKey?: string;
   recyclingKey: string | undefined;
   regionZoom: RegionZoomState;
   sourcesOk: boolean;
@@ -573,7 +572,7 @@ export function StagePaneLayers({
   return (
     <>
       <Image
-        source={uri ? { uri, cacheKey } : undefined}
+        source={uri ? { uri } : undefined}
         style={StyleSheet.absoluteFill}
         contentFit="contain"
         recyclingKey={recyclingKey}

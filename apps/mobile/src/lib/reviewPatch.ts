@@ -260,6 +260,12 @@ export function applyLocalAction(s: ReviewSnapshot, action: LocalAction): Review
 function memberEquals(a: ReviewMemberRow, b: ReviewMemberRow): boolean {
   return (
     a.asset_id === b.asset_id &&
+    // The image version is READ STATE the surfaces render from (phase 3
+    // item 3): an in-place edit changes nothing else about a row, and a
+    // refresh that called it "unchanged" committed no version bump, so
+    // the Timeline's and the open deck's keys stayed on the pre-edit
+    // pixels until an unrelated commit (S23, 2026-09-08).
+    a.image_version === b.image_version &&
     a.state === b.state &&
     a.needs_edit === b.needs_edit &&
     a.time_attached === b.time_attached &&

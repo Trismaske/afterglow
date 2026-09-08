@@ -30,6 +30,7 @@
  * undercounting a pass lost in the crash window rather than ever
  * fabricating one.
  */
+import type { StoredMediaKind } from '../lib/mediaIdentity';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { withWriteTransaction } from './database';
 import { leaveQueue, livePhotoClause, reachExists, sourceExists } from './actions';
@@ -43,6 +44,9 @@ export interface ShareQueueRow {
   photo_id: string;
   uri: string;
   image_version: number;
+  /** The media kind (v24, m0.9 phase 4): which MediaStore collection
+   * the row's content URI addresses. */
+  kind: StoredMediaKind;
   taken_at: number;
   day: string | null;
   queued_at: number;
@@ -184,7 +188,7 @@ export async function getShareQueue(
   const reach = reachExists(mounted, 'q.photo_id');
   const src = sourceExists(roots, 'q.photo_id');
   return db.getAllAsync<ShareQueueRow>(
-    `SELECT q.photo_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, q.queued_at,
+    `SELECT q.photo_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.taken_at, p.day, q.queued_at,
        (SELECT COUNT(*) FROM share_batch_members m
           JOIN share_batches b ON b.id = m.batch_id
         WHERE m.photo_id = q.photo_id

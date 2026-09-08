@@ -84,7 +84,7 @@ export async function runTrashAttempt(
   let dispatched = false;
   try {
     await markBatchLaunching(db, batch.batchId, Date.now());
-    const dialog = await trashAssets(ids);
+    const dialog = await trashAssets(batch.members.map((m) => ({ id: m.photoId, kind: m.kind })));
     dispatched =
       dialog.status !== 'unsupported' &&
       !(dialog.status === 'failed' && dialog.stage === 'prepare');

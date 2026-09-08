@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { migrateDatabase } from './database';
-import { getPresentAssetIds, writeContinuousGroups, type ContinuousPhotoUpsert } from './store';
+import { getPresentAssetRefs, writeContinuousGroups, type ContinuousPhotoUpsert } from './store';
 import { reconcileExternallyRemoved } from './trashStore';
 import { countForgettable, forgetVolume } from './volumeLifecycle';
 import { queueAction, resolveActions } from './actions';
@@ -40,6 +40,12 @@ function photo(volume: string, rawId: string, takenAt = AT - 3_600_000): Continu
     takenAt,
     modTime: takenAt,
     fileGeneration: null,
+    kind: 'photo' as const,
+    mimeType: 'image/jpeg',
+    displayName: null,
+    width: null,
+    height: null,
+    durationMs: null,
     fileMtime: takenAt,
     day: '2027-01-15',
     volumeName: volume,
@@ -148,7 +154,9 @@ describe('mechanism 2 — Forget this card', () => {
     expect(
       count(d, 'SELECT COUNT(*) AS n FROM photos WHERE volume_name = ? AND is_present = 0', SD),
     ).toBe(2);
-    expect(await getPresentAssetIds(asExpo(d), null, [PRIMARY, SD])).toEqual([`${PRIMARY}/p1`]);
+    expect((await getPresentAssetRefs(asExpo(d), null, [PRIMARY, SD])).map((r) => r.id)).toEqual([
+      `${PRIMARY}/p1`,
+    ]);
     // Satellites swept; the QUEUED edit died, the RESOLVED share stayed.
     expect(
       count(d, `SELECT COUNT(*) AS n FROM photo_embeddings WHERE asset_id LIKE '${SD}/%'`),

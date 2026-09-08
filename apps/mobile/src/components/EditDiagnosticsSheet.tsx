@@ -9,6 +9,7 @@
  * component only binds it to the native module and renders a shareable
  * report for the Samsung round-trip.
  */
+import { launchMimeType } from '../lib/editActions';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Modal, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import {
@@ -17,7 +18,7 @@ import {
   runEditDiagnostics,
   type EditDiagnosticsReport,
 } from '../../modules/media-store-actions';
-import { getEditableContentUri } from '../lib/media';
+import { getEditableContentUri, type MediaRef } from '../lib/media';
 import {
   MATRIX_PROBES,
   WRITE_REQUEST_TITLE,
@@ -29,7 +30,8 @@ import {
 import { colors, touch } from '../theme';
 
 interface Props {
-  assetId: string;
+  /** The item under diagnosis — id plus kind (its content URI's collection). */
+  asset: MediaRef;
   onClose: () => void;
 }
 
@@ -48,7 +50,7 @@ function envLines(env: EditDiagnosticsReport | null): (readonly [string, string]
   ];
 }
 
-export function EditDiagnosticsSheet({ assetId, onClose }: Props) {
+export function EditDiagnosticsSheet({ asset, onClose }: Props) {
   const [uri, setUri] = useState<string | null>(null);
   const [env, setEnv] = useState<EditDiagnosticsReport | null>(null);
   const [envDone, setEnvDone] = useState(false);
@@ -59,7 +61,7 @@ export function EditDiagnosticsSheet({ assetId, onClose }: Props) {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const contentUri = await getEditableContentUri(assetId);
+      const contentUri = await getEditableContentUri(asset);
       if (cancelled) return;
       setUri(contentUri);
       const report = await runEditDiagnostics(contentUri);
@@ -70,7 +72,7 @@ export function EditDiagnosticsSheet({ assetId, onClose }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [assetId]);
+  }, [asset]);
 
   const next = useMemo(() => nextMatrixStep(records), [records]);
 
@@ -105,14 +107,19 @@ export function EditDiagnosticsSheet({ assetId, onClose }: Props) {
           return;
         }
         const probe = MATRIX_PROBES[step];
-        const dispatch = await probeEditLaunch(uri, probe.action, probe.withWrite);
+        const dispatch = await probeEditLaunch(
+          uri,
+          probe.action,
+          probe.withWrite,
+          launchMimeType(asset.kind),
+        );
         setRecords((prev) => [...prev, { step, dispatch }]);
         if (dispatch.result === 'launched') setAwaitingObservation(step);
       } finally {
         setRunning(false);
       }
     },
-    [uri, running],
+    [uri, running, asset.kind],
   );
 
   const recordObservation = useCallback((step: MatrixStepId, observedOpen: boolean) => {

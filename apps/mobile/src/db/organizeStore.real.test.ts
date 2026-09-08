@@ -13,7 +13,7 @@ import {
   queueOrganize,
   setOrganizeTargets,
   unqueueOrganize,
-  androidAllowsImagesIn,
+  androidAllowsMediaIn,
   validateOrganizeTarget,
 } from './organizeStore';
 import { decodeOrganizeTarget } from './actions';
@@ -111,18 +111,25 @@ describe('target validation', () => {
     ).toMatch(/not valid/);
   });
 
-  it('androidAllowsImagesIn mirrors the platform allow-list for the PICKER only', () => {
+  it('androidAllowsMediaIn mirrors the platform allow-list for the PICKER only', () => {
     // Measured refusal, S10e 2026-07-31: "allowed directories are
     // [DCIM, Pictures]". This filter keeps the picker from offering a
     // target the next step refuses...
-    expect(androidAllowsImagesIn('DCIM/Camera/')).toBe(true);
-    expect(androidAllowsImagesIn('Pictures/Trips/')).toBe(true);
-    expect(androidAllowsImagesIn('Pictures/Trips')).toBe(true); // trailing slash optional
-    expect(androidAllowsImagesIn('Download/')).toBe(false);
-    expect(androidAllowsImagesIn('Movies/')).toBe(false);
+    expect(androidAllowsMediaIn('DCIM/Camera/', ['photo'])).toBe(true);
+    expect(androidAllowsMediaIn('Pictures/Trips/', ['photo'])).toBe(true);
+    expect(androidAllowsMediaIn('Pictures/Trips', ['photo'])).toBe(true); // trailing slash optional
+    expect(androidAllowsMediaIn('Download/', ['photo'])).toBe(false);
+    expect(androidAllowsMediaIn('Movies/', ['photo'])).toBe(false);
+    // m0.9 phase 4: Movies is a video home — for a video-only move, never
+    // for a mixed one (a path must be valid for every kind it carries).
+    expect(androidAllowsMediaIn('Movies/', ['video'])).toBe(true);
+    expect(androidAllowsMediaIn('Movies/Clips/', ['video', 'video'])).toBe(true);
+    expect(androidAllowsMediaIn('Movies/', ['photo', 'video'])).toBe(false);
+    expect(androidAllowsMediaIn('Movies/', [])).toBe(false);
+    expect(androidAllowsMediaIn('Pictures/', ['video'])).toBe(true);
     // ...and must not be mistaken for a prefix match on the NAME.
-    expect(androidAllowsImagesIn('DCIMx/')).toBe(false);
-    expect(androidAllowsImagesIn('PicturesOld/')).toBe(false);
+    expect(androidAllowsMediaIn('DCIMx/', ['photo'])).toBe(false);
+    expect(androidAllowsMediaIn('PicturesOld/', ['photo'])).toBe(false);
 
     // It is deliberately NOT wired into validation: Android stays the
     // only authority, so a path this filter hides still validates.

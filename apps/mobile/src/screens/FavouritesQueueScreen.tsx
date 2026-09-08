@@ -4,6 +4,7 @@
  * verified before SQLite commits the result. Cancelled and failed work stays
  * visible and retryable across restarts.
  */
+import type { StoredMediaKind } from '../lib/mediaIdentity';
 import React, { useCallback, useMemo, useState } from 'react';
 import { plural } from '../lib/format';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -46,6 +47,7 @@ interface FavouriteQueueRow {
   uri: string;
   /** The image cache version (item 3). */
   image_version: number;
+  kind: StoredMediaKind;
   taken_at: number;
   /** Capture day; null = honestly undated (m0.8.6 change 5). */
   day: string | null;
@@ -85,6 +87,7 @@ export function FavouritesQueueScreen() {
         // corner renders this as the day and clock the shot was taken.
         taken_at: byId.get(action.photoId)?.takenAt ?? action.queuedAt,
         image_version: byId.get(action.photoId)?.imageVersion ?? 0,
+        kind: byId.get(action.photoId)?.kind ?? 'photo',
         day: byId.get(action.photoId)?.day ?? null,
         favourite_target: decodeFavouriteTarget(action.target) === false ? 0 : 1,
         state: action.state,
@@ -104,7 +107,9 @@ export function FavouritesQueueScreen() {
   const runBatch = useCallback(
     async (target: boolean) => {
       if (busyTarget !== null) return;
-      const rendered = (target ? applyRows : removeRows).map((row) => row.asset_id);
+      const renderedRows = target ? applyRows : removeRows;
+      const rendered = renderedRows.map((row) => row.asset_id);
+      const kindOf = new Map(renderedRows.map((row) => [row.asset_id, row.kind]));
       if (rendered.length === 0) return;
       setBusyTarget(target);
       try {
@@ -134,7 +139,7 @@ export function FavouritesQueueScreen() {
           console.warn('[favourites] fresh scope read failed — apply blocked:', String(error));
           Alert.alert(
             'Could not verify the queue',
-            'Afterglow could not re-check which photos are still in the selected folders. Nothing was changed — try again.',
+            'Afterglow could not re-check which items are still in the selected folders. Nothing was changed — try again.',
           );
           return;
         }
@@ -147,7 +152,16 @@ export function FavouritesQueueScreen() {
         // loop batches — one dialog each — until drained or declined.
         for (let i = 0; i < all.length; i += FAVOURITE_BATCH_LIMIT) {
           const batch = all.slice(i, i + FAVOURITE_BATCH_LIMIT);
-          const result = await applyFavouriteBatch(batch, target);
+          const result = await applyFavouriteBatch(
+            batch.map((id) => {
+              const kind = kindOf.get(id);
+              // `all` ⊆ rendered, so this cannot miss — and a miss must
+              // not dispatch a guessed collection.
+              if (!kind) throw new Error(`no stored kind for ${id}`);
+              return { id, kind };
+            }),
+            target,
+          );
           if (result.status === 'applied') {
             // Guarded on the direction we ACTUALLY sent: a photo the user
             // re-toggled while the consent dialog was up must not be
@@ -315,6 +329,7 @@ export function FavouritesQueueScreen() {
             >
               <OsThumbnail
                 assetId={item.asset_id}
+                kind={item.kind}
                 uri={item.uri}
                 version={item.image_version}
                 px={ROW_THUMB_PX}

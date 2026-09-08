@@ -20,6 +20,7 @@
  * each consumer renders its own truncation copy.
  */
 
+import type { StoredMediaKind } from './mediaIdentity';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { fetchPhotoPageDesc, type LoadedPhoto } from './media';
 import { getRescuedPhotoPage, getStateRowsForAssets } from '../db/store';
@@ -32,6 +33,7 @@ import { createMergedDescendingPager, type MergedPager, type PageFetcher } from 
 export interface GridPagedItem {
   id: string;
   uri: string;
+  kind: StoredMediaKind;
   timestamp: number;
   /** MediaStore reported no capture date (untracked rows only — tracked
    * rows take their date truth from the state join instead). */
@@ -49,6 +51,8 @@ export type GridCursor = string | { takenAt: number; assetId: string };
 export interface LibraryGridPhoto {
   id: string;
   uri: string;
+  /** The media kind (m0.9 phase 4). */
+  kind: StoredMediaKind;
   /** The image cache version (item 3): the DB row's, else MediaStore's
    * own timestamp for an untracked photo. */
   version: number;
@@ -105,6 +109,7 @@ export function createLibraryGridStream(
       const items: GridPagedItem[] = page.photos.map((p: LoadedPhoto) => ({
         id: p.item.id,
         uri: p.item.uri,
+        kind: p.item.kind,
         timestamp: p.item.timestamp,
         undated: p.undated,
         fromDb: false,
@@ -133,6 +138,7 @@ export function createLibraryGridStream(
     const items: GridPagedItem[] = rows.map((r) => ({
       id: r.asset_id,
       uri: r.uri,
+      kind: r.kind,
       timestamp: r.taken_at,
       undated: false,
       fromDb: true,
@@ -181,6 +187,7 @@ export function createLibraryGridStream(
             collected.push({
               id: p.id,
               uri: p.uri,
+              kind: p.kind,
               version: row?.image_version ?? p.timestamp,
               takenAt: row?.taken_at ?? p.timestamp,
               day: row !== undefined ? row.day : p.undated ? null : undefined,

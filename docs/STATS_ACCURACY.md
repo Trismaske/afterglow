@@ -20,6 +20,9 @@ Deliberately **unscoped** ("what you DID", [statsLoad.ts](../apps/mobile/src/lib
 Planning and coverage stats — forecast base rates and floor, backlog frontier, corpus coverage, the intake chart (both series, gap 6) — scope to the selected, mounted library they describe.
 The habit readers (`getDayReviewSummary`, `getDecisionRhythm`, `getRecentDecisionStamps`, `getDecisionOutcomesSince`) take no scope parameters at all; `getReviewedCountsByDay` keeps its scope parameters for the planning readers — the intake chart's decided series and the forecast/finish-line pace maps — while its unscoped calls feed the achievement surfaces.
 
+**Media kinds (m0.9 phase 4):** every corpus and decision count includes videos — MediaStore range counts, the per-volume tripwires, the grids, goal decisions, the forecast's remaining count — and their copy says "items".
+Photos-only by construction, and still worded "photos": the embedding-analysis figures (videos are never embedded) and the not-related counts (grouping is photos-only).
+
 ## Per-surface verdicts
 
 Full query citations live in the audit rows below; "moves on" lists only non-reviewing movers.

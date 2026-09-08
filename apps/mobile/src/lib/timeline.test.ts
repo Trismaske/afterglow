@@ -32,6 +32,7 @@ const member = (
   asset_id: id,
   uri: `file://${id}`,
   image_version: 0,
+  kind: 'photo',
   taken_at: takenAt,
   day,
   state,

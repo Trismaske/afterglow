@@ -26,6 +26,7 @@
  * terminal uniqueness is schema-enforced; a verified post-restore
  * re-trash legitimately counts the next generation (P8#4).
  */
+import type { MediaRef, StoredMediaKind } from '../lib/mediaIdentity';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { withWriteTransaction } from './database';
 import { closeShareCycleIfQueueEmpty } from './shareStore';
@@ -42,7 +43,7 @@ export type TrashOutcome =
 
 export interface PreparedTrashBatch {
   batchId: number;
-  members: { photoId: string; measuredBytes: number }[];
+  members: { photoId: string; kind: StoredMediaKind; measuredBytes: number }[];
   /** Fresh goal work the stage-to-culled transition produced (same rule
    * as applyReviewDecisions: the row moved into today's decided bucket
    * from no decision or an earlier day's). Always 0 without
@@ -155,7 +156,8 @@ export async function prepareTrashBatch(
       const row = await txn.getFirstAsync<{
         trash_generation: number;
         state: string;
-      }>('SELECT trash_generation, state FROM photos WHERE asset_id = ?', member.photoId);
+        kind: StoredMediaKind;
+      }>('SELECT trash_generation, state, kind FROM photos WHERE asset_id = ?', member.photoId);
       if (!row || row.state !== 'culled') continue; // only staged culls
       await txn.runAsync(
         `INSERT INTO trash_batch_members (batch_id, photo_id, trash_generation, measured_bytes)
@@ -173,6 +175,7 @@ export async function prepareTrashBatch(
       );
       out.members.push({
         photoId: member.photoId,
+        kind: row.kind,
         measuredBytes: member.measuredBytes,
       });
     }
@@ -380,7 +383,7 @@ export interface ResolveInput {
   batchId: number;
   /** Per member: what an authoritative post-dialog check found (C#1
    * tri-state; permission failures and errors must be 'unknown'). */
-  verify: (photoId: string) => Promise<PresenceCheck>;
+  verify: (ref: MediaRef) => Promise<PresenceCheck>;
   /** The consent dialog outcome for the whole batch. */
   dialog: 'applied' | 'cancelled' | 'unsupported' | 'failed';
   /** True when this resolution recovers an interrupted `launching` attempt
@@ -417,8 +420,11 @@ export async function resolveTrashBatch(
     photo_id: string;
     trash_generation: number;
     measured_bytes: number;
+    kind: StoredMediaKind;
   }>(
-    'SELECT photo_id, trash_generation, measured_bytes FROM trash_batch_members WHERE batch_id = ?',
+    `SELECT m.photo_id, m.trash_generation, m.measured_bytes, p.kind
+       FROM trash_batch_members m JOIN photos p ON p.asset_id = m.photo_id
+      WHERE m.batch_id = ?`,
     input.batchId,
   );
 
@@ -426,7 +432,9 @@ export async function resolveTrashBatch(
   // held across MediaStore queries), then everything commits at once.
   const checks = new Map<string, PresenceCheck>();
   if (input.dialog === 'applied' || input.interrupted) {
-    for (const member of members) checks.set(member.photo_id, await input.verify(member.photo_id));
+    for (const member of members) {
+      checks.set(member.photo_id, await input.verify({ id: member.photo_id, kind: member.kind }));
+    }
   }
 
   const outcomes: Record<string, TrashOutcome> = {};
@@ -527,7 +535,7 @@ export interface TrashRecoveryResult {
  */
 export async function recoverTrashBatches(
   db: SQLiteDatabase,
-  verify: (photoId: string) => Promise<PresenceCheck>,
+  verify: (ref: MediaRef) => Promise<PresenceCheck>,
   at: number,
   /** Mounted volumes at recovery (O2) — threaded into each resolve's
    * membership repair. */

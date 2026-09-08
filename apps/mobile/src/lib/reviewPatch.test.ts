@@ -34,6 +34,7 @@ describe('queueEquals (the refresh no-op rule)', () => {
     asset_id: id,
     uri: `file://${id}`,
     image_version,
+    kind: 'photo',
     taken_at: 1000,
     day: '2026-09-08',
     state: 'kept',

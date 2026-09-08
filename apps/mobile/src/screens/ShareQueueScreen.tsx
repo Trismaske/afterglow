@@ -14,6 +14,7 @@
  * - Clear is explicit and warns when never-shared photos remain; share
  *   events survive the clear for History.
  */
+import { shareMimeType } from '../lib/editActions';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -207,15 +208,14 @@ export function ShareQueueScreen({ navigation }: Props) {
         // within the 5 s TTL a hot-ejected card's rows would otherwise
         // still ride into the dispatched batch.
         invalidateMountedVolumes();
-        const freshIds = (
-          await getShareQueue(
-            db,
-            Date.now(),
-            await mountedVolumeSet(),
-            (await resolveSources(db)).roots ?? null,
-          )
-        ).map((r) => r.photo_id);
-        const freshSet = new Set(freshIds);
+        const freshRows = await getShareQueue(
+          db,
+          Date.now(),
+          await mountedVolumeSet(),
+          (await resolveSources(db)).roots ?? null,
+        );
+        const freshSet = new Set(freshRows.map((r) => r.photo_id));
+        const freshKind = new Map(freshRows.map((r) => [r.photo_id, r.kind]));
         // INTERSECTION in both modes (final cycle T1): the fresh read may
         // only SHRINK the batch — "Share all N" covers the N rendered
         // rows, and a card remounting before the reload commits must not
@@ -248,7 +248,15 @@ export function ShareQueueScreen({ navigation }: Props) {
           // P1): the batch above records `ids`, and dispatching a
           // different set would send removed photos and record members
           // that never went out.
-          const uris = await Promise.all(ids.map(getEditableContentUri));
+          const refs = ids.map((id) => {
+            const kind = freshKind.get(id);
+            // Unreachable by construction (ids ⊆ freshSet) — but a
+            // missing kind must fail the batch here, not dispatch a
+            // guessed collection.
+            if (!kind) throw new Error(`no stored kind for ${id}`);
+            return { id, kind };
+          });
+          const uris = await Promise.all(refs.map(getEditableContentUri));
           failedStage = 'dispatch';
           // The batch id rides the chooser as the chosen-event token
           // (D10): app-root wiring resolves the batch to 'shared' when
@@ -256,7 +264,7 @@ export function ShareQueueScreen({ navigation }: Props) {
           // r2): a fast pick can beat the JS continuation, and an
           // unarmed token would silently drop the label prompt.
           awaitingLabelRef.current = batchId;
-          dispatch = await shareMediaUris(uris, batchId);
+          dispatch = await shareMediaUris(uris, batchId, shareMimeType(refs.map((r) => r.kind)));
         } catch (error) {
           awaitingLabelRef.current = null;
           dispatch = {
@@ -301,7 +309,7 @@ export function ShareQueueScreen({ navigation }: Props) {
     const sizeGate = (): void => {
       if (shareIds.length > SHARE_SOFT_WARN_COUNT) {
         Alert.alert(
-          `Share ${shareIds.length} photos?`,
+          `Share ${shareIds.length} items?`,
           "Some apps can't receive this many at once.",
           [
             { text: 'Cancel', style: 'cancel' },
@@ -329,7 +337,7 @@ export function ShareQueueScreen({ navigation }: Props) {
       console.warn('[share] pending-edit check failed — dispatch blocked:', String(error));
       Alert.alert(
         'Could not check pending edits',
-        'Afterglow could not verify whether any of these photos still have an unsent edit request. Nothing was shared — try again.',
+        'Afterglow could not verify whether any of these items still have an unsent edit request. Nothing was shared — try again.',
       );
       return;
     }
@@ -410,6 +418,7 @@ export function ShareQueueScreen({ navigation }: Props) {
     ({ item }: { item: ShareQueueRow }) => (
       <QueueGridCell
         id={item.photo_id}
+        kind={item.kind}
         uri={item.uri}
         version={item.image_version}
         selected={selected.has(item.photo_id)}
@@ -447,9 +456,9 @@ export function ShareQueueScreen({ navigation }: Props) {
             ? QUEUE_REFRESH_FAILED
             : 'Loading…'
           : count === 0
-            ? 'Queue photos with Share during review, then send them in passes.'
+            ? 'Queue items with Share during review, then send them in passes.'
             : selectionMode
-              ? `${selected.size} selected · ✓ marks photos already shared this cycle`
+              ? `${selected.size} selected · ✓ marks items already shared this cycle`
               : // The long-press door was invisible (device pass
                 // 2026-08-28) — say it, on the same subtitle (vertical
                 // space is the scarcest thing on these screens).

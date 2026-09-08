@@ -673,7 +673,7 @@ export function TimelineScreen({ navigation }: Props) {
     const pending = unit.members.filter((m) => m.state === 'unreviewed').length;
     return (
       <UnitCard
-        title={`Singles · ${plural(unit.members.length, 'photo')} · ${labelForDayKey(unit.day)}`}
+        title={`Singles · ${plural(unit.members.length, 'item')} · ${labelForDayKey(unit.day)}`}
         status={pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`}
         statusDone={pending === 0}
         members={unit.members}
@@ -732,7 +732,7 @@ export function TimelineScreen({ navigation }: Props) {
     // re-pad insets.top (m0.8.1 consistency sweep).
     <View style={[styles.root, { paddingTop: 12 }]}>
       <Text style={styles.subtitle}>
-        {plural(total, 'photo')} to review · {plural(queueCounts.groups, 'group')} ·{' '}
+        {plural(total, 'item')} to review · {plural(queueCounts.groups, 'group')} ·{' '}
         {plural(queueCounts.singles, 'single')}
       </Text>
       <View style={styles.filterRow}>
@@ -818,7 +818,7 @@ export function TimelineScreen({ navigation }: Props) {
               ? browse.failed
                 ? 'Could not read your history just now — leave and reopen to retry.'
                 : browse.exhausted
-                  ? 'No photos yet.'
+                  ? 'No items yet.'
                   : 'Loading…'
               : 'Nothing left to review.'}
           </Text>

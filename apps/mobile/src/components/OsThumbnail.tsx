@@ -12,10 +12,12 @@ import React from 'react';
 import { Image, type ImageContentFit, type ImageStyle } from 'expo-image';
 import type { StyleProp } from 'react-native';
 import { useOsThumbnail } from './useOsThumbnail';
+import type { StoredMediaKind } from '../lib/mediaIdentity';
 import { imageCacheKey, versionedUri } from '../lib/imageKeys';
 
 export function OsThumbnail({
   assetId,
+  kind,
   uri,
   version,
   px,
@@ -23,6 +25,9 @@ export function OsThumbnail({
   contentFit = 'cover',
 }: {
   assetId: string;
+  /** The row's media kind (m0.9 phase 4) — picks the MediaStore
+   * collection the OS store is asked for. Videos serve a frame. */
+  kind: StoredMediaKind;
   /** The row's image version (item 3) — keys both caches. */
   version: number;
   /** The file URI — the fallback source when the OS store cannot serve. */
@@ -32,7 +37,7 @@ export function OsThumbnail({
   style?: StyleProp<ImageStyle>;
   contentFit?: ImageContentFit;
 }) {
-  const thumb = useOsThumbnail(assetId, px, version);
+  const thumb = useOsThumbnail(assetId, kind, px, version);
   return (
     <Image
       source={

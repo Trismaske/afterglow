@@ -59,7 +59,7 @@ export function describeFavouriteFailure(failure: FavouriteFailure): FavouriteFa
     // singular and plural asserted for BOTH counts in the tests.
     lines.push(
       `${plural(applied, verb)} ${applied === 1 ? 'was' : 'were'} applied; ` +
-        `Android did not confirm ${plural(failure.unverifiedCount, 'photo')}.`,
+        `Android did not confirm ${plural(failure.unverifiedCount, 'item')}.`,
     );
   } else {
     // TIER 2: nothing confirmed — honest and generic.
@@ -83,7 +83,7 @@ export function describeFavouriteFailure(failure: FavouriteFailure): FavouriteFa
   return {
     title:
       applied > 0
-        ? `Partly applied — ${plural(failure.unverifiedCount, 'photo')} unconfirmed`
+        ? `Partly applied — ${plural(failure.unverifiedCount, 'item')} unconfirmed`
         : 'Favourite changes need retry',
     body: lines.join('\n\n'),
   };

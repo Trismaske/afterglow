@@ -16,33 +16,33 @@ describe('describeTrashFailure', () => {
       error: weird,
     });
     expect(report.title).toBe('Partly moved to trash');
-    expect(report.body).toContain('3 photos were already moved to trash; 5 remain staged.');
+    expect(report.body).toContain('3 items were already moved to trash; 5 remain staged.');
     expect(report.body).toContain('Android refused to move the rest. Your culls remain staged.');
     expect(report.body).toContain(`Android said:\n• ${weird}`);
     expect(report.body.indexOf('already moved')).toBeLessThan(report.body.indexOf('Android said'));
   });
 
-  it('n = 1 progress reads "1 photo was already moved"', () => {
+  it('n = 1 progress reads "1 item was already moved"', () => {
     const report = describeTrashFailure({
       trashedCount: 1,
       remaining: 2,
       unresolvedCount: 0,
     });
-    expect(report.body).toContain('1 photo was already moved to trash; 2 remain staged.');
+    expect(report.body).toContain('1 item was already moved to trash; 2 remain staged.');
   });
 
   it('no progress: the honest refusal alone, with its own title', () => {
     const report = describeTrashFailure({ trashedCount: 0, remaining: 4, unresolvedCount: 0 });
-    expect(report.title).toBe('Could not move photos to trash');
+    expect(report.title).toBe('Could not move items to trash');
     expect(report.body).toBe(
-      'Android refused to move the photos to trash. Your culls remain staged.',
+      'Android refused to move the items to trash. Your culls remain staged.',
     );
   });
 
   it('ambiguity names the unverified count, singular included', () => {
     const report = describeTrashFailure({ trashedCount: 0, remaining: 4, unresolvedCount: 1 });
     expect(report.body).toContain(
-      '1 photo could not be verified and may already be in the system trash.',
+      '1 item could not be verified and may already be in the system trash.',
     );
   });
 

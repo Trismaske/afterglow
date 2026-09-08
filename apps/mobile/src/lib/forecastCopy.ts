@@ -41,7 +41,7 @@ function rate(perDay: number): string {
 }
 
 function photos(n: number): string {
-  return `${plural(n, 'photo')}`;
+  return `${plural(n, 'item')}`;
 }
 
 /**
@@ -56,7 +56,7 @@ export function forecastHeadline(finish: FinishLine, at: number): string {
     case 'caught_up':
       return 'All caught up — nothing left to review';
     case 'insufficient_history':
-      return 'All photos · state browsing';
+      return 'All items · state browsing';
     case 'growing':
       // No date: at this pace there is no day on which this ends.
       return `${photos(finish.remaining)} left · gaining ${rate(finish.growth)}`;

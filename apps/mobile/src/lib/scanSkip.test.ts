@@ -72,7 +72,7 @@ describe('multi-volume proof (m0.8.2)', () => {
     // Before the native call was made all-or-nothing, an unreadable
     // volume simply vanished from the map — and a map missing the SAME
     // volume on two launches compared equal, skipping the scan forever
-    // while that volume's photos changed underneath.
+    // while that volume's items changed underneath.
     const both = scanFingerprint({
       generations: { external_primary: 12, '0a91-e18d': 7 },
       roots: [root('DCIM/Camera')],
@@ -115,7 +115,7 @@ describe('scanStatusLine', () => {
     // pass": a SKIP verifies just as well and is the common case, so
     // wording it as a pass would report staleness that was disproved.
     expect(scanStatusLine({ verifiedAt: NOW - 2 * 3_600_000, corpus: 5795, now: NOW })).toBe(
-      `Checked 2 hours ago · ${(5795).toLocaleString()} photos`,
+      `Checked 2 hours ago · ${(5795).toLocaleString()} items`,
     );
   });
 
@@ -145,7 +145,7 @@ describe('scanStatusLine', () => {
         running: { scanned: 1200, total: 5795 },
         now: NOW,
       }),
-    ).toBe(`Scanning 21% · ${(1200).toLocaleString()} of ${(5795).toLocaleString()} photos`);
+    ).toBe(`Scanning 21% · ${(1200).toLocaleString()} of ${(5795).toLocaleString()} items`);
     // Mid-scan arrivals can push `scanned` past the snapshot — clamp.
     expect(
       scanStatusLine({
@@ -153,12 +153,12 @@ describe('scanStatusLine', () => {
         corpus: 5795,
         running: { scanned: 6000, total: 5795 },
       }),
-    ).toBe(`Scanning 100% · ${(5795).toLocaleString()} of ${(5795).toLocaleString()} photos`);
+    ).toBe(`Scanning 100% · ${(5795).toLocaleString()} of ${(5795).toLocaleString()} items`);
   });
 
   it('omits the total while the up-front count is unavailable', () => {
     expect(
       scanStatusLine({ verifiedAt: null, corpus: 0, running: { scanned: 40, total: null } }),
-    ).toBe('Scanning now · 40 photos');
+    ).toBe('Scanning now · 40 items');
   });
 });

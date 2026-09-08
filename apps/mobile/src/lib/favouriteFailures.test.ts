@@ -16,8 +16,8 @@ describe('describeFavouriteFailure', () => {
       favourite: true,
       error: VERIFY_SENTINEL,
     });
-    expect(report.title).toBe('Partly applied — 2 photos unconfirmed');
-    expect(report.body).toContain('3 favourites were applied; Android did not confirm 2 photos.');
+    expect(report.title).toBe('Partly applied — 2 items unconfirmed');
+    expect(report.body).toContain('3 favourites were applied; Android did not confirm 2 items.');
     expect(report.body).toContain('The unconfirmed ones stay queued and retry on the next apply.');
   });
 
@@ -28,18 +28,18 @@ describe('describeFavouriteFailure', () => {
       favourite: true,
       error: VERIFY_SENTINEL,
     });
-    expect(report.body).toContain('1 favourite was applied; Android did not confirm 2 photos.');
+    expect(report.body).toContain('1 favourite was applied; Android did not confirm 2 items.');
   });
 
-  it('tier 1 singular UNCONFIRMED count: "did not confirm 1 photo", and it "retries"', () => {
+  it('tier 1 singular UNCONFIRMED count: "did not confirm 1 item", and it "retries"', () => {
     const report = describeFavouriteFailure({
       batchSize: 4,
       unverifiedCount: 1,
       favourite: true,
       error: VERIFY_SENTINEL,
     });
-    expect(report.title).toBe('Partly applied — 1 photo unconfirmed');
-    expect(report.body).toContain('3 favourites were applied; Android did not confirm 1 photo.');
+    expect(report.title).toBe('Partly applied — 1 item unconfirmed');
+    expect(report.body).toContain('3 favourites were applied; Android did not confirm 1 item.');
     expect(report.body).toContain(
       'The unconfirmed one stays queued and retries on the next apply.',
     );

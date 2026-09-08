@@ -88,6 +88,7 @@ export function ReDecideSheet({
           <View style={styles.header}>
             <OsThumbnail
               assetId={item.id}
+              kind={item.kind}
               uri={item.uri}
               version={version}
               px={SHEET_THUMB_PX}

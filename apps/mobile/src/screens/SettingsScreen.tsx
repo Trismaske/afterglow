@@ -181,7 +181,7 @@ export function SettingsScreen({ navigation }: Props) {
           'Nothing was changed',
           mountedNow === null
             ? 'Could not verify the card is absent. Try again.'
-            : 'The card is back — its photos are reachable again.',
+            : 'The card is back — its items are reachable again.',
         );
         if (mountedNow !== null) {
           setAwayVolumes((prev) => prev.filter((v) => v.volume !== entry.volume));
@@ -189,8 +189,8 @@ export function SettingsScreen({ navigation }: Props) {
         }
         return;
       }
-      const present = `${plural(counts.present, 'photo')}`;
-      const everything = `${plural(counts.total, 'photo')}`;
+      const present = `${plural(counts.present, 'item')}`;
+      const everything = `${plural(counts.total, 'item')}`;
       const runForget = async (level: 'keep' | 'erase') => {
         try {
           // Final revalidation right before the destructive write — the
@@ -203,7 +203,7 @@ export function SettingsScreen({ navigation }: Props) {
               'Nothing was changed',
               atWrite === null
                 ? 'Could not verify the card is absent. Try again.'
-                : 'The card is back — its photos are reachable again.',
+                : 'The card is back — its items are reachable again.',
             );
             if (atWrite !== null) {
               setAwayVolumes((prev) => prev.filter((v) => v.volume !== entry.volume));
@@ -219,8 +219,8 @@ export function SettingsScreen({ navigation }: Props) {
           setAwayVolumes((prev) => prev.filter((v) => v.volume !== entry.volume));
           showToast(
             level === 'keep'
-              ? `Card forgotten — review history for ${plural(result.photos, 'photo')} kept`
-              : `Card erased — ${plural(result.rows, 'photo')} removed from your history`,
+              ? `Card forgotten — review history for ${plural(result.photos, 'item')} kept`
+              : `Card erased — ${plural(result.rows, 'item')} removed from your history`,
           );
           void refresh();
           // Forget rewrites scan OUTPUT without changing scan INPUT
@@ -248,7 +248,7 @@ export function SettingsScreen({ navigation }: Props) {
           '“Keep my review history” marks them gone but keeps every decision — ' +
           'all-time counts survive.\n\n' +
           `“Erase everything” removes all ${everything} from your history entirely.\n\n` +
-          'If the card ever returns, its photos are re-ingested either way.',
+          'If the card ever returns, its items are re-ingested either way.',
         [
           { text: 'Cancel', style: 'cancel' },
           { text: 'Keep my review history', onPress: () => void runForget('keep') },
@@ -327,7 +327,7 @@ export function SettingsScreen({ navigation }: Props) {
           if (!cancelled) setAwayVolumes(away);
           if (away.length > 0) {
             const count = away.reduce((sum, entry) => sum + entry.count, 0);
-            label = `${label} — SD card not mounted (${plural(count, 'photo')})`;
+            label = `${label} — SD card not mounted (${plural(count, 'item')})`;
           }
         } else if (!cancelled) {
           setAwayVolumes([]);
@@ -575,7 +575,7 @@ export function SettingsScreen({ navigation }: Props) {
       >
         <View style={styles.dialogScrim}>
           <View style={styles.dialog}>
-            <Text style={styles.dialogTitle}>Photos per day</Text>
+            <Text style={styles.dialogTitle}>Items per day</Text>
             <TextInput
               value={customGoalText}
               onChangeText={(text) => {
@@ -611,7 +611,7 @@ export function SettingsScreen({ navigation }: Props) {
         style={styles.root}
         contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
       >
-        <Text style={styles.sectionLabel}>Photos</Text>
+        <Text style={styles.sectionLabel}>Photos & videos</Text>
         <Pressable style={styles.row} onPress={() => navigation.navigate('SourcePicker')}>
           <View style={styles.rowBody}>
             <Text style={styles.rowTitle}>Photo source</Text>
@@ -632,7 +632,7 @@ export function SettingsScreen({ navigation }: Props) {
             <View style={styles.rowBody}>
               <Text style={styles.rowTitle}>Forget this card</Text>
               <Text style={styles.rowHint} numberOfLines={2}>
-                {`SD card not mounted — ${plural(entry.count, 'photo')} waiting on it. For a card that is never coming back.`}
+                {`SD card not mounted — ${plural(entry.count, 'item')} waiting on it. For a card that is never coming back.`}
               </Text>
             </View>
             <Text style={[styles.chevron, { color: theme.accent }]}>›</Text>

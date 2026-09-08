@@ -46,10 +46,28 @@ export function canonicalPhotoId(volumeName: string, rawId: string): string {
   return `${volumeName}/${rawId}`;
 }
 
+/** Media kinds the data layer stores (m0.9 phase 4) — mirrors core's
+ * `MediaKind`; duplicated here so this file stays import-free. Motion
+ * photos are `'photo'` (their still is the row; the embedded video is a
+ * fact ON the row, `motion_video_offset`). */
+export type StoredMediaKind = 'photo' | 'video';
+
+/** An item as every kind-aware action addresses it: the canonical id plus
+ * the stored kind that picks its MediaStore collection. Built from rows
+ * (every uri-bearing SELECT projects `kind`), never guessed. */
+export interface MediaRef {
+  id: string;
+  kind: StoredMediaKind;
+}
+
 /**
  * The volume-qualified MediaStore content URI for a canonical id — THE
  * uri every action (trash, favourite, edit, share, presence, EXIF read)
- * addresses a photo by (m0.8.3, codex r1). Constructed, never resolved:
+ * addresses an item by (m0.8.3, codex r1). KIND-AWARE (m0.9 phase 4):
+ * MediaStore's images and video collections are views over one files
+ * table, so a raw id is unique across kinds on its volume, but each
+ * collection only answers for its own kind — the stored kind picks the
+ * collection, and every consumer passes it. Constructed, never resolved:
  * Expo's reverse lookup queries the MERGED external collection by raw
  * `_ID` alone, and raw ids can collide across volumes (measured, S10e
  * 2026-07-30: each volume's DB allocates independently and the id
@@ -59,8 +77,9 @@ export function canonicalPhotoId(volumeName: string, rawId: string): string {
  * volume-qualified shape resolves rows on the right volume and that a
  * wrong-volume uri does NOT resolve — fail-closed beats mis-addressed.
  */
-export function canonicalContentUri(canonicalId: string): string {
-  return `content://media/${volumeOf(canonicalId)}/images/media/${rawIdOf(canonicalId)}`;
+export function canonicalContentUri(canonicalId: string, kind: StoredMediaKind): string {
+  const collection = kind === 'video' ? 'video' : 'images';
+  return `content://media/${volumeOf(canonicalId)}/${collection}/media/${rawIdOf(canonicalId)}`;
 }
 
 /** The raw MediaStore id of a canonical id (tolerant of legacy bare ids). */

@@ -3,7 +3,7 @@ import {
   setMediaFavourite,
   type MediaStoreActionStatus,
 } from '../../modules/media-store-actions';
-import { getEditableContentUri } from './media';
+import { getEditableContentUri, type MediaRef } from './media';
 import { VERIFY_SENTINEL } from './favouriteFailures';
 
 /** Conservative app cap per MediaStore consent request (P5#4) — the
@@ -28,12 +28,12 @@ export interface FavouriteBatchResult {
  * Callers only mark the durable queue applied when `status` is `applied`.
  */
 export async function applyFavouriteBatch(
-  assetIds: readonly string[],
+  refs: readonly MediaRef[],
   favourite: boolean,
 ): Promise<FavouriteBatchResult> {
   try {
     const pairs = await Promise.all(
-      assetIds.map(async (id) => ({ id, uri: await getEditableContentUri(id) })),
+      refs.map(async (ref) => ({ id: ref.id, uri: await getEditableContentUri(ref) })),
     );
     const action = await setMediaFavourite(
       pairs.map((pair) => pair.uri),
@@ -54,7 +54,7 @@ export async function applyFavouriteBatch(
   } catch (error) {
     return {
       status: 'failed',
-      unverifiedIds: [...assetIds],
+      unverifiedIds: refs.map((ref) => ref.id),
       error: error instanceof Error ? error.message : String(error),
     };
   }

@@ -43,6 +43,12 @@ function upsert(rawId: string, takenAt = AT - 3_600_000): ContinuousPhotoUpsert 
     takenAt,
     modTime: takenAt,
     fileGeneration: null,
+    kind: 'photo' as const,
+    mimeType: 'image/jpeg',
+    displayName: null,
+    width: null,
+    height: null,
+    durationMs: null,
     fileMtime: takenAt,
     day: '2027-01-15',
     volumeName: 'external_primary',
@@ -54,6 +60,150 @@ function upsert(rawId: string, takenAt = AT - 3_600_000): ContinuousPhotoUpsert 
 const id = (rawId: string): string => `external_primary/${rawId}`;
 
 describe('writeContinuousGroups', () => {
+  it('lands media kinds: a video single with its facts, and a motion photo whose per-file read marker moves with its fields (v24)', async () => {
+    const d = await fresh();
+    const db = asExpo(d);
+    const video: ContinuousPhotoUpsert = {
+      ...upsert('v'),
+      uri: 'file:///dcim/v.mp4',
+      kind: 'video',
+      mimeType: 'video/mp4',
+      displayName: '20260907_193042.mp4',
+      width: 3840,
+      height: 2160,
+      durationMs: 34_367,
+      fileGeneration: 982_389,
+    };
+    // A completed per-file read: the S23 specimen's real offsets.
+    const motion: ContinuousPhotoUpsert = {
+      ...upsert('m'),
+      displayName: '20260906_151931.jpg',
+      width: 4000,
+      height: 3000,
+      fileGeneration: 700,
+      motionVideoOffset: 1_524_709,
+      motionVideoLength: 4_444_568,
+      motionPresentationUs: 3_134_504,
+      factsCheckedVersion: 700,
+    };
+    await writeContinuousGroups(
+      db,
+      { photos: [video, motion], groups: [], singles: [id('v'), id('m')] },
+      AT,
+    );
+    const read = () =>
+      db.getAllAsync<Record<string, unknown>>(
+        `SELECT asset_id, kind, mime_type, display_name, width, height, duration_ms,
+                motion_video_offset, motion_video_length, motion_presentation_us,
+                facts_checked_version, COALESCE(file_generation, file_mtime) AS image_version
+           FROM photos ORDER BY asset_id`,
+      );
+    let rows = await read();
+    expect(rows).toEqual([
+      {
+        asset_id: id('m'),
+        kind: 'photo',
+        mime_type: 'image/jpeg',
+        display_name: '20260906_151931.jpg',
+        width: 4000,
+        height: 3000,
+        duration_ms: null,
+        motion_video_offset: 1_524_709,
+        motion_video_length: 4_444_568,
+        motion_presentation_us: 3_134_504,
+        facts_checked_version: 700,
+        image_version: 700,
+      },
+      {
+        asset_id: id('v'),
+        kind: 'video',
+        mime_type: 'video/mp4',
+        display_name: '20260907_193042.mp4',
+        width: 3840,
+        height: 2160,
+        duration_ms: 34_367,
+        motion_video_offset: null,
+        motion_video_length: null,
+        motion_presentation_us: null,
+        facts_checked_version: null,
+        image_version: 982_389,
+      },
+    ]);
+    // A video lands as a SINGLE: assigned, no group.
+    const assignment = await db.getFirstAsync<{ group_id: number | null }>(
+      'SELECT group_id FROM photo_group_assignments WHERE photo_id = ?',
+      id('v'),
+    );
+    expect(assignment).toEqual({ group_id: null });
+
+    // Pass 2: the same content, NO per-file read this pass (marker
+    // current) — the motion fields and marker are RETAINED; a MediaStore
+    // 0×0 (null) does not erase the measured size.
+    await writeContinuousGroups(
+      db,
+      {
+        photos: [
+          {
+            ...motion,
+            width: null,
+            height: null,
+            motionVideoOffset: undefined,
+            motionVideoLength: undefined,
+            motionPresentationUs: undefined,
+            factsCheckedVersion: undefined,
+          },
+        ],
+        groups: [],
+        singles: [id('m')],
+      },
+      AT + 1,
+    );
+    rows = await read();
+    expect(rows[0]).toMatchObject({
+      width: 4000,
+      height: 3000,
+      motion_video_offset: 1_524_709,
+      motion_video_length: 4_444_568,
+      facts_checked_version: 700,
+    });
+
+    // Pass 3: an edit stripped the trailer (new generation), and the read
+    // COMPLETED with no motion — all four move together to the new
+    // verdict at the new version.
+    await writeContinuousGroups(
+      db,
+      {
+        photos: [
+          {
+            ...motion,
+            fileGeneration: 701,
+            // The new bytes report no size and the rescue found none:
+            // a completed read's null REPLACES the stale measurement.
+            width: null,
+            height: null,
+            motionVideoOffset: null,
+            motionVideoLength: null,
+            motionPresentationUs: null,
+            factsCheckedVersion: 701,
+          },
+        ],
+        groups: [],
+        singles: [id('m')],
+      },
+      AT + 2,
+    );
+    rows = await read();
+    expect(rows[0]).toMatchObject({
+      width: null,
+      height: null,
+      motion_video_offset: null,
+      motion_video_length: null,
+      motion_presentation_us: null,
+      facts_checked_version: 701,
+      image_version: 701,
+    });
+  });
+
   it('writes groups + singles into one continuous run and keeps FKs clean', async () => {
     const d = await fresh();
     const db = asExpo(d);
@@ -131,6 +281,12 @@ describe('writeContinuousGroups', () => {
       takenAt: AT - 100,
       modTime: AT + 5,
       fileGeneration: null,
+      kind: 'photo' as const,
+      mimeType: 'image/jpeg',
+      displayName: null,
+      width: null,
+      height: null,
+      durationMs: null,
       fileMtime: AT + 5,
       uri: 'file:///dcim/1-v2.jpg',
     };
@@ -356,6 +512,7 @@ describe('writeContinuousGroups', () => {
         takenAt: AT,
         modTime: AT,
         day: '2027-01-15',
+        kind: 'photo',
       },
       AT + 20,
       AT,
@@ -454,6 +611,7 @@ describe('writeContinuousGroups', () => {
         takenAt: AT,
         modTime: AT,
         day: '2027-01-15',
+        kind: 'photo',
       },
       AT + 20,
       AT,

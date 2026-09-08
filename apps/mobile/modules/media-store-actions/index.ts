@@ -40,22 +40,30 @@ interface NativeApi {
   mediaPresence(uri: string): Promise<'present' | 'trashed' | 'absent' | 'unknown'>;
   loadThumbnail(uri: string, size: number): Promise<RegionBitmap>;
   editDiagnostics(uri: string): Promise<EditDiagnosticsReport>;
-  probeLaunch(uri: string, action: string, withWrite: boolean): Promise<ProbeLaunchResult>;
+  probeLaunch(
+    uri: string,
+    action: string,
+    withWrite: boolean,
+    mimeType: string,
+  ): Promise<ProbeLaunchResult>;
   requestWriteAccess(uris: string[]): Promise<{ status: MediaStoreActionStatus }>;
   shareUris(
     uris: string[],
     token: number,
+    mimeType: string,
   ): Promise<{ result: 'dispatched' | 'error'; message: string }>;
-  listImageAlbums(): Promise<VolumeAlbum[]>;
+  listMediaAlbums(): Promise<VolumeAlbum[]>;
   mediaGenerations(): Promise<Record<string, number>>;
   mediaChangedSince(volume: string, since: number): Promise<NativeChangedRow[]>;
   queryRelativePaths(uris: string[]): Promise<RelativePathInfo[]>;
-  queryImageDetails(uris: string[]): Promise<ImageDetailsRow[]>;
+  queryMediaDetails(uris: string[]): Promise<MediaDetailsRow[]>;
   moveToRelativePath(uris: string[], relativePath: string): Promise<MoveResult[]>;
   readExifDateTimeOriginal(uris: string[]): Promise<ExifDateResult[]>;
-  countImagesByVolume(volumes: string[]): Promise<Record<string, number>>;
-  listFavouriteImageIds(volume: string): Promise<string[]>;
-  loadImageById(volume: string, rawId: string): Promise<NativeImageRow | null>;
+  countMediaByVolume(volumes: string[]): Promise<Record<string, number>>;
+  listFavouriteMediaIds(volume: string): Promise<string[]>;
+  loadMediaById(volume: string, rawId: string): Promise<NativeMediaRow | null>;
+  queryMediaFacts(volume: string, rawIds: string[]): Promise<NativeMediaRow[]>;
+  readMediaFacts(requests: MediaFactsRequest[]): Promise<MediaFactsResult[]>;
   listMountedVolumes(): Promise<string[]>;
   openRegionDecoder(uri: string): Promise<RegionDecoderInfo>;
   decodeRegion(
@@ -88,6 +96,9 @@ interface NativeApi {
 export interface ChangedMediaRow {
   volumeName: string;
   rawId: string;
+  /** The row's MediaStore MEDIA_TYPE (m0.9 phase 4) — which collection
+   * its actions address, and the kind the scan stores. */
+  mediaType: 'photo' | 'video';
   /** DATE_TAKEN in ms, or null for an undated photo. */
   dateTakenMs: number | null;
   /** DATE_MODIFIED in SECONDS (MediaStore's unit), or null. */
@@ -110,7 +121,8 @@ export interface VolumeAlbum {
   bucketId: string;
   displayName: string;
   relativePath: string;
-  photoCount: number;
+  /** Images plus videos in the bucket (m0.9 phase 4). */
+  itemCount: number;
 }
 
 /** Read-only path lookup result — nulls when the row/columns are
@@ -125,7 +137,7 @@ export interface RelativePathInfo {
  * collision-proof replacement for merged-collection raw-id lookups.
  * 'absent' is authoritative (successful empty query); 'error' is not
  * evidence of anything. dateModifiedMs is already converted to ms. */
-export interface ImageDetailsRow {
+export interface MediaDetailsRow {
   uri: string;
   status: 'found' | 'absent' | 'error';
   displayName?: string | null;
@@ -243,9 +255,11 @@ export async function probeEditLaunch(
   uri: string,
   action: string,
   withWrite: boolean,
+  /** The item's launch type (lib/editActions launchMimeType). */
+  mimeType: string,
 ): Promise<ProbeLaunchResult> {
   if (!available()) return { result: 'unsupported', message: 'Not on Android' };
-  return native!.probeLaunch(contentUris([uri])[0], action, withWrite);
+  return native!.probeLaunch(contentUris([uri])[0], action, withWrite, mimeType);
 }
 
 export async function requestMediaWriteAccess(
@@ -296,45 +310,111 @@ export async function getMediaChangedSince(
   return native!.mediaChangedSince(volume, since);
 }
 
-/** Raw ids of the volume's IS_FAVORITE=1 images (F20) — one indexed
+/** Raw ids of the volume's IS_FAVORITE=1 items — images and videos (F20) — one indexed
  * query per pass per volume. Throws rather than returning a partial set:
  * a missing favourite would read as a CLEARED flag and un-carry it, so
  * the scan degrades to "project nothing" on failure instead. */
-export async function getFavouriteImageIds(volume: string): Promise<string[]> {
+export async function getFavouriteMediaIds(volume: string): Promise<string[]> {
   if (!available()) return [];
-  return native!.listFavouriteImageIds(volume);
+  return native!.listFavouriteMediaIds(volume);
 }
 
-/** One image row by (volume, rawId), or null when absent there — the F27
- * direct fetch's volume-qualified read (codex m0.8.7 r1: merged-collection
- * lookups answer for the wrong volume when raw ids collide). Null also
- * when the module is absent — the caller falls back to the merged read. */
-export interface NativeImageRow {
+/** One Files-collection row by (volume, rawId), or null when absent
+ * there — the F27 direct fetch's volume-qualified read (codex m0.8.7 r1:
+ * merged-collection lookups answer for the wrong volume when raw ids
+ * collide). Null also when the module is absent — the caller falls back
+ * to the merged read. */
+export interface NativeMediaRow {
   rawId: string;
   dataPath: string | null;
   displayName: string | null;
   dateTakenMs: number | null;
   dateModifiedSec: number;
+  /** MediaStore's WIDTH/HEIGHT; 0 when it has none (M17's rescue measures). */
   width: number;
   height: number;
   /** MediaStore GENERATION_MODIFIED — the image cache version (item 3). */
-  generationModified?: number | null;
+  generationModified: number;
+  /** m0.9 phase 4: the kind (from MEDIA_TYPE), MIME (classification
+   * truth, M15), duration (videos; null when MediaStore has none) and
+   * size. */
+  kind: 'photo' | 'video';
+  mimeType: string | null;
+  durationMs: number | null;
+  sizeBytes: number | null;
 }
-export async function loadImageByVolumeId(
+export async function loadMediaByVolumeId(
   volume: string,
   rawId: string,
-): Promise<NativeImageRow | null | 'module-absent'> {
+): Promise<NativeMediaRow | null | 'module-absent'> {
   if (!available()) return 'module-absent';
-  return native!.loadImageById(volume, rawId);
+  return native!.loadMediaById(volume, rawId);
+}
+
+/** The per-page facts join (m0.9 phase 4): the Files-collection row for
+ * each raw id on `volume` — MIME, display name, duration, size and the
+ * generation the expo-media-library page lacks. Rows MediaStore does
+ * not return are absent from the result (the caller keeps the Asset's
+ * values). THROWS on a failed query rather than returning a partial
+ * page: a missing row would be classified by its filename. */
+export async function queryMediaFactsByIds(
+  volume: string,
+  rawIds: string[],
+): Promise<NativeMediaRow[]> {
+  if (!available()) throw new Error('media facts query unavailable');
+  return native!.queryMediaFacts(volume, rawIds);
+}
+
+/** One bounded per-file read request (phase 4, item 6): which facts the
+ * caller is missing for this item. */
+export interface MediaFactsRequest {
+  uri: string;
+  kind: 'photo' | 'video';
+  motion: boolean;
+  dimensions: boolean;
+  duration: boolean;
+}
+
+/** The read's outcome. 'ok' is a COMPLETED read: a requested fact that is
+ * absent (a still with no motion XMP, an undecodable header) comes back
+ * null and the caller may stamp its once-per-content marker; 'error'
+ * concluded nothing and the caller must not. */
+export interface MediaFactsResult {
+  uri: string;
+  status: 'ok' | 'error';
+  message?: string;
+  motionOffset?: number | null;
+  motionLength?: number | null;
+  motionPresentationUs?: number | null;
+  width?: number | null;
+  height?: number | null;
+  durationMs?: number | null;
+  elapsedMs: number;
+}
+
+/** Motion detection plus the measurement rescue, one open per file
+ * (MediaFacts.kt). Unavailable module → every item errors, so callers
+ * degrade to "unknown, retried next pass"; they short-circuit on
+ * mediaStoreActionsAvailable() rather than probing. */
+export async function readMediaFacts(requests: MediaFactsRequest[]): Promise<MediaFactsResult[]> {
+  if (!available()) {
+    return requests.map((r) => ({
+      uri: r.uri,
+      status: 'error' as const,
+      message: 'module unavailable',
+      elapsedMs: 0,
+    }));
+  }
+  return native!.readMediaFacts(requests);
 }
 
 /** The volume-aware album catalog. ALL VOLUMES OR NONE, same rule and
  * same reason: a partial catalog hides folders the user selected on the
  * dropped volume, and can make the default-source probe conclude
  * DCIM/Camera is absent and broaden to every folder. */
-export async function listImageAlbums(): Promise<VolumeAlbum[]> {
+export async function listMediaAlbums(): Promise<VolumeAlbum[]> {
   if (!available()) return [];
-  return native!.listImageAlbums();
+  return native!.listMediaAlbums();
 }
 
 /** Read-only RELATIVE_PATH/DATA lookup (the organize crash-repair
@@ -356,12 +436,12 @@ export function subscribeVolumesChanged(listener: () => void): () => void {
   return () => subscription.remove();
 }
 
-/** Image details by canonical content URI (Q2). Throws when unavailable
+/** Details by canonical content URI (Q2), any kind. Throws when unavailable
  * — callers gate on mediaStoreActionsAvailable() and fall back to the
  * volume-guarded merged lookup. */
-export async function queryImageDetailsByUri(uris: string[]): Promise<ImageDetailsRow[]> {
+export async function queryMediaDetailsByUri(uris: string[]): Promise<MediaDetailsRow[]> {
   if (!available()) throw new Error('canonical details query unavailable');
-  return native!.queryImageDetails(contentUris(uris));
+  return native!.queryMediaDetails(contentUris(uris));
 }
 
 /** Verified RELATIVE_PATH moves (R#6). Callers hold write access first. */
@@ -403,14 +483,14 @@ export async function getMountedVolumes(): Promise<string[]> {
   return native!.listMountedVolumes();
 }
 
-/** Per-volume image counts (m0.8.3 phase 2) — the "All folders" side of
+/** Per-volume item counts — images plus videos (m0.8.3 phase 2) — the "All folders" side of
  * the per-volume scan tripwires. ALL VOLUMES OR NONE (a partial map
  * would hide exactly the tripwire this feeds) — THROWS when any volume
  * is uncountable or the module/API is unavailable; the scan's planner
  * catches and falls back to a full pass. */
-export async function getImageCountsByVolume(volumes: string[]): Promise<Record<string, number>> {
+export async function getMediaCountsByVolume(volumes: string[]): Promise<Record<string, number>> {
   if (!available()) throw new Error('per-volume counts unavailable');
-  return native!.countImagesByVolume(volumes);
+  return native!.countMediaByVolume(volumes);
 }
 
 /** Fire the share sheet (SEND / SEND_MULTIPLE with read grants). Resolves
@@ -421,9 +501,11 @@ export async function getImageCountsByVolume(volumes: string[]): Promise<Record<
 export async function shareMediaUris(
   uris: string[],
   token: number,
+  /** The batch's declared type (lib/shareResolution shareMimeType). */
+  mimeType: string,
 ): Promise<{ result: 'dispatched' | 'error' | 'unsupported'; message: string }> {
   if (!available()) return { result: 'unsupported', message: 'Not on Android' };
-  return native!.shareUris(contentUris(uris), token);
+  return native!.shareUris(contentUris(uris), token, mimeType);
 }
 
 /** The chooser's chosen-target callback (m0.8.6 D10): the user handed

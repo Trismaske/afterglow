@@ -116,7 +116,7 @@ export function HomeScreen({ navigation }: Props) {
   const reviewRefresh = review.refresh;
   const noteDecisions = review.noteDecisions;
   const [permission, requestPermission] = MediaLibrary.usePermissions({
-    granularPermissions: ['photo'],
+    granularPermissions: ['photo', 'video'],
   });
 
   const [scan, setScan] = useState(getScanStatus());
@@ -493,7 +493,7 @@ export function HomeScreen({ navigation }: Props) {
                   if (attempt.status === 'unsupported') {
                     Alert.alert(
                       'System trash unavailable',
-                      "Afterglow's media module is not available in this build, so nothing was changed. Afterglow never permanently deletes photos — your culls are still staged and untouched.",
+                      "Afterglow's media module is not available in this build, so nothing was changed. Afterglow never permanently deletes anything — your culls are still staged and untouched.",
                     );
                   } else if (attempt.status === 'failed') {
                     // The three-tier contract at this boundary too (codex
@@ -581,7 +581,7 @@ export function HomeScreen({ navigation }: Props) {
           setDetectionNotice(
             result.autoDoneIds.length === 1
               ? '1 edited photo detected — marked done'
-              : `${result.autoDoneIds.length} edited photos detected — marked done`,
+              : `${result.autoDoneIds.length} edited items detected — marked done`,
           );
           setRefreshTick((t) => t + 1);
         }
@@ -882,8 +882,8 @@ export function HomeScreen({ navigation }: Props) {
       {permission !== null && !permission.granted && (
         <View style={styles.card}>
           <Text style={styles.cardText}>
-            Afterglow needs access to your photos to review them. Nothing is ever deleted without
-            your explicit confirmation.
+            Afterglow needs access to your photos and videos to review them. Nothing is ever deleted
+            without your explicit confirmation.
           </Text>
           <BigButton
             label={
@@ -953,7 +953,7 @@ export function HomeScreen({ navigation }: Props) {
                       accessibilityLabel="SD card not mounted — open Settings"
                     >
                       <Text style={styles.unreachableLine}>
-                        {`SD card not mounted — ${plural(entry.count, 'photo')} waiting on it`}
+                        {`SD card not mounted — ${plural(entry.count, 'item')} waiting on it`}
                       </Text>
                     </Pressable>
                   ))}
@@ -1068,8 +1068,8 @@ export function HomeScreen({ navigation }: Props) {
                 ? 'Photo scan hit a problem — it will retry on next launch.'
                 : scan.total !== null && scan.total > 0
                   ? `Scanning ${Math.min(100, Math.round((scan.scanned / scan.total) * 100))}% · ` +
-                    `${Math.min(scan.scanned, scan.total).toLocaleString()} of ${scan.total.toLocaleString()} photos`
-                  : `Scanning photos… ${scan.scanned.toLocaleString()} seen · ${scan.embedded.toLocaleString()} analyzed`}
+                    `${Math.min(scan.scanned, scan.total).toLocaleString()} of ${scan.total.toLocaleString()} items`
+                  : `Scanning… ${scan.scanned.toLocaleString()} seen · ${scan.embedded.toLocaleString()} analyzed`}
             </Text>
           )}
         </View>
@@ -1093,7 +1093,7 @@ export function HomeScreen({ navigation }: Props) {
                 describes (tester ask, round 4) — it used to trail the
                 scan line, where it read as a scan statistic. */}
             <Text style={styles.editQueueHint}>
-              {`${plural(stagedCullCount, 'photo')} staged to cull` +
+              {`${plural(stagedCullCount, 'item')} staged to cull` +
                 (reclaimableBytes > 0 ? ` · ~${formatBytes(reclaimableBytes)} reclaimable` : '')}
             </Text>
           </View>
@@ -1154,7 +1154,7 @@ export function HomeScreen({ navigation }: Props) {
             // day with photos fully reviewed (coverageStreak skips it),
             // so the recency claim stays true (§10 check 17 wording).
             <Text style={styles.streakText}>
-              📅 Most recent {coverageState.streak} days with photos fully reviewed
+              📅 Most recent {coverageState.streak} days with items fully reviewed
             </Text>
           )}
         </View>
@@ -1171,7 +1171,7 @@ export function HomeScreen({ navigation }: Props) {
                 to say anything true. */}
             <Text style={styles.progressHint}>
               {finish === null
-                ? 'All photos · state browsing'
+                ? 'All items · state browsing'
                 : forecastHeadline(finish, Date.now())}
             </Text>
           </View>
@@ -1206,7 +1206,7 @@ export function HomeScreen({ navigation }: Props) {
             <Pressable style={styles.olderRow} onPress={() => void expandOlderDays()}>
               <MaterialCommunityIcons name="calendar-clock" size={20} color={colors.textDim} />
               <Text style={styles.olderRowText}>
-                {plural(olderDays.length, 'older day')} with photos to review
+                {plural(olderDays.length, 'older day')} with items to review
               </Text>
               <Text style={[styles.progressChevron, { color: theme.accent }]}>›</Text>
             </Pressable>

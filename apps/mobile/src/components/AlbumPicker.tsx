@@ -12,23 +12,29 @@
  * shows its relativePath beneath the name — rows must never be
  * indistinguishable while targeting different paths.
  */
+import type { StoredMediaKind } from '../lib/mediaIdentity';
 import React, { useEffect, useMemo, useState } from 'react';
 import { FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { VolumeAlbum } from '../../modules/media-store-actions';
-import { listImageAlbumsCached } from '../lib/sourceCatalog';
+import { listMediaAlbumsCached } from '../lib/sourceCatalog';
 import { PRIMARY_VOLUME } from '../lib/mediaIdentity';
-import { androidAllowsImagesIn, newAlbumPath } from '../db/organizeStore';
+import { androidAllowsMediaIn, newAlbumPath } from '../db/organizeStore';
 import { colors, touch } from '../theme';
 
 export function AlbumPicker({
   visible,
+  kinds,
   title = 'Move to album',
   onChoose,
   onClose,
 }: {
   visible: boolean;
+  /** The kinds the move would carry (m0.9 phase 4): only paths Android
+   * permits for EVERY one are offered — Movies for a video-only move,
+   * never for a mixed one. */
+  kinds: readonly StoredMediaKind[];
   title?: string;
   /** Called with the chosen/created relativePath (trailing slash kept). */
   onChoose: (relativePath: string) => void;
@@ -59,7 +65,7 @@ export function AlbumPicker({
     // Fail-closed (C#8): a catalog error never widens choices — the
     // picker shows what the native query proved, and a failure says so
     // (errors are not cached, so Retry really re-queries).
-    void listImageAlbumsCached().then(
+    void listMediaAlbumsCached().then(
       (catalog) => {
         if (cancelled) return;
         setAlbums(
@@ -70,8 +76,10 @@ export function AlbumPicker({
             // the defect m0.8.4's acceptance pass found. The refusal
             // itself is still explained if one slips through: this is a
             // convenience filter, not the authority (organizeStore).
-            .filter((a) => a.volumeName === PRIMARY_VOLUME && androidAllowsImagesIn(a.relativePath))
-            .sort((a, b) => b.photoCount - a.photoCount),
+            .filter(
+              (a) => a.volumeName === PRIMARY_VOLUME && androidAllowsMediaIn(a.relativePath, kinds),
+            )
+            .sort((a, b) => b.itemCount - a.itemCount),
         );
       },
       () => {
@@ -81,7 +89,7 @@ export function AlbumPicker({
     return () => {
       cancelled = true;
     };
-  }, [visible, loadNonce]);
+  }, [visible, loadNonce, kinds]);
 
   const newPath = useMemo(() => newAlbumPath(name), [name]);
   // The one input searches AND names: typing filters the catalog live;
@@ -123,7 +131,7 @@ export function AlbumPicker({
                     </Text>
                   )}
                 </View>
-                <Text style={styles.albumCount}>{item.photoCount}</Text>
+                <Text style={styles.albumCount}>{item.itemCount}</Text>
               </Pressable>
             )}
             ListEmptyComponent={

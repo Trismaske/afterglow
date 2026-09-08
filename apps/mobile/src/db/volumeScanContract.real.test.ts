@@ -16,7 +16,7 @@ import {
   countTrackedByVolume,
   getCoverageByDay,
   getGroupAssignments,
-  getPresentAssetIds,
+  getPresentAssetRefs,
   getReviewGroup,
   listSinglesFeed,
   writeContinuousGroups,
@@ -56,6 +56,12 @@ function photo(volume: string, rawId: string, takenAt = AT - 3_600_000): Continu
     takenAt,
     modTime: takenAt,
     fileGeneration: null,
+    kind: 'photo' as const,
+    mimeType: 'image/jpeg',
+    displayName: null,
+    width: null,
+    height: null,
+    durationMs: null,
     fileMtime: takenAt,
     day: '2027-01-15',
     volumeName: volume,
@@ -94,19 +100,19 @@ async function seedMixed(d: TestDb): Promise<void> {
 }
 
 describe('unmounted volumes are outside every reconciliation read (invariants 2 + 6)', () => {
-  it('getPresentAssetIds scoped to mounted volumes returns no ejected rows', async () => {
+  it('getPresentAssetRefs scoped to mounted volumes returns no ejected rows', async () => {
     const d = await fresh();
     await seedMixed(d);
     // Card in: both volumes' rows are candidates.
-    const all = await getPresentAssetIds(asExpo(d), null, [PRIMARY, SD]);
+    const all = (await getPresentAssetRefs(asExpo(d), null, [PRIMARY, SD])).map((r) => r.id);
     expect(all.sort()).toEqual([`${SD}/sd1`, `${SD}/sd2`, `${PRIMARY}/p1`, `${PRIMARY}/p2`].sort());
     // Card out: the SD rows are not candidates — never probed, never
     // eligible for an absence conclusion.
-    const mountedOnly = await getPresentAssetIds(asExpo(d), null, [PRIMARY]);
+    const mountedOnly = (await getPresentAssetRefs(asExpo(d), null, [PRIMARY])).map((r) => r.id);
     expect(mountedOnly.sort()).toEqual([`${PRIMARY}/p1`, `${PRIMARY}/p2`].sort());
     // Nothing mounted at all (SD-only source, card out): zero candidates,
     // not an SQL error.
-    expect(await getPresentAssetIds(asExpo(d), null, [])).toEqual([]);
+    expect((await getPresentAssetRefs(asExpo(d), null, [])).map((r) => r.id)).toEqual([]);
   });
 
   it('countTrackedByVolume answers per volume, so tripwires never mix volumes', async () => {
@@ -155,7 +161,9 @@ describe('eject → pass over the mounted remainder → zero SD row changes (inv
     const sd1 = (await getGroupAssignments(asExpo(d), [`${SD}/sd1`])).get(`${SD}/sd1`);
     expect(sd1?.groupId).not.toBeNull();
     // The deleted member itself is reconciled normally.
-    expect(await getPresentAssetIds(asExpo(d), null, [PRIMARY])).toEqual([`${PRIMARY}/p2`]);
+    expect((await getPresentAssetRefs(asExpo(d), null, [PRIMARY])).map((r) => r.id)).toEqual([
+      `${PRIMARY}/p2`,
+    ]);
 
     // Remount (mounted set now covers both volumes): the same repair
     // dissolves the now-fully-visible rump group — deferred, not lost.

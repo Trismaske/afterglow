@@ -99,7 +99,7 @@ export function CullListScreen({ navigation, route }: Props) {
         id: row.asset_id,
         uri: row.uri,
         timestamp: row.taken_at,
-        kind: 'photo' as const,
+        kind: row.kind,
       })),
     [globalRows],
   );
@@ -145,15 +145,15 @@ export function CullListScreen({ navigation, route }: Props) {
               ? 'Nothing confirmed moved'
               : 'Cancelled — nothing moved',
           result.trashedCount > 0
-            ? `${plural(result.trashedCount, 'photo')} moved before the system confirmation was cancelled. ${result.remaining} remain staged.${ambiguity}`
+            ? `${plural(result.trashedCount, 'item')} moved before the system confirmation was cancelled. ${result.remaining} remain staged.${ambiguity}`
             : result.unresolvedCount > 0
               ? `The system confirmation was cancelled. ${plural(result.unresolvedCount, 'earlier photo')} could not be verified — they remain staged and may already be in the system trash.`
-              : 'The system confirmation was cancelled. Your photos are untouched and still staged.',
+              : 'The system confirmation was cancelled. Your items are untouched and still staged.',
         );
       } else if (result.status === 'unsupported') {
         Alert.alert(
           'System trash unavailable',
-          "Afterglow's media module is not available in this build, so nothing was changed. Afterglow never permanently deletes photos — your culls are still staged and untouched.",
+          "Afterglow's media module is not available in this build, so nothing was changed. Afterglow never permanently deletes anything — your culls are still staged and untouched.",
         );
       } else if (result.status === 'failed') {
         // The three-tier report (Errors_design §4.1): the verified
@@ -173,7 +173,7 @@ export function CullListScreen({ navigation, route }: Props) {
         // conservative: they stay staged rather than claiming success.
         Alert.alert(
           'Could not verify the move',
-          `${plural(result.remaining, 'photo')} could not be confirmed as trashed and remain staged.`,
+          `${plural(result.remaining, 'item')} could not be confirmed as trashed and remain staged.`,
         );
       }
     } finally {
@@ -203,16 +203,16 @@ export function CullListScreen({ navigation, route }: Props) {
       console.warn('[cull] unsent-intent count failed — confirm blocked:', String(error));
       Alert.alert(
         'Could not check pending requests',
-        'Afterglow could not verify whether any of these photos still have unsent share or edit requests. Nothing was moved — try again.',
+        'Afterglow could not verify whether any of these items still have unsent share or edit requests. Nothing was moved — try again.',
       );
       return;
     }
     const warnings = [
       unsent.share > 0
-        ? `${plural(unsent.share, 'photo')} still ${unsent.share === 1 ? 'has' : 'have'} an unsent share request.`
+        ? `${plural(unsent.share, 'item')} still ${unsent.share === 1 ? 'has' : 'have'} an unsent share request.`
         : null,
       unsent.edit > 0
-        ? `${plural(unsent.edit, 'photo')} still ${unsent.edit === 1 ? 'has' : 'have'} an unsent edit request.`
+        ? `${plural(unsent.edit, 'item')} still ${unsent.edit === 1 ? 'has' : 'have'} an unsent edit request.`
         : null,
     ].filter((line): line is string => line !== null);
     const intentWarning =
@@ -222,7 +222,7 @@ export function CullListScreen({ navigation, route }: Props) {
     // The app-level warning is followed by Android's MediaStore-owned
     // confirmation sheet. There is no permanent-delete fallback.
     Alert.alert(
-      `Move ${plural(staged.length, 'photo')} to trash?`,
+      `Move ${plural(staged.length, 'item')} to trash?`,
       `Android will ask you to confirm. Recovery duration is controlled by your system gallery.${intentWarning}`,
       [
         { text: 'Cancel', style: 'cancel' },
@@ -245,6 +245,7 @@ export function CullListScreen({ navigation, route }: Props) {
       <Pressable style={styles.tile} onPress={() => onTilePress(item)} disabled={busy}>
         <OsThumbnail
           assetId={item.id}
+          kind={item.kind}
           uri={item.uri}
           version={versionOf.get(item.id) ?? 0}
           px={tilePx}
@@ -292,7 +293,7 @@ export function CullListScreen({ navigation, route }: Props) {
                 ? 'Loading…'
                 : staged.length === 0
                   ? 'Done'
-                  : `Trash ${plural(staged.length, 'photo')}`
+                  : `Trash ${plural(staged.length, 'item')}`
           }
           color={staged.length === 0 ? colors.keep : colors.cull}
           disabled={busy || loading}

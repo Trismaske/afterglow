@@ -57,7 +57,7 @@ describe('rhythmLine', () => {
 describe('sittingLine', () => {
   it('describes typical sittings, or nothing when there are none', () => {
     expect(sittingLine({ count: 12, medianPhotos: 34, medianDurationMs: 4 * 60_000 })).toBe(
-      '12 sittings in your recent history · typically 34 photos over 4 min',
+      '12 sittings in your recent history · typically 34 items over 4 min',
     );
     expect(sittingLine({ count: 0, medianPhotos: 0, medianDurationMs: 0 })).toBeNull();
   });

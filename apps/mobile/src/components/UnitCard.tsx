@@ -16,6 +16,7 @@
  * also settles the §5 observation that sparse cards rendered LARGER
  * than dense ones. Thumb-count configurability is parked to m0.8.7.
  */
+import type { StoredMediaKind } from '../lib/mediaIdentity';
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { PixelRatio } from 'react-native';
@@ -43,6 +44,7 @@ export const UNIT_CARD_HEIGHT = CARD_PAD * 2 + HEADER_H + CARD_GAP + THUMB_H + 2
 export interface UnitCardMember {
   asset_id: string;
   uri: string;
+  kind: StoredMediaKind;
   /** The image cache version (item 3). */
   image_version: number;
 }
@@ -82,6 +84,7 @@ export function UnitCard({
           <View key={member.asset_id} style={styles.thumbWrap} pointerEvents="none">
             <OsThumbnail
               assetId={member.asset_id}
+              kind={member.kind}
               uri={member.uri}
               version={member.image_version}
               px={CARD_THUMB_PX}

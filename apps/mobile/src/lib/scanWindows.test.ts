@@ -14,6 +14,10 @@ function photo(id: string, timestamp: number): LoadedPhoto {
     generation: null,
     width: 4000,
     height: 3000,
+    mimeType: 'image/jpeg',
+    displayName: null,
+    durationMs: null,
+    sizeBytes: null,
     undated: false,
   };
 }

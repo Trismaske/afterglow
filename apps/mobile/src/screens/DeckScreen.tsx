@@ -845,7 +845,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     id: m.asset_id,
     timestamp: m.taken_at,
     uri: m.uri,
-    kind: 'photo',
+    kind: m.kind,
     version: m.image_version,
   });
   const aliveItems: DeckItem[] = useMemo(
@@ -869,7 +869,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
         id: r.id,
         timestamp: r.takenAt,
         uri: r.uri,
-        kind: 'photo',
+        kind: r.kind,
         version: r.version,
       })),
     [shownListRows],
@@ -1724,9 +1724,10 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       // Compare eligibility (m0.8.2, F11): undecided OR KEPT — "compare
       // with the photo I just kept" is the point. Staged culls stay out
       // on BOTH endpoints; resurrecting one is the re-decide chips' job.
+      // Photos only (M7): a video is never a Compare endpoint.
       const candidates = deckItems.filter((i) => {
         const state = stateOf.get(i.id) ?? 'unreviewed';
-        return state === 'unreviewed' || state === 'kept';
+        return i.kind === 'photo' && (state === 'unreviewed' || state === 'kept');
       });
       if ((!singlesMode && !groupId) || !current || candidates.length < 2) return;
       if (!candidates.some((i) => i.id === current.id)) return;
@@ -1811,7 +1812,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   if (loadFailed) {
     return (
       <View style={[styles.root, styles.loadFailedRoot]}>
-        <Text style={styles.loadFailedText}>Could not load these photos just now.</Text>
+        <Text style={styles.loadFailedText}>Could not load these items just now.</Text>
         <Pressable
           style={styles.retryButton}
           onPress={() => {
@@ -1902,14 +1903,15 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
 
   // Compare eligibility mirrors openCompare exactly: undecided or KEPT
   // candidates (F11), and the CURRENT photo must be one of them.
+  // PHOTOS ONLY (m0.9 phase 4, M7): videos are excluded from Compare on
+  // both endpoints — the button disables on a video item and the picker
+  // never offers one; motion photos compare as photos.
   const compareStates = ['unreviewed', 'kept'];
-  const compareCandidateCount = view.items.filter((i) =>
-    compareStates.includes(view.stateOf.get(i.id) ?? 'unreviewed'),
-  ).length;
+  const compareCandidate = (i: DeckItem): boolean =>
+    i.kind === 'photo' && compareStates.includes(view.stateOf.get(i.id) ?? 'unreviewed');
+  const compareCandidateCount = view.items.filter(compareCandidate).length;
   const compareEligible =
-    !view.listMode &&
-    compareCandidateCount >= 2 &&
-    compareStates.includes(view.stateOf.get(view.current.id) ?? 'unreviewed');
+    !view.listMode && compareCandidateCount >= 2 && compareCandidate(view.current);
 
   const flagged = needsEdit(view.current.id);
   const favourite = isFavouriteSelected(favouriteStatus(view.current.id));
@@ -2127,6 +2129,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 picture. */}
             <OsThumbnail
               assetId={view.current.id}
+              kind={view.current.kind}
               uri={view.current.uri}
               version={view.current.version}
               px={STAGE_THUMB_PX}
@@ -2220,6 +2223,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
             >
               <OsThumbnail
                 assetId={item.id}
+                kind={item.kind}
                 uri={item.uri}
                 version={item.version}
                 px={STRIP_THUMB_PX}
@@ -2471,14 +2475,13 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                   prior decision is visible before the tap. */}
               {view.items
                 .map((item, deckIndex) => ({ item, deckIndex }))
-                .filter(({ item }) =>
-                  compareStates.includes(view.stateOf.get(item.id) ?? 'unreviewed'),
-                )
+                .filter(({ item }) => compareCandidate(item))
                 .map(({ item, deckIndex }) =>
                   item.id === view.current.id ? null : (
                     <Pressable key={item.id} onPress={() => openCompare(item.id)}>
                       <OsThumbnail
                         assetId={item.id}
+                        kind={item.kind}
                         uri={item.uri}
                         version={item.version}
                         px={PICKER_THUMB_PX}

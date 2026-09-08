@@ -14,9 +14,9 @@ import type { MainTabScreenProps } from '../navigation';
 import { setNeedsEdit, getToEditPhotos, markEditDone, type ToEditRow } from '../db/store';
 import { withUserWritePriority } from '../lib/writePriority';
 import { useReview } from '../review/ReviewContext';
-import { getEditableContentUri } from '../lib/media';
+import { getEditableContentUri, type MediaRef } from '../lib/media';
 import { launchEditor, launchViewer } from '../lib/edit';
-import { ACTION_EDIT, ACTION_VIEW } from '../lib/editActions';
+import { ACTION_EDIT, ACTION_VIEW, launchMimeType } from '../lib/editActions';
 import { describeEditLaunchFailure } from '../lib/editLaunchFailures';
 import type { EditLaunchStage } from '../lib/edit';
 import { probeEditLaunch, type ProbeLaunchResult } from '../../modules/media-store-actions';
@@ -55,7 +55,7 @@ export function EditQueueScreen({ navigation }: Props) {
   const [busyId, setBusyId] = useState<string | null>(null);
   // Gate-0 (m0.7 item A): the editor-launch diagnostic matrix, opened from
   // the failure alert or by long-pressing Edit (proactive/emulator path).
-  const [matrixAssetId, setMatrixAssetId] = useState<string | null>(null);
+  const [matrixAsset, setMatrixAsset] = useState<MediaRef | null>(null);
   /** Thumbnail tap opens the deck in list mode over this queue (gate 5). */
 
   const markDone = useCallback(
@@ -111,7 +111,7 @@ export function EditQueueScreen({ navigation }: Props) {
    * The matrix stays one tap away, exactly as before. */
   const failureAlert = useCallback(
     async (
-      assetId: string,
+      asset: MediaRef,
       operation: 'edit' | 'view',
       result: { stage: EditLaunchStage; error: string; uri: string },
     ) => {
@@ -123,6 +123,7 @@ export function EditQueueScreen({ navigation }: Props) {
               result.uri,
               operation === 'edit' ? ACTION_EDIT : ACTION_VIEW,
               false,
+              launchMimeType(asset.kind),
             )
           ).result;
         } catch (error) {
@@ -137,7 +138,7 @@ export function EditQueueScreen({ navigation }: Props) {
       });
       Alert.alert(report.title, report.body, [
         { text: 'Close', style: 'cancel' },
-        { text: 'Run permission matrix', onPress: () => setMatrixAssetId(assetId) },
+        { text: 'Run permission matrix', onPress: () => setMatrixAsset(asset) },
       ]);
     },
     [],
@@ -148,13 +149,13 @@ export function EditQueueScreen({ navigation }: Props) {
       if (busyId) return;
       setBusyId(row.asset_id);
       try {
-        const contentUri = await getEditableContentUri(row.asset_id);
+        const contentUri = await getEditableContentUri({ id: row.asset_id, kind: row.kind });
         // m0.7 item A: write-request-first EDIT (gate-0 matrix mechanism).
-        const result = await launchEditor(contentUri, (writeGranted) => {
+        const result = await launchEditor(contentUri, row.kind, (writeGranted) => {
           if (!writeGranted) showToast('Editing read-only — saves become a copy');
         });
         if (result.outcome === 'failed') {
-          await failureAlert(row.asset_id, 'edit', result);
+          await failureAlert({ id: row.asset_id, kind: row.kind }, 'edit', result);
           return;
         }
         if (result.outcome === 'returned') askMarkDone(row.asset_id);
@@ -170,10 +171,10 @@ export function EditQueueScreen({ navigation }: Props) {
       if (busyId) return;
       setBusyId(row.asset_id);
       try {
-        const contentUri = await getEditableContentUri(row.asset_id);
-        const result = await launchViewer(contentUri);
+        const contentUri = await getEditableContentUri({ id: row.asset_id, kind: row.kind });
+        const result = await launchViewer(contentUri, row.kind);
         if (result.outcome === 'failed') {
-          await failureAlert(row.asset_id, 'view', result);
+          await failureAlert({ id: row.asset_id, kind: row.kind }, 'view', result);
           return;
         }
         if (result.outcome === 'returned') askMarkDone(row.asset_id);
@@ -199,6 +200,7 @@ export function EditQueueScreen({ navigation }: Props) {
         >
           <OsThumbnail
             assetId={item.asset_id}
+            kind={item.kind}
             uri={item.uri}
             version={item.image_version}
             px={ROW_THUMB_PX}
@@ -287,8 +289,8 @@ export function EditQueueScreen({ navigation }: Props) {
           ) : null
         }
       />
-      {matrixAssetId !== null ? (
-        <EditDiagnosticsSheet assetId={matrixAssetId} onClose={() => setMatrixAssetId(null)} />
+      {matrixAsset !== null ? (
+        <EditDiagnosticsSheet asset={matrixAsset} onClose={() => setMatrixAsset(null)} />
       ) : null}
     </View>
   );

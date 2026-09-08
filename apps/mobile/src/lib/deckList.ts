@@ -32,6 +32,7 @@
  * store layer (real-DB parity in deckList.real.test.ts).
  */
 
+import type { StoredMediaKind } from './mediaIdentity';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import {
   getGridPhotosByFilter,
@@ -81,6 +82,8 @@ export type DeckListDescriptor =
 export interface DeckListRow {
   id: string;
   uri: string;
+  /** The media kind (m0.9 phase 4): the item's MediaStore collection. */
+  kind: StoredMediaKind;
   /** The image cache version (item 3): the row's COALESCE(file_generation, file_mtime). */
   version: number;
   takenAt: number;
@@ -206,6 +209,7 @@ export async function resolveDeckListPage(
               id: r.asset_id,
               uri: r.uri,
               version: r.image_version,
+              kind: r.kind,
               takenAt: r.taken_at,
               day: r.day,
               state: states.get(r.asset_id) ?? 'unreviewed',
@@ -225,6 +229,7 @@ export async function resolveDeckListPage(
               id: r.photo_id,
               uri: r.uri,
               version: r.image_version,
+              kind: r.kind,
               takenAt: r.taken_at,
               day: r.day,
               state: states.get(r.photo_id) ?? 'unreviewed',
@@ -244,6 +249,7 @@ export async function resolveDeckListPage(
               id: r.photo_id,
               uri: r.uri,
               version: r.image_version,
+              kind: r.kind,
               takenAt: r.taken_at,
               day: r.day,
               state: states.get(r.photo_id) ?? 'unreviewed',
@@ -269,6 +275,7 @@ export async function resolveDeckListPage(
             rows: actions.map((action) => ({
               id: action.photoId,
               uri: byId.get(action.photoId)?.uri ?? '',
+              kind: byId.get(action.photoId)?.kind ?? 'photo',
               version: byId.get(action.photoId)?.imageVersion ?? 0,
               takenAt: byId.get(action.photoId)?.takenAt ?? action.queuedAt,
               day: byId.get(action.photoId)?.day ?? null,
@@ -301,7 +308,9 @@ export async function resolveDeckListPage(
       // is two native calls per photo.
       if (probe !== null && live.length > 0) {
         const ids = live.map((r) => r.asset_id);
-        const presences = await mapWithConcurrency(ids, 6, (id) => probe.checkPresence(id));
+        const presences = await mapWithConcurrency(live, 6, (r) =>
+          probe.checkPresence({ id: r.asset_id, kind: r.media_kind }),
+        );
         const gone = new Set(
           ids.filter((_, i) => presences[i] === 'trashed' || presences[i] === 'absent'),
         );
@@ -315,6 +324,9 @@ export async function resolveDeckListPage(
         id: r.asset_id,
         uri: r.uri,
         version: r.image_version,
+        // The FEED discriminator is `kind` ('photo' row vs share event);
+        // the media kind is media_kind.
+        kind: r.media_kind,
         takenAt: r.taken_at,
         day: r.day,
         state: r.state,
@@ -359,6 +371,7 @@ export async function resolveDeckListPage(
           rows: page.map((r) => ({
             id: r.id,
             uri: r.uri,
+            kind: r.kind,
             version: r.version,
             takenAt: r.takenAt,
             // The tri-state collapses for the deck row: an untracked
@@ -401,6 +414,7 @@ export async function resolveDeckListPage(
           id: r.asset_id,
           uri: r.uri,
           version: r.image_version,
+          kind: r.kind,
           takenAt: r.taken_at,
           day: r.day,
           state: r.state,

@@ -13,6 +13,7 @@
  * never persisted (m0.1 decision: SQLite keeps 'culled' until the system
  * trash request succeeds).
  */
+import type { MediaRef, StoredMediaKind } from '../lib/mediaIdentity';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { withReadTransaction, withWriteTransaction } from './database';
 import type { DuelRecord, PhotoState } from '@afterglow/core';
@@ -263,6 +264,9 @@ export interface StagedCullRow {
   uri: string;
   /** The image cache version (v23, item 3): COALESCE(file_generation, file_mtime). */
   image_version: number;
+  /** The media kind (v24, m0.9 phase 4): which MediaStore collection
+   * the row's content URI addresses. */
+  kind: StoredMediaKind;
   taken_at: number;
   day: string | null;
 }
@@ -285,7 +289,7 @@ export async function getStagedCulls(
   const reach = reachClause(mounted);
   const src = sourceClause(roots);
   return db.getAllAsync<StagedCullRow>(
-    `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, taken_at, day FROM photos
+    `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind, taken_at, day FROM photos
      WHERE state = 'culled' AND is_present = 1${reach.sql}${src.sql}
      ORDER BY taken_at ASC${limit === undefined ? '' : ' LIMIT ?'}`,
     ...reach.params,
@@ -873,6 +877,9 @@ export interface ReviewMemberRow {
   uri: string;
   /** The image cache version (v23, item 3). */
   image_version: number;
+  /** The media kind (v24, m0.9 phase 4): which MediaStore collection
+   * the row's content URI addresses. */
+  kind: StoredMediaKind;
   taken_at: number;
   /** Local capture-day key (photos.day); null = undated. The timeline
    * splits singles runs on it (lib/timeline.ts). */
@@ -958,7 +965,7 @@ async function listReviewGroupsIn(
     // newer SD member must not pull a group ahead of what the page
     // actually shows — the timeline's anchors come from visible members.
     const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
-      `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+      `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id IN (${groups.map(() => '?').join(',')}) AND p.is_present = 1${reach.sql}
@@ -988,6 +995,7 @@ async function listReviewGroupsIn(
         asset_id: m.asset_id,
         uri: m.uri,
         image_version: m.image_version,
+        kind: m.kind,
         taken_at: m.taken_at,
         day: m.day,
         state: m.state,
@@ -1091,7 +1099,7 @@ export async function fetchBrowseGroupsPage(
     const ids = heads.map((h) => Number(h.id));
     const placeholders = ids.map(() => '?').join(',');
     const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
-      `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+      `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
          FROM photo_group_assignments a
          JOIN photos p ON p.asset_id = a.photo_id
         WHERE a.group_id IN (${placeholders}) AND p.is_present = 1 AND p.state <> 'trashed'${reach.sql}
@@ -1121,6 +1129,7 @@ export async function fetchBrowseGroupsPage(
         asset_id: m.asset_id,
         uri: m.uri,
         image_version: m.image_version,
+        kind: m.kind,
         taken_at: m.taken_at,
         day: m.day,
         state: m.state,
@@ -1166,7 +1175,7 @@ export async function fetchBrowseSinglesPage(
     before === undefined ? '' : ' AND (p.taken_at < ? OR (p.taken_at = ? AND p.asset_id < ?))';
   const keysetParams = before === undefined ? [] : [before.takenAt, before.takenAt, before.assetId];
   return db.getAllAsync<ReviewMemberRow>(
-    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
       WHERE a.group_id IS NULL AND p.is_present = 1 AND p.state <> 'trashed'${src.sql}${reach.sql}${keyset}
@@ -1199,7 +1208,7 @@ export async function getReviewGroup(
     );
     if (!group) return;
     const members = await txn.getAllAsync<ReviewMemberRow>(
-      `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+      `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id = ? AND p.is_present = 1${reach.sql}
@@ -1247,7 +1256,7 @@ async function listSinglesFeedIn(
   const src = sourceClause(roots, 'p.uri');
   const reach = reachClause(mounted, 'p.volume_name');
   const page = await txn.getAllAsync<ReviewMemberRow>(
-    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
      WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled') AND p.is_present = 1${src.sql}${reach.sql}
@@ -1268,7 +1277,7 @@ async function listSinglesFeedIn(
   if (page.length >= limit && !page.some((row) => row.state === 'unreviewed')) {
     const tail = page[page.length - 1];
     const pending = await txn.getAllAsync<ReviewMemberRow>(
-      `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+      `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id IS NULL AND p.state = 'unreviewed' AND p.is_present = 1${src.sql}${reach.sql}
@@ -1336,7 +1345,7 @@ export async function listSinglesForDeck(
   // run's inclusive range).
   const rangePredicate = range ? ' AND p.taken_at BETWEEN ? AND ?' : '';
   return db.getAllAsync<ReviewMemberRow>(
-    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
      WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled', 'kept') AND p.is_present = 1${src.sql}${reach.sql}${dayPredicate}${rangePredicate}
@@ -1400,7 +1409,7 @@ export async function listGroupsForDay(
         ...batch,
       );
       const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
-        `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, ${memberInSource.sql} AS in_source
+        `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, ${memberInSource.sql} AS in_source
          FROM photo_group_assignments a
          JOIN photos p ON p.asset_id = a.photo_id
          WHERE a.group_id IN (${placeholders}) AND p.is_present = 1${reach.sql}
@@ -1415,6 +1424,7 @@ export async function listGroupsForDay(
           asset_id: m.asset_id,
           uri: m.uri,
           image_version: m.image_version,
+          kind: m.kind,
           taken_at: m.taken_at,
           day: m.day,
           state: m.state,
@@ -1496,7 +1506,7 @@ export async function getPhotoFacts(
   assetId: string,
 ): Promise<PhotoFacts | null> {
   return db.getFirstAsync<PhotoFacts>(
-    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, p.state, p.reviewed_at,
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.taken_at, p.day, p.state, p.reviewed_at,
             (EXISTS (SELECT 1 FROM photo_actions e WHERE e.photo_id = p.asset_id
                       AND e.kind = 'edit' AND e.state IN ('queued', 'error'))) AS needs_edit,
             (SELECT CAST(f.target AS INTEGER) FROM photo_actions f
@@ -1920,7 +1930,7 @@ export async function updatePhotoUri(
 
 /** Present tracked asset ids inside the source scope — the scan's
  * completion reconciliation diffs these against what it actually saw. */
-export async function getPresentAssetIds(
+export async function getPresentAssetRefs(
   db: SQLiteDatabase,
   roots: readonly SourceRoot[] | null = null,
   /** Restrict to these volumes (m0.8.3 phase 2): the scan's unseen
@@ -1929,7 +1939,7 @@ export async function getPresentAssetIds(
    * volume is away, which is no evidence about the photos (plan §4
    * invariants 2 + 6). Null = no restriction. */
   volumes: readonly string[] | null = null,
-): Promise<string[]> {
+): Promise<MediaRef[]> {
   const src = sourceClause(roots);
   // An EMPTY volume list means "nothing is mounted" — match no rows
   // (`IN ()` is not valid SQLite).
@@ -1939,12 +1949,12 @@ export async function getPresentAssetIds(
       : volumes.length === 0
         ? ' AND 0'
         : ` AND volume_name IN (${volumes.map(() => '?').join(',')})`;
-  const rows = await db.getAllAsync<{ asset_id: string }>(
-    `SELECT asset_id FROM photos WHERE is_present = 1${src.sql}${volumeClause}`,
+  const rows = await db.getAllAsync<{ asset_id: string; kind: StoredMediaKind }>(
+    `SELECT asset_id, kind FROM photos WHERE is_present = 1${src.sql}${volumeClause}`,
     ...src.params,
     ...(volumes ?? []),
   );
-  return rows.map((r) => r.asset_id);
+  return rows.map((r) => ({ id: r.asset_id, kind: r.kind }));
 }
 
 /** One photo row the continuous scan upserts (m0.8 gate 2). */
@@ -1958,6 +1968,24 @@ export interface ContinuousPhotoUpsert {
    * (ms) always. */
   fileGeneration: number | null;
   fileMtime: number;
+  /** MEDIA KINDS (v24, m0.9 phase 4). The kind and MIME come from
+   * MediaStore's row (the facts join); display_name likewise. width /
+   * height / duration are MediaStore's values, else the measurement
+   * rescue's, else null (unknown). The motion fields and the marker come
+   * from the bounded per-file read: `factsCheckedVersion` set = the read
+   * COMPLETED this pass at that image version (motion fields are then
+   * authoritative, null = not a motion photo); unset = no read this pass,
+   * and the upsert RETAINS the stored motion fields and marker. */
+  kind: StoredMediaKind;
+  mimeType: string | null;
+  displayName: string | null;
+  width: number | null;
+  height: number | null;
+  durationMs: number | null;
+  motionVideoOffset?: number | null;
+  motionVideoLength?: number | null;
+  motionPresentationUs?: number | null;
+  factsCheckedVersion?: number | null;
   /** Local day key — NULL for UNDATED photos (no DATE_TAKEN): their
    * taken_at is only the mtime fallback, and finite MediaStore day/range
    * queries exclude them, so the DB day surfaces must too. They stay
@@ -2061,8 +2089,11 @@ export async function writeContinuousGroups(
       await txn.runAsync(
         `INSERT INTO photos (asset_id, uri, taken_at, state, mod_time, day,
                              volume_name, raw_id, size_bytes, exif_checked_mod_time,
-                             file_generation, file_mtime)
-         VALUES (?, ?, ?, 'unreviewed', ?, ?, ?, ?, ?, ?, ?, ?)
+                             file_generation, file_mtime,
+                             kind, mime_type, display_name, width, height, duration_ms,
+                             motion_video_offset, motion_video_length, motion_presentation_us,
+                             facts_checked_version)
+         VALUES (?, ?, ?, 'unreviewed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(asset_id) DO UPDATE SET
            uri = excluded.uri,
            taken_at = excluded.taken_at,
@@ -2070,6 +2101,33 @@ export async function writeContinuousGroups(
            -- that could not read one; the mtime always refreshes.
            file_generation = COALESCE(excluded.file_generation, photos.file_generation),
            file_mtime = excluded.file_mtime,
+           -- Media kinds (v24): MediaStore's facts refresh when the pass
+           -- had them; a pass without the facts join keeps the stored
+           -- values. Width/height/duration: a COMPLETED per-file read
+           -- (marker set) is authoritative for the content it read — its
+           -- null is an honest unknown that must replace a stale value;
+           -- without a read this pass, a measured value survives a later
+           -- MediaStore 0×0.
+           kind = excluded.kind,
+           mime_type = COALESCE(excluded.mime_type, photos.mime_type),
+           display_name = COALESCE(excluded.display_name, photos.display_name),
+           width = CASE WHEN excluded.facts_checked_version IS NOT NULL
+             THEN excluded.width ELSE COALESCE(excluded.width, photos.width) END,
+           height = CASE WHEN excluded.facts_checked_version IS NOT NULL
+             THEN excluded.height ELSE COALESCE(excluded.height, photos.height) END,
+           duration_ms = CASE WHEN excluded.facts_checked_version IS NOT NULL
+             THEN excluded.duration_ms ELSE COALESCE(excluded.duration_ms, photos.duration_ms) END,
+           -- The per-file read's fields move TOGETHER with its marker:
+           -- a completed read this pass lands all four; no read this
+           -- pass keeps all four (the D15 rule).
+           motion_video_offset = CASE WHEN excluded.facts_checked_version IS NOT NULL
+             THEN excluded.motion_video_offset ELSE photos.motion_video_offset END,
+           motion_video_length = CASE WHEN excluded.facts_checked_version IS NOT NULL
+             THEN excluded.motion_video_length ELSE photos.motion_video_length END,
+           motion_presentation_us = CASE WHEN excluded.facts_checked_version IS NOT NULL
+             THEN excluded.motion_presentation_us ELSE photos.motion_presentation_us END,
+           facts_checked_version =
+             COALESCE(excluded.facts_checked_version, photos.facts_checked_version),
            -- A scanned photo IS present, whatever marked it absent —
            -- including a "Forget this card, keep history" assertion whose
            -- card came back (m0.8.3 §7): the honest edge in that flow's
@@ -2110,6 +2168,16 @@ export async function writeContinuousGroups(
         photo.exifCheckedModTime ?? null,
         photo.fileGeneration,
         photo.fileMtime,
+        photo.kind,
+        photo.mimeType,
+        photo.displayName,
+        photo.width,
+        photo.height,
+        photo.durationMs,
+        photo.motionVideoOffset ?? null,
+        photo.motionVideoLength ?? null,
+        photo.motionPresentationUs ?? null,
+        photo.factsCheckedVersion ?? null,
       );
     }
     // Revalidate the plan INSIDE the transaction: the runner computed it
@@ -2435,11 +2503,26 @@ export async function getPhotoQueueFacts(
   db: SQLiteDatabase,
   assetIds: readonly string[],
 ): Promise<
-  Map<string, { uri: string; takenAt: number; day: string | null; imageVersion: number }>
+  Map<
+    string,
+    {
+      uri: string;
+      takenAt: number;
+      day: string | null;
+      imageVersion: number;
+      kind: StoredMediaKind;
+    }
+  >
 > {
   const facts = new Map<
     string,
-    { uri: string; takenAt: number; day: string | null; imageVersion: number }
+    {
+      uri: string;
+      takenAt: number;
+      day: string | null;
+      imageVersion: number;
+      kind: StoredMediaKind;
+    }
   >();
   for (const ids of chunk(assetIds, IN_CHUNK)) {
     if (ids.length === 0) continue;
@@ -2448,10 +2531,11 @@ export async function getPhotoQueueFacts(
       asset_id: string;
       uri: string;
       image_version: number;
+      kind: StoredMediaKind;
       taken_at: number;
       day: string | null;
     }>(
-      `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, taken_at, day FROM photos WHERE asset_id IN (${placeholders})`,
+      `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind, taken_at, day FROM photos WHERE asset_id IN (${placeholders})`,
       ...ids,
     );
     for (const row of rows) {
@@ -2460,6 +2544,7 @@ export async function getPhotoQueueFacts(
         takenAt: Number(row.taken_at),
         day: row.day,
         imageVersion: row.image_version,
+        kind: row.kind,
       });
     }
   }
@@ -2540,6 +2625,9 @@ export interface ToEditRow {
   asset_id: string;
   uri: string;
   image_version: number;
+  /** The media kind (v24, m0.9 phase 4): which MediaStore collection
+   * the row's content URI addresses. */
+  kind: StoredMediaKind;
   taken_at: number;
   day: string | null;
 }
@@ -2561,7 +2649,7 @@ export async function getToEditPhotos(
   const reach = reachClause(mounted, 'p.volume_name');
   const src = sourceClause(roots, 'p.uri');
   return db.getAllAsync<ToEditRow>(
-    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day FROM photos p
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.taken_at, p.day FROM photos p
        JOIN photo_actions pa ON pa.photo_id = p.asset_id
       WHERE pa.kind = 'edit' AND pa.state IN ('queued', 'error')
         AND ${livePhotoClause('p.asset_id', 'edit')}${reach.sql}${src.sql}
@@ -2575,6 +2663,7 @@ export async function getToEditPhotos(
 export interface EditDetectionRow {
   asset_id: string;
   uri: string;
+  kind: StoredMediaKind;
   taken_at: number;
   mod_time: number | null;
   content_hash: string | null;
@@ -2589,7 +2678,7 @@ export async function getEditDetectionRows(
 ): Promise<EditDetectionRow[]> {
   const reach = reachClause(mounted, 'p.volume_name');
   return db.getAllAsync<EditDetectionRow>(
-    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.mod_time, p.content_hash,
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.taken_at, p.mod_time, p.content_hash,
             pa.queued_at AS to_edit_at
        FROM photos p
        JOIN photo_actions pa ON pa.photo_id = p.asset_id
@@ -2654,7 +2743,14 @@ export async function updateModTimeBaseline(
 export async function insertDetectedCopyWithMatch(
   db: SQLiteDatabase,
   originalId: string,
-  copy: { assetId: string; uri: string; takenAt: number; modTime: number; day: string },
+  copy: {
+    assetId: string;
+    uri: string;
+    takenAt: number;
+    modTime: number;
+    day: string;
+    kind: StoredMediaKind;
+  },
   detectedAt: number,
   /** The edit cycle the detection evidence belongs to — the original must
    * still be in THAT cycle (its edit action still queued, same
@@ -2686,8 +2782,8 @@ export async function insertDetectedCopyWithMatch(
     // clobbered (it was not a candidate anyway).
     const upsert = await txn.runAsync(
       `INSERT INTO photos
-         (asset_id, uri, taken_at, state, mod_time, day, volume_name, raw_id, activity_at)
-       VALUES (?, ?, ?, 'unreviewed', ?, ?, ?, ?, ?)
+         (asset_id, uri, taken_at, state, mod_time, day, volume_name, raw_id, activity_at, kind)
+       VALUES (?, ?, ?, 'unreviewed', ?, ?, ?, ?, ?, ?)
        ON CONFLICT(asset_id) DO UPDATE SET
          activity_at = excluded.activity_at
        WHERE photos.state = 'unreviewed' AND photos.activity_at IS NULL`,
@@ -2701,6 +2797,7 @@ export async function insertDetectedCopyWithMatch(
       volumeOf(copy.assetId),
       rawIdOf(copy.assetId),
       detectedAt,
+      copy.kind,
     );
     if (Number(upsert.changes) === 0) {
       // The guarded upsert lost its race — the user touched the copy row
@@ -2723,14 +2820,17 @@ export async function insertDetectedCopyWithMatch(
 export interface PendingCopyMatch {
   original_id: string;
   copy_id: string;
+  /** The copy's stored kind — its presence probe addresses that collection. */
+  copy_kind: StoredMediaKind;
 }
 
 /** One pending match per original (earliest detected wins). */
 export async function getPendingCopyMatches(db: SQLiteDatabase): Promise<PendingCopyMatch[]> {
   return db.getAllAsync<PendingCopyMatch>(
-    `SELECT original_id, copy_id FROM edit_copy_matches
-     WHERE state = 'pending'
-     GROUP BY original_id HAVING MIN(detected_at)`,
+    `SELECT m.original_id, m.copy_id, p.kind AS copy_kind
+       FROM edit_copy_matches m JOIN photos p ON p.asset_id = m.copy_id
+      WHERE m.state = 'pending'
+      GROUP BY m.original_id HAVING MIN(m.detected_at)`,
   );
 }
 
@@ -2756,10 +2856,15 @@ export async function dismissCopyMatch(
 // once a mutation moves a row's sort key (C#15).
 
 export interface HistoryPhotoRow {
+  /** The FEED row discriminator (photo row vs share event) — not the
+   * media kind, which is `media_kind` below. */
   kind: 'photo';
   asset_id: string;
   uri: string;
   image_version: number;
+  /** The media kind (v24, m0.9 phase 4): which MediaStore collection
+   * the row's content URI addresses. */
+  media_kind: StoredMediaKind;
   taken_at: number;
   state: PhotoState;
   /** Per-kind LIVE (`state IN ('queued','error')`; favourite additionally
@@ -2917,7 +3022,7 @@ export async function getHistoryPage(
     photoPos === 'end'
       ? []
       : await db.getAllAsync<Omit<HistoryPhotoRow, 'kind'>>(
-          `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, taken_at, state, day, activity_at, is_present,
+          `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind AS media_kind, taken_at, state, day, activity_at, is_present,
                   EXISTS (SELECT 1 FROM photo_actions pa_edit WHERE pa_edit.photo_id = photos.asset_id AND pa_edit.kind = 'edit' AND pa_edit.state IN ('queued', 'error')) AS needs_edit,
                   EXISTS (SELECT 1 FROM photo_actions pc_edit WHERE pc_edit.photo_id = photos.asset_id AND pc_edit.kind = 'edit' AND pc_edit.resolved_at IS NOT NULL) AS edit_applied,
                   EXISTS (SELECT 1 FROM photo_actions pl_fav WHERE pl_fav.photo_id = photos.asset_id AND pl_fav.kind = 'favourite' AND pl_fav.state IN ('queued', 'error') AND pl_fav.target = '1') AS favourite_live,
@@ -3139,6 +3244,9 @@ export interface AssetStateRow {
   /** The image cache version (v23, item 3) — the library grid's join
    * carries it for tracked rows. */
   image_version: number;
+  /** The media kind (v24, m0.9 phase 4): which MediaStore collection
+   * the row's content URI addresses. */
+  kind: StoredMediaKind;
 }
 
 export async function getStateRowsForAssets(
@@ -3156,11 +3264,12 @@ export async function getStateRowsForAssets(
       day: string | null;
       rescued: number;
       image_version: number;
+      kind: StoredMediaKind;
     }>(
       `SELECT asset_id, state, taken_at, day,
               (exif_checked_mod_time IS NOT NULL AND day IS NOT NULL) AS rescued,
               EXISTS (SELECT 1 FROM photo_group_assignments a
-                      WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped, COALESCE(file_generation, file_mtime) AS image_version
+                      WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped, COALESCE(file_generation, file_mtime) AS image_version, kind
        FROM photos WHERE asset_id IN (${placeholders})`,
       ...ids,
     );
@@ -3172,6 +3281,7 @@ export async function getStateRowsForAssets(
         day: row.day,
         rescued: !!row.rescued,
         image_version: row.image_version,
+        kind: row.kind,
       });
   }
   return out;
@@ -3185,6 +3295,9 @@ export interface RescuedPhotoRow {
   asset_id: string;
   uri: string;
   image_version: number;
+  /** The media kind (v24, m0.9 phase 4): which MediaStore collection
+   * the row's content URI addresses. */
+  kind: StoredMediaKind;
   taken_at: number;
   day: string;
 }
@@ -3209,7 +3322,7 @@ export async function getRescuedPhotoPage(
     before === undefined ? '' : ' AND (taken_at < ? OR (taken_at = ? AND asset_id < ?))';
   const keysetParams = before === undefined ? [] : [before.takenAt, before.takenAt, before.assetId];
   return db.getAllAsync<RescuedPhotoRow>(
-    `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, taken_at, day
+    `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind, taken_at, day
        FROM photos
       WHERE exif_checked_mod_time IS NOT NULL AND day IS NOT NULL
         AND state <> 'trashed' AND is_present = 1${src.sql}${reach.sql}${keyset}
@@ -3230,6 +3343,9 @@ export interface GridPhotoRow {
   asset_id: string;
   uri: string;
   image_version: number;
+  /** The media kind (v24, m0.9 phase 4): which MediaStore collection
+   * the row's content URI addresses. */
+  kind: StoredMediaKind;
   taken_at: number;
   /** Capture day; NULL = honestly undated (taken_at is the mtime
    * fallback then — surfaces must say "Unknown day", m0.8.6 change 5). */
@@ -3288,7 +3404,7 @@ export async function getGridPhotosByFilter(
   const filterSql = GRID_FILTER_SQL[filter];
   if (filterSql === undefined) throw new Error(`unknown grid filter: ${filter}`);
   return db.getAllAsync<GridPhotoRow>(
-    `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, taken_at, day, state,
+    `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind, taken_at, day, state,
             EXISTS (SELECT 1 FROM photo_group_assignments a
                     WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped,
             EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = photos.asset_id
@@ -3648,6 +3764,31 @@ export async function getTakenAtForAssets(
       ...batch,
     );
     for (const row of rows) result.set(row.asset_id, Number(row.taken_at));
+  }
+  return result;
+}
+
+/** The bounded per-file read's once-per-content marker per id (phase 4,
+ * item 6): the image version at which motion detection + the
+ * measurement rescue last COMPLETED, or null. The scan reads for rows
+ * whose marker differs from the version it is about to write. */
+export async function getFactsBaselines(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+): Promise<Map<string, number | null>> {
+  const result = new Map<string, number | null>();
+  for (const batch of chunk(assetIds, IN_CHUNK)) {
+    const rows = await db.getAllAsync<{ asset_id: string; facts_checked_version: number | null }>(
+      `SELECT asset_id, facts_checked_version FROM photos
+        WHERE asset_id IN (${batch.map(() => '?').join(',')})`,
+      ...batch,
+    );
+    for (const row of rows) {
+      result.set(
+        row.asset_id,
+        row.facts_checked_version === null ? null : Number(row.facts_checked_version),
+      );
+    }
   }
   return result;
 }

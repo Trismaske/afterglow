@@ -32,7 +32,7 @@ export const DATABASE_NAME = 'afterglow.db';
  * When one release's destructive DDL lands across multiple phases, bump
  * once PER destructive phase (not once per release), so a mid-release
  * install self-heals by rebuild instead of by a manual data wipe. */
-export const SCHEMA_VERSION = 23;
+export const SCHEMA_VERSION = 24;
 
 export const BASELINE_DDL = `
   CREATE TABLE photos (
@@ -59,6 +59,37 @@ export const BASELINE_DDL = `
     -- above stays the edit detector's baseline and is NOT a version.
     file_generation      INTEGER,
     file_mtime           INTEGER,
+    -- MEDIA KINDS (v24, m0.9 phase 4). kind is what the row IS to every
+    -- action (which MediaStore collection its content URI addresses) and
+    -- to the scan (videos are singles, never embedded). A motion photo is
+    -- a 'photo' whose embedded video is a fact ON the row below.
+    kind                 TEXT NOT NULL DEFAULT 'photo' CHECK (kind IN ('photo', 'video')),
+    -- MIME is the classification truth; display_name renders the
+    -- extension (name and MIME may disagree; each layer is honest about
+    -- what it claims — M15). Both NULL only for rows the expo path
+    -- ingested without the native facts join.
+    mime_type            TEXT,
+    display_name         TEXT,
+    -- Display-space pixel size (orientation applied) and duration (ms,
+    -- videos and motion videos). NULL = unknown after MediaStore and the
+    -- measurement rescue both had nothing (M17).
+    width                INTEGER,
+    height               INTEGER,
+    duration_ms          INTEGER,
+    -- The embedded motion video: byte offset from the file's start and
+    -- its length (the video runs to the end of the file in both proven
+    -- containers), plus the presentation timestamp (µs into the video
+    -- of the still's frame; NULL when the writer gave none). NULL offset
+    -- = not a motion photo (or not yet read — see the marker).
+    motion_video_offset  INTEGER,
+    motion_video_length  INTEGER,
+    motion_presentation_us INTEGER,
+    -- The ONE once-per-content marker for the bounded per-file read
+    -- (motion detection + the measurement rescue, MediaFacts.kt): the
+    -- image_version at which the read COMPLETED. NULL = never or failed
+    -- (retry next pass); a changed version re-reads, because an edit can
+    -- strip the trailer or change the bounds. The D15 pattern.
+    facts_checked_version INTEGER,
     day                  TEXT,
     -- File size at last scan (v14): NULL until scanned post-migration.
     -- Powers the EXACT reclaimable-bytes sum (vetted: no estimates).

@@ -114,6 +114,12 @@ export function OrganizeQueueScreen({ navigation }: Props) {
     [selectionMode, selected, rows],
   );
   const targeted = useMemo(() => (rows ?? []).filter((r) => r.organize_path !== null), [rows]);
+  /** The kinds the picker's move would carry (m0.9 phase 4): the album
+   * list offers only paths valid for every one of them. */
+  const pickerKinds = useMemo(() => {
+    const ids = new Set(targetIds);
+    return [...new Set((rows ?? []).filter((r) => ids.has(r.photo_id)).map((r) => r.kind))];
+  }, [rows, targetIds]);
   const untargetedCount = (rows?.length ?? 0) - targeted.length;
 
   const toggle = useCallback((id: string) => {
@@ -213,7 +219,7 @@ export function OrganizeQueueScreen({ navigation }: Props) {
       await reload();
     } catch (error) {
       surfaceQueueWriteError(
-        'Afterglow could not finish removing those photos from the queue. The grid below shows what actually stands — please retry.',
+        'Afterglow could not finish removing those items from the queue. The grid below shows what actually stands — please retry.',
         error,
       );
       await reload().catch(() => {});
@@ -276,7 +282,9 @@ export function OrganizeQueueScreen({ navigation }: Props) {
         if (declined) break;
         for (let i = 0; i < members.length; i += ORGANIZE_BATCH_LIMIT) {
           const batch = members.slice(i, i + ORGANIZE_BATCH_LIMIT);
-          const uris = await Promise.all(batch.map((m) => getEditableContentUri(m.photo_id)));
+          const uris = await Promise.all(
+            batch.map((m) => getEditableContentUri({ id: m.photo_id, kind: m.kind })),
+          );
           // Crash-retry repair first (N#8): a move MediaStore completed
           // whose SQLite commit was lost is detected with a READ-ONLY
           // path lookup — never the mutating move call, which a lingering
@@ -380,7 +388,7 @@ export function OrganizeQueueScreen({ navigation }: Props) {
         showToast(
           declined
             ? `Moved ${moved} — the rest stay queued`
-            : `Moved ${plural(moved, 'photo')}${skipped}`,
+            : `Moved ${plural(moved, 'item')}${skipped}`,
         );
       }
       await reload();
@@ -398,7 +406,7 @@ export function OrganizeQueueScreen({ navigation }: Props) {
       // an already-moved photo is repaired (read-only precheck →
       // 'already') on the next Move.
       surfaceQueueWriteError(
-        'Afterglow could not finish recording the move. Some photos may already have moved — everything still queued below is picked up again on the next Move.',
+        'Afterglow could not finish recording the move. Some items may already have moved — everything still queued below is picked up again on the next Move.',
         error,
       );
       await reload().catch(() => {});
@@ -412,6 +420,7 @@ export function OrganizeQueueScreen({ navigation }: Props) {
     ({ item }: { item: OrganizeQueueRow }) => (
       <QueueGridCell
         id={item.photo_id}
+        kind={item.kind}
         uri={item.uri}
         version={item.image_version}
         selected={selected.has(item.photo_id)}
@@ -460,7 +469,7 @@ export function OrganizeQueueScreen({ navigation }: Props) {
             ? QUEUE_REFRESH_FAILED
             : 'Loading…'
           : count === 0
-            ? 'Queue photos with Organize during review, then assign albums here.'
+            ? 'Queue items with Organize during review, then assign albums here.'
             : selectionMode
               ? `${selected.size} selected · choose their album, or remove them`
               : // The long-press door was invisible (device pass
@@ -527,6 +536,7 @@ export function OrganizeQueueScreen({ navigation }: Props) {
       ) : null}
       <AlbumPicker
         visible={pickerOpen}
+        kinds={pickerKinds}
         onChoose={(path) => void chooseAlbum(path)}
         onClose={() => setPickerOpen(false)}
       />

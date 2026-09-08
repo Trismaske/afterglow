@@ -122,13 +122,14 @@ export function HistoryScreen({ navigation }: Props) {
       // TOMBSTONES are skipped (D9): they are expected-gone, and running
       // the check would report exactly that and drop the placeholder the
       // feed exists to keep.
-      const photoIds = pageRows
-        .filter(
-          (row): row is Extract<HistoryRow, { kind: 'photo' }> =>
-            row.kind === 'photo' && row.is_present === 1 && row.state !== 'trashed',
-        )
-        .map((row) => row.asset_id);
-      const presences = await mapWithConcurrency(photoIds, 6, (id) => checkMediaPresence(id));
+      const photoRows = pageRows.filter(
+        (row): row is Extract<HistoryRow, { kind: 'photo' }> =>
+          row.kind === 'photo' && row.is_present === 1 && row.state !== 'trashed',
+      );
+      const photoIds = photoRows.map((row) => row.asset_id);
+      const presences = await mapWithConcurrency(photoRows, 6, (row) =>
+        checkMediaPresence({ id: row.asset_id, kind: row.media_kind }),
+      );
       const gone = new Set<string>(
         photoIds.filter((_, i) => presences[i] === 'trashed' || presences[i] === 'absent'),
       );
@@ -251,7 +252,7 @@ export function HistoryScreen({ navigation }: Props) {
             </View>
             <View style={styles.rowBody}>
               <Text style={styles.rowTitle}>
-                Shared · {plural(item.member_count, 'photo')}
+                Shared · {plural(item.member_count, 'item')}
                 {item.label ? ` · “${item.label}”` : ''}
               </Text>
               <Text style={styles.rowTime}>{formatDayClock(item.chosen_at)}</Text>
@@ -286,6 +287,7 @@ export function HistoryScreen({ navigation }: Props) {
           ) : (
             <OsThumbnail
               assetId={item.asset_id}
+              kind={item.media_kind}
               uri={item.uri}
               version={item.image_version}
               px={ROW_THUMB_PX}

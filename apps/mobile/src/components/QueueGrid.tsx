@@ -7,6 +7,7 @@
  * coloured fill), per-kind status renders as small overlay badges the
  * caller supplies. The chip is the screens' small header/action button.
  */
+import type { StoredMediaKind } from '../lib/mediaIdentity';
 import React from 'react';
 import { Pressable, StyleSheet, Text, type StyleProp, type ViewStyle } from 'react-native';
 import { PixelRatio, useWindowDimensions } from 'react-native';
@@ -18,6 +19,7 @@ import { colors } from '../theme';
 
 export function QueueGridCell({
   id,
+  kind,
   uri,
   version,
   selected,
@@ -27,6 +29,7 @@ export function QueueGridCell({
   children,
 }: {
   id: string;
+  kind: StoredMediaKind;
   uri: string;
   /** The image cache version (item 3). */
   version: number;
@@ -44,6 +47,7 @@ export function QueueGridCell({
     <Pressable style={styles.cell} onPress={onPress} onLongPress={onLongPress}>
       <OsThumbnail
         assetId={id}
+        kind={kind}
         uri={uri}
         version={version}
         px={cellPx}

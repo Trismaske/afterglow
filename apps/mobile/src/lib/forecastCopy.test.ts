@@ -72,30 +72,30 @@ describe('forecastHeadline', () => {
   it('falls back to the plain navigation subtitle without history', () => {
     // The Progress row still has to say what it is.
     expect(forecastHeadline({ kind: 'insufficient_history', decisions: 12 }, AT)).toBe(
-      'All photos · state browsing',
+      'All items · state browsing',
     );
   });
 
   it('states the growth rate and NEVER a date while the backlog grows', () => {
     const text = forecastHeadline(growing(), AT);
-    expect(text).toBe(`${n(4012)} photos left · gaining 12/day`);
+    expect(text).toBe(`${n(4012)} items left · gaining 12/day`);
     expect(text).not.toMatch(/≈|Aug|Sep|20\d\d/);
   });
 
   it('gives a date once reviewing outruns shooting', () => {
     expect(forecastHeadline(finishing({ days: 9 }), AT)).toMatch(
-      new RegExp(`^${n(4012)} photos left · ≈ .+ at this pace$`),
+      new RegExp(`^${n(4012)} items left · ≈ .+ at this pace$`),
     );
   });
 
   it('says so plainly rather than printing an absurd date', () => {
     expect(forecastHeadline(finishing({ days: 5000 }), AT)).toBe(
-      `${n(4012)} photos left · over ten years at this pace`,
+      `${n(4012)} items left · over ten years at this pace`,
     );
   });
 
   it('keeps the singular honest', () => {
-    expect(forecastHeadline(growing({ remaining: 1 }), AT)).toContain('1 photo left');
+    expect(forecastHeadline(growing({ remaining: 1 }), AT)).toContain('1 item left');
   });
 });
 

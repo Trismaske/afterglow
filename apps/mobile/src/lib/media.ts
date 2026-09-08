@@ -24,9 +24,10 @@ import type { MediaItem } from '@afterglow/core';
 import {
   getMediaPresence,
   getMountedVolumes,
-  loadImageByVolumeId,
+  loadMediaByVolumeId,
   mediaStoreActionsAvailable,
-  queryImageDetailsByUri,
+  queryMediaDetailsByUri,
+  queryMediaFactsByIds,
   trashMedia,
   type MediaStoreActionStatus,
 } from '../../modules/media-store-actions';
@@ -44,16 +45,31 @@ import {
  * coverage it did not achieve.
  */
 export { PRIMARY_VOLUME, canonicalPhotoId, rawIdOf, volumeOf } from './mediaIdentity';
+export type { MediaRef, StoredMediaKind } from './mediaIdentity';
 import {
   canonicalContentUri,
   canonicalPhotoId,
   rawIdOf,
   volumeOf,
   volumeOfUriPath,
+  type MediaRef,
+  type StoredMediaKind,
 } from './mediaIdentity';
 
-/** A camera-roll photo: the core item plus MediaStore extras we persist.
- * `item.id` is the canonical volume-qualified id. */
+/** MediaStore's MEDIA_TYPE as the legacy Asset reports it → the stored
+ * kind. Audio and unknown never reach here (the queries filter to photo
+ * and video). */
+function kindOfAsset(mediaType: string): StoredMediaKind {
+  return mediaType === 'video' ? 'video' : 'photo';
+}
+
+/** Both kinds, every query (m0.9 phase 4): videos enter the scan, the
+ * counts, the grids and the copy-detection pool alongside photos. */
+const MEDIA_KINDS = [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video];
+
+/** A camera-roll item — photo or video (m0.9 phase 4): the core item plus
+ * MediaStore extras we persist. `item.id` is the canonical volume-qualified
+ * id; `item.kind` is the stored kind. */
 export interface LoadedPhoto {
   item: MediaItem;
   rawId: string;
@@ -61,11 +77,33 @@ export interface LoadedPhoto {
   filename: string;
   modTime: number;
   /** MediaStore GENERATION_MODIFIED when the load path had it (the
-   * native per-photo query); null on the expo-media-library path. The
-   * image cache version (item 3) is this, else modTime. */
+   * native per-item query, or the per-page facts join); null on a bare
+   * expo-media-library page. The image cache version (item 3) is this,
+   * else modTime. */
   generation: number | null;
+  /** Display-space pixels; 0 when MediaStore has none (the scan's
+   * measurement rescue fills them, M17). */
   width: number;
   height: number;
+  /** MIME (classification truth, M15) and MediaStore's display name —
+   * null on a bare expo page (the facts join fills them). */
+  mimeType: string | null;
+  displayName: string | null;
+  /** Duration in ms for videos; null for photos or when unknown. */
+  durationMs: number | null;
+  /** MediaStore's SIZE when the load path had it — saves a stat. */
+  sizeBytes: number | null;
+  /** Set by the scan's bounded per-file read (phase 4, item 6) when it
+   * COMPLETED for this item this pass: the motion facts (nulls = not a
+   * motion photo) and the image version the read covered — the upsert
+   * persists them together as the once-per-content marker. Unset = no
+   * read this pass (marker current, or a failed read → retry). */
+  facts?: {
+    factsCheckedVersion: number;
+    motionVideoOffset: number | null;
+    motionVideoLength: number | null;
+    motionPresentationUs: number | null;
+  };
   /** MediaStore has no DATE_TAKEN for it — `item.timestamp` is the
    * modification-time fallback, and MediaStore sorted it at the end of
    * a DATE_TAKEN-descending stream (the scan handles these separately). */
@@ -107,7 +145,7 @@ function toLoadedPhoto(asset: MediaLibrary.Asset): LoadedPhoto | null {
       // all at epoch.
       timestamp: asset.creationTime || asset.modificationTime || 0,
       uri: asset.uri,
-      kind: 'photo',
+      kind: kindOfAsset(asset.mediaType),
     },
     rawId: asset.id,
     volumeName,
@@ -117,7 +155,63 @@ function toLoadedPhoto(asset: MediaLibrary.Asset): LoadedPhoto | null {
     undated: !asset.creationTime,
     width: asset.width,
     height: asset.height,
+    mimeType: null,
+    displayName: null,
+    // The legacy Asset reports seconds (0 for photos).
+    durationMs:
+      asset.mediaType === 'video' && asset.duration > 0 ? Math.round(asset.duration * 1000) : null,
+    sizeBytes: null,
   };
+}
+
+/**
+ * The per-page facts join (m0.9 phase 4): one Files-collection query per
+ * volume per page adds what the legacy Asset lacks — MIME, display name,
+ * duration, size and GENERATION_MODIFIED (the cache version the expo
+ * path could not supply) — and re-reads width/height/kind from the same
+ * row. Mutates in place. The SCAN calls this on its ingestion pages;
+ * grid pagers do not (their rows come from SQLite). Without the native
+ * module the page stays as the Asset shaped it, logged once. A failed
+ * query THROWS — a partial page would classify the missing rows by
+ * their filenames, and the scan's pass must fail closed instead.
+ */
+let warnedNoFactsJoin = false;
+export async function joinMediaFacts(photos: LoadedPhoto[]): Promise<void> {
+  if (photos.length === 0) return;
+  if (!mediaStoreActionsAvailable()) {
+    if (!warnedNoFactsJoin) {
+      warnedNoFactsJoin = true;
+      console.warn('[media] native module absent — pages carry no MIME, duration or generation');
+    }
+    return;
+  }
+  const byVolume = new Map<string, LoadedPhoto[]>();
+  for (const photo of photos) {
+    const list = byVolume.get(photo.volumeName);
+    if (list) list.push(photo);
+    else byVolume.set(photo.volumeName, [photo]);
+  }
+  for (const [volume, list] of byVolume) {
+    const rows = await queryMediaFactsByIds(
+      volume,
+      list.map((p) => p.rawId),
+    );
+    const byId = new Map(rows.map((r) => [r.rawId, r]));
+    for (const photo of list) {
+      const row = byId.get(photo.rawId);
+      if (!row) continue; // gone between the page and the join — the pass sees it next time
+      photo.item.kind = row.kind;
+      photo.generation = row.generationModified;
+      photo.mimeType = row.mimeType;
+      photo.displayName = row.displayName;
+      photo.durationMs = row.durationMs;
+      photo.sizeBytes = row.sizeBytes;
+      if (row.width > 0 && row.height > 0) {
+        photo.width = row.width;
+        photo.height = row.height;
+      }
+    }
+  }
 }
 
 /** Map one MediaStore page, dropping fail-closed assets; `skipped` is the
@@ -159,7 +253,7 @@ export async function pagePhotosInRange(
       ...(albumId !== undefined ? { album: albumId } : {}),
       ...(startMs > 0 ? { createdAfter: startMs } : {}),
       ...(Number.isFinite(endMs) ? { createdBefore: endMs } : {}),
-      mediaType: MediaLibrary.MediaType.photo,
+      mediaType: MEDIA_KINDS,
       sortBy: [[MediaLibrary.SortBy.creationTime, !descending]],
     });
     const keepGoing = await onPage(toLoadedPage(page.assets).photos);
@@ -204,7 +298,7 @@ export async function fetchPhotoPageDesc(
     // NULL, so open-ended callers pass Infinity and get NO bounds (undated
     // photos must enter the scan and the all-photos counts).
     ...(Number.isFinite(endMs) ? { createdBefore: endMs } : {}),
-    mediaType: MediaLibrary.MediaType.photo,
+    mediaType: MEDIA_KINDS,
     sortBy: [[MediaLibrary.SortBy.creationTime, false]],
   });
   const mapped = toLoadedPage(page.assets);
@@ -263,7 +357,7 @@ export async function countPhotosInRange(
           // Same undated-photo contract as fetchPhotoPageDesc.
           ...(startMs > 0 ? { createdAfter: startMs } : {}),
           ...(Number.isFinite(endMs) ? { createdBefore: endMs } : {}),
-          mediaType: MediaLibrary.MediaType.photo,
+          mediaType: MEDIA_KINDS,
         });
         return page.totalCount;
       }),
@@ -302,7 +396,8 @@ export interface AssetDetails {
  * with another volume's path (updatePhotoUri) or feeding edit detection
  * another photo's times.
  */
-export async function getAssetDetails(assetId: string): Promise<AssetDetails | null> {
+export async function getAssetDetails(ref: MediaRef): Promise<AssetDetails | null> {
+  const assetId = ref.id;
   // CANONICAL lookup first (final cycle Q2): query the volume-qualified
   // content URI natively — immune to cross-volume raw-id collisions,
   // where the merged lookup below can only fail closed to null and leave
@@ -311,7 +406,7 @@ export async function getAssetDetails(assetId: string): Promise<AssetDetails | n
   // as the module-absent fallback.
   if (mediaStoreActionsAvailable()) {
     try {
-      const [row] = await queryImageDetailsByUri([await getEditableContentUri(assetId)]);
+      const [row] = await queryMediaDetailsByUri([await getEditableContentUri(ref)]);
       if (row.status !== 'found') return null;
       // No DATA path or no DATE_MODIFIED = no usable repair/detection
       // signal — same "no signal" contract as a failed lookup.
@@ -361,7 +456,7 @@ export async function getAssetDetails(assetId: string): Promise<AssetDetails | n
 let warnedMergedFallback = false;
 export async function loadPhotoById(assetId: string): Promise<LoadedPhoto | null> {
   try {
-    const row = await loadImageByVolumeId(volumeOf(assetId), rawIdOf(assetId));
+    const row = await loadMediaByVolumeId(volumeOf(assetId), rawIdOf(assetId));
     if (row === 'module-absent') {
       if (!warnedMergedFallback) {
         warnedMergedFallback = true;
@@ -382,16 +477,20 @@ export async function loadPhotoById(assetId: string): Promise<LoadedPhoto | null
         id: assetId,
         timestamp: row.dateTakenMs ?? row.dateModifiedSec * 1000,
         uri,
-        kind: 'photo',
+        kind: row.kind,
       },
       rawId: row.rawId,
       volumeName: volumeOf(assetId),
       filename: row.displayName ?? row.dataPath.slice(row.dataPath.lastIndexOf('/') + 1),
       modTime: row.dateModifiedSec * 1000,
-      generation: row.generationModified ?? null,
+      generation: row.generationModified,
       undated: row.dateTakenMs === null,
       width: row.width,
       height: row.height,
+      mimeType: row.mimeType,
+      displayName: row.displayName,
+      durationMs: row.durationMs,
+      sizeBytes: row.sizeBytes,
     };
   } catch {
     return null;
@@ -401,6 +500,7 @@ export async function loadPhotoById(assetId: string): Promise<LoadedPhoto | null
 /** Candidate asset for edited-copy detection. */
 export interface CandidateAsset {
   id: string;
+  kind: StoredMediaKind;
   filename: string;
   creationTime: number;
   modificationTime: number;
@@ -432,7 +532,7 @@ export async function loadCandidatesCreatedBetween(
         ...(album !== undefined ? { album } : {}),
         ...(startMs > 0 ? { createdAfter: startMs } : {}),
         ...(endMs !== undefined ? { createdBefore: endMs } : {}),
-        mediaType: MediaLibrary.MediaType.photo,
+        mediaType: MEDIA_KINDS,
         sortBy: [[MediaLibrary.SortBy.creationTime, false]],
       });
       for (const asset of page.assets) {
@@ -446,6 +546,7 @@ export async function loadCandidatesCreatedBetween(
         }
         out.push({
           id: canonicalPhotoId(volumeName, asset.id),
+          kind: kindOfAsset(asset.mediaType),
           filename: asset.filename,
           creationTime: asset.creationTime,
           modificationTime: asset.modificationTime,
@@ -476,8 +577,8 @@ export async function loadCandidatesCreatedBetween(
  * Deliberately still async (m0.8.4): the body no longer awaits, but
  * de-asyncing is churn across every caller for no gain.
  */
-export async function getEditableContentUri(assetId: string): Promise<string> {
-  return canonicalContentUri(assetId);
+export async function getEditableContentUri(ref: MediaRef): Promise<string> {
+  return canonicalContentUri(ref.id, ref.kind);
 }
 
 /**
@@ -490,9 +591,9 @@ export async function getEditableContentUri(assetId: string): Promise<string> {
  * reclaimed-bytes credit or release a photo as gone.
  */
 export async function verifyTrashedTriState(
-  assetId: string,
+  ref: MediaRef,
 ): Promise<'present' | 'absent' | 'unknown'> {
-  const presence = await checkMediaPresence(assetId);
+  const presence = await checkMediaPresence(ref);
   if (presence === 'trashed' || presence === 'absent') return 'absent';
   if (presence === 'present') return 'present';
   return 'unknown';
@@ -507,11 +608,11 @@ export async function verifyTrashedTriState(
  * 'unknown' and callers must change nothing.
  */
 export async function checkMediaPresence(
-  assetId: string,
+  ref: MediaRef,
 ): Promise<'present' | 'trashed' | 'absent' | 'unknown'> {
   if (!mediaStoreActionsAvailable()) return 'unknown';
   try {
-    const presence = await getMediaPresence(await getEditableContentUri(assetId));
+    const presence = await getMediaPresence(await getEditableContentUri(ref));
     if (presence !== 'absent') return presence;
     // 'absent' (a successful EMPTY cursor) is authoritative only while
     // the row's volume is actually mounted (final cycle V1) — cross-OEM
@@ -524,7 +625,7 @@ export async function checkMediaPresence(
     // eject contract preserves. LIVE read, not the burst cache: this
     // gates destructive conclusions.
     const live = await getMountedVolumes();
-    return live.includes(volumeOf(assetId)) ? 'absent' : 'unknown';
+    return live.includes(volumeOf(ref.id)) ? 'absent' : 'unknown';
   } catch {
     return 'unknown';
   }
@@ -546,13 +647,13 @@ export interface TrashAssetsResult {
  * guarantees a system trash exists, so there is no fallback to design.
  * A build without the native module removes nothing at all.
  */
-export async function trashAssets(assetIds: readonly string[]): Promise<TrashAssetsResult> {
-  if (assetIds.length === 0) return { status: 'applied' };
+export async function trashAssets(refs: readonly MediaRef[]): Promise<TrashAssetsResult> {
+  if (refs.length === 0) return { status: 'applied' };
   // Two tries, because the stage is the classifier's tier-1 fact (codex
   // m0.8.7 r2): a uri-resolution failure must not wear Android's name.
   let uris: string[];
   try {
-    uris = await Promise.all(assetIds.map(getEditableContentUri));
+    uris = await Promise.all(refs.map(getEditableContentUri));
   } catch (error) {
     return {
       status: 'failed',

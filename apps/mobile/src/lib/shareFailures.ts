@@ -33,14 +33,14 @@ export function describeShareFailure(failure: ShareFailure): ShareFailureReport 
   if (failure.stage === 'prepare') {
     // TIER 1: proven by the stage — Android never saw the batch.
     lines.push(
-      `${plural(failure.count, 'photo')} could not be prepared for sharing — the share sheet ` +
+      `${plural(failure.count, 'item')} could not be prepared for sharing — the share sheet ` +
         `was never opened. Nothing was sent, and the queue is unchanged.`,
     );
   } else {
     // TIER 2: honest and generic — a dispatch refusal has no cause we
     // can prove from our own facts.
     lines.push(
-      `Android could not open the share sheet for ${plural(failure.count, 'photo')}. ` +
+      `Android could not open the share sheet for ${plural(failure.count, 'item')}. ` +
         `Nothing was sent, and the queue is unchanged.`,
     );
   }

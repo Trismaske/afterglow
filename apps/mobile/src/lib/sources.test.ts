@@ -131,24 +131,24 @@ describe('matchAlbumIds', () => {
 describe('foldAlbumsToDirs (catalog volume splitting)', () => {
   it('keeps the same relative path on two volumes as two entries', () => {
     const dirs = foldAlbumsToDirs([
-      { volumeName: PRIMARY, bucketId: '1', relativePath: 'DCIM/Camera/', photoCount: 10 },
-      { volumeName: SD, bucketId: '2', relativePath: 'DCIM/Camera/', photoCount: 3 },
+      { volumeName: PRIMARY, bucketId: '1', relativePath: 'DCIM/Camera/', itemCount: 10 },
+      { volumeName: SD, bucketId: '2', relativePath: 'DCIM/Camera/', itemCount: 3 },
     ]);
     expect(dirs).toEqual([
-      { volume: SD, dir: 'DCIM/Camera', albumIds: ['2'], photoCount: 3 },
-      { volume: PRIMARY, dir: 'DCIM/Camera', albumIds: ['1'], photoCount: 10 },
+      { volume: SD, dir: 'DCIM/Camera', albumIds: ['2'], itemCount: 3 },
+      { volume: PRIMARY, dir: 'DCIM/Camera', albumIds: ['1'], itemCount: 10 },
     ]);
   });
 
   it('merges buckets sharing a (volume, dir) and skips empties', () => {
     const dirs = foldAlbumsToDirs([
-      { volumeName: PRIMARY, bucketId: '1', relativePath: 'Pictures/X/', photoCount: 4 },
-      { volumeName: PRIMARY, bucketId: '2', relativePath: 'pictures/x/', photoCount: 2 },
-      { volumeName: PRIMARY, bucketId: '3', relativePath: 'Pictures/Empty/', photoCount: 0 },
-      { volumeName: PRIMARY, bucketId: '4', relativePath: '', photoCount: 9 },
+      { volumeName: PRIMARY, bucketId: '1', relativePath: 'Pictures/X/', itemCount: 4 },
+      { volumeName: PRIMARY, bucketId: '2', relativePath: 'pictures/x/', itemCount: 2 },
+      { volumeName: PRIMARY, bucketId: '3', relativePath: 'Pictures/Empty/', itemCount: 0 },
+      { volumeName: PRIMARY, bucketId: '4', relativePath: '', itemCount: 9 },
     ]);
     expect(dirs).toEqual([
-      { volume: PRIMARY, dir: 'Pictures/X', albumIds: ['1', '2'], photoCount: 6 },
+      { volume: PRIMARY, dir: 'Pictures/X', albumIds: ['1', '2'], itemCount: 6 },
     ]);
   });
 });

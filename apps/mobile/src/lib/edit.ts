@@ -20,10 +20,11 @@
  * inconsistent about result codes, so callers must never treat the result
  * as "was it edited" — that's manual Mark done + edit detection.
  */
+import type { StoredMediaKind } from './mediaIdentity';
 import { Platform } from 'react-native';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { requestMediaWriteAccess } from '../../modules/media-store-actions';
-import { ACTION_EDIT, ACTION_VIEW } from './editActions';
+import { ACTION_EDIT, ACTION_VIEW, launchMimeType } from './editActions';
 
 const FLAG_GRANT_READ_URI_PERMISSION = 0x00000001;
 const FLAG_GRANT_WRITE_URI_PERMISSION = 0x00000002;
@@ -54,6 +55,7 @@ function message(error: unknown): string {
  */
 export async function launchEditor(
   contentUri: string,
+  kind: StoredMediaKind,
   onDispatch?: (writeGranted: boolean) => void,
 ): Promise<EditLaunchResult> {
   if (Platform.OS !== 'android') return { outcome: 'unsupported' };
@@ -81,7 +83,7 @@ export async function launchEditor(
   try {
     const pending = IntentLauncher.startActivityAsync(ACTION_EDIT, {
       data: contentUri,
-      type: 'image/*',
+      type: launchMimeType(kind),
       flags: FLAG_GRANT_READ_URI_PERMISSION | (writeGranted ? FLAG_GRANT_WRITE_URI_PERMISSION : 0),
     });
     onDispatch?.(writeGranted);
@@ -93,7 +95,10 @@ export async function launchEditor(
 }
 
 /** Read-only ACTION_VIEW — the "Open in gallery" button. */
-export async function launchViewer(contentUri: string): Promise<ViewLaunchResult> {
+export async function launchViewer(
+  contentUri: string,
+  kind: StoredMediaKind,
+): Promise<ViewLaunchResult> {
   if (Platform.OS !== 'android') return { outcome: 'unsupported' };
   if (!contentUri.startsWith('content://')) {
     return {
@@ -106,7 +111,7 @@ export async function launchViewer(contentUri: string): Promise<ViewLaunchResult
   try {
     await IntentLauncher.startActivityAsync(ACTION_VIEW, {
       data: contentUri,
-      type: 'image/*',
+      type: launchMimeType(kind),
       flags: FLAG_GRANT_READ_URI_PERMISSION,
     });
     return { outcome: 'returned' };

@@ -161,7 +161,7 @@ export interface SourceDir {
   /** Bucket ids for this (volume, dir) — usually one. */
   albumIds: string[];
   /** Photos in these buckets (non-recursive, like the buckets). */
-  photoCount: number;
+  itemCount: number;
 }
 
 /**
@@ -175,24 +175,24 @@ export function foldAlbumsToDirs(
     volumeName: string;
     bucketId: string;
     relativePath: string;
-    photoCount: number;
+    itemCount: number;
   }[],
 ): SourceDir[] {
   const byDir = new Map<string, SourceDir>();
   for (const album of albums) {
     const dir = album.relativePath.replace(/\/+$/, '');
-    if (dir === '' || album.photoCount === 0) continue;
+    if (dir === '' || album.itemCount === 0) continue;
     const key = rootKey({ volume: album.volumeName, dir });
     const existing = byDir.get(key);
     if (existing) {
       existing.albumIds.push(album.bucketId);
-      existing.photoCount += album.photoCount;
+      existing.itemCount += album.itemCount;
     } else {
       byDir.set(key, {
         volume: album.volumeName,
         dir,
         albumIds: [album.bucketId],
-        photoCount: album.photoCount,
+        itemCount: album.itemCount,
       });
     }
   }

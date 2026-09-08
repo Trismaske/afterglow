@@ -16,6 +16,7 @@
  * header is injected via ListHeaderComponent so nothing nests inside a
  * ScrollView.
  */
+import type { StoredMediaKind } from '../../lib/mediaIdentity';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { OsThumbnail } from '../OsThumbnail';
@@ -59,6 +60,8 @@ import { colors, useTheme } from '../../theme';
 export interface GridPhoto {
   id: string;
   uri: string;
+  /** The media kind (m0.9 phase 4). */
+  kind: StoredMediaKind;
   /** The image cache version (item 3). */
   version: number;
   takenAt: number;
@@ -247,6 +250,7 @@ export function PhotoStateGrid({
           const photos: GridPhoto[] = rows.map((r) => ({
             id: r.asset_id,
             uri: r.uri,
+            kind: r.kind,
             version: r.image_version,
             takenAt: r.taken_at,
             day: r.day,
@@ -275,6 +279,7 @@ export function PhotoStateGrid({
           const collected: GridPhoto[] = pulled.map((r) => ({
             id: r.id,
             uri: r.uri,
+            kind: r.kind,
             version: r.version,
             takenAt: r.takenAt,
             day: r.day,
@@ -348,6 +353,7 @@ export function PhotoStateGrid({
             screen at device scale, bucketed. */}
         <OsThumbnail
           assetId={item.id}
+          kind={item.kind}
           uri={item.uri}
           version={item.version}
           px={tilePx}
@@ -391,8 +397,8 @@ export function PhotoStateGrid({
         !loading && (exhausted || failed) ? (
           <Text style={styles.empty}>
             {failed
-              ? 'Could not read your photos just now. Pull back and reopen to try again.'
-              : 'No photos in this state.'}
+              ? 'Could not read your library just now. Pull back and reopen to try again.'
+              : 'No items in this state.'}
           </Text>
         ) : null
       }

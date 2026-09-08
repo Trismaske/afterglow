@@ -4,7 +4,7 @@
  * (the persisted selection).
  *
  * The catalog comes from ONE native cursor walk (media-store-actions
- * listImageAlbums: bucket → relative path + count) — the ONLY path.
+ * listMediaAlbums: bucket → relative path + count) — the ONLY path.
  * Without that module there is no catalog and `buildCatalog` throws:
  * returning an empty one would make the unset-default resolution
  * conclude DCIM/Camera does not exist and silently broaden the scope to
@@ -14,7 +14,7 @@
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
 import {
-  listImageAlbums,
+  listMediaAlbums,
   mediaStoreActionsAvailable,
   type VolumeAlbum,
 } from '../../modules/media-store-actions';
@@ -91,7 +91,7 @@ export function invalidateSourceCatalog(): void {
  * sorted by path. Empty and zero-count buckets are skipped — they
  * contribute no photos anyway.
  *
- * ONE native cursor walk (`listImageAlbums`) returns every bucket's
+ * ONE native cursor walk (`listMediaAlbums`) returns every bucket's
  * relative path + count (a few hundred ms on an S10e with 642 buckets).
  */
 export async function listSourceDirs(force = false): Promise<SourceDir[]> {
@@ -133,7 +133,7 @@ const ALBUMS_TTL_MS = 60_000;
 let albumsCache: { at: number; albums: VolumeAlbum[] } | null = null;
 let albumsInFlight: Promise<VolumeAlbum[]> | null = null;
 
-export async function listImageAlbumsCached(force = false): Promise<VolumeAlbum[]> {
+export async function listMediaAlbumsCached(force = false): Promise<VolumeAlbum[]> {
   if (force) {
     // Bump the generation, not just the caches: an ORDINARY query
     // already in flight would otherwise land after this forced one and
@@ -145,7 +145,7 @@ export async function listImageAlbumsCached(force = false): Promise<VolumeAlbum[
   }
   if (albumsCache && Date.now() - albumsCache.at < ALBUMS_TTL_MS) return albumsCache.albums;
   if (albumsInFlight) return albumsInFlight;
-  const pending = listImageAlbums();
+  const pending = listMediaAlbums();
   const generation = cacheGeneration;
   albumsInFlight = pending;
   void pending
@@ -179,7 +179,7 @@ async function buildCatalog(): Promise<SourceDir[]> {
   }
   // A forced listSourceDirs cleared the album cache before this build,
   // so the plain call is fresh exactly when freshness was demanded.
-  const albums = await listImageAlbumsCached();
+  const albums = await listMediaAlbumsCached();
   // Keyed by (volume, dir) — m0.8.3 D4: volume identity is preserved,
   // so DCIM/Camera on primary and on the SD card stay two entries.
   const dirs = commit(foldAlbumsToDirs(albums));

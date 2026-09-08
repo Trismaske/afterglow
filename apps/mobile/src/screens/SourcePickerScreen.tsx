@@ -159,7 +159,7 @@ export function SourcePickerScreen({ navigation }: Props) {
                 volume: root.volume,
                 dir: root.dir,
                 albumIds: [],
-                photoCount: trackedCount,
+                itemCount: trackedCount,
                 missing: !unmounted,
                 unmounted,
               });
@@ -198,7 +198,7 @@ export function SourcePickerScreen({ navigation }: Props) {
     });
   }, []);
 
-  const totalPhotos = useMemo(() => (rows ?? []).reduce((sum, r) => sum + r.photoCount, 0), [rows]);
+  const totalPhotos = useMemo(() => (rows ?? []).reduce((sum, r) => sum + r.itemCount, 0), [rows]);
 
   const valid = allFolders || selected.size > 0;
 
@@ -416,14 +416,14 @@ export function SourcePickerScreen({ navigation }: Props) {
                 {row.unmounted ? (
                   <Text style={styles.rowHint}>not mounted</Text>
                 ) : row.missing ? (
-                  <Text style={styles.rowHint}>no photos found — tap to unselect</Text>
+                  <Text style={styles.rowHint}>no items found — tap to unselect</Text>
                 ) : included ? (
                   <Text style={[styles.rowIncluded, { color: theme.accent }]}>
                     included via a parent folder
                   </Text>
                 ) : null}
               </View>
-              {!row.missing && <Text style={styles.rowCount}>{row.photoCount}</Text>}
+              {!row.missing && <Text style={styles.rowCount}>{row.itemCount}</Text>}
               <View style={styles.check}>
                 {isSelected ? (
                   <MaterialCommunityIcons name="check" size={22} color={theme.accent} />

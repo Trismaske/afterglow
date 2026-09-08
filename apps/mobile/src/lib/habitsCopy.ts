@@ -51,7 +51,7 @@ export function sittingLine(summary: SittingSummary): string | null {
   // 0 ms, so appending a duration would print "over under a minute" —
   // a figure dressed around nothing.
   if (summary.medianPhotos <= 1) return `${head}typically a single photo at a time`;
-  return `${head}typically ${plural(summary.medianPhotos, 'photo')} over ${durationLabel(summary.medianDurationMs)}`;
+  return `${head}typically ${plural(summary.medianPhotos, 'item')} over ${durationLabel(summary.medianDurationMs)}`;
 }
 
 /** The turnaround half of a queue row: what happens to work you queue. */

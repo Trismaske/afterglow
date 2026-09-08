@@ -16,6 +16,25 @@
  *    registers as an EDIT handler, so this is the one-tap path for
  *    Gallery-preferring users).
  */
+import type { StoredMediaKind } from './mediaIdentity';
 
 export const ACTION_EDIT = 'android.intent.action.EDIT';
 export const ACTION_VIEW = 'android.intent.action.VIEW';
+
+/** The intent type an EDIT / VIEW launch declares for an item (m0.9
+ * phase 4): Android resolves handlers by it, so a video launched as
+ * image/* would find no editor or the wrong one. */
+export function launchMimeType(kind: StoredMediaKind): 'image/*' | 'video/*' {
+  return kind === 'video' ? 'video/*' : 'image/*';
+}
+
+/** The declared type of a share batch (m0.9 phase 4): the chooser filters
+ * receivers by it, so a video-only batch says video/*, a photo-only batch
+ * image/*, and a mixed batch the wildcard type (star-slash-star) — the
+ * honest type for a heterogeneous ACTION_SEND_MULTIPLE. */
+export function shareMimeType(kinds: readonly StoredMediaKind[]): 'image/*' | 'video/*' | '*/*' {
+  const hasPhoto = kinds.includes('photo');
+  const hasVideo = kinds.includes('video');
+  if (hasPhoto && hasVideo) return '*/*';
+  return hasVideo ? 'video/*' : 'image/*';
+}

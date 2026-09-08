@@ -38,9 +38,11 @@ import {
   fetchPhotoPageDesc,
   getAssetDetails,
   getEditableContentUri,
+  joinMediaFacts,
   loadPhotoById,
   type LoadedPhoto,
 } from '../lib/media';
+import { perfAggregate } from '../lib/perfLog';
 import { reconcileExternallyRemoved } from '../db/trashStore';
 import { createMergedDescendingPager, type PageFetcher } from '../lib/progressPager';
 import { createWindowAccumulator } from '../lib/scanWindows';
@@ -54,14 +56,16 @@ import {
   scanFingerprint,
 } from '../lib/scanSkip';
 import {
-  getFavouriteImageIds,
-  getImageCountsByVolume,
+  getFavouriteMediaIds,
+  getMediaCountsByVolume,
   getMediaChangedSince,
   getMediaGenerations,
   getMountedVolumes,
   mediaStoreActionsAvailable,
   readExifDateTimeOriginal,
+  readMediaFacts,
   type ChangedMediaRow,
+  type MediaFactsRequest,
 } from '../../modules/media-store-actions';
 import { canonicalPhotoId, volumeOf } from '../lib/mediaIdentity';
 import {
@@ -94,7 +98,8 @@ import {
   getPhotoTimestamps,
   getRescueBaselines,
   getTakenAtForAssets,
-  getPresentAssetIds,
+  getPresentAssetRefs,
+  getFactsBaselines,
   getSetting,
   setSetting,
   updatePhotoUri,
@@ -327,7 +332,8 @@ async function pageAndGroup(
   let skipped = 0;
   // EXIF reads attempted but never completed (codex r2): the pass may
   // finish, but storing its fingerprint would let the unchanged-library
-  // skip hide the promised retry.
+  // skip hide the promised retry. The per-file facts reads (phase 4)
+  // that did not complete count here too — same rule, same retry.
   let exifFailed = 0;
   const unmountedWarned = new Set<string>();
   const buckets: (string | undefined)[] = albumIds ? [...albumIds] : [undefined];
@@ -348,6 +354,9 @@ async function pageAndGroup(
       fetchers.push(async (cursor, count) => {
         const page = await fetchPhotoPageDesc(from, to, albumId, cursor, count);
         skipped += page.skipped;
+        // m0.9 phase 4: MIME, display name, duration, size and the
+        // generation ride the page from the Files collection.
+        await joinMediaFacts(page.photos);
         return { items: page.photos, nextCursor: page.hasNext ? (page.endCursor ?? null) : null };
       });
     }
@@ -379,7 +388,7 @@ async function pageAndGroup(
           stopped = true;
           return;
         }
-        await processWindow(
+        exifFailed += await processWindow(
           db,
           window,
           engine,
@@ -395,7 +404,7 @@ async function pageAndGroup(
         stopped = true;
         return;
       }
-      await processWindow(
+      exifFailed += await processWindow(
         db,
         window,
         engine,
@@ -421,7 +430,7 @@ async function pageAndGroup(
         unmountedWarned.add(photo.volumeName);
         console.warn(
           `[scan] volume '${photo.volumeName}' is not in the mounted set — ` +
-            `its photos are skipped this pass`,
+            `its items are skipped this pass`,
         );
       }
       return false;
@@ -440,7 +449,7 @@ async function pageAndGroup(
       }
       for (const window of accumulator.feed(photo)) {
         if (superseded()) return null;
-        await processWindow(
+        exifFailed += await processWindow(
           db,
           window,
           engine,
@@ -455,7 +464,15 @@ async function pageAndGroup(
   if (superseded()) return null;
   for (const window of accumulator.flush()) {
     if (superseded()) return null;
-    await processWindow(db, window, engine, baseThreshold, superseded, mountedVolumes, favourites);
+    exifFailed += await processWindow(
+      db,
+      window,
+      engine,
+      baseThreshold,
+      superseded,
+      mountedVolumes,
+      favourites,
+    );
   }
   // F27's direct landing: fetch each changed undated photo by id and
   // feed it into the undated batch below. A fetch failure is a
@@ -550,7 +567,7 @@ async function mediaCountsByVolume(
     }
     return out;
   }
-  return getImageCountsByVolume([...volumes]);
+  return getMediaCountsByVolume([...volumes]);
 }
 
 /**
@@ -676,7 +693,7 @@ async function planPass(
       });
       if (moved.length > 0) {
         console.log(
-          `[scan] delta: ${moved.length} changed photos moved their DATE_TAKEN — ` +
+          `[scan] delta: ${moved.length} changed items moved their DATE_TAKEN — ` +
             `full pass to rewindow both sides`,
         );
         return null;
@@ -716,7 +733,7 @@ async function planPass(
     const losses = volumesWithUntracedLoss(counts);
     if (losses.length > 0) {
       console.log(
-        `[scan] delta: tracked photos gone from MediaStore with no trace on ` +
+        `[scan] delta: tracked items gone from MediaStore with no trace on ` +
           `${losses.join(', ')} — full pass to reconcile`,
       );
       return null;
@@ -778,7 +795,7 @@ async function finishPass(
   const { superseded, engine, fingerprint, generations, unseenOverCap, skipped, exifFailed } = args;
   if (skipped > 0) {
     console.warn(
-      `[scan] ${skipped} photos were skipped fail-closed (volume unparseable or unmounted) — ` +
+      `[scan] ${skipped} items were skipped fail-closed (volume unparseable or unmounted) — ` +
         `baseline withheld; the next pass retries them`,
     );
     return;
@@ -992,7 +1009,7 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     try {
       const flagged = new Set<string>();
       for (const volume of mounted) {
-        for (const rawId of await getFavouriteImageIds(volume)) {
+        for (const rawId of await getFavouriteMediaIds(volume)) {
           flagged.add(canonicalPhotoId(volume, rawId));
         }
       }
@@ -1036,7 +1053,7 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
       // Gallery trashes are 30-day-restorable — no permanentIds: their
       // duel history survives a restore (grilling Q13).
       await reconcileExternallyRemoved(db, decision.trashedIds, Date.now(), [...mountedVolumes]);
-      console.log(`[scan] delta: ${decision.trashedIds.length} trashed photos left the queue`);
+      console.log(`[scan] delta: ${decision.trashedIds.length} trashed items left the queue`);
     }
     // POST-DELTA CONSISTENCY CHECK, PER VOLUME (invariant 1's second
     // half). Having just ingested everything the change set held, each
@@ -1136,20 +1153,21 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   // behind the cursor), so each candidate gets the tri-state presence
   // check and only verified 'trashed'/'absent' rows converge — exactly
   // the History reconciliation contract.
-  const tracked = await getPresentAssetIds(db, passSources.roots ?? null, [...mountedVolumes]);
-  const unseen = tracked.filter((id) => !seenIds.has(id));
+  const tracked = await getPresentAssetRefs(db, passSources.roots ?? null, [...mountedVolumes]);
+  const unseen = tracked.filter((ref) => !seenIds.has(ref.id));
   const RECONCILE_CAP = 500;
   if (unseen.length > RECONCILE_CAP) {
     // Loud, once: the remainder reconciles on later scans/History pages.
     console.warn(
-      `[scan] ${unseen.length} unseen tracked photos — verifying only ${RECONCILE_CAP} this run`,
+      `[scan] ${unseen.length} unseen tracked items — verifying only ${RECONCILE_CAP} this run`,
     );
   }
   const gone: string[] = [];
   let movedUris = 0;
   let unresolved = 0;
-  for (const id of unseen.slice(0, RECONCILE_CAP)) {
-    const presence = await checkMediaPresence(id);
+  for (const ref of unseen.slice(0, RECONCILE_CAP)) {
+    const id = ref.id;
+    const presence = await checkMediaPresence(ref);
     if (presence === 'trashed' || presence === 'absent') {
       // Both converge the same way — duels are append-only (v22) and
       // survive every removal, so 'absent' needs no separate marking.
@@ -1158,7 +1176,7 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
       // Present but NOT enumerated: the photo moved (same MediaStore id,
       // new path — e.g. out of the selected source). Refresh its uri so
       // source-scoped reads stop surfacing it under the stale path.
-      const details = await getAssetDetails(id);
+      const details = await getAssetDetails(ref);
       if (details?.uri) {
         await updatePhotoUri(db, id, details.uri);
         movedUris += 1;
@@ -1177,7 +1195,7 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   if (movedUris > 0) console.log(`[scan] refreshed ${movedUris} moved photo paths`);
   if (unresolved > 0) {
     console.warn(
-      `[scan] ${unresolved} unseen photos could not be verified — ` +
+      `[scan] ${unresolved} unseen items could not be verified — ` +
         `baseline withheld; the next pass retries them`,
     );
   }
@@ -1186,7 +1204,7 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     // trashed reconcile above.
     await assertMountedUnchanged(mountedVolumes);
     await reconcileExternallyRemoved(db, gone, Date.now(), [...mountedVolumes]);
-    console.log(`[scan] reconciled ${gone.length} externally removed photos`);
+    console.log(`[scan] reconciled ${gone.length} externally removed items`);
   }
 
   // Final fence: baselines must describe the world they were read in.
@@ -1297,6 +1315,9 @@ async function applyExifDateRescue(db: SQLiteDatabase, batch: LoadedPhoto[]): Pr
   );
   const toProbe: LoadedPhoto[] = [];
   for (const photo of batch) {
+    // m0.9 phase 4: videos carry no EXIF header — an undated video stays
+    // honestly undated, never probed, never counted as a failed read.
+    if (photo.item.kind !== 'photo') continue;
     const row = stored.get(photo.item.id);
     // Reuse ONLY on the rescue's own completed-read marker (codex r1):
     // photos.mod_time belongs to edit detection, and a row without the
@@ -1325,7 +1346,7 @@ async function applyExifDateRescue(db: SQLiteDatabase, batch: LoadedPhoto[]): Pr
       // lib/concurrency.ts) — 100 concurrent uri resolutions would spike
       // the module queue for no throughput gain.
       const uris = await mapWithConcurrency(chunkPhotos, 6, (photo) =>
-        getEditableContentUri(photo.item.id),
+        getEditableContentUri({ id: photo.item.id, kind: photo.item.kind }),
       );
       results = await readExifDateTimeOriginal(uris);
     } catch (error) {
@@ -1361,7 +1382,9 @@ async function applyExifDateRescue(db: SQLiteDatabase, batch: LoadedPhoto[]): Pr
   return failed;
 }
 
-/** Embed, group, and persist one closed merge window. */
+/** Embed, group, and persist one closed merge window. Returns the
+ * number of per-file facts reads that did NOT complete (the pass adds
+ * them to its withheld-baseline count). */
 async function processWindow(
   db: SQLiteDatabase,
   window: LoadedPhoto[],
@@ -1375,7 +1398,7 @@ async function processWindow(
   /** Canonical ids MediaStore reported IS_FAVORITE=1 for at pass start
    * (F20). Null = the read failed — the pass projects nothing. */
   favourites?: ReadonlySet<string> | null,
-): Promise<void> {
+): Promise<number> {
   const favouriteOf = (id: string): boolean | null =>
     favourites === null || favourites === undefined ? null : favourites.has(id);
   // WRITE PRIORITY (vetted): a pending user decision reaches SQLite
@@ -1388,15 +1411,23 @@ async function processWindow(
   // write itself.
   if (mountedVolumes) await assertMountedUnchanged(mountedVolumes);
   const ids = window.map((p) => p.item.id);
+  // m0.9 phase 4: only PHOTOS reach the engine — videos are singles by
+  // design (G5: no grouping, no embeddings) and ride the window only so
+  // they land in capture order with their neighbours.
+  const photos = window.filter((p) => p.item.kind === 'photo');
+  const videos = window.filter((p) => p.item.kind === 'video');
+  // The bounded per-file read (phase 4, item 6) — motion detection and
+  // the measurement rescue for every item whose marker is stale.
+  const factsFailed = await applyMediaFactsRead(db, window);
 
   // dHash floor input rides the embed pipeline (module-computed from the
   // same decode — never the manipulator path, which leaks at corpus
   // scale); only bursts with company can contain near-dup pairs, so
   // singles-only windows skip the hash work entirely.
-  const withHashes = hasMultiPhotoBurst(window);
+  const withHashes = hasMultiPhotoBurst(photos);
   const { vectors, hashes } = await ensureEmbeddings(
     db,
-    window,
+    photos,
     (_done, _total, ok) => {
       // Only PERSISTED embeddings count — failures must not inflate the
       // completion metrics or the summary log.
@@ -1422,13 +1453,16 @@ async function processWindow(
   const cannotLink = await getNotRelatedPairsAmong(db, ids);
 
   const groups = groupByEmbedding(
-    window.map((p) => p.item),
+    photos.map((p) => p.item),
     (id) => vectors.get(id) ?? null,
     withHashes ? (id) => hashes.get(id) ?? null : undefined,
     { baseThreshold, cannotLink },
   );
   const multi = groups.filter((g) => g.items.length >= 2);
-  const singles = groups.filter((g) => g.items.length === 1).map((g) => g.items[0].id);
+  const singles = [
+    ...groups.filter((g) => g.items.length === 1).map((g) => g.items[0].id),
+    ...videos.map((v) => v.item.id),
+  ];
 
   // Re-check right before the write — a user write may have started
   // while the embed phase above was running — and re-verify the MOUNTED
@@ -1448,6 +1482,18 @@ async function processWindow(
         modTime: p.modTime,
         fileGeneration: p.generation,
         fileMtime: p.modTime,
+        // v24 media kinds: MediaStore's facts (the page join / the direct
+        // fetch) plus the per-file read's results when it completed.
+        kind: p.item.kind,
+        mimeType: p.mimeType,
+        displayName: p.displayName ?? p.filename,
+        width: p.width > 0 ? p.width : null,
+        height: p.height > 0 ? p.height : null,
+        durationMs: p.durationMs,
+        motionVideoOffset: p.facts?.motionVideoOffset ?? null,
+        motionVideoLength: p.facts?.motionVideoLength ?? null,
+        motionPresentationUs: p.facts?.motionPresentationUs ?? null,
+        factsCheckedVersion: p.facts?.factsCheckedVersion ?? null,
         // Undated photos carry NO day: their timestamp is only the mtime
         // fallback, and the day surfaces exclude them on both sides.
         day: p.undated ? null : dayKey(p.item.timestamp),
@@ -1455,7 +1501,7 @@ async function processWindow(
         rawId: p.rawId,
         // v14: recorded so reclaimable bytes is an exact SUM (0 = the
         // stat failed → NULL keeps the row in the transient stat-fallback).
-        sizeBytes: fileSize(p.item.uri) || null,
+        sizeBytes: p.sizeBytes ?? (fileSize(p.item.uri) || null),
         // NULL unless the D15 rescue completed a read this pass — the
         // upsert's COALESCE then retains any stored marker.
         exifCheckedModTime: p.exifCheckedModTime ?? null,
@@ -1476,6 +1522,102 @@ async function processWindow(
     { abortIf: stale, mountedVolumes: mountedVolumes ? [...mountedVolumes] : null },
   );
   update({ windowsGrouped: status.windowsGrouped + 1 });
+  return factsFailed;
+}
+
+/**
+ * The bounded per-file read (m0.9 phase 4, item 6): motion-photo
+ * detection plus M17's measurement rescue, ONE open per content version,
+ * through the module's `readMediaFacts` (MediaFacts.kt). Runs where the
+ * D15 rescue runs — per window, before the write — and the weekly full
+ * pass IS the one-time backfill: every row whose `facts_checked_version`
+ * differs from the version about to be written is read, so the corpus
+ * converges and an edited file (new version) is re-read. Mutates the
+ * window in place (`facts`, and width/height/duration when measured).
+ * Returns the count of reads that did NOT complete: the pass withholds
+ * its baseline over them (like EXIF failures), so the next pass retries.
+ * Module absent → nothing attempted, zero failures (a failure that can
+ * never succeed must not defeat the unchanged-library skip forever).
+ */
+const MOTION_LOG_CAP = 8;
+let motionLogged = 0;
+async function applyMediaFactsRead(db: SQLiteDatabase, window: LoadedPhoto[]): Promise<number> {
+  if (!mediaStoreActionsAvailable()) return 0;
+  const stored = await getFactsBaselines(
+    db,
+    window.map((p) => p.item.id),
+  );
+  const versionOf = (p: LoadedPhoto): number => p.generation ?? p.modTime;
+  const toRead = window.filter((p) => stored.get(p.item.id) !== versionOf(p));
+  if (toRead.length === 0) return 0;
+  let failed = 0;
+  let motion = 0;
+  const READ_CHUNK = 50;
+  for (let i = 0; i < toRead.length; i += READ_CHUNK) {
+    const chunkPhotos = toRead.slice(i, i + READ_CHUNK);
+    const requests: MediaFactsRequest[] = await Promise.all(
+      chunkPhotos.map(async (p) => ({
+        uri: await getEditableContentUri({ id: p.item.id, kind: p.item.kind }),
+        kind: p.item.kind,
+        motion: p.item.kind === 'photo',
+        dimensions: !(p.width > 0 && p.height > 0),
+        duration: p.item.kind === 'video' && p.durationMs === null,
+      })),
+    );
+    let results;
+    try {
+      results = await readMediaFacts(requests);
+    } catch (error) {
+      failed += chunkPhotos.length;
+      console.warn(`[scan] media facts read failed for a chunk: ${String(error)}`);
+      continue;
+    }
+    for (let j = 0; j < chunkPhotos.length; j++) {
+      const result = results[j];
+      const p = chunkPhotos[j];
+      if (!result || result.status !== 'ok') {
+        failed += 1;
+        continue;
+      }
+      perfAggregate('media facts', result.elapsedMs, 1);
+      if (result.width && result.height) {
+        p.width = result.width;
+        p.height = result.height;
+      }
+      if (result.durationMs != null) p.durationMs = result.durationMs;
+      if (result.motionOffset != null) {
+        motion += 1;
+        // The first few detections per pass, named — the device pass
+        // checks these against the specimen files' known offsets; the
+        // count line below covers the rest (no per-item flooding).
+        if (motionLogged < MOTION_LOG_CAP) {
+          motionLogged += 1;
+          console.log(
+            `[scan] motion photo ${p.displayName ?? p.filename}: video at ` +
+              `${result.motionOffset}+${result.motionLength ?? '?'}` +
+              (result.durationMs != null ? `, ${result.durationMs} ms` : '') +
+              (result.motionPresentationUs != null
+                ? ` (still at ${result.motionPresentationUs} µs)`
+                : ''),
+          );
+        }
+      }
+      p.facts = {
+        factsCheckedVersion: versionOf(p),
+        motionVideoOffset: result.motionOffset ?? null,
+        motionVideoLength: result.motionLength ?? null,
+        motionPresentationUs: result.motionPresentationUs ?? null,
+      };
+    }
+  }
+  if (failed > 0) {
+    console.warn(
+      `[scan] media facts: ${failed} of ${toRead.length} reads did not complete — retried next pass`,
+    );
+  }
+  if (motion > 0)
+    console.log(`[scan] media facts: ${motion} motion photo(s) among ${toRead.length} read`);
+  return failed;
 }
 
 /** Does any 3-min burst in this (chronological) window hold ≥ 2 photos? */

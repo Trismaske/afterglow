@@ -282,11 +282,14 @@ class MediaStoreActionsModule : Module() {
     // One launch probe: dispatch the real intent with the requested grant
     // mode and report what the dispatch itself did. Resolves immediately —
     // the user observes whether an app opened and records it in the UI.
-    AsyncFunction("probeLaunch") { uri: Uri, action: String, withWrite: Boolean ->
+    // `mimeType` (m0.9 phase 4): the item's kind decides the intent's
+    // declared type — Android resolves EDIT/VIEW handlers by it, so a
+    // video probed as image/* would test the wrong handler set.
+    AsyncFunction("probeLaunch") { uri: Uri, action: String, withWrite: Boolean, mimeType: String ->
       val activity = appContext.currentActivity
         ?: return@AsyncFunction mapOf("result" to "error", "message" to "No current activity")
       val intent = Intent(action)
-        .setDataAndType(uri, "image/*")
+        .setDataAndType(uri, mimeType)
         .addFlags(
           Intent.FLAG_GRANT_READ_URI_PERMISSION or
             (if (withWrite) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0),
@@ -370,10 +373,13 @@ class MediaStoreActionsModule : Module() {
       val context = appContext.reactContext
         ?: throw IllegalStateException("Android context unavailable")
       val out = mutableListOf<Map<String, Any?>>()
-      val uri = MediaStore.Images.Media.getContentUri(volume)
+      // m0.9 phase 4: the FILES collection, filtered to images and
+      // videos — one query answers for both kinds, and the row's
+      // MEDIA_TYPE tells the scan which collection its actions address.
+      val uri = MediaStore.Files.getContentUri(volume)
       val selection =
-        "${MediaStore.MediaColumns.GENERATION_ADDED} > ? OR " +
-          "${MediaStore.MediaColumns.GENERATION_MODIFIED} > ?"
+        "($MEDIA_KIND_SELECTION) AND (${MediaStore.MediaColumns.GENERATION_ADDED} > ? OR " +
+          "${MediaStore.MediaColumns.GENERATION_MODIFIED} > ?)"
       val bound = since.toLong().toString()
       val queryArgs = android.os.Bundle().apply {
         putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_INCLUDE)
@@ -394,7 +400,8 @@ class MediaStoreActionsModule : Module() {
             // filters the changed set to the source scope, keyed on where
             // the row is NOW — so a move into a selected source registers
             // while an out-of-source change plans nothing.
-            MediaStore.Images.Media.BUCKET_ID,
+            MediaStore.MediaColumns.BUCKET_ID,
+            MediaStore.Files.FileColumns.MEDIA_TYPE,
           ),
           queryArgs,
           null,
@@ -405,12 +412,14 @@ class MediaStoreActionsModule : Module() {
           val trashedCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_TRASHED)
           val addedGenCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.GENERATION_ADDED)
           val modGenCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.GENERATION_MODIFIED)
-          val bucketCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_ID)
+          val bucketCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_ID)
+          val typeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
           while (cursor.moveToNext()) {
             out.add(
               mapOf(
                 "volumeName" to volume,
                 "rawId" to cursor.getLong(idCol).toString(),
+                "mediaType" to kindOf(cursor.getInt(typeCol)),
                 // DATE_TAKEN is ms since epoch and NULL for undated
                 // photos; DATE_MODIFIED is SECONDS. The JS side owns the
                 // fallback, so both are reported raw.
@@ -442,16 +451,16 @@ class MediaStoreActionsModule : Module() {
      * query failed to return, so the caller degrades to "project
      * nothing" instead.
      */
-    AsyncFunction("listFavouriteImageIds") { volume: String ->
+    AsyncFunction("listFavouriteMediaIds") { volume: String ->
       val context = appContext.reactContext
         ?: throw IllegalStateException("Android context unavailable")
-      val uri = MediaStore.Images.Media.getContentUri(volume)
+      val uri = MediaStore.Files.getContentUri(volume)
       val out = mutableListOf<String>()
       try {
         context.contentResolver.query(
           uri,
           arrayOf(MediaStore.MediaColumns._ID),
-          "${MediaStore.MediaColumns.IS_FAVORITE} = 1",
+          "($MEDIA_KIND_SELECTION) AND ${MediaStore.MediaColumns.IS_FAVORITE} = 1",
           null,
           null,
         )?.use { cursor ->
@@ -473,61 +482,97 @@ class MediaStoreActionsModule : Module() {
      * absent on that volume; DATA carries the file path the app's
      * path-based volume identity needs.
      */
-    AsyncFunction("loadImageById") { volume: String, rawId: String ->
+    AsyncFunction("loadMediaById") { volume: String, rawId: String ->
       val context = appContext.reactContext
         ?: throw IllegalStateException("Android context unavailable")
-      val uri = MediaStore.Images.Media.getContentUri(volume)
+      val uri = MediaStore.Files.getContentUri(volume)
       var out: Map<String, Any?>? = null
       try {
         context.contentResolver.query(
           uri,
-          arrayOf(
-            MediaStore.MediaColumns._ID,
-            MediaStore.MediaColumns.DATA,
-            MediaStore.MediaColumns.DISPLAY_NAME,
-            MediaStore.MediaColumns.DATE_TAKEN,
-            MediaStore.MediaColumns.DATE_MODIFIED,
-            MediaStore.MediaColumns.GENERATION_MODIFIED,
-            MediaStore.MediaColumns.WIDTH,
-            MediaStore.MediaColumns.HEIGHT,
-          ),
-          "${MediaStore.MediaColumns._ID} = ?",
+          MEDIA_FACTS_PROJECTION,
+          "($MEDIA_KIND_SELECTION) AND ${MediaStore.MediaColumns._ID} = ?",
           arrayOf(rawId),
           null,
         )?.use { cursor ->
-          if (cursor.moveToFirst()) {
-            val takenCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_TAKEN)
-            out = mapOf(
-              "rawId" to cursor.getLong(
-                cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID),
-              ).toString(),
-              "dataPath" to cursor.getString(
-                cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA),
-              ),
-              "displayName" to cursor.getString(
-                cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME),
-              ),
-              "dateTakenMs" to if (cursor.isNull(takenCol)) null else cursor.getLong(takenCol),
-              "dateModifiedSec" to cursor.getLong(
-                cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED),
-              ),
-              // The image cache version (m0.9 phase 3, item 3): bumps on
-              // ANY content or metadata change, mtime-preserving editors
-              // included.
-              "generationModified" to cursor.getLong(
-                cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.GENERATION_MODIFIED),
-              ).toDouble(),
-              "width" to cursor.getInt(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.WIDTH)),
-              "height" to cursor.getInt(
-                cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.HEIGHT),
-              ),
-            )
-          }
+          if (cursor.moveToFirst()) out = mediaFactsRow(cursor)
         } ?: throw IllegalStateException("null cursor for volume $volume")
       } catch (error: Exception) {
-        throw IllegalStateException("image lookup failed for $volume/$rawId", error)
+        throw IllegalStateException("media lookup failed for $volume/$rawId", error)
       }
       out
+    }
+
+    /**
+     * The per-page MediaStore facts join (m0.9 phase 4): the
+     * expo-media-library full pass hands the scan pages of raw ids, and
+     * ONE `_ID IN (…)` query per page per volume on the FILES collection
+     * adds what its Asset shape lacks — MIME (the kind's classification
+     * truth, M15), DISPLAY_NAME (the extension's truth), DURATION, SIZE
+     * and GENERATION_MODIFIED (the image cache version, which the expo
+     * path could not supply). Rows absent from the result are simply
+     * missing from the map — the caller keeps the Asset's own values.
+     * Throws on a failed query: a partial facts map would silently
+     * classify the missing rows by their filenames.
+     */
+    AsyncFunction("queryMediaFacts") { volume: String, rawIds: List<String> ->
+      val context = appContext.reactContext
+        ?: throw IllegalStateException("Android context unavailable")
+      val out = mutableListOf<Map<String, Any?>>()
+      if (rawIds.isEmpty()) return@AsyncFunction out
+      val uri = MediaStore.Files.getContentUri(volume)
+      val placeholders = rawIds.joinToString(",") { "?" }
+      try {
+        context.contentResolver.query(
+          uri,
+          MEDIA_FACTS_PROJECTION,
+          "($MEDIA_KIND_SELECTION) AND ${MediaStore.MediaColumns._ID} IN ($placeholders)",
+          rawIds.toTypedArray(),
+          null,
+        )?.use { cursor ->
+          while (cursor.moveToNext()) out.add(mediaFactsRow(cursor))
+        } ?: throw IllegalStateException("null cursor for volume $volume")
+      } catch (error: Exception) {
+        throw IllegalStateException("media facts query failed for volume $volume", error)
+      }
+      out
+    }
+
+    /**
+     * The bounded per-file read (m0.9 phase 4, item 6) — motion-photo
+     * detection plus M17's measurement rescue, ONE open per content
+     * version. Each request names what it needs:
+     *
+     *  - `motion`: the file's XMP through androidx ExifInterface (it
+     *    follows JPEG's segment table and HEIF's item index itself, so
+     *    the read is bounded by the container's structure — the format
+     *    spike found HEIC's XMP 1.58 MB in, AFTER the primary image).
+     *    Parsed by LOCAL NAME, never prefix (the spike saw `GCamera:` and
+     *    `Camera:`, `Item:` and `ContainerItem:`): Android Motion Photo
+     *    1.0 (`MotionPhoto="1"`, the Container item with
+     *    Semantic="MotionPhoto" and its Length — the video is the LAST
+     *    Length bytes of the file) else the older MicroVideo shape
+     *    (`MicroVideo="1"`, MicroVideoOffset = bytes from end of file).
+     *    Samsung's SEF trailer is NOT parsed: every Samsung motion photo
+     *    seen carries the XMP.
+     *  - `dimensions`: a bounds-only decode, EXIF-orientation corrected
+     *    (photos) or the metadata reader's video size with rotation
+     *    applied (videos) — for rows MediaStore reports 0×0.
+     *  - `duration`: the metadata reader's duration for videos MediaStore
+     *    reports no duration for.
+     *
+     * READ-ONLY by contract. Per-item outcomes: 'ok' is a COMPLETED read
+     * (motion found or honestly absent; requested values found or
+     * honestly unavailable), 'error' means nothing was concluded — the
+     * caller must not stamp its once-per-content marker. `elapsedMs`
+     * feeds the `[perf] media facts` aggregate.
+     */
+    AsyncFunction("readMediaFacts") Coroutine { requests: List<MediaFactsRequest> ->
+      withContext(Dispatchers.IO) {
+        val context = appContext.reactContext
+          ?: throw IllegalStateException("Android context unavailable")
+        requests.map { request -> readMediaFactsOf(context, request) }
+      }
     }
 
     /**
@@ -554,17 +599,17 @@ class MediaStoreActionsModule : Module() {
      * count map is indistinguishable from a complete one, and a missing
      * volume would hide exactly the tripwire this exists to fire.
      */
-    AsyncFunction("countImagesByVolume") { volumes: List<String> ->
+    AsyncFunction("countMediaByVolume") { volumes: List<String> ->
       val context = appContext.reactContext
         ?: throw IllegalStateException("Android context unavailable")
       val out = mutableMapOf<String, Double>()
       for (volume in volumes) {
         try {
-          val uri = MediaStore.Images.Media.getContentUri(volume)
+          val uri = MediaStore.Files.getContentUri(volume)
           val count = context.contentResolver.query(
             uri,
             arrayOf(MediaStore.MediaColumns._ID),
-            null,
+            MEDIA_KIND_SELECTION,
             null,
             null,
           )?.use { cursor -> cursor.count }
@@ -577,23 +622,23 @@ class MediaStoreActionsModule : Module() {
       out
     }
 
-    AsyncFunction("listImageAlbums") {
+    AsyncFunction("listMediaAlbums") {
       val context = appContext.reactContext
         ?: throw IllegalStateException("Android context unavailable")
       val out = mutableListOf<Map<String, Any?>>()
       val volumes = MediaStore.getExternalVolumeNames(context)
       for (volume in volumes) {
-        val uri = MediaStore.Images.Media.getContentUri(volume)
+        val uri = MediaStore.Files.getContentUri(volume)
         val counts = HashMap<Long, Triple<String, String, Int>>()
         try {
           val cursorOrNull = context.contentResolver.query(
             uri,
             arrayOf(
-              MediaStore.Images.Media.BUCKET_ID,
-              MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
-              MediaStore.Images.Media.RELATIVE_PATH,
+              MediaStore.MediaColumns.BUCKET_ID,
+              MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
+              MediaStore.MediaColumns.RELATIVE_PATH,
             ),
-            null,
+            MEDIA_KIND_SELECTION,
             null,
             null,
           )
@@ -603,9 +648,9 @@ class MediaStoreActionsModule : Module() {
           // the catch below exists to prevent (codex r5).
           ?: throw IllegalStateException("album query returned null cursor for volume $volume")
           cursorOrNull.use { cursor ->
-            val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_ID)
-            val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
-            val pathCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.RELATIVE_PATH)
+            val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_ID)
+            val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+            val pathCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.RELATIVE_PATH)
             while (cursor.moveToNext()) {
               val bucket = cursor.getLong(idCol)
               val name = cursor.getString(nameCol) ?: continue
@@ -631,7 +676,7 @@ class MediaStoreActionsModule : Module() {
               "bucketId" to bucket.toString(),
               "displayName" to entry.first,
               "relativePath" to entry.second,
-              "photoCount" to entry.third,
+              "itemCount" to entry.third,
             ),
           )
         }
@@ -648,7 +693,7 @@ class MediaStoreActionsModule : Module() {
     // ANOTHER volume's row when raw ids collide across volumes; querying
     // the exact per-volume URI is collision-proof. DATE_MODIFIED is
     // converted to ms here so JS consumers share one unit.
-    AsyncFunction("queryImageDetails") { uriStrings: List<Uri> ->
+    AsyncFunction("queryMediaDetails") { uriStrings: List<Uri> ->
       val context = appContext.reactContext
         ?: throw IllegalStateException("Android context unavailable")
       val resolver = context.contentResolver
@@ -659,7 +704,7 @@ class MediaStoreActionsModule : Module() {
             arrayOf(
               MediaStore.MediaColumns.DISPLAY_NAME,
               MediaStore.MediaColumns.DATE_MODIFIED,
-              MediaStore.Images.Media.DATE_TAKEN,
+              MediaStore.MediaColumns.DATE_TAKEN,
               MediaStore.MediaColumns.DATA,
             ),
             null,
@@ -811,17 +856,21 @@ class MediaStoreActionsModule : Module() {
     // PendingIntent must be MUTABLE: the system fills
     // EXTRA_CHOSEN_COMPONENT into it. A dismissed sheet fires nothing —
     // absence of the event by foreground return IS the abandonment fact.
-    AsyncFunction("shareUris") { uris: List<Uri>, token: Int ->
+    // `mimeType` (m0.9 phase 4): the batch's declared type — image/*,
+    // video/*, or */* for a mixed batch (lib/shareResolution
+    // shareMimeType) — because the chooser filters receivers by it and
+    // an image/* label would hide every video-capable target.
+    AsyncFunction("shareUris") { uris: List<Uri>, token: Int, mimeType: String ->
       val activity = appContext.currentActivity
         ?: return@AsyncFunction mapOf("result" to "error", "message" to "No current activity")
       val send = if (uris.size == 1) {
         Intent(Intent.ACTION_SEND).apply {
-          type = "image/*"
+          type = mimeType
           putExtra(Intent.EXTRA_STREAM, uris[0])
         }
       } else {
         Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-          type = "image/*"
+          type = mimeType
           putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
         }
       }
@@ -897,15 +946,19 @@ class MediaStoreActionsModule : Module() {
   /** Full-library read access. Android 14 "selected photos" access is
    * granted-but-partial: MediaStore queries silently filter to the
    * selection, so an empty cursor proves NOTHING about unselected
-   * assets — emptiness is only authoritative with full access. */
-  private fun hasFullImagesAccess(): Boolean {
+   * assets — emptiness is only authoritative with full access. BOTH
+   * kinds (m0.9 phase 4): the partial-selection dialog is one dialog
+   * over images and videos, and a photo-only grant proves nothing about
+   * a video's absence — with either permission missing, presence reads
+   * go "unknown" for every kind. */
+  private fun hasFullMediaAccess(): Boolean {
     val context = appContext.reactContext ?: return false
-    val permission = if (Build.VERSION.SDK_INT >= 33) {
-      "android.permission.READ_MEDIA_IMAGES"
+    val permissions = if (Build.VERSION.SDK_INT >= 33) {
+      listOf("android.permission.READ_MEDIA_IMAGES", "android.permission.READ_MEDIA_VIDEO")
     } else {
-      "android.permission.READ_EXTERNAL_STORAGE"
+      listOf("android.permission.READ_EXTERNAL_STORAGE")
     }
-    return context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+    return permissions.all { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
   }
 
   private fun mediaPresenceOf(uri: Uri): String {
@@ -922,7 +975,7 @@ class MediaStoreActionsModule : Module() {
       ) ?: return "unknown"
       cursor.use { c ->
         if (!c.moveToFirst()) {
-          if (hasFullImagesAccess()) "absent" else "unknown"
+          if (hasFullMediaAccess()) "absent" else "unknown"
         } else {
           val index = c.getColumnIndex(MediaStore.MediaColumns.IS_TRASHED)
           when {

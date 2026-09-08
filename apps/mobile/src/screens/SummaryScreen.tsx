@@ -116,7 +116,7 @@ export function SummaryScreen({ navigation }: Props) {
       )}
       {stats.staged > 0 && (
         <Text style={styles.warning}>
-          {plural(stats.staged, 'photo')} still staged (delete was skipped) — they stay in the cull
+          {plural(stats.staged, 'item')} still staged (delete was skipped) — they stay in the cull
           list until you confirm.
         </Text>
       )}

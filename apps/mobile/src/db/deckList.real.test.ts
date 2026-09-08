@@ -42,6 +42,12 @@ function upsert(rawId: string, takenAt: number): ContinuousPhotoUpsert {
     uri: `file:///dcim/${rawId}.jpg`,
     takenAt,
     fileGeneration: null,
+    kind: 'photo' as const,
+    mimeType: 'image/jpeg',
+    displayName: null,
+    width: null,
+    height: null,
+    durationMs: null,
     fileMtime: AT,
     modTime: takenAt,
     day: DAY,
@@ -86,6 +92,7 @@ describe('queue sources', () => {
     expect(page.rows[0]).toEqual({
       id: id('3'),
       uri: 'file:///dcim/3.jpg',
+      kind: 'photo',
       // The image cache version (item 3): the seed writes no generation,
       // so it is the mtime the upsert carried.
       version: AT,
@@ -116,6 +123,35 @@ describe('queue sources', () => {
 });
 
 describe('history source', () => {
+  it("keeps a video row's media kind (the feed discriminator is a different `kind`)", async () => {
+    const d = await fresh();
+    await writeContinuousGroups(
+      asExpo(d),
+      {
+        photos: [
+          {
+            ...upsert('v', AT - 3_600_000),
+            uri: 'file:///dcim/v.mp4',
+            kind: 'video',
+            mimeType: 'video/mp4',
+          },
+        ],
+        groups: [],
+        singles: [id('v')],
+      },
+      AT,
+    );
+    await applyReviewDecisions(asExpo(d), [[id('v'), 'kept']], AT + 10);
+    const page = await resolveDeckListPage(
+      asExpo(d),
+      { source: 'history', filter: 'all' },
+      null,
+      null,
+      null,
+    );
+    expect(page.rows.map((r) => [r.id, r.kind])).toEqual([[id('v'), 'video']]);
+  });
+
   it('excludes tombstones — a swipe must not land on a gone photo', async () => {
     const d = await fresh();
     await seed(d, ['1', '2']);

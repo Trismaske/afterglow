@@ -454,7 +454,7 @@ await step('progress page opens with both chip rows', null, async () => {
     const anchor =
       nodes.length > 0
         ? (findNode(nodes, /^Progress$/) ??
-          findNode(nodes, / left · | at this pace$|^All photos · state browsing$/))
+          findNode(nodes, / left · | at this pace$|^All items · state browsing$/))
         : null;
     if (anchor) {
       if (taps >= 2) {
@@ -476,7 +476,7 @@ await step('progress page opens with both chip rows', null, async () => {
   // layers render as two rows rather than one merged vocabulary.
   await waitFor(/^To edit$/, 20000, 'action chips');
   await waitFor(/^Share$/, 20000, 'action chips');
-  await waitFor(/^PHOTOS · /, 20000, 'grid header');
+  await waitFor(/^ITEMS · /, 20000, 'grid header');
   shell('input keyevent KEYCODE_BACK');
   await waitForHome();
 });

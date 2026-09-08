@@ -22,7 +22,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { loadOsThumbnail, type RegionBitmap } from '../../modules/media-store-actions';
 import { BaseRetention } from '../lib/regionZoom';
-import { canonicalContentUri } from '../lib/mediaIdentity';
+import { canonicalContentUri, type StoredMediaKind } from '../lib/mediaIdentity';
 import { perfAggregate } from '../lib/perfLog';
 import { imageCacheKey } from '../lib/imageKeys';
 
@@ -57,12 +57,17 @@ function unpin(key: string): void {
   parked.delete(key);
 }
 
-async function load(assetId: string, px: number, key: string): Promise<RegionBitmap> {
+async function load(
+  assetId: string,
+  kind: StoredMediaKind,
+  px: number,
+  key: string,
+): Promise<RegionBitmap> {
   const existing = inflight.get(key);
   if (existing) return existing;
   const flight = (async () => {
     const start = Date.now();
-    const ref = await loadOsThumbnail(canonicalContentUri(assetId), px);
+    const ref = await loadOsThumbnail(canonicalContentUri(assetId, kind), px);
     perfAggregate(`os thumbnail ${px}px`, Date.now() - start, 1);
     // Upper bound: the store scales to FIT, so the bitmap is at most px².
     retention.put(key, ref, px * px * 4);
@@ -81,7 +86,12 @@ export type OsThumbnailState =
 
 /** The OS thumbnail for `assetId` at `px` (a lib/thumbnailSize bucket).
  * Synchronous on a retained hit; the ref stays valid while mounted. */
-export function useOsThumbnail(assetId: string, px: number, version: number): OsThumbnailState {
+export function useOsThumbnail(
+  assetId: string,
+  kind: StoredMediaKind,
+  px: number,
+  version: number,
+): OsThumbnailState {
   // The version (item 3) is part of the key: the OS store regenerates
   // its thumbnail on an in-place edit, and our retained ref must not
   // outlive that.
@@ -101,7 +111,7 @@ export function useOsThumbnail(assetId: string, px: number, version: number): Os
     else if (failed.has(key)) setState({ status: 'failed' });
     else {
       setState({ status: 'loading' });
-      void load(assetId, px, key).then(
+      void load(assetId, kind, px, key).then(
         (ref) => {
           if (!cancelled) setState({ status: 'ready', ref });
         },
@@ -122,6 +132,6 @@ export function useOsThumbnail(assetId: string, px: number, version: number): Os
       cancelled = true;
       unpin(key);
     };
-  }, [assetId, px, version, key]);
+  }, [assetId, kind, px, version, key]);
   return state;
 }

@@ -294,7 +294,7 @@ function resolveTarget(target: ProgressTarget): {
     // Open-ended on purpose: undated photos count too (media.ts bound
     // contract), which is what makes this the whole library.
     return {
-      heading: 'All photos',
+      heading: 'All items',
       scope: { startMs: 0, endMs: Number.POSITIVE_INFINITY },
       startMs: 0,
       endMs: Number.POSITIVE_INFINITY,
@@ -603,10 +603,10 @@ export function ProgressView({
         {target.kind === 'day' && <Text style={styles.title}>{heading}</Text>}
         <Text style={styles.subtitle}>
           {b.total === 0
-            ? 'No photos here.'
+            ? 'No items here.'
             : reviewed === b.total
-              ? `All ${plural(b.total, 'photo')} reviewed`
-              : `${reviewed} of ${plural(b.total, 'photo')} reviewed · ${pct}%`}
+              ? `All ${plural(b.total, 'item')} reviewed`
+              : `${reviewed} of ${plural(b.total, 'item')} reviewed · ${pct}%`}
         </Text>
 
         {/* A COMPOSITION bar, not a progress bar — the chips below carry
@@ -712,7 +712,7 @@ export function ProgressView({
 
         <View style={styles.gridLabelRow}>
           <Text style={styles.gridLabel}>
-            {filter === 'all' ? 'Photos · all states' : `Photos · ${filterLabel(filter)}`}
+            {filter === 'all' ? 'Items · all states' : `Items · ${filterLabel(filter)}`}
             {filter === 'kept' && data.trashed > 0
               ? `  (${data.trashed} trashed — files gone, not shown)`
               : ''}

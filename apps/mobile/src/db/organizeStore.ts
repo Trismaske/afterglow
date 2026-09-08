@@ -23,6 +23,7 @@
  * Pictures/ (autonomous); cross-volume sources are rejected with a clear
  * message, never silently copied+trashed.
  */
+import type { StoredMediaKind } from '../lib/mediaIdentity';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { withWriteTransaction } from './database';
 import { encodeOrganizeTarget, leaveQueue, livePhotoClause, sourceExists } from './actions';
@@ -93,9 +94,17 @@ export function validateOrganizeTarget(target: OrganizeTarget): string | null {
  * that would have worked, which is annoying; it can never block a move
  * the platform would allow, because nothing downstream reads it.
  */
-export function androidAllowsImagesIn(relativePath: string): boolean {
+export function androidAllowsMediaIn(
+  relativePath: string,
+  /** The kinds a move would carry: a path must be valid for EVERY one.
+   * Images: DCIM, Pictures. Videos: DCIM, Movies, Pictures (m0.9
+   * phase 4). */
+  kinds: readonly StoredMediaKind[],
+): boolean {
   const path = relativePath.endsWith('/') ? relativePath : `${relativePath}/`;
-  return path.startsWith('DCIM/') || path.startsWith('Pictures/');
+  const common = path.startsWith('DCIM/') || path.startsWith('Pictures/');
+  if (common) return true;
+  return path.startsWith('Movies/') && kinds.length > 0 && kinds.every((k) => k === 'video');
 }
 
 /** Normalized target path for a NEW album name → `Pictures/<name>/`.
@@ -112,6 +121,9 @@ export interface OrganizeQueueRow {
   photo_id: string;
   uri: string;
   image_version: number;
+  /** The media kind (v24, m0.9 phase 4): which MediaStore collection
+   * the row's content URI addresses. */
+  kind: StoredMediaKind;
   taken_at: number;
   day: string | null;
   /** NULL until an album is assigned in the queue (m0.8.2, F6). */
@@ -263,7 +275,7 @@ export async function getOrganizeQueue(
   // NULL-safe target projection: an untargeted row (m0.8.2) comes back
   // with NULL volume/path rather than substr() noise.
   return db.getAllAsync<OrganizeQueueRow>(
-    `SELECT p.asset_id AS photo_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.taken_at, p.day, pa.state,
+    `SELECT p.asset_id AS photo_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.taken_at, p.day, pa.state,
             CASE WHEN pa.target IS NULL THEN NULL
                  ELSE substr(pa.target, 1, instr(pa.target, char(10)) - 1) END AS organize_volume,
             CASE WHEN pa.target IS NULL THEN NULL

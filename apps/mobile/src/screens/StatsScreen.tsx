@@ -98,7 +98,7 @@ export function StatsScreen({ navigation }: Props) {
   const db = useSQLiteContext();
   const theme = useTheme();
   const review = useReview();
-  const [permission] = MediaLibrary.usePermissions({ granularPermissions: ['photo'] });
+  const [permission] = MediaLibrary.usePermissions({ granularPermissions: ['photo', 'video'] });
 
   // D14: Activity is both the default and the leftmost tab, so returning
   // to the page lands where it left off in the reader's mental model.
@@ -319,8 +319,8 @@ function ActivityTab({ decisions }: { decisions: DecisionStats | null }) {
             </Text>
             <Text style={styles.cardText}>
               {reviewedToday === 0
-                ? 'No photos decided yet today.'
-                : `${plural(reviewedToday, 'photo')} decided today` +
+                ? 'No items decided yet today.'
+                : `${plural(reviewedToday, 'item')} decided today` +
                   (reviewedToday >= decisions.goal
                     ? ''
                     : ` · ${decisions.goal - reviewedToday} to go`)}
@@ -388,10 +388,10 @@ function ActivityTab({ decisions }: { decisions: DecisionStats | null }) {
           </View>
           <Text style={styles.cardText}>
             {coverageChart.daysWithPhotos === 0
-              ? `No photos captured in the last ${ACTIVITY_WINDOW_DAYS} days.`
+              ? `No items captured in the last ${ACTIVITY_WINDOW_DAYS} days.`
               : // One family of words with Home's coverage streak (F1):
                 // both count DAYS WITH PHOTOS, and both say so.
-                `${coverageChart.clearedDays} of ${plural(coverageChart.daysWithPhotos, 'day')} with photos fully reviewed` +
+                `${coverageChart.clearedDays} of ${plural(coverageChart.daysWithPhotos, 'day')} with items fully reviewed` +
                 (coverageChart.pending > 0 ? ` · ${coverageChart.pending} left over` : '')}
           </Text>
           <Text style={styles.cardText}>
@@ -419,8 +419,8 @@ function ActivityTab({ decisions }: { decisions: DecisionStats | null }) {
                   : ` — ${Math.abs(intake.net).toLocaleString()} behind over this window`)}
           </Text>
           <View style={styles.legend}>
-            <Legend color={colors.text} label="Photos shot that day" value={intake.captured} />
-            <Legend color={colors.keep} label="Photos decided that day" value={intake.reviewed} />
+            <Legend color={colors.text} label="Items captured that day" value={intake.captured} />
+            <Legend color={colors.keep} label="Items decided that day" value={intake.reviewed} />
           </View>
         </View>
       )}
@@ -664,7 +664,7 @@ function HabitsTab({
   // palette teaches itself here rather than painting three different
   // things one colour.
   const milestones = [
-    { item: milestone('photos reviewed', habits.lifetime.reviewed), hue: colors.keep },
+    { item: milestone('items reviewed', habits.lifetime.reviewed), hue: colors.keep },
     { item: milestone('culled', habits.lifetime.culled), hue: colors.cull },
     { item: milestone('edits completed', habits.lifetime.editsCompleted), hue: colors.edit },
   ];
@@ -675,7 +675,7 @@ function HabitsTab({
         <Text style={styles.cardTitle}>Rhythm</Text>
         <RhythmHeatmap grid={habits.rhythm} />
         <Text style={styles.cardText}>
-          {rhythm ?? 'Once you have reviewed a few hundred photos, your pattern shows up here.'}
+          {rhythm ?? 'Once you have reviewed a few hundred items, your pattern shows up here.'}
         </Text>
         {sittings !== null && <Text style={styles.cardHint}>{sittings}</Text>}
       </View>

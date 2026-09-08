@@ -81,11 +81,20 @@ describe('canonical id helpers', () => {
     // address `content://media/<volume>/…`, never a merged-collection
     // resolution. Spike A6: the volume-qualified uri resolves the right
     // row and a wrong-volume uri does NOT resolve (fail-closed).
-    expect(canonicalContentUri('external_primary/42')).toBe(
+    expect(canonicalContentUri('external_primary/42', 'photo')).toBe(
       'content://media/external_primary/images/media/42',
     );
-    expect(canonicalContentUri('0a91-e18d/42')).toBe('content://media/0a91-e18d/images/media/42');
+    expect(canonicalContentUri('0a91-e18d/42', 'photo')).toBe(
+      'content://media/0a91-e18d/images/media/42',
+    );
     // Bare legacy ids address primary.
-    expect(canonicalContentUri('42')).toBe('content://media/external_primary/images/media/42');
+    expect(canonicalContentUri('42', 'photo')).toBe(
+      'content://media/external_primary/images/media/42',
+    );
+    // m0.9 phase 4: the stored kind picks the collection — a video's raw
+    // id answers only on the video collection of its volume.
+    expect(canonicalContentUri('external_primary/1000182326', 'video')).toBe(
+      'content://media/external_primary/video/media/1000182326',
+    );
   });
 });

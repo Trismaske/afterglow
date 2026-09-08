@@ -97,7 +97,7 @@ export async function runEditDetection(
   // The per-photo MediaStore lookups run bounded-parallel (m0.8.1, was
   // serial); the decision loop below stays sequential because it WRITES.
   const detailsByRow = await mapWithConcurrency(rows, 6, (row) =>
-    getAssetDetails(row.asset_id).catch(() => null),
+    getAssetDetails({ id: row.asset_id, kind: row.kind }).catch(() => null),
   );
   for (const [index, row] of rows.entries()) {
     const details = detailsByRow[index];
@@ -137,7 +137,11 @@ export async function runEditDetection(
         // previous cycle's edit was already consumed.
         await updateModTimeBaseline(db, row.asset_id, details.modificationTime, row.to_edit_at);
       }
-      if (!row.content_hash && hashBudget > 0) {
+      // Videos never bank a hash (m0.9 phase 4, M8's cost flag): a
+      // whole-file SHA-256 of a 200 MB clip is the wholesale read the
+      // plan forbids, so a moved mod time on a video is "edited" outright
+      // — the no-baseline verdict above.
+      if (!row.content_hash && hashBudget > 0 && row.kind === 'photo') {
         // Unchanged and unhashed: bank a baseline for future tiebreaks.
         hashBudget--;
         const hash = await sha256OfFile(details.localUri ?? row.uri);
@@ -208,6 +212,9 @@ export async function runEditDetection(
 
   for (const l of live) {
     if (candidates.length === 0) break;
+    // Same KIND only (m0.9 phase 4): an edited copy of a photo is a
+    // photo, of a video a video — a related base name or a capture time
+    // within tolerance across kinds is coincidence, not evidence.
     const matches = matchEditedCopies(
       {
         assetId: l.row.asset_id,
@@ -215,7 +222,7 @@ export async function runEditDetection(
         takenAt: l.row.taken_at,
         toEditAt: l.row.to_edit_at ?? l.row.taken_at,
       },
-      candidates,
+      candidates.filter((c) => c.kind === l.row.kind),
     );
     // One best copy per original (C#12): only the first match records —
     // this run, and across runs (the insert skips an original with any
@@ -234,6 +241,7 @@ export async function runEditDetection(
           takenAt,
           modTime: copy.modificationTime,
           day: dayKey(takenAt),
+          kind: copy.kind,
         },
         Date.now(),
         l.row.to_edit_at, // evidence belongs to the captured cycle
@@ -260,14 +268,15 @@ export async function runEditDetection(
     if (emitted.has(`${match.original_id} ${match.copy_id}`)) continue;
     const original = live.find((l) => l.row.asset_id === match.original_id);
     if (!original) continue; // original resolved/left the queue
-    const copyDetails = await getAssetDetails(match.copy_id);
+    const copyRef = { id: match.copy_id, kind: match.copy_kind };
+    const copyDetails = await getAssetDetails(copyRef);
     if (!copyDetails) {
       // getAssetDetails is null for BOTH a missing asset and a transient
       // lookup failure — only an authoritative absence may dismiss the
       // only pending match (fail-closed, like every removal decision).
       // Confirmed absence also converges the copy's tracked 'done' row
       // (presence, intents, counts) via the shared removal cleanup.
-      const presence = await checkMediaPresence(match.copy_id);
+      const presence = await checkMediaPresence(copyRef);
       if (presence === 'absent' || presence === 'trashed') {
         // Reconcile the copy's tracked row FIRST: a crash between the
         // two leaves the pending match as the retry signal (the next

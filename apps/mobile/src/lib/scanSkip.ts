@@ -109,13 +109,13 @@ export function scanStatusLine(args: {
     // percent Home shows; a delta shows the plain count.
     if (total !== null && total > 0) {
       const pct = Math.min(100, Math.round((scanned / total) * 100));
-      return `Scanning ${pct}% · ${Math.min(scanned, total).toLocaleString()} of ${plural(total, 'photo')}`;
+      return `Scanning ${pct}% · ${Math.min(scanned, total).toLocaleString()} of ${plural(total, 'item')}`;
     }
-    return `Scanning now · ${plural(scanned, 'photo')}`;
+    return `Scanning now · ${plural(scanned, 'item')}`;
   }
   if (args.verifiedAt === null) return 'Not checked yet';
   const ageMs = Math.max(0, (args.now ?? Date.now()) - args.verifiedAt);
-  return `Checked ${relativeAge(ageMs)} · ${plural(args.corpus, 'photo')}`;
+  return `Checked ${relativeAge(ageMs)} · ${plural(args.corpus, 'item')}`;
 }
 
 /** "just now" / "12 minutes ago" / "3 hours ago" / "2 days ago". */

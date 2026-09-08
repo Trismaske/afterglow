@@ -288,7 +288,7 @@ export function describeDeltaPlan(plan: DeltaPlan, verdict?: DeltaVerdict): stri
   const decision =
     verdict === undefined
       ? ''
-      : ` — cost ${Math.round(verdict.cost)} vs budget ${Math.round(verdict.budget)} photos: ` +
+      : ` — cost ${Math.round(verdict.cost)} vs budget ${Math.round(verdict.budget)} items: ` +
         (verdict.worthIt ? 'DELTA wins' : 'full pass wins');
   return (
     `delta: ${plan.changed} changed (${plan.trashed} trashed, ${plan.undated} undated) → ` +

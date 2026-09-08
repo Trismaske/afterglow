@@ -17,6 +17,7 @@ function row(over: Partial<ChangedMediaRow> = {}): ChangedMediaRow {
   return {
     volumeName: 'external_primary',
     rawId: '1',
+    mediaType: 'photo',
     dateTakenMs: T,
     dateModifiedSec: T / 1000,
     isTrashed: false,
@@ -243,7 +244,7 @@ describe('describeDeltaPlan', () => {
       plan,
       deltaVerdict({ covered: 40, changed: 1, ranges: 1, corpus: 5_000 }),
     );
-    expect(line).toContain('cost 43 vs budget 2500 photos: DELTA wins');
+    expect(line).toContain('cost 43 vs budget 2500 items: DELTA wins');
   });
 });
 

@@ -50,7 +50,7 @@ export function describeTrashFailure(failure: TrashFailure): TrashFailureReport 
   // TIER 1 where we hold proof: the verified progress counts.
   if (failure.trashedCount > 0) {
     lines.push(
-      `${plural(failure.trashedCount, 'photo')} ${failure.trashedCount === 1 ? 'was' : 'were'} ` +
+      `${plural(failure.trashedCount, 'item')} ${failure.trashedCount === 1 ? 'was' : 'were'} ` +
         `already moved to trash${stillStaged ? `; ${failure.remaining} remain staged` : ''}.`,
     );
   }
@@ -74,13 +74,13 @@ export function describeTrashFailure(failure: TrashFailure): TrashFailureReport 
     lines.push(
       failure.trashedCount > 0
         ? `Android refused to move the rest.${stillStaged ? ' Your culls remain staged.' : ''}`
-        : `Android refused to move the photos to trash.${stillStaged ? ' Your culls remain staged.' : ''}`,
+        : `Android refused to move the items to trash.${stillStaged ? ' Your culls remain staged.' : ''}`,
     );
   }
 
   if (failure.unresolvedCount > 0) {
     lines.push(
-      `${plural(failure.unresolvedCount, 'photo')} could not be verified and may already be ` +
+      `${plural(failure.unresolvedCount, 'item')} could not be verified and may already be ` +
         `in the system trash.`,
     );
   }
@@ -91,7 +91,7 @@ export function describeTrashFailure(failure: TrashFailure): TrashFailureReport 
   if (raw) lines.push(stage === 'dispatch' ? `Android said:\n• ${raw}` : `Details:\n• ${raw}`);
 
   return {
-    title: failure.trashedCount > 0 ? 'Partly moved to trash' : 'Could not move photos to trash',
+    title: failure.trashedCount > 0 ? 'Partly moved to trash' : 'Could not move items to trash',
     body: lines.join('\n\n'),
   };
 }

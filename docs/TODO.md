@@ -190,6 +190,9 @@ Same hygiene as above: promote on trigger, delete when answered.
   It only helps a user who opens the app while plugged in, and it adds a deferral rule to a mechanism that may be deleted.
   So it is listed as an option rather than a recommendation.
 
+  **Status (2026-09-08):** the resumability prerequisite is scheduled — m0.9 phase 9 builds the enumeration checkpoint, the durable-state progress line, and a foreground keep-awake (the S23 spent four days restarting a never-completed initial pass at 0%).
+  Background execution itself is a PLAN.md backlog item for a later version; the blockers above are its design input.
+
 - **Coalesce tiny singles runs?** (m0.8.2 build, settled as keep-as-is by Tristan 2026-07-29; trigger: tester complaints about ceremony.)
   A sparse-photo stretch produces one timeline card and one one-photo deck per day (device-observed: dozens at the head on both phones).
   This is honest capture-order review, and auto-advance chains through them.

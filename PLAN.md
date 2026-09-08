@@ -523,6 +523,10 @@ No release target until then.
   Trigger: a user asks for it.
 - **Opt-in usage analytics** — assessed 2026-08-21 and deliberately not built: at tester scale, feedback rounds are behavioral data with reasons attached, and the generic event log will record Afterglow actions anyway (a stated-purpose substrate most usage questions can query locally). The `diagLog` diagnostics sink deliberately excludes user actions.
   Trigger: a post-v1 user base too large for direct feedback rounds AND a named question the event log cannot answer — both, not either.
+- **Background scan execution (idle + charging)** — the initial pass and the weekly reconciliation run only while Afterglow is in the foreground; a phone left on a desk gets the pass throttled or killed with the screen, and a big library's initial embed (the S23's 27 880 photos, ~1 h) then arrives in fragments across days (2026-09-08).
+  m0.9 phase 9 ships the in-app half — an enumeration checkpoint, a durable-state progress line, and a foreground keep-awake — which is also this item's prerequisite: a WorkManager slot is ~10 minutes, so a background pass MUST be resumable.
+  The remaining blockers are measured in docs/TODO.md ("If it stays, idle + charging"): two new dependencies to reach `requiresCharging`/`requiresDeviceIdle`, a DB-backed cross-process scan lease, and Samsung's background-job culling on both test devices.
+  Trigger: the weekly full pass survives its field-time revisit (docs/TODO.md) AND a tester reports an initial pass that phase 9's resume still cannot finish in normal use.
 - **GitLab releases** — deferred until further notice.
   GitHub Releases is the sole delivery path.
   Do not add GitLab CI or remotes without a new decision.

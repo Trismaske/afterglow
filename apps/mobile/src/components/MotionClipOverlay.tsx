@@ -2,54 +2,54 @@
  * MotionClipOverlay — a MOTION PHOTO's embedded clip over its still (m0.9
  * phase 5, F25/G6). The page stays the photo page (expo-image on the JPEG
  * primary, the region-zoom pipeline on the same bytes); this overlay is
- * the video half of the dual identity, and it is ALWAYS MOUNTED once the
- * page renders — the still ↔ playing handoff is props only (opacity and
- * the player's source), never a host view mounted mid-touch under the
- * stage's intercepting detector (MediaStage's rule).
+ * the video half of the dual identity, with the SAME playback machinery
+ * and chrome as a video (the media model): the shared PlaybackChrome on
+ * the deck stage — speaker, hairline, play/replay — and expo-video's
+ * native transport in the expanded stage.
+ *
+ * THE PLAYER BOUND (M26): like VideoPage, a native player exists only
+ * while the page is NEAR (current or a neighbour) — the inner
+ * `MotionClipPlayer` owns the player's lifetime and mounts when the
+ * pager settles, never mid-touch. Within that layer the still ↔ playing
+ * handoff is props only (opacity and the player's source).
  *
  * The clip plays from a run-scoped cache file (the module's
  * `extractMotionClip`: the last `length` bytes of the photo, copied once
- * per id + version, swept at every process start). Extraction failing
- * leaves the still in place and logs once per item — the photo is
- * complete without its clip.
+ * per volume + id + version, swept at every process start). Extraction
+ * failing leaves the still in place and logs once per item — the photo
+ * is complete without its clip. The resolved source is TAGGED with the
+ * identity it was extracted for: an in-place edit keeps this component
+ * (the page is keyed by id) and must never play the previous version's
+ * clip.
  *
  * Modes (M5, the Motion photos row): `once` plays muted on page settle
  * and rests on the still (the overlay fades out at the clip's end —
  * the still IS the chosen frame); `loop` keeps playing until the page
- * leaves; `off` shows the still with a play control. Always muted (F25).
+ * leaves; `off` shows the still with a play control. The clip starts
+ * muted and the speaker unmutes the CURRENT view only, like a video.
  * Zoom always shows the still (G6, structural): the overlay's opacity
  * is driven from the stage's zoom scale on the UI thread — no bridge
  * crossing — so a pinch reveals the JPEG under the playing clip at once,
- * and the clip simply continues invisibly (muted) until it ends.
+ * and the clip simply continues invisibly until it ends.
  */
 import React, { useEffect, useState } from 'react';
-import { Pressable, StyleSheet } from 'react-native';
+import { StyleSheet } from 'react-native';
 import { useEvent } from 'expo';
 import { VideoView, useVideoPlayer, type SurfaceType } from 'expo-video';
 import Animated, { useAnimatedStyle, type SharedValue } from 'react-native-reanimated';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { extractMotionClip } from '../../modules/media-store-actions';
 import { canonicalContentUri, rawIdOf, volumeOf } from '../lib/mediaIdentity';
-import { colors } from '../theme';
+import { PlaybackChrome } from './PlaybackChrome';
+import { TIME_UPDATE_INTERVAL_S } from './VideoPage';
 import type { PlaybackMode } from '../lib/playbackPrefs';
 import type { MotionClipRow } from '../db/store';
 
 const warnedIds = new Set<string>();
 
-export function MotionClipOverlay({
-  id,
-  clip,
-  near,
-  active,
-  mode,
-  immersive,
-  surfaceType,
-  zoomScale,
-}: {
+export function MotionClipOverlay(props: {
   id: string;
   clip: MotionClipRow;
-  /** Current page or a neighbour (M26): only then is the clip extracted
-   * and the player sourced. */
+  /** Current page or a neighbour (M26): only then does a player exist. */
   near: boolean;
   active: boolean;
   mode: PlaybackMode;
@@ -58,17 +58,45 @@ export function MotionClipOverlay({
   /** The stage's zoom scale (1 = unzoomed) — read on the UI thread. */
   zoomScale: SharedValue<number>;
 }) {
-  // The resolved clip file, tagged with the identity it was extracted
-  // for: an in-place edit keeps this component (the page is keyed by id)
-  // and must never play the previous version's clip.
+  if (!props.near) return null;
+  return <MotionClipPlayer {...props} />;
+}
+
+function MotionClipPlayer({
+  id,
+  clip,
+  active,
+  mode,
+  immersive,
+  surfaceType,
+  zoomScale,
+}: {
+  id: string;
+  clip: MotionClipRow;
+  active: boolean;
+  mode: PlaybackMode;
+  immersive: boolean;
+  surfaceType: SurfaceType;
+  zoomScale: SharedValue<number>;
+}) {
   const [source, setSource] = useState<{ key: string; uri: string } | null>(null);
+  // The cache name carries the VOLUME: raw ids and generations are
+  // allocated per volume, so primary and an SD card can share both.
   const clipKey = `${volumeOf(id)}-${rawIdOf(id)}-${clip.version}`;
   const sourceUri = source !== null && source.key === clipKey ? source.uri : null;
   const player = useVideoPlayer(null, (p) => {
     p.muted = true;
     p.loop = mode === 'loop';
+    p.timeUpdateEventInterval = TIME_UPDATE_INTERVAL_S;
   });
   const { isPlaying } = useEvent(player, 'playingChange', { isPlaying: player.playing });
+  const { muted } = useEvent(player, 'mutedChange', { muted: player.muted });
+  const time = useEvent(player, 'timeUpdate', {
+    currentTime: 0,
+    currentLiveTimestamp: null,
+    currentOffsetFromLive: null,
+    bufferedPosition: 0,
+  });
   const [ended, setEnded] = useState(false);
   useEffect(() => {
     // A looping player emits playToEnd on every wrap — only a Once play
@@ -79,13 +107,10 @@ export function MotionClipOverlay({
     return () => sub.remove();
   }, [player]);
 
-  // Resolve the clip file once per id + version; swap the source in
-  // place (props only).
+  // Resolve the clip file once per volume + id + version; swap the
+  // source in place (props only).
   useEffect(() => {
-    if (!near) return;
     let cancelled = false;
-    // The cache name carries the VOLUME: raw ids and generations are
-    // allocated per volume, so primary and an SD card can share both.
     void extractMotionClip(
       canonicalContentUri(id, 'photo'),
       clip.offset,
@@ -104,79 +129,79 @@ export function MotionClipOverlay({
     return () => {
       cancelled = true;
     };
-  }, [id, clip.offset, clip.length, clip.version, clipKey, near]);
+  }, [id, clip.offset, clip.length, clip.version, clipKey]);
   useEffect(() => {
-    player.replace(near && sourceUri !== null ? { uri: sourceUri } : null, true);
-  }, [player, sourceUri, near]);
+    player.replace(sourceUri !== null ? { uri: sourceUri } : null, true);
+  }, [player, sourceUri]);
   useEffect(() => {
     player.loop = mode === 'loop';
   }, [player, mode]);
 
+  // Active + a playing mode → play; a mode turned Off while active →
+  // pause; leaving → pause, rewind, re-mute (the speaker is per view).
   useEffect(() => {
     if (active && sourceUri !== null) {
-      if (mode !== 'off') {
-        setEnded(false);
-        player.play();
+      if (mode === 'off') {
+        player.pause();
+        return;
       }
+      setEnded(false);
+      player.play();
       return;
     }
     player.pause();
     player.currentTime = 0;
+    player.muted = true;
     setEnded(false);
   }, [player, active, mode, sourceUri]);
 
-  // Visible only while the clip is playing (once → the still returns at
-  // the end), and never while zoomed.
+  // The clip layer shows while playing (once → the still returns at the
+  // end) and, in the expanded stage, whenever the page is active so the
+  // native transport has something to operate; never while zoomed.
   const playingVisible = isPlaying && !ended;
-  // ONE opacity source: the zoom test runs on the UI thread, the playing
+  const layerVisible = playingVisible || (immersive && active && sourceUri !== null);
+  // ONE opacity source: the zoom test runs on the UI thread, the visible
   // flag is captured as a dependency (JS → worklet closure, safe).
   const visibility = useAnimatedStyle(
-    () => ({ opacity: playingVisible && zoomScale.value <= 1.001 ? 1 : 0 }),
-    [playingVisible],
+    () => ({ opacity: layerVisible && zoomScale.value <= 1.001 ? 1 : 0 }),
+    [layerVisible],
   );
-  const showPlayControl =
-    !immersive && active && sourceUri !== null && mode === 'off' && !playingVisible;
+  const duration = player.duration;
+  const progress = duration > 0 ? Math.min(1, time.currentTime / duration) : 0;
 
   return (
     <>
-      <Animated.View style={[StyleSheet.absoluteFill, visibility]} pointerEvents="none">
+      <Animated.View
+        style={[StyleSheet.absoluteFill, visibility]}
+        // The native transport owns taps in the expanded stage; on the
+        // deck stage the layer is inert under the page's own press.
+        pointerEvents={immersive && layerVisible ? 'auto' : 'none'}
+      >
         <VideoView
           player={player}
           style={StyleSheet.absoluteFill}
           contentFit="contain"
-          nativeControls={false}
+          nativeControls={immersive}
           surfaceType={surfaceType}
           fullscreenOptions={{ enable: false }}
         />
       </Animated.View>
-      {showPlayControl && (
-        <Pressable
-          style={styles.playControl}
-          onPress={() => {
+      {!immersive && active && sourceUri !== null && (
+        <PlaybackChrome
+          showPlayControl={!playingVisible}
+          ended={ended}
+          muted={muted}
+          progress={progress}
+          playLabel="Play motion photo"
+          onPlay={() => {
             setEnded(false);
             player.replay();
           }}
-          accessibilityLabel="Play motion photo"
-        >
-          <MaterialCommunityIcons name="play" size={44} color={colors.text} />
-        </Pressable>
+          onToggleMuted={() => {
+            player.muted = !player.muted;
+          }}
+        />
       )}
     </>
   );
 }
-
-const styles = StyleSheet.create({
-  playControl: {
-    position: 'absolute',
-    left: '50%',
-    top: '50%',
-    marginLeft: -36,
-    marginTop: -36,
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(0,0,0,0.45)',
-  },
-});

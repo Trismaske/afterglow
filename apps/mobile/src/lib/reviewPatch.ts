@@ -266,6 +266,12 @@ function memberEquals(a: ReviewMemberRow, b: ReviewMemberRow): boolean {
     // the Timeline's and the open deck's keys stayed on the pre-edit
     // pixels until an unrelated commit (S23, 2026-09-08).
     a.image_version === b.image_version &&
+    // The motion facts (phase 5): a per-file read that fails and later
+    // completes for the same content version changes only these — the
+    // deck mounts its clip overlay from them, so they are read state.
+    a.motion_offset === b.motion_offset &&
+    a.motion_length === b.motion_length &&
+    a.motion_presentation_us === b.motion_presentation_us &&
     a.state === b.state &&
     a.needs_edit === b.needs_edit &&
     a.time_attached === b.time_attached &&

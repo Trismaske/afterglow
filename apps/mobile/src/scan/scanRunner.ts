@@ -326,6 +326,7 @@ async function pageAndGroup(
   },
 ): Promise<{ seenIds: Set<string>; skipped: number; exifFailed: number } | null> {
   const { ranges, albumIds, baseThreshold, engine, superseded, mountedVolumes, favourites } = args;
+  resetFactsPassStats();
   // Fail-closed drops this pass: unparseable volumes (counted by the
   // adapter per page) plus parsed volumes outside the mounted set. Any
   // skip makes the pass ineligible to advance its baselines (finishPass).
@@ -495,6 +496,7 @@ async function pageAndGroup(
     console.log(`[scan] delta: ${fetched} undated changed photo(s) landed by direct fetch`);
   }
   await processUndatedBatch(undated.splice(0));
+  reportFactsPassStats();
   return stopped ? null : { seenIds, skipped, exifFailed };
 }
 
@@ -1540,7 +1542,24 @@ async function processWindow(
  * never succeed must not defeat the unchanged-library skip forever).
  */
 const MOTION_LOG_CAP = 8;
-let motionLogged = 0;
+/** Per-PASS diagnostics for the facts read: the first few detections
+ * named per pass, and the SEF tripwire's count reported ONCE per pass
+ * (applyMediaFactsRead runs per window). Reset at pass start
+ * (pageAndGroup), emitted at pass end. */
+const factsPassStats = { motionLogged: 0, sefWithoutXmp: 0 };
+function resetFactsPassStats(): void {
+  factsPassStats.motionLogged = 0;
+  factsPassStats.sefWithoutXmp = 0;
+}
+function reportFactsPassStats(): void {
+  if (factsPassStats.sefWithoutXmp > 0) {
+    // The SEF tripwire: the specimen the unparsed-trailer decision lacks.
+    console.warn(
+      `[scan] media facts: ${factsPassStats.sefWithoutXmp} file(s) carry a Samsung SEF motion block with NO motion XMP — ` +
+        'unrecognised container, read as stills (the trailer parser is built when such a file exists)',
+    );
+  }
+}
 async function applyMediaFactsRead(db: SQLiteDatabase, window: LoadedPhoto[]): Promise<number> {
   if (!mediaStoreActionsAvailable()) return 0;
   const stored = await getFactsBaselines(
@@ -1552,7 +1571,6 @@ async function applyMediaFactsRead(db: SQLiteDatabase, window: LoadedPhoto[]): P
   if (toRead.length === 0) return 0;
   let failed = 0;
   let motion = 0;
-  let sefWithoutXmp = 0;
   const READ_CHUNK = 50;
   for (let i = 0; i < toRead.length; i += READ_CHUNK) {
     const chunkPhotos = toRead.slice(i, i + READ_CHUNK);
@@ -1586,14 +1604,14 @@ async function applyMediaFactsRead(db: SQLiteDatabase, window: LoadedPhoto[]): P
         p.height = result.height;
       }
       if (result.durationMs != null) p.durationMs = result.durationMs;
-      if (result.sefMotionWithoutXmp) sefWithoutXmp += 1;
+      if (result.sefMotionWithoutXmp) factsPassStats.sefWithoutXmp += 1;
       if (result.motionOffset != null) {
         motion += 1;
         // The first few detections per pass, named — the device pass
         // checks these against the specimen files' known offsets; the
         // count line below covers the rest (no per-item flooding).
-        if (motionLogged < MOTION_LOG_CAP) {
-          motionLogged += 1;
+        if (factsPassStats.motionLogged < MOTION_LOG_CAP) {
+          factsPassStats.motionLogged += 1;
           console.log(
             `[scan] motion photo ${p.displayName ?? p.filename}: video at ` +
               `${result.motionOffset}+${result.motionLength ?? '?'}` +
@@ -1615,13 +1633,6 @@ async function applyMediaFactsRead(db: SQLiteDatabase, window: LoadedPhoto[]): P
   if (failed > 0) {
     console.warn(
       `[scan] media facts: ${failed} of ${toRead.length} reads did not complete — retried next pass`,
-    );
-  }
-  if (sefWithoutXmp > 0) {
-    // The SEF tripwire: the specimen the unparsed-trailer decision lacks.
-    console.warn(
-      `[scan] media facts: ${sefWithoutXmp} file(s) carry a Samsung SEF motion block with NO motion XMP — ` +
-        'unrecognised container, read as stills (the trailer parser is built when such a file exists)',
     );
   }
   if (motion > 0)

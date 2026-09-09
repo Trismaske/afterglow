@@ -143,7 +143,10 @@ export function SettingsScreen({ navigation }: Props) {
       setPlayback((prev) => ({ ...prev, [kind]: mode }));
       void setSetting(db, PLAYBACK_KEYS[kind], serializePlaybackMode(mode)).then(
         () => {
-          if (playbackWriteGen.current[kind] === gen) durablePlaybackRef.current[kind] = mode;
+          // Every committed write moves the anchor, whatever generation
+          // is current: a later tap that then fails must roll back to
+          // what SQLite actually holds, which is this value.
+          durablePlaybackRef.current[kind] = mode;
         },
         (error) => {
           console.warn('[settings] playback mode write failed:', String(error));

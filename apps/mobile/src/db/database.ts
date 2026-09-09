@@ -442,6 +442,10 @@ export async function migrateDatabase(db: SQLiteDatabase): Promise<void> {
     await txn.execAsync(BASELINE_DDL);
     await txn.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   });
+  // The migration ran on its own fresh connection, which never saw the
+  // WAL limit above — reclaim whatever the rebuild appended before the
+  // first reader connection exists (the same reason as the first one).
+  await db.execAsync('PRAGMA wal_checkpoint(TRUNCATE)');
 }
 
 /**

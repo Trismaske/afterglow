@@ -56,3 +56,32 @@ describe('queueEquals (the refresh no-op rule)', () => {
     expect(queueEquals(snapshot(1), snapshot(2))).toBe(false);
   });
 });
+describe('queueEquals — the motion facts are read state (phase 5)', () => {
+  const member = (id: string, motion_offset: number | null): ReviewMemberRow => ({
+    asset_id: id,
+    uri: `file://${id}`,
+    image_version: 7,
+    kind: 'photo',
+    motion_offset,
+    motion_length: motion_offset === null ? null : 4_444_568,
+    motion_presentation_us: null,
+    taken_at: 1000,
+    day: '2026-09-09',
+    state: 'unreviewed',
+    needs_edit: 0,
+    time_attached: 0,
+  });
+  const snapshot = (motion_offset: number | null): ReviewSnapshot => ({
+    groups: [],
+    singles: [member('m', motion_offset)],
+    counts: { grouped: 0, singles: 1, groups: 0 },
+    needsEdit: new Set(),
+    favourites: new Map(),
+  });
+  it('a per-file read that completes later for the same version is a change', () => {
+    // The first pass's read failed (no clip known); the retry found the
+    // clip at the same image version — the deck must mount its overlay.
+    expect(queueEquals(snapshot(null), snapshot(1_524_709))).toBe(false);
+    expect(queueEquals(snapshot(1_524_709), snapshot(1_524_709))).toBe(true);
+  });
+});

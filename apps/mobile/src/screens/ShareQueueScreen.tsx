@@ -344,7 +344,7 @@ export function ShareQueueScreen({ navigation }: Props) {
     if (pendingEdits > 0) {
       Alert.alert(
         'Share before editing?',
-        `${pendingEdits} of these photo${pendingEdits === 1 ? ' still has' : 's still have'} an unsent edit request — sharing now sends the unedited file${pendingEdits === 1 ? '' : 's'}.`,
+        `${pendingEdits} of these item${pendingEdits === 1 ? ' still has' : 's still have'} an unsent edit request — sharing now sends the unedited file${pendingEdits === 1 ? '' : 's'}.`,
         [
           { text: 'Cancel', style: 'cancel' },
           { text: 'Share anyway', onPress: sizeGate },

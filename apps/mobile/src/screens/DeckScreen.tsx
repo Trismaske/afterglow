@@ -991,7 +991,14 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     null,
   );
   useEffect(() => {
-    if (!isFocused) return;
+    if (!isFocused) {
+      // A covered deck forgets its modes: the next focus re-reads them,
+      // and until that read lands nothing autoplays — a mode saved in
+      // Settings meanwhile (Off, say) can never be overtaken by the
+      // previous visit's value.
+      setPlayback(null);
+      return;
+    }
     let cancelled = false;
     void Promise.all([
       getSetting(db, PLAYBACK_KEYS.video),

@@ -117,6 +117,14 @@ Numbers change whenever an item closes, so **cross-references from code or other
    The read-source half of the same family is related: "A D15-rescued photo's date does not reach the Progress library scope".
    That item was designed and shipped in m0.8.6.
 
+11. **Android cross-OS / cross-device audit** (Tristan, 2026-09-09, phase-4 close grilling).
+   Both test phones are Samsung, so every OEM-observed dependency (gallery, editor and player intent handling, camera formats such as the SEF trailer, One UI's process killer) has been checked on one flavour.
+   The standing rule for NEW decisions is in `apps/mobile/AGENTS.md` ("Compatibility drives platform decisions"): documented contract over observed behaviour.
+   Two-part mechanism for the decisions already made:
+   part one, cheap and repeatable — run the UI gate (`scripts/mobile-ui-gate.mjs`) against the Android emulator's Google system image per release, the Pixel flavour of AOSP for free;
+   part two, triggered — an inventory of every OEM-observed dependency, classified documented contract / Mainline-module behaviour / OEM observation, walked on a non-Samsung device.
+   Trigger for part two: the first non-Samsung tester, or a Pixel on the bench.
+
 ## Waiting for a trigger
 
 This section holds fixes whose shape is known but whose value is unproven, and questions whose answer needs evidence that does not exist yet.

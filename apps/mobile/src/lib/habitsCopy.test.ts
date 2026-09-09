@@ -67,7 +67,7 @@ describe('sittingLine', () => {
     // one-photo sittings) has a 0 ms span — "over under a minute" would
     // dress a figure around nothing.
     expect(sittingLine({ count: 1, medianPhotos: 1, medianDurationMs: 0 })).toBe(
-      '1 sitting in your recent history · typically a single photo at a time',
+      '1 sitting in your recent history · typically a single item at a time',
     );
   });
 });

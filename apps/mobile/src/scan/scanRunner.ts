@@ -1552,6 +1552,7 @@ async function applyMediaFactsRead(db: SQLiteDatabase, window: LoadedPhoto[]): P
   if (toRead.length === 0) return 0;
   let failed = 0;
   let motion = 0;
+  let sefWithoutXmp = 0;
   const READ_CHUNK = 50;
   for (let i = 0; i < toRead.length; i += READ_CHUNK) {
     const chunkPhotos = toRead.slice(i, i + READ_CHUNK);
@@ -1585,6 +1586,7 @@ async function applyMediaFactsRead(db: SQLiteDatabase, window: LoadedPhoto[]): P
         p.height = result.height;
       }
       if (result.durationMs != null) p.durationMs = result.durationMs;
+      if (result.sefMotionWithoutXmp) sefWithoutXmp += 1;
       if (result.motionOffset != null) {
         motion += 1;
         // The first few detections per pass, named — the device pass
@@ -1613,6 +1615,13 @@ async function applyMediaFactsRead(db: SQLiteDatabase, window: LoadedPhoto[]): P
   if (failed > 0) {
     console.warn(
       `[scan] media facts: ${failed} of ${toRead.length} reads did not complete — retried next pass`,
+    );
+  }
+  if (sefWithoutXmp > 0) {
+    // The SEF tripwire: the specimen the unparsed-trailer decision lacks.
+    console.warn(
+      `[scan] media facts: ${sefWithoutXmp} file(s) carry a Samsung SEF motion block with NO motion XMP — ` +
+        'unrecognised container, read as stills (the trailer parser is built when such a file exists)',
     );
   }
   if (motion > 0)

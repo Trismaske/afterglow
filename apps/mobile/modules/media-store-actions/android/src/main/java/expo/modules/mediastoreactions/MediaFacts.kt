@@ -42,6 +42,9 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.SystemClock
 import android.provider.MediaStore
+import java.io.FileInputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import androidx.exifinterface.media.ExifInterface
 import expo.modules.kotlin.records.Field
 import expo.modules.kotlin.records.Record
@@ -160,6 +163,46 @@ internal fun parseMotionXmp(xmp: String, fileSize: Long): MotionFacts? {
   return null
 }
 
+/** Samsung SEF trailer: does its directory carry a MotionPhoto_Data
+ * block (tag 0x0a30)? Layout (format spike, 2026-09-08): the file ends
+ * in `<u32 dirLen>"SEFT"`; the directory starts dirLen bytes before
+ * that with "SEFH", then a u32, a u32 block count, and 12-byte entries
+ * `<u16 pad><u16 tag><u32 offset><u32 length>`. False on any shape
+ * mismatch — this is a tripwire, never a detector. */
+internal fun sefDeclaresMotion(fd: java.io.FileDescriptor, size: Long): Boolean {
+  if (size < 16) return false
+  return try {
+    FileInputStream(fd).channel.use { channel ->
+      val tail = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+      channel.read(tail, size - 8)
+      tail.flip()
+      val dirLen = tail.int.toLong()
+      val magic = ByteArray(4).also { tail.get(it) }
+      if (String(magic, Charsets.US_ASCII) != "SEFT" || dirLen <= 12 || dirLen > 4096) return false
+      val start = size - 8 - dirLen
+      if (start < 0) return false
+      val dir = ByteBuffer.allocate(dirLen.toInt()).order(ByteOrder.LITTLE_ENDIAN)
+      channel.read(dir, start)
+      dir.flip()
+      val head = ByteArray(4).also { dir.get(it) }
+      if (String(head, Charsets.US_ASCII) != "SEFH") return false
+      dir.int // version
+      val blocks = dir.int
+      if (blocks < 0 || blocks > 64) return false
+      repeat(blocks) {
+        if (dir.remaining() < 12) return false
+        dir.short // pad
+        val tag = dir.short.toInt() and 0xffff
+        dir.int; dir.int
+        if (tag == 0x0a30) return true
+      }
+      false
+    }
+  } catch (error: Exception) {
+    false
+  }
+}
+
 /** The bounded per-file read. 'ok' = a COMPLETED read (every requested
  * fact found or honestly unavailable); 'error' = nothing concluded, the
  * caller must not stamp its once-per-content marker. */
@@ -196,11 +239,22 @@ internal fun readMediaFactsOf(context: Context, request: MediaFactsRequest): Map
       pfd.use {
         val exif = ExifInterface(it.fileDescriptor)
         if (request.motion) {
+          // A completed read needs the file size the offsets derive from;
+          // an unknown size (statSize -1 on some providers) is an ERROR,
+          // never "no motion" — the caller must retry, not stamp.
+          if (it.statSize < 0) throw IllegalStateException("file size unknown (statSize -1)")
           val xmp = exif.getAttributeBytes(ExifInterface.TAG_XMP)
           val motion = xmp?.let { bytes -> parseMotionXmp(String(bytes, Charsets.UTF_8), it.statSize) }
           out["motionOffset"] = motion?.offset?.toDouble()
           out["motionLength"] = motion?.length?.toDouble()
           out["motionPresentationUs"] = motion?.presentationUs?.toDouble()
+          // The SEF tripwire (phase-4 close, Tristan 2026-09-09): the
+          // trailer is NOT parsed for detection, but a file whose SEF
+          // directory declares a MotionPhoto_Data block while its XMP
+          // declares no motion is exactly the specimen the "XMP-less
+          // Samsung motion photo" hypothesis lacks — reported so the
+          // scan can log it once per pass. Reads ≤ a few hundred bytes.
+          if (motion == null) out["sefMotionWithoutXmp"] = sefDeclaresMotion(it.fileDescriptor, it.statSize)
           if (motion != null) {
             // The embedded clip's duration — duration_ms describes motion
             // videos too. Read from the byte range the XMP named, never
@@ -218,9 +272,11 @@ internal fun readMediaFactsOf(context: Context, request: MediaFactsRequest): Map
         }
         if (request.dimensions) {
           val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-          resolver.openInputStream(uri)?.use { stream ->
-            BitmapFactory.decodeStream(stream, null, options)
-          }
+          // A missing stream is an ERROR (the read never happened), not
+          // an honestly-unknown size.
+          val stream = resolver.openInputStream(uri)
+            ?: throw IllegalStateException("openInputStream returned null")
+          stream.use { BitmapFactory.decodeStream(it, null, options) }
           if (options.outWidth > 0 && options.outHeight > 0) {
             val swap = exif.rotationDegrees == 90 || exif.rotationDegrees == 270
             out["width"] = if (swap) options.outHeight else options.outWidth

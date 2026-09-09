@@ -64,7 +64,7 @@ export function EditDiagnosticsSheet({ asset, onClose }: Props) {
       const contentUri = await getEditableContentUri(asset);
       if (cancelled) return;
       setUri(contentUri);
-      const report = await runEditDiagnostics(contentUri);
+      const report = await runEditDiagnostics(contentUri, launchMimeType(asset.kind));
       if (cancelled) return;
       setEnv(report);
       setEnvDone(true);

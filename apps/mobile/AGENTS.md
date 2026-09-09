@@ -36,6 +36,11 @@ Both removal affordances use the local `modules/media-store-actions` trash reque
 **Never add a permanent-delete fallback.**
 **`WRITE_EXTERNAL_STORAGE` in app.json is LOAD-BEARING — never remove it** (`lib/media.ts` header).
 
+## Compatibility drives platform decisions
+
+When two mechanisms both work, prefer the one that rests on a documented Android contract over one that rests on observed provider or OEM behaviour, even when it costs more code.
+Our test devices are Samsung; documented contract is the only evidence that reaches every flavour.
+
 ## src/lib/ (pure logic is unit-tested; impure partner files do the platform I/O)
 
 | File(s)                                                                                                  | Role                                                                                                                                                                |

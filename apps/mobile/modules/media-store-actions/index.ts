@@ -39,7 +39,7 @@ interface NativeApi {
   isFavourite(uri: string): Promise<boolean | null>;
   mediaPresence(uri: string): Promise<'present' | 'trashed' | 'absent' | 'unknown'>;
   loadThumbnail(uri: string, size: number): Promise<RegionBitmap>;
-  editDiagnostics(uri: string): Promise<EditDiagnosticsReport>;
+  editDiagnostics(uri: string, mimeType: string): Promise<EditDiagnosticsReport>;
   probeLaunch(
     uri: string,
     action: string,
@@ -246,9 +246,13 @@ export async function loadOsThumbnail(contentUri: string, size: number): Promise
   return native!.loadThumbnail(contentUris([contentUri])[0], size);
 }
 
-export async function runEditDiagnostics(uri: string): Promise<EditDiagnosticsReport | null> {
+export async function runEditDiagnostics(
+  uri: string,
+  /** The item's launch type — the handler lists are queried by it. */
+  mimeType: string,
+): Promise<EditDiagnosticsReport | null> {
   if (!available()) return null;
-  return native!.editDiagnostics(contentUris([uri])[0]);
+  return native!.editDiagnostics(contentUris([uri])[0], mimeType);
 }
 
 export async function probeEditLaunch(
@@ -389,6 +393,9 @@ export interface MediaFactsResult {
   width?: number | null;
   height?: number | null;
   durationMs?: number | null;
+  /** The SEF tripwire: a Samsung trailer declares a motion block while
+   * the XMP declares none — an unrecognised container, read as a still. */
+  sefMotionWithoutXmp?: boolean;
   elapsedMs: number;
 }
 

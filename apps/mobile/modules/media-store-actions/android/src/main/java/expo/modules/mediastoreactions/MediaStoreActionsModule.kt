@@ -250,7 +250,7 @@ class MediaStoreActionsModule : Module() {
     // about our URI read/write permission, can we actually open the bytes,
     // and which handler packages are visible (possibly partial without
     // <queries> entries — that partiality is itself a diagnostic datum).
-    AsyncFunction("editDiagnostics") { uri: Uri ->
+    AsyncFunction("editDiagnostics") { uri: Uri, mimeType: String ->
       val context = appContext.reactContext
         ?: throw IllegalStateException("Android context unavailable")
       val resolver = context.contentResolver
@@ -274,8 +274,8 @@ class MediaStoreActionsModule : Module() {
         "readPerm" to permissionLabel(readPerm),
         "writePerm" to permissionLabel(writePerm),
         "openStream" to openStream,
-        "editHandlers" to visibleHandlers(uri, Intent.ACTION_EDIT),
-        "viewHandlers" to visibleHandlers(uri, Intent.ACTION_VIEW),
+        "editHandlers" to visibleHandlers(uri, Intent.ACTION_EDIT, mimeType),
+        "viewHandlers" to visibleHandlers(uri, Intent.ACTION_VIEW, mimeType),
       )
     }
 
@@ -920,9 +920,9 @@ class MediaStoreActionsModule : Module() {
   private fun permissionLabel(result: Int): String =
     if (result == PackageManager.PERMISSION_GRANTED) "granted" else "denied"
 
-  private fun visibleHandlers(uri: Uri, action: String): String {
+  private fun visibleHandlers(uri: Uri, action: String, mimeType: String): String {
     val pm = appContext.reactContext?.packageManager ?: return "unavailable"
-    val intent = Intent(action).setDataAndType(uri, "image/*")
+    val intent = Intent(action).setDataAndType(uri, mimeType)
     return try {
       val handlers = pm.queryIntentActivities(intent, 0).map { it.activityInfo.packageName }
       if (handlers.isEmpty()) "none visible" else handlers.distinct().joinToString(", ")

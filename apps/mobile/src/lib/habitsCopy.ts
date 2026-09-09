@@ -50,7 +50,7 @@ export function sittingLine(summary: SittingSummary): string | null {
   // (splitSittings keeps them since the singleton fix). Their span is
   // 0 ms, so appending a duration would print "over under a minute" —
   // a figure dressed around nothing.
-  if (summary.medianPhotos <= 1) return `${head}typically a single photo at a time`;
+  if (summary.medianPhotos <= 1) return `${head}typically a single item at a time`;
   return `${head}typically ${plural(summary.medianPhotos, 'item')} over ${durationLabel(summary.medianDurationMs)}`;
 }
 

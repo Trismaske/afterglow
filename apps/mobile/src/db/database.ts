@@ -396,8 +396,28 @@ export const BASELINE_DDL = `
  * and a half-migrated verdict column is worse than a rescan.
  */
 
+/** The idle WAL bound (Tristan, 2026-09-09): see migrateDatabase. */
+const WAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024;
+
 export async function migrateDatabase(db: SQLiteDatabase): Promise<void> {
   await db.execAsync('PRAGMA journal_mode = WAL');
+  // The WAL's idle size is BOUNDED (m0.9 phase 4 close, Tristan
+  // 2026-09-09): SQLite reuses a WAL file but never shrinks it, so a
+  // heavy pass's high-water mark (161 MB on the S23 — a full re-embed
+  // plus one facts upsert per row while the review provider read
+  // concurrently) would stay on disk forever. Two halves, both needed:
+  // (1) journal_size_limit is PER CONNECTION and acts when a WRITER
+  // resets the log after a complete checkpoint — so it is armed here
+  // AND on every transaction-scoped connection (withSessionTransaction),
+  // which is where the store's writes actually run; (2) an explicit
+  // TRUNCATE checkpoint on the open path reclaims an already-bloated
+  // file immediately, before any reader connection exists to block it
+  // (measured: the limit alone left the S23's 160.7 MB file untouched
+  // across two restarts with no write in between). Correctness,
+  // durability and the in-pass growth ceiling are unchanged; 32 MB holds
+  // a delta and a normal session without ever truncating.
+  await db.execAsync(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES}`);
+  await db.execAsync('PRAGMA wal_checkpoint(TRUNCATE)');
   // C#3: declared foreign keys mean nothing unless enforcement is on —
   // every connection, not only migrating ones (this is the open path).
   // Transaction-scoped connections get theirs in withWriteTransaction.
@@ -450,7 +470,8 @@ async function withSessionTransaction(
 ): Promise<void> {
   await db.withExclusiveTransactionAsync(async (txn) => {
     await txn.execAsync(
-      `ROLLBACK; PRAGMA busy_timeout = 30000; PRAGMA foreign_keys = ON; ${begin}`,
+      `ROLLBACK; PRAGMA busy_timeout = 30000; PRAGMA foreign_keys = ON; ` +
+        `PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES}; ${begin}`,
     );
     await task(txn);
   });

@@ -42,7 +42,7 @@ export interface FavouriteFailure {
  * quoting it as "Android said" would be a misattribution.
  */
 export const VERIFY_SENTINEL =
-  'Android did not report the requested favourite state for every photo.';
+  'Android did not report the requested favourite state for every item.';
 
 export interface FavouriteFailureReport {
   title: string;

@@ -39,6 +39,8 @@ import {
   getHistoryPage,
   getPhotoQueueFacts,
   getStatesForAssets,
+  motionClipOf,
+  type MotionClipRow,
   getToEditPhotos,
   type HistoryCursor,
   type HistoryFilter,
@@ -84,6 +86,9 @@ export interface DeckListRow {
   uri: string;
   /** The media kind (m0.9 phase 4): the item's MediaStore collection. */
   kind: StoredMediaKind;
+  /** A motion photo's clip (phase 5), null otherwise — on the row so the
+   * page mounts its overlay synchronously. */
+  motion: MotionClipRow | null;
   /** The image cache version (item 3): the row's COALESCE(file_generation, file_mtime). */
   version: number;
   takenAt: number;
@@ -210,6 +215,7 @@ export async function resolveDeckListPage(
               uri: r.uri,
               version: r.image_version,
               kind: r.kind,
+              motion: motionClipOf(r),
               takenAt: r.taken_at,
               day: r.day,
               state: states.get(r.asset_id) ?? 'unreviewed',
@@ -230,6 +236,7 @@ export async function resolveDeckListPage(
               uri: r.uri,
               version: r.image_version,
               kind: r.kind,
+              motion: motionClipOf(r),
               takenAt: r.taken_at,
               day: r.day,
               state: states.get(r.photo_id) ?? 'unreviewed',
@@ -250,6 +257,7 @@ export async function resolveDeckListPage(
               uri: r.uri,
               version: r.image_version,
               kind: r.kind,
+              motion: motionClipOf(r),
               takenAt: r.taken_at,
               day: r.day,
               state: states.get(r.photo_id) ?? 'unreviewed',
@@ -276,6 +284,7 @@ export async function resolveDeckListPage(
               id: action.photoId,
               uri: byId.get(action.photoId)?.uri ?? '',
               kind: byId.get(action.photoId)?.kind ?? 'photo',
+              motion: byId.get(action.photoId)?.motion ?? null,
               version: byId.get(action.photoId)?.imageVersion ?? 0,
               takenAt: byId.get(action.photoId)?.takenAt ?? action.queuedAt,
               day: byId.get(action.photoId)?.day ?? null,
@@ -327,6 +336,7 @@ export async function resolveDeckListPage(
         // The FEED discriminator is `kind` ('photo' row vs share event);
         // the media kind is media_kind.
         kind: r.media_kind,
+        motion: motionClipOf(r),
         takenAt: r.taken_at,
         day: r.day,
         state: r.state,
@@ -372,6 +382,7 @@ export async function resolveDeckListPage(
             id: r.id,
             uri: r.uri,
             kind: r.kind,
+            motion: r.motion,
             version: r.version,
             takenAt: r.takenAt,
             // The tri-state collapses for the deck row: an untracked
@@ -415,6 +426,7 @@ export async function resolveDeckListPage(
           uri: r.uri,
           version: r.image_version,
           kind: r.kind,
+          motion: motionClipOf(r),
           takenAt: r.taken_at,
           day: r.day,
           state: r.state,

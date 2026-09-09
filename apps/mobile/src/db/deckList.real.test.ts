@@ -93,6 +93,7 @@ describe('queue sources', () => {
       id: id('3'),
       uri: 'file:///dcim/3.jpg',
       kind: 'photo',
+      motion: null,
       // The image cache version (item 3): the seed writes no generation,
       // so it is the mtime the upsert carried.
       version: AT,

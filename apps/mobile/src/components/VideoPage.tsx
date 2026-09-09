@@ -46,6 +46,7 @@ export function VideoPage({
   version,
   width,
   posterPx,
+  near,
   active,
   mode,
   immersive,
@@ -59,6 +60,10 @@ export function VideoPage({
   width: number;
   /** The poster's OS-thumbnail bucket (the stage's first-paint size). */
   posterPx: number;
+  /** This page is the current one or its neighbour (M26): only then
+   * does the player hold a source and the view mount — a far page is
+   * its poster alone. */
+  near: boolean;
   /** The pager has settled on this page. */
   active: boolean;
   mode: PlaybackMode;
@@ -71,11 +76,17 @@ export function VideoPage({
   const theme = useTheme();
   // The version rides the uri so an edited file is a new source to the
   // player (item 3's rule, same as expo-image).
-  const player = useVideoPlayer({ uri: versionedUri(uri, version) }, (p) => {
+  const source = versionedUri(uri, version);
+  const player = useVideoPlayer(near ? { uri: source } : null, (p) => {
     p.muted = true;
     p.loop = mode === 'loop';
     p.timeUpdateEventInterval = TIME_UPDATE_INTERVAL_S;
   });
+  // M26's bound: a far page releases its decoder (no source), a near one
+  // holds it — props only, the player object itself is stable.
+  useEffect(() => {
+    player.replace(near ? { uri: source } : null, true);
+  }, [player, near, source]);
   const { isPlaying } = useEvent(player, 'playingChange', { isPlaying: player.playing });
   const { muted } = useEvent(player, 'mutedChange', { muted: player.muted });
   const time = useEvent(player, 'timeUpdate', {
@@ -129,15 +140,17 @@ export function VideoPage({
         contentFit="contain"
         style={StyleSheet.absoluteFill}
       />
-      <VideoView
-        player={player}
-        style={StyleSheet.absoluteFill}
-        contentFit="contain"
-        nativeControls={immersive}
-        surfaceType={surfaceType}
-        fullscreenOptions={{ enable: false }}
-      />
-      {!immersive && (
+      {near && (
+        <VideoView
+          player={player}
+          style={StyleSheet.absoluteFill}
+          contentFit="contain"
+          nativeControls={immersive}
+          surfaceType={surfaceType}
+          fullscreenOptions={{ enable: false }}
+        />
+      )}
+      {!immersive && near && (
         <>
           {showPlayControl && (
             <Pressable

@@ -362,8 +362,62 @@ await step('home library totals line', null, async () => {
   // Round 4: the card states the corpus total; the scan line below the
   // CTA exists only WHILE a scan runs (or after one failed), so it is
   // not an unconditional assertion any more.
-  if (!findNode(home, /pictures? total/)) throw new Error('totals line missing');
+  if (!findNode(home, /items? total/)) throw new Error('totals line missing');
 });
+await step('playback off for the walk', null, async () => {
+  // A PLAYING video never lets the UI reach idle, and `uiautomator dump`
+  // writes nothing until it does — every deck assertion after a video
+  // page then reads an empty dump and times out (phase 5 finding,
+  // 2026-09-09: page 3 of 4 on screen, the dump still saying 1 of 4).
+  // The walk parks both Playback modes on Off through the same Settings
+  // rows a tester uses; a test device keeps the setting.
+  await tapText(/^Settings$/, 10000);
+  // A marker that exists ONLY on the Settings screen: Home's own header
+  // icon carries the desc "Settings", so waiting for that word would
+  // pass before the screen has changed.
+  await waitFor(/^Photo source$/, 15000, 'settings screen');
+  try {
+    // The Playback rows sit below the fold, and the two cards are taller
+    // than a phone screen holds at once — so each row is found on its
+    // own, scrolling in HALF screens (a full-screen fling overshoots the
+    // section between two dumps).
+    for (const label of [/^Videos$/, /^Motion photos$/]) {
+      let nodes = [];
+      for (let i = 0; i < 16; i += 1) {
+        nodes = dumpUi();
+        if (findNode(nodes, label)) break;
+        shell('input swipe 540 1500 540 900 300');
+        await new Promise((r) => setTimeout(r, 900));
+      }
+      let row = findNode(nodes, label);
+      if (!row) throw new Error(`Playback row ${label} not on screen`);
+      // The row's own Off chip: the nearest "Off" BELOW its title (the
+      // coverage goal has an Off chip of its own, higher up the page).
+      // A title that just entered the screen has its chips still below
+      // the fold — nudge a quarter screen and look again.
+      let off = null;
+      for (let i = 0; i < 4 && !off; i += 1) {
+        off = nodes
+          .filter((n) => n.text === 'Off' && n.y > row.y && n.y - row.y < 500)
+          .sort((a, b) => a.y - b.y)[0];
+        if (off) break;
+        shell('input swipe 540 1400 540 1000 300');
+        await new Promise((r) => setTimeout(r, 900));
+        nodes = dumpUi();
+        row = findNode(nodes, label) ?? row;
+      }
+      if (!off) throw new Error(`no Off chip under ${label}`);
+      tap(off);
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  } finally {
+    // Whatever happened, the walk continues from Home.
+    shell('input keyevent KEYCODE_BACK');
+    await waitForHome();
+    home = dumpUi();
+  }
+});
+
 await step('tab order Edit · Favourite · HOME · Organize · Share', null, async () => {
   // Poll: right after launch a dump can land before the bar lays out.
   const deadline = Date.now() + 20000;

@@ -128,13 +128,31 @@ export function SettingsScreen({ navigation }: Props) {
     video: 'once',
     motion: 'once',
   });
+  /** The last DURABLE value per kind (loaded or written) — the rollback
+   * anchor when a write fails — and a per-kind write generation so an
+   * in-flight focus read cannot overwrite a newer tap (the goal rows'
+   * pattern). */
+  const durablePlaybackRef = useRef<Record<PlaybackKind, PlaybackMode>>({
+    video: 'once',
+    motion: 'once',
+  });
+  const playbackWriteGen = useRef<Record<PlaybackKind, number>>({ video: 0, motion: 0 });
   const pickPlayback = useCallback(
     (kind: PlaybackKind, mode: PlaybackMode) => {
+      const gen = (playbackWriteGen.current[kind] += 1);
       setPlayback((prev) => ({ ...prev, [kind]: mode }));
-      void setSetting(db, PLAYBACK_KEYS[kind], serializePlaybackMode(mode)).catch((error) => {
-        console.warn('[settings] playback mode write failed:', String(error));
-        showToast('Could not save the playback setting');
-      });
+      void setSetting(db, PLAYBACK_KEYS[kind], serializePlaybackMode(mode)).then(
+        () => {
+          if (playbackWriteGen.current[kind] === gen) durablePlaybackRef.current[kind] = mode;
+        },
+        (error) => {
+          console.warn('[settings] playback mode write failed:', String(error));
+          if (playbackWriteGen.current[kind] !== gen) return; // a newer tap owns the row
+          const durable = durablePlaybackRef.current[kind];
+          setPlayback((prev) => ({ ...prev, [kind]: durable }));
+          showToast('Could not save the playback setting');
+        },
+      );
     },
     [db],
   );
@@ -326,7 +344,18 @@ export function SettingsScreen({ navigation }: Props) {
             setCoverage(durableCoverage);
           }
           setStrictness(parseStrictness(rawStrictness));
-          setPlayback({ video: parsePlaybackMode(rawVideo), motion: parsePlaybackMode(rawMotion) });
+          // Fenced like the goals: a tap since focus owns its row.
+          const loaded = {
+            video: parsePlaybackMode(rawVideo),
+            motion: parsePlaybackMode(rawMotion),
+          };
+          setPlayback((prev) => ({
+            video: playbackWriteGen.current.video === 0 ? loaded.video : prev.video,
+            motion: playbackWriteGen.current.motion === 0 ? loaded.motion : prev.motion,
+          }));
+          if (playbackWriteGen.current.video === 0) durablePlaybackRef.current.video = loaded.video;
+          if (playbackWriteGen.current.motion === 0)
+            durablePlaybackRef.current.motion = loaded.motion;
         }
         // Resolving sources needs MediaStore access; without permission
         // (or on failure) the row still navigates, just without a label.
@@ -667,7 +696,7 @@ export function SettingsScreen({ navigation }: Props) {
 
         <Text style={styles.sectionLabel}>Daily goal</Text>
         <Text style={styles.hint}>
-          A gentle target for photos reviewed per day — it drives the Home ring and streaks, and
+          A gentle target for items reviewed per day — it drives the Home ring and streaks, and
           never blocks anything.
         </Text>
         <View style={styles.chipRow}>
@@ -704,7 +733,7 @@ export function SettingsScreen({ navigation }: Props) {
         <Text style={styles.sectionLabel}>Keeping up</Text>
         <Text style={styles.hint}>
           A second, independent goal: leave nothing unreviewed from the last day or two — or aim for
-          the whole library. Photos without a capture date count only under “All time”.
+          the whole library. Items without a capture date count only under “All time”.
         </Text>
         <View style={styles.chipRow}>
           {COVERAGE_GOAL_CHOICES.map((value) => {

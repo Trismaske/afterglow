@@ -27,7 +27,10 @@ import type { MediaItem } from '@afterglow/core';
  * `recyclingKey`: expo-image keeps a recycled view's pixels when uri and
  * recyclingKey match, so a bumped cacheKey alone left the STAGE on the
  * pre-edit picture while the strip had moved on (S23, 2026-09-08). */
-type DeckItem = MediaItem & { version: number };
+/** A deck page's item: the core item plus its image version (item 3) and,
+ * for a motion photo, its clip (phase 5) — on the row, so the page mounts
+ * its overlay synchronously (MediaStage's no-mid-touch-mount rule). */
+type DeckItem = MediaItem & { version: number; motion: MotionClipRow | null };
 import type { RootStackParamList } from '../navigation';
 import { useReview, type RedecideTarget } from '../review/ReviewContext';
 import type { ReviewGroupRow, ReviewMemberRow } from '../db/store';
@@ -89,9 +92,9 @@ import { Animated as RNAnimated, BackHandler } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import {
   clearNotRelated,
-  getMotionClips,
   getNotRelatedCount,
   getSetting,
+  motionClipOf,
   type MotionClipRow,
 } from '../db/store';
 import { requestTargetedRescan } from '../scan/scanRunner';
@@ -862,6 +865,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     uri: m.uri,
     kind: m.kind,
     version: m.image_version,
+    motion: motionClipOf(m),
   });
   const aliveItems: DeckItem[] = useMemo(
     () => (group ? group.members.filter((m) => m.state === 'unreviewed').map(toItem) : []),
@@ -886,6 +890,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
         uri: r.uri,
         kind: r.kind,
         version: r.version,
+        motion: r.motion,
       })),
     [shownListRows],
   );
@@ -958,6 +963,9 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   pagerSettlingRef.current = pagerSettling;
   const holdingRef = useRef(holding);
   holdingRef.current = holding;
+  const focusedRef = useRef(isFocused);
+  focusedRef.current = isFocused;
+  const currentIndexRef = useRef(0);
 
   // Millisecond precision only where adjacent deck photos share a second
   // AND the timestamps carry sub-second data (m0.4).
@@ -977,10 +985,11 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   // so a Settings change applies on return; the motion clips of the
   // unit's items (one indexed read per unit); the pinch goes inert on a
   // video page (M6) — JS → shared value, the safe bridge direction.
-  const [playback, setPlayback] = useState<{ video: PlaybackMode; motion: PlaybackMode }>({
-    video: 'once',
-    motion: 'once',
-  });
+  // Null until the durable rows are READ: a page never autoplays on a
+  // guessed mode (a saved Off must hold through a slow or failed read).
+  const [playback, setPlayback] = useState<{ video: PlaybackMode; motion: PlaybackMode } | null>(
+    null,
+  );
   useEffect(() => {
     if (!isFocused) return;
     let cancelled = false;
@@ -993,35 +1002,18 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
           setPlayback({ video: parsePlaybackMode(video), motion: parsePlaybackMode(motion) });
         }
       },
-      () => {},
+      (error) => {
+        // No autoplay this visit; the play controls still work by hand.
+        console.warn('[deck] playback settings read failed — autoplay off:', String(error));
+      },
     );
     return () => {
       cancelled = true;
     };
   }, [db, isFocused]);
-  const [motionClips, setMotionClips] = useState<Map<string, MotionClipRow>>(() => new Map());
-  const motionClipsRef = useRef(motionClips);
-  motionClipsRef.current = motionClips;
-  useEffect(() => {
-    let cancelled = false;
-    const ids = deckItems.map((i) => i.id);
-    if (ids.length === 0) return;
-    void getMotionClips(db, ids).then(
-      (clips) => {
-        if (!cancelled) setMotionClips(clips);
-      },
-      (error) => console.warn('[deck] motion clips read failed:', String(error)),
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [db, deckItems]);
   const playbackRef = useRef(playback);
   playbackRef.current = playback;
-  useEffect(() => {
-    // M6: two fingers on a video page belong to the pager.
-    stage.pinchInert.value = current?.kind === 'video';
-  }, [stage, current?.kind]);
+
   const {
     scale,
     savedScale,
@@ -1821,12 +1813,22 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   );
 
   const renderPage = useCallback(
-    ({ item }: { item: DeckItem }) => {
+    ({ item, index }: { item: DeckItem; index: number }) => {
       // Phase 5: which page this item is — read from refs so the
       // callback stays stable; `extraData` below re-renders the pages
-      // when the current id, the modes, immersive, or the clips change.
+      // when the current id, the modes, immersive, focus, or the pager's
+      // settle change. A page is ACTIVE only while the deck is the
+      // visible screen (a pushed Compare must pause it), and a player
+      // exists only on the current page and its two neighbours (M26's
+      // bound, enforced here rather than trusted to FlatList's window).
+      const near = Math.abs(index - currentIndexRef.current) <= 1;
       const active =
-        item.id === currentIdRef.current && !pagerSettlingRef.current && !holdingRef.current;
+        near &&
+        item.id === currentIdRef.current &&
+        !pagerSettlingRef.current &&
+        !holdingRef.current &&
+        focusedRef.current;
+      const modes = playbackRef.current;
       if (item.kind === 'video') {
         return (
           <VideoPage
@@ -1836,15 +1838,15 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
             version={item.version}
             width={pageW}
             posterPx={STAGE_THUMB_PX}
+            near={near}
             active={active}
-            mode={playbackRef.current.video}
+            mode={modes?.video ?? 'off'}
             immersive={immersiveRef.current}
             surfaceType={VIDEO_SURFACE_TYPE}
             onPress={onPagePress}
           />
         );
       }
-      const clip = motionClipsRef.current.get(item.id);
       return (
         // Pressable, not a tap gesture: presses fire on the JS thread with
         // no worklets bridge (crash class above), and a horizontal drag
@@ -1869,14 +1871,15 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               if (item.id === currentIdRef.current) setDecodedTick((t) => t + 1);
             }}
           />
-          {clip !== undefined && (
-            // The motion photo's clip over its still (F25/G6) — always
-            // mounted with the page, props-only handoff.
+          {item.motion !== null && (
+            // The motion photo's clip over its still (F25/G6) — mounted
+            // WITH the page (the clip rides the row), props-only handoff.
             <MotionClipOverlay
               id={item.id}
-              clip={clip}
+              clip={item.motion}
+              near={near}
               active={active}
-              mode={playbackRef.current.motion}
+              mode={modes?.motion ?? 'off'}
               immersive={immersiveRef.current}
               surfaceType={VIDEO_SURFACE_TYPE}
               zoomScale={scale}
@@ -1990,6 +1993,12 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   // What the stage is SHOWING this render — the id whose page paint the
   // underlay waits for (render-time, so the swap frame reads the new id).
   currentIdRef.current = view?.current.id ?? null;
+  currentIndexRef.current = view?.cursor ?? 0;
+  // M6, armed IN THIS RENDER (not a passive effect, which would leave the
+  // first committed frame of a video page with the previous page's
+  // value — the one-paint-late guard class): two fingers on a video
+  // page belong to the pager. JS → shared value is the safe direction.
+  stage.pinchInert.value = view?.current.kind === 'video';
   if (view === null) {
     // Nothing to freeze — the session's very first deck is still
     // reading its rows. The outgoing-photo stage (or a blank breath on
@@ -2286,14 +2295,8 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               // at most three players alive — and the pages re-render
               // on the facts they read through refs.
               windowSize={3}
-              extraData={[
-                view.current.id,
-                playback,
-                immersive,
-                pagerSettling,
-                holding,
-                motionClips,
-              ]}
+              initialNumToRender={3}
+              extraData={[view.current.id, playback, immersive, pagerSettling, holding, isFocused]}
               onEndReached={view.listMode ? loadMoreList : undefined}
               onEndReachedThreshold={2}
             />

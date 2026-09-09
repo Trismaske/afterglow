@@ -29,7 +29,7 @@ import { VideoView, useVideoPlayer, type SurfaceType } from 'expo-video';
 import Animated, { useAnimatedStyle, type SharedValue } from 'react-native-reanimated';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { extractMotionClip } from '../../modules/media-store-actions';
-import { canonicalContentUri, rawIdOf } from '../lib/mediaIdentity';
+import { canonicalContentUri, rawIdOf, volumeOf } from '../lib/mediaIdentity';
 import { colors } from '../theme';
 import type { PlaybackMode } from '../lib/playbackPrefs';
 import type { MotionClipRow } from '../db/store';
@@ -39,6 +39,7 @@ const warnedIds = new Set<string>();
 export function MotionClipOverlay({
   id,
   clip,
+  near,
   active,
   mode,
   immersive,
@@ -47,6 +48,9 @@ export function MotionClipOverlay({
 }: {
   id: string;
   clip: MotionClipRow;
+  /** Current page or a neighbour (M26): only then is the clip extracted
+   * and the player sourced. */
+  near: boolean;
   active: boolean;
   mode: PlaybackMode;
   immersive: boolean;
@@ -54,7 +58,12 @@ export function MotionClipOverlay({
   /** The stage's zoom scale (1 = unzoomed) — read on the UI thread. */
   zoomScale: SharedValue<number>;
 }) {
-  const [source, setSource] = useState<string | null>(null);
+  // The resolved clip file, tagged with the identity it was extracted
+  // for: an in-place edit keeps this component (the page is keyed by id)
+  // and must never play the previous version's clip.
+  const [source, setSource] = useState<{ key: string; uri: string } | null>(null);
+  const clipKey = `${volumeOf(id)}-${rawIdOf(id)}-${clip.version}`;
+  const sourceUri = source !== null && source.key === clipKey ? source.uri : null;
   const player = useVideoPlayer(null, (p) => {
     p.muted = true;
     p.loop = mode === 'loop';
@@ -73,15 +82,18 @@ export function MotionClipOverlay({
   // Resolve the clip file once per id + version; swap the source in
   // place (props only).
   useEffect(() => {
+    if (!near) return;
     let cancelled = false;
+    // The cache name carries the VOLUME: raw ids and generations are
+    // allocated per volume, so primary and an SD card can share both.
     void extractMotionClip(
       canonicalContentUri(id, 'photo'),
       clip.offset,
       clip.length,
-      `${rawIdOf(id)}-${clip.version}`,
+      clipKey,
     ).then(
       (fileUri) => {
-        if (!cancelled) setSource(fileUri);
+        if (!cancelled) setSource({ key: clipKey, uri: fileUri });
       },
       (error) => {
         if (cancelled || warnedIds.has(id)) return;
@@ -92,16 +104,16 @@ export function MotionClipOverlay({
     return () => {
       cancelled = true;
     };
-  }, [id, clip.offset, clip.length, clip.version]);
+  }, [id, clip.offset, clip.length, clip.version, clipKey, near]);
   useEffect(() => {
-    if (source !== null) player.replace({ uri: source });
-  }, [player, source]);
+    player.replace(near && sourceUri !== null ? { uri: sourceUri } : null, true);
+  }, [player, sourceUri, near]);
   useEffect(() => {
     player.loop = mode === 'loop';
   }, [player, mode]);
 
   useEffect(() => {
-    if (active && source !== null) {
+    if (active && sourceUri !== null) {
       if (mode !== 'off') {
         setEnded(false);
         player.play();
@@ -111,7 +123,7 @@ export function MotionClipOverlay({
     player.pause();
     player.currentTime = 0;
     setEnded(false);
-  }, [player, active, mode, source]);
+  }, [player, active, mode, sourceUri]);
 
   // Visible only while the clip is playing (once → the still returns at
   // the end), and never while zoomed.
@@ -123,7 +135,7 @@ export function MotionClipOverlay({
     [playingVisible],
   );
   const showPlayControl =
-    !immersive && active && source !== null && mode === 'off' && !playingVisible;
+    !immersive && active && sourceUri !== null && mode === 'off' && !playingVisible;
 
   return (
     <>

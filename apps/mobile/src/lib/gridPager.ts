@@ -21,6 +21,7 @@
  */
 
 import type { StoredMediaKind } from './mediaIdentity';
+import { motionClipOf, type MotionClipRow } from '../db/store';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { fetchPhotoPageDesc, type LoadedPhoto } from './media';
 import { getRescuedPhotoPage, getStateRowsForAssets } from '../db/store';
@@ -53,6 +54,8 @@ export interface LibraryGridPhoto {
   uri: string;
   /** The media kind (m0.9 phase 4). */
   kind: StoredMediaKind;
+  /** A tracked motion photo's clip (phase 5); untracked rows have none. */
+  motion: MotionClipRow | null;
   /** The image cache version (item 3): the DB row's, else MediaStore's
    * own timestamp for an untracked photo. */
   version: number;
@@ -188,6 +191,7 @@ export function createLibraryGridStream(
               id: p.id,
               uri: p.uri,
               kind: p.kind,
+              motion: row ? motionClipOf(row) : null,
               version: row?.image_version ?? p.timestamp,
               takenAt: row?.taken_at ?? p.timestamp,
               day: row !== undefined ? row.day : p.undated ? null : undefined,

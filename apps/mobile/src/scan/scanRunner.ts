@@ -302,7 +302,22 @@ interface TimeRange {
  * Returns the ids enumerated, or null when a settings change superseded
  * the run mid-flight.
  */
+/** The pass's facts diagnostics are emitted on EVERY exit of the walk —
+ * a superseded or aborted pass has already committed windows whose
+ * marker is stamped, so a SEF tripwire seen there would otherwise be
+ * lost for good (the next pass skips the stamped row). */
 async function pageAndGroup(
+  db: SQLiteDatabase,
+  args: Parameters<typeof pageAndGroupWalk>[1],
+): ReturnType<typeof pageAndGroupWalk> {
+  try {
+    return await pageAndGroupWalk(db, args);
+  } finally {
+    reportFactsPassStats();
+  }
+}
+
+async function pageAndGroupWalk(
   db: SQLiteDatabase,
   args: {
     ranges: readonly TimeRange[];
@@ -496,7 +511,6 @@ async function pageAndGroup(
     console.log(`[scan] delta: ${fetched} undated changed photo(s) landed by direct fetch`);
   }
   await processUndatedBatch(undated.splice(0));
-  reportFactsPassStats();
   return stopped ? null : { seenIds, skipped, exifFailed };
 }
 

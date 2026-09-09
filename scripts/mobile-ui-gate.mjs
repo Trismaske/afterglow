@@ -97,6 +97,7 @@ function dumpUi() {
       text: attr('text'),
       desc: attr('content-desc'),
       enabled: attr('enabled') === 'true',
+      selected: attr('selected') === 'true',
       x: (Number(b[1]) + Number(b[3])) / 2,
       y: (Number(b[2]) + Number(b[4])) / 2,
       x1: Number(b[1]),
@@ -408,7 +409,21 @@ await step('playback off for the walk', null, async () => {
       }
       if (!off) throw new Error(`no Off chip under ${label}`);
       tap(off);
-      await new Promise((r) => setTimeout(r, 500));
+      // Prove the mode COMMITTED: the chip reports selected only after
+      // the optimistic state lands, and a failed write rolls it back —
+      // so a selected Off is the durable Off, and only then may the
+      // idle-dependent walk continue.
+      const deadline = Date.now() + 8000;
+      let committed = false;
+      while (Date.now() < deadline && !committed) {
+        await new Promise((r) => setTimeout(r, 400));
+        const now = dumpUi();
+        const again = findNode(now, label);
+        committed =
+          !!again &&
+          now.some((n) => n.text === 'Off' && n.selected && n.y > again.y && n.y - again.y < 500);
+      }
+      if (!committed) throw new Error(`Off did not commit under ${label}`);
     }
   } finally {
     // Whatever happened, the walk continues from Home.
@@ -604,11 +619,20 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
     await waitForHome();
     await tapText(/\d+ to review$/, 20000);
     await waitFor(/^Timeline$/, 20000, 'overview heading');
+    // The walk decides THREE photos in its unit (one cull, one keep, and
+    // the finish probe needs one still pending), so the unit must hold
+    // at least three — and it is looked for under the Timeline's
+    // Unreviewed filter, which lists exactly the units with pending
+    // photos, so a library with any is found and a library with none
+    // fails for the right reason.
+    await tapText(/^Unreviewed$/, 10000);
+    await new Promise((r) => setTimeout(r, 1200));
+    const WALK_NEEDS = 3;
     const bigCard = () => {
       const nodes = dumpUi();
       for (let i = 0; i < nodes.length; i += 1) {
         const pending = /^(\d+) pending$/.exec(nodes[i].text ?? '');
-        if (!pending || Number(pending[1]) < 2) continue;
+        if (!pending || Number(pending[1]) < WALK_NEEDS) continue;
         // A four-node window, not two: one extra node between title and
         // status (a future UnitCard tweak) must not break the lookup.
         const title = nodes
@@ -624,7 +648,10 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
       await new Promise((r) => setTimeout(r, 600));
       card = bigCard();
     }
-    if (!card) throw new Error('no unit with ≥ 2 pending photos in reach on the overview');
+    if (!card)
+      throw new Error(
+        `no unit with ≥ ${WALK_NEEDS} pending photos under Unreviewed — seed the target and re-run`,
+      );
     tap(card);
     await waitFor(/^Keep remaining/, 20000, 'deck');
     const { node } = await waitFor(/^\d+\/\d+$/, 20000, 'pager indicator');
@@ -1128,6 +1155,54 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
       await new Promise((r) => setTimeout(r, 700));
     }
   }
+  await step(
+    'a video or motion-photo page shows its play control (when the newest unit holds one)',
+    null,
+    async () => {
+      // Phase 5: with Playback parked on Off (the preflight), a video page
+      // is its poster plus a "Play" control and a motion photo its still
+      // plus "Play motion photo" — both visible to the dump. The newest
+      // unit is walked for up to eight pages; a library whose newest unit
+      // holds neither passes with a note (seed one to exercise this —
+      // docs/MOBILE_UI_GATE.md). Keep on the page proves the verdict
+      // path takes the kind.
+      await ensureForeground();
+      await waitForHome();
+      await tapText(/^Continue reviewing$/, 20000);
+      const indicator = await waitFor(/^\d+\/\d+$/, 20000, 'pager indicator');
+      const total = Number(indicator.node.text.split('/')[1]);
+      let found = null;
+      for (let page = 0; page < Math.min(total, 8) && !found; page += 1) {
+        const nodes = dumpUi();
+        found = findNode(nodes, /^Play$|^Play motion photo$/) ?? null;
+        if (found) break;
+        if (page + 1 < Math.min(total, 8)) {
+          swipeDeckLeft();
+          await new Promise((r) => setTimeout(r, 1200));
+        }
+      }
+      if (!found) {
+        console.log(
+          "   (no video or motion photo among the newest unit's first pages — control check skipped)",
+        );
+      } else {
+        const before = (await waitFor(/^\d+\/\d+$/, 5000, 'pager indicator')).node.text;
+        await tapText(/^Keep$/, 10000);
+        await new Promise((r) => setTimeout(r, 1500));
+        const after = dumpUi();
+        // Keep either advanced the pager or, on the last page, left the
+        // indicator alone with the verdict taken — the badge is not
+        // dumpable, so the advance is the assertion we can make.
+        const now = findNode(after, /^\d+\/\d+$/)?.text ?? null;
+        if (now === null) throw new Error('deck lost after Keep on a video/motion page');
+        if (now === before && Number(before.split('/')[0]) < total)
+          throw new Error(`Keep on a ${found.desc} page did not advance (${before} → ${now})`);
+      }
+      shell('input keyevent KEYCODE_BACK');
+      await waitForHome();
+    },
+  );
+
   await step('completing an edit updates its tab badge', null, async () => {
     // A FAILED dump reads as badge 0 — the absent-anchor default — and
     // the early return would then pass having asserted nothing. Only a

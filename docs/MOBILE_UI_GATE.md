@@ -86,7 +86,9 @@ Caveat in a failure: an all-black photo (pocket shot) inside the transition can 
   A dev-client build fails every step.
   The gate relaunches the app through the launcher intent, which a dev client answers with its "connect to a development server" screen rather than the app.
 - A photo corpus with unreviewed photos (the deck steps hard-fail without one).
-- Videos in the corpus are fine: the walk's `playback off` step parks both Playback modes on Off first, because a playing video keeps the UI from idling and `uiautomator dump` then writes nothing (m0.9 phase 5).
+- Videos in the corpus are fine: the walk's `playback off` step parks both Playback modes on Off first (and waits for the chips to report selected), because a playing video keeps the UI from idling and `uiautomator dump` then writes nothing (m0.9 phase 5).
+- The deck walk needs a unit with at least THREE pending photos under the Timeline's Unreviewed filter (one cull, one keep, one left for the finish probe); with fewer it fails with "seed the target and re-run" — push a few JPEGs into the camera folder and let the delta land them.
+- To exercise the video / motion-photo step, the phone's NEWEST unit must hold a video or a motion photo within its first eight pages: shoot one, or push a short `.mp4` and a motion photo (a Samsung or Pixel camera JPEG with the Motion Photo XMP) into DCIM/Camera; without one the step passes with a note.
   Physical test phones qualify as-is.
 - A **fresh app state** (`adb shell pm clear`, re-grant permission, let the scan finish).
   The deck chips are toggles and the F21 badge step asserts exact deltas from the run's start, so a photo carrying queued actions from an earlier run flips chips OFF and inverts the arithmetic — repeat runs on used state fail the step against a healthy app (observed 2026-08-21).

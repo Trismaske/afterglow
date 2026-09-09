@@ -2065,6 +2065,13 @@ async function ensureContinuousRun(txn: SQLiteDatabase, at: number): Promise<num
  * protect verdicts, not membership), project the pass's IS_FAVORITE
  * observations (F20), then run the shared membership repairs.
  */
+/** SQL: the upsert leaves the row's image version unchanged — the
+ * generation the row will carry equals the stored one (a known
+ * generation survives a pass without one), or with no generation at all
+ * the mtimes agree. Correlated on `excluded` and `photos`. */
+const sameVersionClause = `(COALESCE(excluded.file_generation, photos.file_generation) IS photos.file_generation
+  AND (photos.file_generation IS NOT NULL OR excluded.file_mtime = photos.file_mtime))`;
+
 export async function writeContinuousGroups(
   db: SQLiteDatabase,
   write: ContinuousWindowWrite,
@@ -2136,13 +2143,20 @@ export async function writeContinuousGroups(
              THEN excluded.duration_ms ELSE COALESCE(excluded.duration_ms, photos.duration_ms) END,
            -- The per-file read's fields move TOGETHER with its marker:
            -- a completed read this pass lands all four; no read this
-           -- pass keeps all four (the D15 rule).
+           -- pass keeps them ONLY while the content version is unchanged
+           -- (the D15 rule) — a version that advanced without a read
+           -- (the read failed) clears the byte range, because the old
+           -- range on new bytes is not a clip, it is arbitrary trailing
+           -- bytes; the stale marker keeps the retry.
            motion_video_offset = CASE WHEN excluded.facts_checked_version IS NOT NULL
-             THEN excluded.motion_video_offset ELSE photos.motion_video_offset END,
+             THEN excluded.motion_video_offset
+             WHEN ${sameVersionClause} THEN photos.motion_video_offset ELSE NULL END,
            motion_video_length = CASE WHEN excluded.facts_checked_version IS NOT NULL
-             THEN excluded.motion_video_length ELSE photos.motion_video_length END,
+             THEN excluded.motion_video_length
+             WHEN ${sameVersionClause} THEN photos.motion_video_length ELSE NULL END,
            motion_presentation_us = CASE WHEN excluded.facts_checked_version IS NOT NULL
-             THEN excluded.motion_presentation_us ELSE photos.motion_presentation_us END,
+             THEN excluded.motion_presentation_us
+             WHEN ${sameVersionClause} THEN photos.motion_presentation_us ELSE NULL END,
            facts_checked_version =
              COALESCE(excluded.facts_checked_version, photos.facts_checked_version),
            -- A scanned photo IS present, whatever marked it absent —

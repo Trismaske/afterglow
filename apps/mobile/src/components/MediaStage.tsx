@@ -179,7 +179,15 @@ export function useMediaStage() {
     // GestureStateManager.activate is a 'worklet' (v3), so no bridge
     // crossing happens here.
     onTouchesDown: (event) => {
-      if (overlayOwnsStream.value || pinchInert.value) return;
+      if (overlayOwnsStream.value) return;
+      if (pinchInert.value) {
+        // A video page (M6): FAIL the recognizer for this stream, so it
+        // can never self-activate past its span threshold and steal the
+        // pager's scroll — ignoring the callbacks alone would not stop
+        // RNGH's own activation.
+        if (stagePinchTag.value !== 0) GestureStateManager.fail(stagePinchTag.value);
+        return;
+      }
       if (event.allTouches.length >= 2 && stagePinchTag.value !== 0) {
         GestureStateManager.activate(stagePinchTag.value);
       }

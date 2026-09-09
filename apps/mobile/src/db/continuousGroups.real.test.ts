@@ -167,6 +167,36 @@ describe('writeContinuousGroups', () => {
       facts_checked_version: 700,
     });
 
+    // Pass 2b: the version ADVANCES (an edit) but the read did not
+    // complete this pass — the old byte range must not be exposed on the
+    // new bytes: cleared, marker stale (the retry).
+    await writeContinuousGroups(
+      db,
+      {
+        photos: [
+          {
+            ...motion,
+            fileGeneration: 701,
+            motionVideoOffset: undefined,
+            motionVideoLength: undefined,
+            motionPresentationUs: undefined,
+            factsCheckedVersion: undefined,
+          },
+        ],
+        groups: [],
+        singles: [id('m')],
+      },
+      AT + 1,
+    );
+    rows = await read();
+    expect(rows[0]).toMatchObject({
+      motion_video_offset: null,
+      motion_video_length: null,
+      motion_presentation_us: null,
+      facts_checked_version: 700,
+      image_version: 701,
+    });
+
     // Pass 3: an edit stripped the trailer (new generation), and the read
     // COMPLETED with no motion — all four move together to the new
     // verdict at the new version.

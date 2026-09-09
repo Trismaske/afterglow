@@ -814,6 +814,8 @@ export function SettingsScreen({ navigation }: Props) {
                   <Pressable
                     key={option.id}
                     onPress={() => pickPlayback(row.kind, option.id)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
                     style={[
                       styles.chip,
                       active && { backgroundColor: theme.accent, borderColor: theme.accent },

@@ -62,6 +62,14 @@ import {
   type StrictnessStep,
 } from '../lib/groupingPrefs';
 import {
+  PLAYBACK_KEYS,
+  PLAYBACK_MODES,
+  parsePlaybackMode,
+  serializePlaybackMode,
+  type PlaybackKind,
+  type PlaybackMode,
+} from '../lib/playbackPrefs';
+import {
   getScanStatus,
   requestRescan,
   SCAN_VERIFIED_AT_KEY,
@@ -115,6 +123,21 @@ export function SettingsScreen({ navigation }: Props) {
   const [goal, setGoal] = useState<number | null>(null);
   const [coverage, setCoverage] = useState<CoverageGoal | null>(null);
   const [strictness, setStrictness] = useState<StrictnessStep | null>(null);
+  /** Phase 5 (M5): the two per-kind playback modes, Once by default. */
+  const [playback, setPlayback] = useState<Record<PlaybackKind, PlaybackMode>>({
+    video: 'once',
+    motion: 'once',
+  });
+  const pickPlayback = useCallback(
+    (kind: PlaybackKind, mode: PlaybackMode) => {
+      setPlayback((prev) => ({ ...prev, [kind]: mode }));
+      void setSetting(db, PLAYBACK_KEYS[kind], serializePlaybackMode(mode)).catch((error) => {
+        console.warn('[settings] playback mode write failed:', String(error));
+        showToast('Could not save the playback setting');
+      });
+    },
+    [db],
+  );
   const [applying, setApplying] = useState(false);
   const applyingRef = useRef(false);
   const [customGoalOpen, setCustomGoalOpen] = useState(false);
@@ -280,10 +303,12 @@ export function SettingsScreen({ navigation }: Props) {
     useCallback(() => {
       let cancelled = false;
       (async () => {
-        const [rawGoal, rawCoverage, rawStrictness] = await Promise.all([
+        const [rawGoal, rawCoverage, rawStrictness, rawVideo, rawMotion] = await Promise.all([
           getSetting(db, DAILY_GOAL_KEY),
           getSetting(db, COVERAGE_GOAL_KEY),
           getSetting(db, GROUPING_STRICTNESS_KEY),
+          getSetting(db, PLAYBACK_KEYS.video),
+          getSetting(db, PLAYBACK_KEYS.motion),
         ]);
         if (!cancelled) {
           // FENCED against user writes (codex r9): a selection made while
@@ -301,6 +326,7 @@ export function SettingsScreen({ navigation }: Props) {
             setCoverage(durableCoverage);
           }
           setStrictness(parseStrictness(rawStrictness));
+          setPlayback({ video: parsePlaybackMode(rawVideo), motion: parsePlaybackMode(rawMotion) });
         }
         // Resolving sources needs MediaStore access; without permission
         // (or on failure) the row still navigates, just without a label.
@@ -724,6 +750,52 @@ export function SettingsScreen({ navigation }: Props) {
             );
           })}
         </View>
+
+        <Text style={styles.sectionLabel}>Playback</Text>
+        <Text style={styles.hint}>
+          How videos and motion photos play when you land on them. They start muted; the speaker on
+          the stage unmutes the one you are looking at.
+        </Text>
+        {(
+          [
+            {
+              kind: 'video' as const,
+              title: 'Videos',
+              subtext:
+                'Once plays a video through and rests on its last frame. Loop keeps it going. Off shows the first frame with a play button.',
+            },
+            {
+              kind: 'motion' as const,
+              title: 'Motion photos',
+              subtext:
+                'The short clip inside a motion photo. Once plays it and returns to the photo. Loop keeps it moving. Off shows the photo with a play button.',
+            },
+          ] as const
+        ).map((row) => (
+          <View key={row.kind} style={styles.card}>
+            <Text style={styles.rowTitle}>{row.title}</Text>
+            <Text style={styles.explainer}>{row.subtext}</Text>
+            <View style={styles.chipRow}>
+              {PLAYBACK_MODES.map((option) => {
+                const active = playback[row.kind] === option.id;
+                return (
+                  <Pressable
+                    key={option.id}
+                    onPress={() => pickPlayback(row.kind, option.id)}
+                    style={[
+                      styles.chip,
+                      active && { backgroundColor: theme.accent, borderColor: theme.accent },
+                    ]}
+                  >
+                    <Text style={[styles.chipText, active && { color: theme.onAccent }]}>
+                      {option.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        ))}
 
         <Text style={styles.sectionLabel}>Appearance</Text>
         <View style={styles.card}>

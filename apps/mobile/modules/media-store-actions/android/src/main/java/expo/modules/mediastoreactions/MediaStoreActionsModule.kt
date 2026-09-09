@@ -58,6 +58,10 @@ class MediaStoreActionsModule : Module() {
     Class(RegionBitmapRef::class)
 
     OnCreate {
+      // Run-scoped motion clips (phase 5): swept on every process start.
+      appContext.reactContext?.let { context ->
+        java.io.File(context.cacheDir, "motion").deleteRecursively()
+      }
       val filter = IntentFilter().apply {
         addAction(Intent.ACTION_MEDIA_MOUNTED)
         addAction(Intent.ACTION_MEDIA_UNMOUNTED)
@@ -567,6 +571,50 @@ class MediaStoreActionsModule : Module() {
      * caller must not stamp its once-per-content marker. `elapsedMs`
      * feeds the `[perf] media facts` aggregate.
      */
+    /**
+     * The motion clip as a playable file (m0.9 phase 5): the embedded
+     * MP4 is the last `length` bytes of the photo at `offset`
+     * (MediaFacts.kt), and expo-video plays files, not byte ranges — so
+     * the clip is COPIED once per (id, version) into the app's cache dir
+     * under `motion/` and its file:// uri returned. RUN-SCOPED under
+     * cache policy: the directory is swept at module creation (every
+     * process start), so extracted clips never outlive the run and the
+     * OS may reclaim the cache dir at any time. Idempotent: an existing
+     * file of the expected length is returned without re-reading.
+     */
+    AsyncFunction("extractMotionClip") Coroutine { uri: Uri, offset: Double, length: Double, name: String ->
+      withContext(Dispatchers.IO) {
+        val context = appContext.reactContext
+          ?: throw IllegalStateException("Android context unavailable")
+        val dir = java.io.File(context.cacheDir, "motion").apply { mkdirs() }
+        val safeName = name.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val out = java.io.File(dir, "$safeName.mp4")
+        val len = length.toLong()
+        if (out.isFile && out.length() == len) return@withContext "file://${out.absolutePath}"
+        val pfd = context.contentResolver.openFileDescriptor(uri, "r")
+          ?: throw IllegalStateException("openFileDescriptor returned null")
+        pfd.use { descriptor ->
+          java.io.FileInputStream(descriptor.fileDescriptor).channel.use { input ->
+            java.io.FileOutputStream(out).channel.use { output ->
+              var position = offset.toLong()
+              var remaining = len
+              while (remaining > 0) {
+                val moved = input.transferTo(position, remaining, output)
+                if (moved <= 0) throw IllegalStateException("short read at $position of $uri")
+                position += moved
+                remaining -= moved
+              }
+            }
+          }
+        }
+        if (out.length() != len) {
+          out.delete()
+          throw IllegalStateException("extracted ${out.length()} of $len bytes")
+        }
+        "file://${out.absolutePath}"
+      }
+    }
+
     AsyncFunction("readMediaFacts") Coroutine { requests: List<MediaFactsRequest> ->
       withContext(Dispatchers.IO) {
         val context = appContext.reactContext

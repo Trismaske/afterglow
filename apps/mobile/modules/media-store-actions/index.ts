@@ -64,6 +64,7 @@ interface NativeApi {
   loadMediaById(volume: string, rawId: string): Promise<NativeMediaRow | null>;
   queryMediaFacts(volume: string, rawIds: string[]): Promise<NativeMediaRow[]>;
   readMediaFacts(requests: MediaFactsRequest[]): Promise<MediaFactsResult[]>;
+  extractMotionClip(uri: string, offset: number, length: number, name: string): Promise<string>;
   listMountedVolumes(): Promise<string[]>;
   openRegionDecoder(uri: string): Promise<RegionDecoderInfo>;
   decodeRegion(
@@ -397,6 +398,20 @@ export interface MediaFactsResult {
    * the XMP declares none — an unrecognised container, read as a still. */
   sefMotionWithoutXmp?: boolean;
   elapsedMs: number;
+}
+
+/** The motion clip as a playable file:// uri (phase 5), copied once per
+ * (id, version) into the run-scoped `motion/` cache dir — see the
+ * module's `extractMotionClip`. Throws when the module is absent or the
+ * copy fails short; the caller shows the still and logs once. */
+export async function extractMotionClip(
+  contentUri: string,
+  offset: number,
+  length: number,
+  name: string,
+): Promise<string> {
+  if (!available()) throw new Error('motion clip extraction unavailable');
+  return native!.extractMotionClip(contentUris([contentUri])[0], offset, length, name);
 }
 
 /** Motion detection plus the measurement rescue, one open per file

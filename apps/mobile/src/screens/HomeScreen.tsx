@@ -938,9 +938,7 @@ export function HomeScreen({ navigation }: Props) {
                       Null (either source) drops the line rather than
                       showing a wrong total. */}
                   {libraryTotal !== null && (
-                    <Text style={styles.cardText}>
-                      {`${plural(libraryTotal, 'picture')} total`}
-                    </Text>
+                    <Text style={styles.cardText}>{`${plural(libraryTotal, 'item')} total`}</Text>
                   )}
                   {/* m0.8.3 §5 (D5): unmounted ≠ deleted, named with its
                       count. One line per absent volume; the copy carries

@@ -36,6 +36,10 @@ import { colors, touch, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded, plural } from '../lib/format';
 import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { OsThumbnail } from '../components/OsThumbnail';
+import { VideoPage } from '../components/VideoPage';
+import { MotionClipOverlay } from '../components/MotionClipOverlay';
+import { PLAYBACK_KEYS, parsePlaybackMode, type PlaybackMode } from '../lib/playbackPrefs';
+import type { SurfaceType } from 'expo-video';
 import { thumbBucketPx } from '../lib/thumbnailSize';
 import { imageCacheKey, versionedUri } from '../lib/imageKeys';
 import { checkMediaPresence } from '../lib/media';
@@ -83,7 +87,13 @@ import { resolveSources } from '../lib/sourceCatalog';
 import { useExternalRefresh } from '../components/useExternalRefresh';
 import { Animated as RNAnimated, BackHandler } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { clearNotRelated, getNotRelatedCount } from '../db/store';
+import {
+  clearNotRelated,
+  getMotionClips,
+  getNotRelatedCount,
+  getSetting,
+  type MotionClipRow,
+} from '../db/store';
 import { requestTargetedRescan } from '../scan/scanRunner';
 import { withUserWritePriority } from '../lib/writePriority';
 import { DeckDetailsOverlay } from '../components/DeckDetailsOverlay';
@@ -125,6 +135,11 @@ const THUMB = 52;
  * full decode as soon as it lands. */
 const STRIP_THUMB_PX = thumbBucketPx(THUMB, PixelRatio.get());
 const STAGE_THUMB_PX = 512;
+/** The player's Android surface (M27): fixed per build for the
+ * measurement — SurfaceView vs TextureView on both phones over ≥ 1 min
+ * of playback. The stage's always-mounted overlays are the documented
+ * SurfaceView overlap case, so the measurement starts here. */
+const VIDEO_SURFACE_TYPE: SurfaceType = 'textureView';
 const PICKER_THUMB_PX = thumbBucketPx(72, PixelRatio.get());
 const THUMB_GAP = 6;
 const THUMB_INSET = 2;
@@ -939,6 +954,10 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     return () => clearTimeout(timer);
   }, [holding, settledUnit, unitKey]);
   const pagerSettling = !holding && settledUnit !== unitKey;
+  const pagerSettlingRef = useRef(pagerSettling);
+  pagerSettlingRef.current = pagerSettling;
+  const holdingRef = useRef(holding);
+  holdingRef.current = holding;
 
   // Millisecond precision only where adjacent deck photos share a second
   // AND the timestamps carry sub-second data (m0.4).
@@ -954,6 +973,55 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   // inline-callback rule, and the detector rationale live in its
   // header and still bind everything below.
   const stage = useMediaStage();
+  // Phase 5 playback: the two per-kind modes (M5), read on every focus
+  // so a Settings change applies on return; the motion clips of the
+  // unit's items (one indexed read per unit); the pinch goes inert on a
+  // video page (M6) — JS → shared value, the safe bridge direction.
+  const [playback, setPlayback] = useState<{ video: PlaybackMode; motion: PlaybackMode }>({
+    video: 'once',
+    motion: 'once',
+  });
+  useEffect(() => {
+    if (!isFocused) return;
+    let cancelled = false;
+    void Promise.all([
+      getSetting(db, PLAYBACK_KEYS.video),
+      getSetting(db, PLAYBACK_KEYS.motion),
+    ]).then(
+      ([video, motion]) => {
+        if (!cancelled) {
+          setPlayback({ video: parsePlaybackMode(video), motion: parsePlaybackMode(motion) });
+        }
+      },
+      () => {},
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [db, isFocused]);
+  const [motionClips, setMotionClips] = useState<Map<string, MotionClipRow>>(() => new Map());
+  const motionClipsRef = useRef(motionClips);
+  motionClipsRef.current = motionClips;
+  useEffect(() => {
+    let cancelled = false;
+    const ids = deckItems.map((i) => i.id);
+    if (ids.length === 0) return;
+    void getMotionClips(db, ids).then(
+      (clips) => {
+        if (!cancelled) setMotionClips(clips);
+      },
+      (error) => console.warn('[deck] motion clips read failed:', String(error)),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [db, deckItems]);
+  const playbackRef = useRef(playback);
+  playbackRef.current = playback;
+  useEffect(() => {
+    // M6: two fingers on a video page belong to the pager.
+    stage.pinchInert.value = current?.kind === 'video';
+  }, [stage, current?.kind]);
   const {
     scale,
     savedScale,
@@ -1753,33 +1821,71 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   );
 
   const renderPage = useCallback(
-    ({ item }: { item: DeckItem }) => (
-      // Pressable, not a tap gesture: presses fire on the JS thread with
-      // no worklets bridge (crash class above), and a horizontal drag
-      // hands over to the pager's scroll exactly like any list row.
-      <Pressable style={{ width: pageW, height: '100%' }} onPress={onPagePress}>
-        <Image
-          // The version-carrying key (item 3): an in-place edit lands
-          // fresh pixels on the next scan, never Glide's pre-edit entry.
-          source={{ uri: versionedUri(item.uri, item.version) }}
-          style={StyleSheet.absoluteFill}
-          contentFit="contain"
-          // The version is part of the recycling identity (DeckItem's
-          // doc): an edited photo is a NEW image to expo-image.
-          recyclingKey={imageCacheKey(item.id, item.version)}
-          transition={40}
-          onLoad={() => {
-            // This page has painted — the decode underlay may drop for
-            // it. Re-render only when it is the CURRENT page: that is
-            // the one the underlay is covering.
-            if (loadedPagesRef.current.has(item.id)) return;
-            loadedPagesRef.current.add(item.id);
-            if (item.id === currentIdRef.current) setDecodedTick((t) => t + 1);
-          }}
-        />
-      </Pressable>
-    ),
-    [pageW, onPagePress],
+    ({ item }: { item: DeckItem }) => {
+      // Phase 5: which page this item is — read from refs so the
+      // callback stays stable; `extraData` below re-renders the pages
+      // when the current id, the modes, immersive, or the clips change.
+      const active =
+        item.id === currentIdRef.current && !pagerSettlingRef.current && !holdingRef.current;
+      if (item.kind === 'video') {
+        return (
+          <VideoPage
+            id={item.id}
+            kind="video"
+            uri={item.uri}
+            version={item.version}
+            width={pageW}
+            posterPx={STAGE_THUMB_PX}
+            active={active}
+            mode={playbackRef.current.video}
+            immersive={immersiveRef.current}
+            surfaceType={VIDEO_SURFACE_TYPE}
+            onPress={onPagePress}
+          />
+        );
+      }
+      const clip = motionClipsRef.current.get(item.id);
+      return (
+        // Pressable, not a tap gesture: presses fire on the JS thread with
+        // no worklets bridge (crash class above), and a horizontal drag
+        // hands over to the pager's scroll exactly like any list row.
+        <Pressable style={{ width: pageW, height: '100%' }} onPress={onPagePress}>
+          <Image
+            // The version-carrying key (item 3): an in-place edit lands
+            // fresh pixels on the next scan, never Glide's pre-edit entry.
+            source={{ uri: versionedUri(item.uri, item.version) }}
+            style={StyleSheet.absoluteFill}
+            contentFit="contain"
+            // The version is part of the recycling identity (DeckItem's
+            // doc): an edited photo is a NEW image to expo-image.
+            recyclingKey={imageCacheKey(item.id, item.version)}
+            transition={40}
+            onLoad={() => {
+              // This page has painted — the decode underlay may drop for
+              // it. Re-render only when it is the CURRENT page: that is
+              // the one the underlay is covering.
+              if (loadedPagesRef.current.has(item.id)) return;
+              loadedPagesRef.current.add(item.id);
+              if (item.id === currentIdRef.current) setDecodedTick((t) => t + 1);
+            }}
+          />
+          {clip !== undefined && (
+            // The motion photo's clip over its still (F25/G6) — always
+            // mounted with the page, props-only handoff.
+            <MotionClipOverlay
+              id={item.id}
+              clip={clip}
+              active={active}
+              mode={playbackRef.current.motion}
+              immersive={immersiveRef.current}
+              surfaceType={VIDEO_SURFACE_TYPE}
+              zoomScale={scale}
+            />
+          )}
+        </Pressable>
+      );
+    },
+    [pageW, onPagePress, scale],
   );
 
   // F22 (m0.8.8): the region-zoom pipeline for the current stage photo —
@@ -1788,11 +1894,14 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   // down exactly when its controls go dead. Wiring (JS-side polling
   // callbacks + the resolution-driven zoom ceiling) is shared:
   // components/useStageZoom.ts.
+  // Phase 5: a VIDEO page has no region pipeline (the decoder cannot
+  // open it; its pinch is inert anyway) — the hook gets no photo.
+  const zoomable = isFocused && current !== null && current.kind === 'photo';
   const regionZoom = useStageRegionZoom(
     { stageW, stageH, scale, tx, ty },
-    isFocused ? (current?.id ?? null) : null,
-    isFocused ? (current?.uri ?? null) : null,
-    isFocused && current !== null,
+    zoomable ? current.id : null,
+    zoomable ? current.uri : null,
+    zoomable,
   );
   // D7: retained bases die with the unit (the new current stays warm).
   useEffect(() => {
@@ -2173,6 +2282,18 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 pagerAnimatingRef.current = false;
               }}
               onMomentumScrollEnd={onMomentumEnd}
+              // Phase 5 (M26): one page each side of the current one —
+              // at most three players alive — and the pages re-render
+              // on the facts they read through refs.
+              windowSize={3}
+              extraData={[
+                view.current.id,
+                playback,
+                immersive,
+                pagerSettling,
+                holding,
+                motionClips,
+              ]}
               onEndReached={view.listMode ? loadMoreList : undefined}
               onEndReachedThreshold={2}
             />

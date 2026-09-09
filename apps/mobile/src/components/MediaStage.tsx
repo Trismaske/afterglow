@@ -122,6 +122,12 @@ export function useMediaStage() {
    * pinch (which can receive the same stream through the shared
    * interceptor) stands down completely while this is set. */
   const overlayOwnsStream = useSharedValue(false);
+  /** PINCH INERT (m0.9 phase 5, M6): the host sets this (JS → shared
+   * value, the safe bridge direction) while the current page is a
+   * VIDEO — the stage pinch then never claims the stream, so two
+   * fingers on a video page belong to the pager like one finger does.
+   * Motion photos keep the pinch: their still is the zoom target. */
+  const pinchInert = useSharedValue(false);
 
   const resetZoom = useCallback(() => {
     scale.value = 1;
@@ -154,7 +160,7 @@ export function useMediaStage() {
       // acting on it would fight the overlay over the one tracker
       // (S10e video 13: single-finger pans froze into identity frames
       // against the stage's per-frame re-anchor).
-      if (overlayOwnsStream.value) return;
+      if (overlayOwnsStream.value || pinchInert.value) return;
       cancelAnimation(scale);
       cancelAnimation(tx);
       cancelAnimation(ty);
@@ -173,7 +179,7 @@ export function useMediaStage() {
     // GestureStateManager.activate is a 'worklet' (v3), so no bridge
     // crossing happens here.
     onTouchesDown: (event) => {
-      if (overlayOwnsStream.value) return;
+      if (overlayOwnsStream.value || pinchInert.value) return;
       if (event.allTouches.length >= 2 && stagePinchTag.value !== 0) {
         GestureStateManager.activate(stagePinchTag.value);
       }
@@ -184,7 +190,7 @@ export function useMediaStage() {
       zoomTracking.value = { ...ZOOM_TRACKING_START, zoomed: zoomTracking.value.zoomed };
     },
     onTouchesMove: (event) => {
-      if (overlayOwnsStream.value) return;
+      if (overlayOwnsStream.value || pinchInert.value) return;
       const step = zoomTouchFrame(
         zoomTracking.value,
         event.allTouches,
@@ -419,6 +425,7 @@ export function useMediaStage() {
     imageAspect,
     zoomTracking,
     overlayOwnsStream,
+    pinchInert,
     resetZoom,
     stageGesture,
     zoomedGesture,

@@ -3768,6 +3768,51 @@ export async function getTakenAtForAssets(
   return result;
 }
 
+/** A motion photo's clip, per id (m0.9 phase 5): the byte range the
+ * per-file read found (`motion_video_offset` + `motion_video_length`),
+ * the presentation timestamp, and the image version the clip cache is
+ * keyed by. Rows with no clip are absent from the map. */
+export interface MotionClipRow {
+  offset: number;
+  length: number;
+  presentationUs: number | null;
+  version: number;
+}
+
+export async function getMotionClips(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+): Promise<Map<string, MotionClipRow>> {
+  const out = new Map<string, MotionClipRow>();
+  for (const batch of chunk(assetIds, IN_CHUNK)) {
+    if (batch.length === 0) continue;
+    const rows = await db.getAllAsync<{
+      asset_id: string;
+      motion_video_offset: number;
+      motion_video_length: number;
+      motion_presentation_us: number | null;
+      image_version: number;
+    }>(
+      `SELECT asset_id, motion_video_offset, motion_video_length, motion_presentation_us,
+              COALESCE(file_generation, file_mtime) AS image_version
+         FROM photos
+        WHERE motion_video_offset IS NOT NULL AND motion_video_length IS NOT NULL
+          AND asset_id IN (${batch.map(() => '?').join(',')})`,
+      ...batch,
+    );
+    for (const row of rows) {
+      out.set(row.asset_id, {
+        offset: Number(row.motion_video_offset),
+        length: Number(row.motion_video_length),
+        presentationUs:
+          row.motion_presentation_us === null ? null : Number(row.motion_presentation_us),
+        version: Number(row.image_version),
+      });
+    }
+  }
+  return out;
+}
+
 /** The bounded per-file read's once-per-content marker per id (phase 4,
  * item 6): the image version at which motion detection + the
  * measurement rescue last COMPLETED, or null. The scan reads for rows

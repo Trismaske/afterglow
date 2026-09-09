@@ -482,3 +482,11 @@ adb -s emulator-5554 emu kill
 - Some security-sensitive dialogs intentionally require a real confirmation.
   This is expected.
   Record it in acceptance results.
+
+### Measuring playback (m0.9 phase 5, the M26/M27 protocol)
+
+Seed a run of three short clips with capture times a minute apart (`ffmpeg -f lavfi -i testsrc2=size=1280x720:rate=30 -t 20 … -metadata creation_time=<ISO>`, pushed into DCIM/Camera and scanned), set Settings › Playback › Videos to Loop, open the run and swipe to its MIDDLE page — that is the pager's three-page window, every player mounted.
+Then sample once per second for 90 s: `top -b -n 1 -p <pid>` (CPU, one core = 100), `dumpsys meminfo <pkg>` (TOTAL PSS), and afterwards `dumpsys gfxinfo <pkg>` (frames rendered, janky %) after a `dumpsys gfxinfo <pkg> reset` at the start.
+`dumpsys batterystats` reports no discharge on USB power; battery drain is a human line, five minutes of looped playback unplugged.
+Compare builds, never runs of different content: the surface type is fixed per build (`DeckScreen.tsx` `VIDEO_SURFACE_TYPE`).
+

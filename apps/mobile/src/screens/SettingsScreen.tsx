@@ -7,6 +7,7 @@
  * for suppressed confirmation dialogs, and the app version. Values
  * persist in the m0.3.1 settings table.
  */
+import { SegmentedControl } from '../components/SegmentedControl';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { plural } from '../lib/format';
 import {
@@ -784,52 +785,38 @@ export function SettingsScreen({ navigation }: Props) {
         </View>
 
         <Text style={styles.sectionLabel}>Playback</Text>
-        <Text style={styles.hint}>
-          How videos and motion photos play when you land on them. They start muted; the speaker on
-          the stage unmutes the one you are looking at.
-        </Text>
-        {(
-          [
-            {
-              kind: 'video' as const,
-              title: 'Videos',
-              subtext:
-                'Once plays a video through and rests on its last frame. Loop keeps it going. Off shows the first frame with a play button.',
-            },
-            {
-              kind: 'motion' as const,
-              title: 'Motion photos',
-              subtext:
-                'The short clip inside a motion photo. Once plays it and returns to the photo. Loop keeps it moving. Off shows the photo with a play button.',
-            },
-          ] as const
-        ).map((row) => (
-          <View key={row.kind} style={styles.card}>
-            <Text style={styles.rowTitle}>{row.title}</Text>
-            <Text style={styles.explainer}>{row.subtext}</Text>
-            <View style={styles.chipRow}>
-              {PLAYBACK_MODES.map((option) => {
-                const active = playback[row.kind] === option.id;
-                return (
-                  <Pressable
-                    key={option.id}
-                    onPress={() => pickPlayback(row.kind, option.id)}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: active }}
-                    style={[
-                      styles.chip,
-                      active && { backgroundColor: theme.accent, borderColor: theme.accent },
-                    ]}
-                  >
-                    <Text style={[styles.chipText, active && { color: theme.onAccent }]}>
-                      {option.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
+        <View style={styles.card}>
+          <Text style={styles.explainer}>
+            How videos and motion photos play when you land on them.
+          </Text>
+          <Text style={styles.explainer}>
+            {'\u2022'} Once — plays through, then rests: a video on its last frame, a motion photo
+            on its photo.{'\n'}
+            {'\u2022'} Loop — keeps playing until you swipe away.{'\n'}
+            {'\u2022'} Off — shows the first frame with a play button.
+          </Text>
+          <Text style={styles.explainer}>
+            Everything starts muted; the speaker on the stage unmutes what you are looking at.
+          </Text>
+          {(
+            [
+              { kind: 'video' as const, title: 'Videos' },
+              { kind: 'motion' as const, title: 'Motion photos' },
+            ] as const
+          ).map((row) => (
+            <View key={row.kind} style={styles.playbackRow}>
+              <Text style={styles.playbackRowTitle}>{row.title}</Text>
+              <View style={styles.playbackControl}>
+                <SegmentedControl
+                  options={PLAYBACK_MODES}
+                  value={playback[row.kind]}
+                  onChange={(mode) => pickPlayback(row.kind, mode)}
+                  accessibilityLabel={`${row.title} playback`}
+                />
+              </View>
             </View>
-          </View>
-        ))}
+          ))}
+        </View>
 
         <Text style={styles.sectionLabel}>Appearance</Text>
         <View style={styles.card}>
@@ -986,6 +973,9 @@ const styles = StyleSheet.create({
   dialogButton: { minHeight: touch.action, paddingHorizontal: 16, justifyContent: 'center' },
   dialogButtonText: { color: colors.textDim, fontSize: 15, fontWeight: '700' },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  playbackRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 10 },
+  playbackRowTitle: { color: colors.text, fontSize: 15, fontWeight: '700', width: 118 },
+  playbackControl: { flex: 1 },
   chip: {
     paddingHorizontal: 14,
     minHeight: 40,

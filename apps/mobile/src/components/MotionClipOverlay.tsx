@@ -31,16 +31,20 @@
  * is driven from the stage's zoom scale on the UI thread — no bridge
  * crossing — so a pinch reveals the JPEG under the playing clip at once,
  * and the clip simply continues invisibly until it ends.
+ *
+ * The lifecycle, the player view and its tap rule, and the chrome are
+ * the shared ones (usePlaybackPlayer, PlaybackLayer, PlaybackChrome) —
+ * identical to VideoPage by construction.
  */
 import React, { useEffect, useState } from 'react';
 import { StyleSheet } from 'react-native';
-import { useEvent } from 'expo';
-import { VideoView, useVideoPlayer, type SurfaceType } from 'expo-video';
+import type { SurfaceType } from 'expo-video';
 import Animated, { useAnimatedStyle, type SharedValue } from 'react-native-reanimated';
 import { extractMotionClip } from '../../modules/media-store-actions';
 import { canonicalContentUri, rawIdOf, volumeOf } from '../lib/mediaIdentity';
 import { PlaybackChrome } from './PlaybackChrome';
-import { TIME_UPDATE_INTERVAL_S } from './VideoPage';
+import { PlaybackLayer } from './PlaybackLayer';
+import { usePlaybackPlayer } from './usePlaybackPlayer';
 import type { PlaybackMode } from '../lib/playbackPrefs';
 import type { MotionClipRow } from '../db/store';
 
@@ -84,31 +88,9 @@ function MotionClipPlayer({
   // allocated per volume, so primary and an SD card can share both.
   const clipKey = `${volumeOf(id)}-${rawIdOf(id)}-${clip.version}`;
   const sourceUri = source !== null && source.key === clipKey ? source.uri : null;
-  const player = useVideoPlayer(null, (p) => {
-    p.muted = true;
-    p.loop = mode === 'loop';
-    p.timeUpdateEventInterval = TIME_UPDATE_INTERVAL_S;
-  });
-  const { isPlaying } = useEvent(player, 'playingChange', { isPlaying: player.playing });
-  const { muted } = useEvent(player, 'mutedChange', { muted: player.muted });
-  const time = useEvent(player, 'timeUpdate', {
-    currentTime: 0,
-    currentLiveTimestamp: null,
-    currentOffsetFromLive: null,
-    bufferedPosition: 0,
-  });
-  const [ended, setEnded] = useState(false);
-  useEffect(() => {
-    // A looping player emits playToEnd on every wrap — only a Once play
-    // has actually ended.
-    const sub = player.addListener('playToEnd', () => {
-      if (!player.loop) setEnded(true);
-    });
-    return () => sub.remove();
-  }, [player]);
 
-  // Resolve the clip file once per volume + id + version; swap the
-  // source in place (props only).
+  // Resolve the clip file once per volume + id + version; the shared
+  // lifecycle swaps it in place (props only).
   useEffect(() => {
     let cancelled = false;
     void extractMotionClip(
@@ -130,35 +112,13 @@ function MotionClipPlayer({
       cancelled = true;
     };
   }, [id, clip.offset, clip.length, clip.version, clipKey]);
-  useEffect(() => {
-    player.replace(sourceUri !== null ? { uri: sourceUri } : null, true);
-  }, [player, sourceUri]);
-  useEffect(() => {
-    player.loop = mode === 'loop';
-  }, [player, mode]);
 
-  // Active + a playing mode → play; a mode turned Off while active →
-  // pause; leaving → pause, rewind, re-mute (the speaker is per view).
-  useEffect(() => {
-    if (active && sourceUri !== null) {
-      if (mode === 'off') {
-        player.pause();
-        return;
-      }
-      setEnded(false);
-      player.play();
-      return;
-    }
-    player.pause();
-    player.currentTime = 0;
-    player.muted = true;
-    setEnded(false);
-  }, [player, active, mode, sourceUri]);
+  const playback = usePlaybackPlayer({ source: sourceUri, active, mode });
 
   // The clip layer shows while playing (once → the still returns at the
   // end) and, in the expanded stage, whenever the page is active so the
   // native transport has something to operate; never while zoomed.
-  const playingVisible = isPlaying && !ended;
+  const playingVisible = playback.isPlaying && !playback.ended;
   const layerVisible = playingVisible || (immersive && active && sourceUri !== null);
   // ONE opacity source: the zoom test runs on the UI thread, the visible
   // flag is captured as a dependency (JS → worklet closure, safe).
@@ -166,40 +126,23 @@ function MotionClipPlayer({
     () => ({ opacity: layerVisible && zoomScale.value <= 1.001 ? 1 : 0 }),
     [layerVisible],
   );
-  const duration = player.duration;
-  const progress = duration > 0 ? Math.min(1, time.currentTime / duration) : 0;
 
   return (
     <>
       <Animated.View
         style={[StyleSheet.absoluteFill, visibility]}
-        // The native transport owns taps in the expanded stage; on the
-        // deck stage the layer is inert under the page's own press.
-        pointerEvents={immersive && layerVisible ? 'auto' : 'none'}
+        // An invisible layer never takes a tap; a visible one follows the
+        // shared rule inside (inert on the deck stage, the transport in
+        // the expanded stage).
+        pointerEvents={layerVisible ? 'auto' : 'none'}
       >
-        <VideoView
-          player={player}
-          style={StyleSheet.absoluteFill}
-          contentFit="contain"
-          nativeControls={immersive}
-          surfaceType={surfaceType}
-          fullscreenOptions={{ enable: false }}
-        />
+        <PlaybackLayer player={playback.player} immersive={immersive} surfaceType={surfaceType} />
       </Animated.View>
       {!immersive && active && sourceUri !== null && (
         <PlaybackChrome
+          {...playback.chrome}
           showPlayControl={!playingVisible}
-          ended={ended}
-          muted={muted}
-          progress={progress}
           playLabel="Play motion photo"
-          onPlay={() => {
-            setEnded(false);
-            player.replay();
-          }}
-          onToggleMuted={() => {
-            player.muted = !player.muted;
-          }}
         />
       )}
     </>

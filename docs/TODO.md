@@ -125,6 +125,16 @@ Numbers change whenever an item closes, so **cross-references from code or other
    part two, triggered — an inventory of every OEM-observed dependency, classified documented contract / Mainline-module behaviour / OEM observation, walked on a non-Samsung device.
    Trigger for part two: the first non-Samsung tester, or a Pixel on the bench.
 
+12. **The immersive flip as a continuous animation** (Tristan, 2026-09-10 S23 pass).
+   The flip is a dip to black (P2-7: `LayoutAnimation` could not tween the pager's page content).
+   Wanted: the photo or video stays on screen throughout and scales between the framed stage and the edge-to-edge one as the chrome collapses or returns.
+   The design question is the mechanism: a shared-element style transform of the stage frame over the native header and status-bar reflows, or a Reanimated layout transition on the measured stage box, against the deck's virtual-detector and always-mounted-overlay constraints (MediaStage.tsx).
+   A playing clip must keep playing through it (the tree stays; only its box moves).
+
+13. **The segmented control on every single-choice Settings row** (Tristan, 2026-09-10).
+   The Playback rows use `components/SegmentedControl`; the daily goal, keeping-up and grouping rows still use loose chips for the same one-of-a-few choice.
+   A small sweep, waiting only on the type-scale pass above so the pill sizes land once; the chip styles and the goal rows' write fences are the parts to keep.
+
 ## Waiting for a trigger
 
 This section holds fixes whose shape is known but whose value is unproven, and questions whose answer needs evidence that does not exist yet.

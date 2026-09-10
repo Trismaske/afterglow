@@ -5,22 +5,20 @@
  * only while the page is NEAR (the current page or a neighbour — the
  * M26 bound, enforced here rather than trusted to FlatList's window).
  *
- * The playback lifecycle and the two chrome tiers are the SHARED ones
- * (usePlaybackPlayer, PlaybackLayer, PlaybackChrome) — a motion photo's
- * clip overlay uses the same three, so the kinds cannot drift apart. On
- * the deck stage this page wraps itself in the deck's press (single tap
- * → immersive, double tap → zoom) with the player layer inert beneath
- * it; in the expanded stage the layer owns every tap and this page
- * renders no press surface of its own. The chrome is exempt from the
- * eye (M21's "functional labels never hideable").
+ * The whole of playback — lifecycle, view, chrome, the tap rule — is
+ * the shared Playback component; a motion photo's overlay uses the same
+ * one, so the kinds cannot drift. This page is the deck's press surface
+ * in BOTH stages, and its press is a plain single tap (the deck's
+ * stage-tap rule, with no double-tap window: a video has no zoom, so
+ * the photo pages' double-tap hook must not run here — it would zoom
+ * the stage overlay over the playing view). The same tree across the
+ * immersive flip is what keeps a playing video playing through it.
  */
 import React from 'react';
-import { Pressable, StyleSheet, View, type GestureResponderEvent } from 'react-native';
+import { Pressable, StyleSheet } from 'react-native';
 import type { SurfaceType } from 'expo-video';
 import { OsThumbnail } from './OsThumbnail';
-import { PlaybackChrome } from './PlaybackChrome';
-import { PlaybackLayer } from './PlaybackLayer';
-import { usePlaybackPlayer } from './usePlaybackPlayer';
+import { Playback, type PlaybackStage } from './Playback';
 import type { PlaybackMode } from '../lib/playbackPrefs';
 import { versionedUri } from '../lib/imageKeys';
 
@@ -34,7 +32,7 @@ export function VideoPage({
   near,
   active,
   mode,
-  immersive,
+  stage,
   surfaceType,
   onPress,
 }: {
@@ -51,14 +49,13 @@ export function VideoPage({
   /** The pager has settled on this page and the deck is visible. */
   active: boolean;
   mode: PlaybackMode;
-  /** The expanded stage: native transport, no page press. */
-  immersive: boolean;
+  stage: PlaybackStage;
   surfaceType: SurfaceType;
-  /** The deck's stage tap (immersive toggle / double-tap zoom). */
-  onPress?: (event: GestureResponderEvent) => void;
+  /** The deck's stage tap (the chrome toggle) — no double-tap window. */
+  onPress: () => void;
 }) {
-  const body = (
-    <View style={{ width, height: '100%' }}>
+  return (
+    <Pressable style={{ width, height: '100%' }} onPress={onPress}>
       <OsThumbnail
         assetId={id}
         kind={kind}
@@ -69,45 +66,18 @@ export function VideoPage({
         style={StyleSheet.absoluteFill}
       />
       {near && (
-        <VideoPlayerLayer
+        <Playback
           // The version rides the uri so an edited file is a new source
-          // (item 3's rule, same as expo-image).
+          // (item 3's rule, same as expo-image) — and, by the key, a new
+          // instance (Playback's header).
+          key={versionedUri(uri, version)}
           source={versionedUri(uri, version)}
           active={active}
           mode={mode}
-          immersive={immersive}
+          stage={stage}
           surfaceType={surfaceType}
         />
       )}
-    </View>
-  );
-  if (immersive || !onPress) return body;
-  return (
-    <Pressable style={{ width, height: '100%' }} onPress={onPress}>
-      {body}
     </Pressable>
-  );
-}
-
-/** The player's whole lifetime — mounted only while the page is near. */
-function VideoPlayerLayer({
-  source,
-  active,
-  mode,
-  immersive,
-  surfaceType,
-}: {
-  source: string;
-  active: boolean;
-  mode: PlaybackMode;
-  immersive: boolean;
-  surfaceType: SurfaceType;
-}) {
-  const playback = usePlaybackPlayer({ source, active, mode });
-  return (
-    <>
-      <PlaybackLayer player={playback.player} immersive={immersive} surfaceType={surfaceType} />
-      {!immersive && <PlaybackChrome {...playback.chrome} />}
-    </>
   );
 }

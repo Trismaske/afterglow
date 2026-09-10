@@ -793,11 +793,9 @@ export function SettingsScreen({ navigation }: Props) {
             {'\u2022'} Once — plays through, then rests: a video on its last frame, a motion photo
             on its photo.{'\n'}
             {'\u2022'} Loop — keeps playing until you swipe away.{'\n'}
-            {'\u2022'} Off — shows the first frame with a play button.
+            {'\u2022'} Off — shows the first frame; tap it for the controls.
           </Text>
-          <Text style={styles.explainer}>
-            Everything starts muted; the speaker on the stage unmutes what you are looking at.
-          </Text>
+          <Text style={styles.explainer}>Everything starts muted; the speaker unmutes.</Text>
           {(
             [
               { kind: 'video' as const, title: 'Videos' },

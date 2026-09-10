@@ -41,6 +41,7 @@ import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { OsThumbnail } from '../components/OsThumbnail';
 import { VideoPage } from '../components/VideoPage';
 import { MotionClipOverlay } from '../components/MotionClipOverlay';
+import type { PlaybackStage } from '../components/Playback';
 import { PLAYBACK_KEYS, parsePlaybackMode, type PlaybackMode } from '../lib/playbackPrefs';
 import type { SurfaceType } from 'expo-video';
 import { thumbBucketPx } from '../lib/thumbnailSize';
@@ -1020,6 +1021,29 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   }, [db, isFocused]);
   const playbackRef = useRef(playback);
   playbackRef.current = playback;
+  /** The page whose playback chrome (components/Playback) is showing —
+   * its id, so a page that just became current derives HIDDEN on its
+   * very first render; hidden by default, toggled by the stage tap, ONE
+   * page at a time. Held here so the tap rule sits beside the photo's;
+   * a page change clears it so a return finds the page at rest. */
+  const [playbackChrome, setPlaybackChrome] = useState<string | null>(null);
+  const playbackChromeRef = useRef(playbackChrome);
+  playbackChromeRef.current = playbackChrome;
+  useEffect(() => {
+    setPlaybackChrome(null);
+  }, [currentId]);
+  const setChromeFor = useCallback((id: string, visible: boolean) => {
+    setPlaybackChrome((shown) => (visible ? id : shown === id ? null : shown));
+  }, []);
+  /** Motion photos whose clip could not be extracted: plain photos to
+   * the tap rule. The overlay reports both directions — a retry (the
+   * page re-entering the near window) or a new version that extracts
+   * makes the page playable again. */
+  const unplayableRef = useRef(new Set<string>());
+  const setClipAvailability = useCallback((id: string, available: boolean) => {
+    if (available) unplayableRef.current.delete(id);
+    else unplayableRef.current.add(id);
+  }, []);
 
   const {
     scale,
@@ -1087,10 +1111,25 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     // zoomed stage keeps taps to itself anyway via pointerEvents.
     // P2-7: a single tap toggles fullscreen immersive, BOTH modes —
     // the gallery idiom (the m0.8.x viewer-open died with the viewer).
-    // A FROZEN deck (rows loading) toggles nothing.
-    if (scale.value === 1 && !holding) immersiveFlip(!immersive);
+    // A FROZEN deck (rows loading) toggles nothing. A PLAYABLE page's
+    // tap toggles its chrome instead (phase 5, tester 2026-09-10); its
+    // expand and collapse buttons are that page's immersive flip.
+    if (scale.value !== 1 || holding) return;
+    if (
+      current !== null &&
+      (current.kind === 'video' ||
+        (current.motion !== null && !unplayableRef.current.has(current.id)))
+    ) {
+      setChromeFor(current.id, playbackChrome !== current.id);
+      return;
+    }
+    immersiveFlip(!immersive);
   };
   const fireStageTap = useCallback(() => stageTapRef.current(), []);
+  const expandStage = useCallback(() => immersiveFlip(true), [immersiveFlip]);
+  const collapseStage = useCallback(() => immersiveFlip(false), [immersiveFlip]);
+  const insetsRef = useRef(insets);
+  insetsRef.current = insets;
   // P2-5: the dead Not-related slot INVERTS on a pair-carrying photo
   // outside group review — "Not related · n" wakes to UN-mark (the
   // retired StateEditorSheet's action, rehomed). Count read per photo;
@@ -1836,6 +1875,17 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
         !holdingRef.current &&
         focusedRef.current;
       const modes = playbackRef.current;
+      const immersive = immersiveRef.current;
+      const stage: PlaybackStage = {
+        immersive,
+        // Immersive is edge to edge: the chrome keeps clear of the OS
+        // navigation bar (the S23's three-button bar, 2026-09-10).
+        insetBottom: immersive ? insetsRef.current.bottom : 0,
+        chromeVisible: active && playbackChromeRef.current === item.id,
+        onChromeVisibleChange: (visible) => setChromeFor(item.id, visible),
+        onExpand: expandStage,
+        onCollapse: collapseStage,
+      };
       if (item.kind === 'video') {
         return (
           <VideoPage
@@ -1848,9 +1898,11 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
             near={near}
             active={active}
             mode={modes?.video ?? 'off'}
-            immersive={immersiveRef.current}
+            stage={stage}
             surfaceType={VIDEO_SURFACE_TYPE}
-            onPress={onPagePress}
+            // A plain single tap: no double-tap window (a video has no
+            // zoom for one to arm), so the chrome answers at once.
+            onPress={fireStageTap}
           />
         );
       }
@@ -1887,15 +1939,25 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               near={near}
               active={active}
               mode={modes?.motion ?? 'off'}
-              immersive={immersiveRef.current}
+              stage={stage}
               surfaceType={VIDEO_SURFACE_TYPE}
               zoomScale={scale}
+              onClipAvailability={setClipAvailability}
             />
           )}
         </Pressable>
       );
     },
-    [pageW, onPagePress, scale],
+    [
+      pageW,
+      onPagePress,
+      fireStageTap,
+      scale,
+      expandStage,
+      collapseStage,
+      setChromeFor,
+      setClipAvailability,
+    ],
   );
 
   // F22 (m0.8.8): the region-zoom pipeline for the current stage photo —
@@ -2189,7 +2251,13 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
         identityOk={current?.id === view.current.id}
         backdropColor={immersive ? '#000' : colors.surface}
         chrome={
-          <>
+          // Immersive is edge to edge: the corner, the badge cluster and
+          // the details overlay keep clear of the OS navigation bar
+          // (the S23's three-button bar hid them, 2026-09-10).
+          <View
+            style={[StyleSheet.absoluteFill, { bottom: immersive ? insets.bottom : 0 }]}
+            pointerEvents="box-none"
+          >
             {/* The eye clears the WHOLE stage (tester, 2026-08-31): the
                 photo purely as it is — position, corner, and the badge
                 pill all go, not just the cluster inside its pill (the
@@ -2231,7 +2299,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               header={cornerLabel}
               onClose={() => setDetailsOpen(false)}
             />
-          </>
+          </View>
         }
       >
         {pageW > 0 && (
@@ -2303,7 +2371,15 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               // on the facts they read through refs.
               windowSize={3}
               initialNumToRender={3}
-              extraData={[view.current.id, playback, immersive, pagerSettling, holding, isFocused]}
+              extraData={[
+                view.current.id,
+                playback,
+                playbackChrome,
+                immersive,
+                pagerSettling,
+                holding,
+                isFocused,
+              ]}
               onEndReached={view.listMode ? loadMoreList : undefined}
               onEndReachedThreshold={2}
             />

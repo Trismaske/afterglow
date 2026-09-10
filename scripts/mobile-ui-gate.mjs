@@ -177,6 +177,13 @@ function swipeDeckRight() {
   shell(`input swipe ${Math.round(width * 0.12)} ${y} ${Math.round(width * 0.8)} ${y} 250`);
 }
 
+/** Single-tap the middle of the photo stage (a photo's immersive
+ * toggle; a video or motion photo's chrome toggle). */
+function tapStage() {
+  const { width, height } = screenSize();
+  shell(`input tap ${Math.round(width / 2)} ${Math.round(height * 0.38)}`);
+}
+
 /** Double-tap the middle of the photo stage.
  *
  * Two separate `adb shell input tap` calls land ~500 ms apart — past the
@@ -1156,16 +1163,19 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
     }
   }
   await step(
-    'a video or motion-photo page shows its play control (when the newest unit holds one)',
+    'a tapped video or motion-photo page shows its play control (when the newest unit holds one)',
     null,
     async () => {
-      // Phase 5: with Playback parked on Off (the preflight), a video page
-      // is its poster plus a "Play" control and a motion photo its still
-      // plus "Play motion photo" — both visible to the dump. The newest
-      // unit is walked for up to eight pages; a library whose newest unit
-      // holds neither passes with a note (seed one to exercise this —
-      // docs/MOBILE_UI_GATE.md). Keep on the page proves the verdict
-      // path takes the kind.
+      // Phase 5: the playback chrome is hidden until the stage is tapped
+      // (tester, 2026-09-10). With Playback parked on Off (the preflight)
+      // a tapped video page shows its "Play" control and a tapped motion
+      // photo "Play motion photo", and a stopped clip keeps its chrome up,
+      // so the dump sees it. A PHOTO answers the same tap with immersive,
+      // which a second tap undoes before the next swipe. The newest unit
+      // is walked for up to eight pages; a library whose newest unit holds
+      // neither passes with a note (seed one to exercise this —
+      // docs/MOBILE_UI_GATE.md). Keep on the page proves the verdict path
+      // takes the kind.
       await ensureForeground();
       await waitForHome();
       await tapText(/^Continue reviewing$/, 20000);
@@ -1173,9 +1183,30 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
       const total = Number(indicator.node.text.split('/')[1]);
       let found = null;
       for (let page = 0; page < Math.min(total, 8) && !found; page += 1) {
-        const nodes = dumpUi();
-        found = findNode(nodes, /^Play$|^Play motion photo$/) ?? null;
+        tapStage();
+        // Positive evidence either way, never a bare missing control: a
+        // failed dump (empty) or a motion clip still extracting also show
+        // no Play. A playable page answers with an anchored Play control;
+        // a photo's tap entered immersive, which drops the action row.
+        let immersive = false;
+        const deadline = Date.now() + 5000;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 400));
+          const nodes = dumpUi();
+          if (nodes.length === 0) continue;
+          found = findNode(nodes, /^Play$|^Play motion photo$/) ?? null;
+          if (found) break;
+          if (!findNode(nodes, /^Keep$/)) {
+            immersive = true;
+            break;
+          }
+        }
         if (found) break;
+        if (!immersive)
+          throw new Error('the stage tap produced neither a Play control nor immersive');
+        // A photo: leave immersive before moving on.
+        tapStage();
+        await waitFor(/^Keep$/, 8000, 'the deck after leaving immersive');
         if (page + 1 < Math.min(total, 8)) {
           swipeDeckLeft();
           await new Promise((r) => setTimeout(r, 1200));

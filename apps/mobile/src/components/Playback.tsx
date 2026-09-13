@@ -16,6 +16,14 @@
  *    unmutes the CURRENT view only.
  *  - A looping player reports playToEnd on every wrap: only a Once play
  *    has ended, and only then does the control read Replay.
+ *  - THE BUFFER BOUND: ExoPlayer's sample buffers are JAVA byte arrays,
+ *    and Media3's default load control fills up to ~128 MB of them per
+ *    player for video — three players (the M26 bound) over the S23's
+ *    4K camera clips took the 256 MB Java heap down in seconds (three
+ *    OutOfMemoryError tombstones, 2026-09-13). Every player is bounded
+ *    to PLAYBACK_BUFFER_S ahead and PLAYBACK_BUFFER_BYTES of samples:
+ *    a local file refills at disk speed, so a few seconds is plenty,
+ *    and three players stay under 50 MB together.
  *  - The player is created WITH its source, never empty: a player
  *    prepared over an empty playlist reports playToEnd too (ExoPlayer's
  *    ENDED on an empty timeline), asynchronously, which read as Replay
@@ -34,9 +42,12 @@
  * auto-hides after CHROME_HIDE_MS while the clip plays and stays while
  * paused or ended, so a stopped clip always offers its control. The
  * pieces: play / pause / replay in the centre, the speaker, expand or
- * collapse (immersive in and out — Back exits too), and a seek track
- * along the bottom (tap or drag; a JS responder, so the pager's scroll
- * stands down for it). The player VIEW never takes a tap
+ * collapse (immersive in and out — Back exits too), and the seek track
+ * grown to its touch form and floated above the bottom row (tap or
+ * drag; a JS responder, so the pager's scroll stands down for it). The
+ * seek track's THIN form — a hairline of progress along the bottom
+ * edge — shows whenever the player view does, chrome or not (YouTube's
+ * idiom, the tester's call 2026-09-13). The player VIEW never takes a tap
  * (`pointerEvents="none"`): the page's press beneath owns single and
  * double taps, the chrome's buttons above own theirs — the same tree in
  * both stages, which is what keeps a playing clip playing across the
@@ -72,8 +83,12 @@ import type { PlaybackMode } from '../lib/playbackPrefs';
  * 2026-09-10: Media3's 5 s hung around; YouTube sits near 3 s). */
 export const CHROME_HIDE_MS = 2000;
 /** Progress ticks per second for the seek track — coarse on purpose (a
- * 3 dp line cannot show finer). */
+ * hairline cannot show finer). */
 const TIME_UPDATE_INTERVAL_S = 0.25;
+/** The buffer bound (header): seconds ahead and bytes of samples per
+ * player. 16 MiB holds ~3 s of a 45 Mbps 4K clip and ~90 s of 1080p. */
+const PLAYBACK_BUFFER_S = 4;
+const PLAYBACK_BUFFER_BYTES = 16 * 1024 * 1024;
 
 /** What the deck tells a playable page about its stage — one object
  * for both hosts, built per render by the deck. */
@@ -184,6 +199,14 @@ export function Playback({
           surfaceType={surfaceType}
           fullscreenOptions={{ enable: false }}
         />
+        {!chromeVisible && (
+          <SeekTrack
+            progress={playback.progress}
+            accent={theme.accent}
+            insetBottom={insetBottom}
+            expanded={false}
+          />
+        )}
       </Animated.View>
       {chromeVisible && (
         <Animated.View
@@ -198,6 +221,7 @@ export function Playback({
             progress={playback.progress}
             accent={theme.accent}
             insetBottom={insetBottom}
+            expanded
             onSeek={onSeek}
           />
           <Pressable
@@ -251,6 +275,12 @@ function usePlayer(source: string, active: boolean, mode: PlaybackMode): PlayerS
     p.muted = true;
     p.loop = mode === 'loop';
     p.timeUpdateEventInterval = TIME_UPDATE_INTERVAL_S;
+    p.bufferOptions = {
+      preferredForwardBufferDuration: PLAYBACK_BUFFER_S,
+      minBufferForPlayback: 1,
+      maxBufferBytes: PLAYBACK_BUFFER_BYTES,
+      prioritizeTimeOverSizeThreshold: false,
+    };
   });
   const { isPlaying } = useEvent(player, 'playingChange', { isPlaying: player.playing });
   const { muted } = useEvent(player, 'mutedChange', { muted: player.muted });
@@ -336,7 +366,9 @@ function usePlayer(source: string, active: boolean, mode: PlaybackMode): PlayerS
   );
 }
 
-/** The seek track: a 3 dp line along the bottom edge inside a taller
+/** The seek track, two forms along the bottom edge. THIN (chrome
+ * hidden): a 2 dp hairline of progress, inert. EXPANDED (chrome shown):
+ * three times the line, a thumb three times that again, inside a taller
  * touch band; tap or drag anywhere on the band seeks to that fraction,
  * and a seek on an ended clip resumes it (ExoPlayer's own semantic).
  * A JS responder, deliberately — the stage's rules forbid a Gesture
@@ -351,21 +383,29 @@ function SeekTrack({
   progress,
   accent,
   insetBottom,
+  expanded,
   onSeek,
 }: {
   progress: number;
   accent: string;
   insetBottom: number;
-  onSeek: (fraction: number) => void;
+  expanded: boolean;
+  onSeek?: (fraction: number) => void;
 }) {
   const width = useRef(0);
   const [scrub, setScrub] = useState<number | null>(null);
   const responder = useMemo(() => {
     const seekAt = (event: GestureResponderEvent) => {
-      if (width.current <= 0) return;
-      const fraction = Math.min(1, Math.max(0, event.nativeEvent.locationX / width.current));
+      // The track is inset by the thumb's radius on both ends (styles):
+      // the fraction maps the inset width, so 0 and 1 sit at the ends.
+      const inner = width.current - 2 * SEEK_THUMB_R;
+      if (inner <= 0) return;
+      const fraction = Math.min(
+        1,
+        Math.max(0, (event.nativeEvent.locationX - SEEK_THUMB_R) / inner),
+      );
       setScrub(fraction);
-      onSeek(fraction);
+      onSeek?.(fraction);
     };
     return PanResponder.create({
       onStartShouldSetPanResponder: () => true,
@@ -378,21 +418,49 @@ function SeekTrack({
     });
   }, [onSeek]);
   const shown = scrub ?? progress;
+  if (!expanded) {
+    return (
+      <View style={[styles.seekHairline, { bottom: insetBottom }]} pointerEvents="none">
+        <View style={[styles.seekFill, { width: `${shown * 100}%`, backgroundColor: accent }]} />
+      </View>
+    );
+  }
   return (
     <View
       {...responder.panHandlers}
-      style={[styles.seekBand, { bottom: insetBottom }]}
+      style={[styles.seekBand, { bottom: insetBottom + SEEK_EXPANDED_LIFT }]}
       onLayout={(event: LayoutChangeEvent) => {
         width.current = event.nativeEvent.layout.width;
       }}
       accessibilityLabel="Seek"
     >
-      <View style={styles.seekTrack}>
-        <View style={[styles.seekFill, { width: `${shown * 100}%`, backgroundColor: accent }]} />
+      {/* The inner box IS the inset track's width: an absolute child's
+          percentage `left` measures the parent's padding box (Yoga), so
+          the thumb rides the track's ends only from inside it. Never a
+          touch target: `locationX` is local to the view a touch lands
+          on, and the seek maps the BAND's width. */}
+      <View style={styles.seekInner} pointerEvents="none">
+        <View style={styles.seekTrack}>
+          <View style={[styles.seekFill, { width: `${shown * 100}%`, backgroundColor: accent }]} />
+        </View>
+        <View
+          style={[styles.seekThumb, { left: `${shown * 100}%`, backgroundColor: accent }]}
+          pointerEvents="none"
+        />
       </View>
     </View>
   );
 }
+
+/** The hairline's height; the expanded track is 3× and its thumb 9×.
+ * The expanded form lifts off the stage edge and insets by the thumb's
+ * radius so the whole circle stays inside the stage's clipped box. */
+const SEEK_LINE = 2;
+const SEEK_THUMB_R = (SEEK_LINE * 9) / 2;
+/** The expanded track floats above the bottom row (the speaker and
+ * expand buttons, the stage's badge pill), so neither end of it and no
+ * thumb position sits under a button — the fullscreen-player layout. */
+const SEEK_EXPANDED_LIFT = 44;
 
 const styles = StyleSheet.create({
   centre: {
@@ -421,9 +489,29 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: 0,
-    height: 28,
+    height: 32,
     justifyContent: 'flex-end',
+    paddingBottom: SEEK_THUMB_R - (SEEK_LINE * 3) / 2,
+    paddingHorizontal: SEEK_THUMB_R,
   },
-  seekTrack: { height: 3, backgroundColor: 'rgba(255,255,255,0.25)' },
-  seekFill: { height: 3 },
+  seekHairline: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: SEEK_LINE,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+  },
+  seekInner: { width: '100%' },
+  seekTrack: { height: SEEK_LINE * 3, backgroundColor: 'rgba(255,255,255,0.25)' },
+  seekFill: { height: '100%' },
+  seekThumb: {
+    position: 'absolute',
+    // Centred on the track: the track's half-height above the inner
+    // box's bottom, the thumb's radius below it.
+    bottom: (SEEK_LINE * 3) / 2 - SEEK_THUMB_R,
+    marginLeft: -SEEK_THUMB_R,
+    width: SEEK_THUMB_R * 2,
+    height: SEEK_THUMB_R * 2,
+    borderRadius: SEEK_THUMB_R,
+  },
 });

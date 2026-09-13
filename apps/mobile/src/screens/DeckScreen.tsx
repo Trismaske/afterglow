@@ -40,7 +40,7 @@ import { formatClockPrecise, millisNeeded, plural } from '../lib/format';
 import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { OsThumbnail } from '../components/OsThumbnail';
 import { VideoPage } from '../components/VideoPage';
-import { MotionClipOverlay } from '../components/MotionClipOverlay';
+import { PhotoPage } from '../components/PhotoPage';
 import type { PlaybackStage } from '../components/Playback';
 import { PLAYBACK_KEYS, parsePlaybackMode, type PlaybackMode } from '../lib/playbackPrefs';
 import type { SurfaceType } from 'expo-video';
@@ -1303,31 +1303,18 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     // deckItems is a dependency because a cull or an undo changes the
     // content width under a cursor that did not move.
   }, [pagerIndex, holding, deckItems, stripMeasured]);
-  /**
-   * Which PAGE Images have painted (their own onLoad — the zoom
-   * overlay's would not do: it is a separate Image instance, and hiding
-   * the underlay on ITS load left dark frames while the page was still
-   * painting, measured on the emulator probe). The underlay shows the
-   * previous photo until the current page's own paint has landed
-   * (§10 check 3). A set, not a single id: neighbor pages preload, and
-   * a page already painted must not re-summon the underlay when swiped
-   * back to. `decodedTick` re-renders the frame where the CURRENT page
-   * lands, and re-runs the lastPhotoRef capture below.
-   */
-  const loadedPagesRef = useRef<Set<string>>(new Set());
-  const [decodedTick, setDecodedTick] = useState(0);
   const currentIdRef = useRef<string | null>(null);
-  /** The photo the stage last actually PAINTED. It backs the COLD-OPEN
-   * stage only now: the session's first deck reading its rows shows the
-   * outgoing photo instead of a blank (§10 check 3). The pager's own
-   * underlay moved to the current photo's OS thumbnail (phase 3, item
-   * 2). Only PAINTED uris are captured (codex device-pass round):
-   * capturing live `current` advanced it to a still-decoding uri
-   * whenever an unrelated render landed mid-decode. */
-  const lastPhotoRef = useRef<string | null>(null);
+  /** The item the stage last showed. It backs the COLD-OPEN stage only:
+   * the session's first deck reading its rows shows the outgoing item's
+   * OS thumbnail instead of a blank (§10 check 3). Every page carries
+   * its own first paint (the OS thumbnail under the full decode — the
+   * poster pattern VideoPage set, extended to photo pages 2026-09-13),
+   * so there is no stage-level underlay and nothing to wait for: the
+   * thumbnail paints in milliseconds whatever the decode is doing. */
+  const lastItemRef = useRef<DeckItem | null>(null);
   useEffect(() => {
-    if (current && loadedPagesRef.current.has(current.id)) lastPhotoRef.current = current.uri;
-  }, [current, decodedTick]);
+    if (current) lastItemRef.current = current;
+  }, [current]);
   /** The last LOADED render's view — what the body draws while the next
    * unit's rows load (see `holding`). */
   const heldViewRef = useRef<DeckView | null>(null);
@@ -1907,45 +1894,22 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
         );
       }
       return (
-        // Pressable, not a tap gesture: presses fire on the JS thread with
-        // no worklets bridge (crash class above), and a horizontal drag
-        // hands over to the pager's scroll exactly like any list row.
-        <Pressable style={{ width: pageW, height: '100%' }} onPress={onPagePress}>
-          <Image
-            // The version-carrying key (item 3): an in-place edit lands
-            // fresh pixels on the next scan, never Glide's pre-edit entry.
-            source={{ uri: versionedUri(item.uri, item.version) }}
-            style={StyleSheet.absoluteFill}
-            contentFit="contain"
-            // The version is part of the recycling identity (DeckItem's
-            // doc): an edited photo is a NEW image to expo-image.
-            recyclingKey={imageCacheKey(item.id, item.version)}
-            transition={40}
-            onLoad={() => {
-              // This page has painted — the decode underlay may drop for
-              // it. Re-render only when it is the CURRENT page: that is
-              // the one the underlay is covering.
-              if (loadedPagesRef.current.has(item.id)) return;
-              loadedPagesRef.current.add(item.id);
-              if (item.id === currentIdRef.current) setDecodedTick((t) => t + 1);
-            }}
-          />
-          {item.motion !== null && (
-            // The motion photo's clip over its still (F25/G6) — mounted
-            // WITH the page (the clip rides the row), props-only handoff.
-            <MotionClipOverlay
-              id={item.id}
-              clip={item.motion}
-              near={near}
-              active={active}
-              mode={modes?.motion ?? 'off'}
-              stage={stage}
-              surfaceType={VIDEO_SURFACE_TYPE}
-              zoomScale={scale}
-              onClipAvailability={setClipAvailability}
-            />
-          )}
-        </Pressable>
+        <PhotoPage
+          id={item.id}
+          uri={item.uri}
+          version={item.version}
+          motion={item.motion}
+          width={pageW}
+          posterPx={STAGE_THUMB_PX}
+          near={near}
+          active={active}
+          mode={modes?.motion ?? 'off'}
+          stage={stage}
+          surfaceType={VIDEO_SURFACE_TYPE}
+          zoomScale={scale}
+          onClipAvailability={setClipAvailability}
+          onPress={onPagePress}
+        />
       );
     },
     [
@@ -2059,8 +2023,8 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   const view = liveView ?? heldViewRef.current;
   /** Frozen view: LOOK normal, DO nothing. */
   const inert = liveView === null;
-  // What the stage is SHOWING this render — the id whose page paint the
-  // underlay waits for (render-time, so the swap frame reads the new id).
+  // What the stage is SHOWING this render (render-time, so the swap
+  // frame reads the new id — the pages read it through the ref).
   currentIdRef.current = view?.current.id ?? null;
   currentIndexRef.current = view?.cursor ?? 0;
   // M6, armed IN THIS RENDER (not a passive effect, which would leave the
@@ -2074,13 +2038,16 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     // a cold open) is all there is to show.
     return (
       <View style={[styles.root, { paddingBottom: insets.bottom + 8 }]}>
-        {lastPhotoRef.current !== null && (
+        {lastItemRef.current !== null && (
           <View style={styles.coldStage}>
-            <Image
-              source={{ uri: lastPhotoRef.current }}
-              style={StyleSheet.absoluteFill}
+            <OsThumbnail
+              assetId={lastItemRef.current.id}
+              kind={lastItemRef.current.kind}
+              uri={lastItemRef.current.uri}
+              version={lastItemRef.current.version}
+              px={STAGE_THUMB_PX}
               contentFit="contain"
-              transition={0}
+              style={StyleSheet.absoluteFill}
             />
           </View>
         )}
@@ -2304,36 +2271,6 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       >
         {pageW > 0 && (
           <View style={styles.pager}>
-            {/* Decode underlay: the page Image a data swap mounts
-              starts transparent until its decode lands, and on
-              the S10e that gap was a visible blank (§10 check
-              3). The previous photo sits under the pager for
-              exactly those frames. ALWAYS MOUNTED, visibility by
-              opacity: mounting it on demand reproduced the blank
-              (a freshly-mounted Image paints a frame late even
-              from cache — emulator probe), while left visible it
-              would ghost through every contained page's
-              letterbox margins. */}
-            {/* Phase 3, item 2 (Tristan, 2026-09-04): the underlay is now
-                THIS photo's OS thumbnail — the at-rest page's instant
-                first paint (7–23 ms measured) under the full decode,
-                which replaces it on arrival. The previous-photo ghost
-                it replaces covered the same frames with the wrong
-                picture. */}
-            <OsThumbnail
-              assetId={view.current.id}
-              kind={view.current.kind}
-              uri={view.current.uri}
-              version={view.current.version}
-              px={STAGE_THUMB_PX}
-              contentFit="contain"
-              style={[
-                StyleSheet.absoluteFill,
-                {
-                  opacity: inert || !loadedPagesRef.current.has(view.current.id) ? 1 : 0,
-                },
-              ]}
-            />
             <FlatList
               // Keyed by the DISPLAYED unit: a unit change swaps in
               // a fresh native list at its own first pending photo

@@ -1582,6 +1582,9 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * legitimate could), the unit leaves its settle standing on the
    * cursor with badge, strip and stage in agreement. */
   const wasSettlingRef = useRef(false);
+  /** The page width the pager's content was last measured at (the
+   * onContentSizeChange re-assert below fires once per width). */
+  const contentWidthRef = useRef(0);
   useEffect(() => {
     const was = wasSettlingRef.current;
     wasSettlingRef.current = pagerSettling;
@@ -2303,6 +2306,22 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 pagerAnimatingRef.current = false;
               }}
               onMomentumScrollEnd={onMomentumEnd}
+              // The immersive flip re-lays every page at a new width. The
+              // alignment effect's scroll to the cursor lands BEFORE the
+              // native list has grown to the new extent, so on the last
+              // pages the offset is clamped to the OLD extent and nothing
+              // re-corrects it (S23, 2026-09-11/13: page 19 of 19 in
+              // immersive showed 18 with a slice of 17; earlier pages fit
+              // either extent). Re-assert the cursor's offset once the
+              // content is measured at THIS width — once per width, so a
+              // list-mode append never jumps a pager mid-drag.
+              onContentSizeChange={() => {
+                if (!pageW || holding || contentWidthRef.current === pageW) return;
+                contentWidthRef.current = pageW;
+                const offset = cursor * pageW;
+                pagerTargetRef.current = offset;
+                listRef.current?.scrollToOffset({ offset, animated: false });
+              }}
               // Phase 5 (M26): one page each side of the current one —
               // at most three players alive — and the pages re-render
               // on the facts they read through refs.

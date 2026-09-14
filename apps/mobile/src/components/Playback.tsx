@@ -45,7 +45,14 @@
  * collapse (immersive in and out — Back exits too), and the seek track
  * grown to its touch form on the bottom edge with the buttons above it
  * (tap or drag; a JS responder, so the pager's scroll stands down for
- * it). While a scrub is underway the REST of the chrome — this
+ * it). A DRAG runs the player in Media3's scrubbing mode for its
+ * duration (the tester, 2026-09-14: frame-exact seeks on a 4K clip
+ * queued behind the finger and read as a pause): the picture follows
+ * the finger — seeks coalesce so only the newest target renders, the
+ * codec rate rises, flushes are skipped, and normal playback is
+ * suppressed until the release, which seeks exactly to the landing
+ * fraction and turns the mode off, so a playing clip plays on from
+ * there with no gap and a paused one stays paused. While a scrub is underway the REST of the chrome — this
  * component's and the deck's stage chrome — hides (the tester's call
  * 2026-09-14, YouTube's idiom): nothing else can be reached during a
  * scrub anyway, and the bar alone reads as the scrub. The seek track's
@@ -101,6 +108,13 @@ const TIME_UPDATE_INTERVAL_S = 0.25;
  * one agrees. */
 const SEEK_SETTLE_FRACTION = 0.02;
 const SEEK_SETTLE_TICKS = 2;
+/** The seek tolerance while a finger DRAGS the track (seconds each way):
+ * the player may land on the nearest keyframe inside it instead of
+ * decoding from the previous keyframe to the exact frame, so each step
+ * under the finger is cheap; the release seeks exactly. Camera clips
+ * keep keyframes about a second apart, so half a second finds one from
+ * most positions. */
+const SCRUB_SEEK_TOLERANCE_S = 0.5;
 /** The buffer bound (header): seconds ahead and bytes of samples per
  * player. 16 MiB holds ~3 s of a 45 Mbps 4K clip and ~90 s of 1080p. */
 const PLAYBACK_BUFFER_S = 4;
@@ -180,9 +194,17 @@ export function Playback({
   const [scrubbing, setScrubbing] = useState(false);
   const scrubRef = useRef(onScrubbingChange);
   scrubRef.current = onScrubbingChange;
+  const playerScrubRef = useRef(playback.scrub);
+  playerScrubRef.current = playback.scrub;
+  /** The last fraction a drag reached (every drag step comes through
+   * `onSeek`): the landing when the chrome hides under the scrub and
+   * the track goes with it before its release can report one. */
+  const landingRef = useRef<number | undefined>(undefined);
   const onScrubbing = useCallback(
-    (underway: boolean) => {
+    (underway: boolean, fraction?: number) => {
       setScrubbing(underway);
+      if (underway) landingRef.current = undefined;
+      playerScrubRef.current(underway, fraction ?? landingRef.current);
       scrubRef.current(underway);
       touched();
     },
@@ -193,10 +215,14 @@ export function Playback({
   useEffect(() => {
     if (chromeVisible || !scrubbingRef.current) return;
     setScrubbing(false);
+    playerScrubRef.current(false, landingRef.current);
     scrubRef.current(false);
   }, [chromeVisible]);
   useEffect(
     () => () => {
+      // The player is released with this component (its hook's own
+      // cleanup ran first), so only the deck is told; the scrubbing
+      // mode dies with the player.
       if (scrubbingRef.current) scrubRef.current(false);
     },
     [],
@@ -236,6 +262,7 @@ export function Playback({
   const onSeek = useCallback(
     (fraction: number) => {
       touched();
+      landingRef.current = fraction;
       playback.seek(fraction);
     },
     [playback, touched],
@@ -329,6 +356,9 @@ interface PlayerState {
   pause: () => void;
   toggleMuted: () => void;
   seek: (fraction: number) => void;
+  /** A drag on the track began (true) or ended (false, with the landing
+   * fraction) — the scrubbing mode in the header. */
+  scrub: (underway: boolean, fraction?: number) => void;
 }
 
 /** The lifecycle in the header, as one hook. */
@@ -424,6 +454,28 @@ function usePlayer(source: string, active: boolean, mode: PlaybackMode): PlayerS
     },
     [player],
   );
+  const scrub = useCallback(
+    (underway: boolean, fraction?: number) => {
+      if (underway) {
+        player.seekTolerance = {
+          toleranceBefore: SCRUB_SEEK_TOLERANCE_S,
+          toleranceAfter: SCRUB_SEEK_TOLERANCE_S,
+        };
+        player.scrubbingModeOptions = { scrubbingModeEnabled: true };
+        return;
+      }
+      // The setters post to the player's thread in order: exact
+      // tolerance, the landing seek, then the mode off — playback
+      // resumes at the landing frame, never at the last cheap step. A
+      // page that went INACTIVE under the scrub has just been paused
+      // and rewound by the effect above (the page change hid the chrome
+      // and ended the scrub): its landing must not undo that.
+      player.seekTolerance = { toleranceBefore: 0, toleranceAfter: 0 };
+      if (fraction !== undefined && active) seek(fraction);
+      player.scrubbingModeOptions = { scrubbingModeEnabled: false };
+    },
+    [player, seek, active],
+  );
 
   const duration = player.duration;
   const progress =
@@ -440,8 +492,9 @@ function usePlayer(source: string, active: boolean, mode: PlaybackMode): PlayerS
       pause,
       toggleMuted,
       seek,
+      scrub,
     }),
-    [player, isPlaying, ended, underway, muted, progress, play, pause, toggleMuted, seek],
+    [player, isPlaying, ended, underway, muted, progress, play, pause, toggleMuted, seek, scrub],
   );
 }
 
@@ -476,7 +529,7 @@ function SeekTrack({
   onSeek?: (fraction: number) => void;
   /** A scrub began (true, on the grant) or ended (false, on release or
    * termination). */
-  onScrubbing?: (underway: boolean) => void;
+  onScrubbing?: (underway: boolean, fraction?: number) => void;
 }) {
   const width = useRef(0);
   /** The band's left edge in PAGE coordinates, taken at the grant: the
@@ -490,6 +543,8 @@ function SeekTrack({
    * 2026-09-14). */
   const pageLeft = useRef(0);
   const [scrub, setScrub] = useState<number | null>(null);
+  /** The last fraction the finger reached — the landing on release. */
+  const landing = useRef<number | undefined>(undefined);
   const responder = useMemo(() => {
     const seekAt = (pageX: number) => {
       // The track is inset by the thumb's radius on both ends (styles):
@@ -497,12 +552,14 @@ function SeekTrack({
       const inner = width.current - 2 * SEEK_THUMB_R;
       if (inner <= 0) return;
       const fraction = Math.min(1, Math.max(0, (pageX - pageLeft.current - SEEK_THUMB_R) / inner));
+      landing.current = fraction;
       setScrub(fraction);
       onSeek?.(fraction);
     };
     const end = () => {
       setScrub(null);
-      onScrubbing?.(false);
+      onScrubbing?.(false, landing.current);
+      landing.current = undefined;
     };
     return PanResponder.create({
       onStartShouldSetPanResponder: () => true,
@@ -510,6 +567,7 @@ function SeekTrack({
       onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: (event: GestureResponderEvent) => {
         pageLeft.current = event.nativeEvent.pageX - event.nativeEvent.locationX;
+        landing.current = undefined;
         onScrubbing?.(true);
         seekAt(event.nativeEvent.pageX);
       },

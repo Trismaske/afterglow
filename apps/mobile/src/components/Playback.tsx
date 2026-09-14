@@ -43,15 +43,20 @@
  * paused or ended, so a stopped clip always offers its control. The
  * pieces: play / pause / replay in the centre, the speaker, expand or
  * collapse (immersive in and out — Back exits too), and the seek track
- * grown to its touch form and floated above the bottom row (tap or
- * drag; a JS responder, so the pager's scroll stands down for it). The
- * seek track's THIN form — a hairline of progress along the bottom
- * edge — shows whenever the player view does, chrome or not (YouTube's
- * idiom, the tester's call 2026-09-13). The player VIEW never takes a tap
- * (`pointerEvents="none"`): the page's press beneath owns single and
- * double taps, the chrome's buttons above own theirs — the same tree in
- * both stages, which is what keeps a playing clip playing across the
- * immersive flip (a swapped root remounts the player).
+ * grown to its touch form on the bottom edge with the buttons above it
+ * (tap or drag; a JS responder, so the pager's scroll stands down for
+ * it). While a scrub is underway the REST of the chrome — this
+ * component's and the deck's stage chrome — hides (the tester's call
+ * 2026-09-14, YouTube's idiom): nothing else can be reached during a
+ * scrub anyway, and the bar alone reads as the scrub. The seek track's
+ * THIN form — a hairline of progress along the bottom edge — shows
+ * whenever the player view does, chrome or not (YouTube's idiom, the
+ * tester's call 2026-09-13); the touch form thickens it in place. The
+ * player VIEW never takes a tap (`pointerEvents="none"`): the page's
+ * press beneath owns single and double taps, the chrome's buttons above
+ * own theirs — the same tree in both stages, which is what keeps a
+ * playing clip playing across the immersive flip (a swapped root
+ * remounts the player).
  *
  * Exempt from the eye (M21's "functional labels never hideable"): this
  * chrome operates the clip, it does not annotate it.
@@ -114,6 +119,9 @@ export interface PlaybackStage {
   /** The chrome's expand and collapse buttons (the immersive flip). */
   onExpand: () => void;
   onCollapse: () => void;
+  /** A scrub on the seek track began or ended: the deck hides its own
+   * stage chrome for the scrub's duration (header). */
+  onScrubbingChange: (scrubbing: boolean) => void;
 }
 
 export function Playback({
@@ -147,8 +155,15 @@ export function Playback({
 }) {
   const theme = useTheme();
   const playback = usePlayer(source, active, mode);
-  const { immersive, insetBottom, chromeVisible, onChromeVisibleChange, onExpand, onCollapse } =
-    stage;
+  const {
+    immersive,
+    insetBottom,
+    chromeVisible,
+    onChromeVisibleChange,
+    onExpand,
+    onCollapse,
+    onScrubbingChange,
+  } = stage;
 
   // Auto-hide: only while playing; any chrome interaction restarts it.
   // The deck's callback is read through a ref so a deck re-render (a
@@ -157,11 +172,40 @@ export function Playback({
   const touched = useCallback(() => setInteraction((n) => n + 1), []);
   const hideRef = useRef(onChromeVisibleChange);
   hideRef.current = onChromeVisibleChange;
+  // A scrub underway: the rest of the chrome hides (header) and the
+  // auto-hide waits — a finger resting on the thumb must not lose its
+  // track. The deck is told through a ref so a page re-render never
+  // re-fires it; an end is reported once, from release, from the chrome
+  // hiding under the scrub, or from unmount.
+  const [scrubbing, setScrubbing] = useState(false);
+  const scrubRef = useRef(onScrubbingChange);
+  scrubRef.current = onScrubbingChange;
+  const onScrubbing = useCallback(
+    (underway: boolean) => {
+      setScrubbing(underway);
+      scrubRef.current(underway);
+      touched();
+    },
+    [touched],
+  );
+  const scrubbingRef = useRef(false);
+  scrubbingRef.current = scrubbing;
   useEffect(() => {
-    if (!chromeVisible || !playback.isPlaying) return;
+    if (chromeVisible || !scrubbingRef.current) return;
+    setScrubbing(false);
+    scrubRef.current(false);
+  }, [chromeVisible]);
+  useEffect(
+    () => () => {
+      if (scrubbingRef.current) scrubRef.current(false);
+    },
+    [],
+  );
+  useEffect(() => {
+    if (!chromeVisible || !playback.isPlaying || scrubbing) return;
     const timer = setTimeout(() => hideRef.current(false), CHROME_HIDE_MS);
     return () => clearTimeout(timer);
-  }, [chromeVisible, playback.isPlaying, interaction]);
+  }, [chromeVisible, playback.isPlaying, interaction, scrubbing]);
 
   // ONE opacity rule on the UI thread: zoom hides the player view (the
   // still shows beneath) and the chrome; a still-resting host shows the
@@ -225,38 +269,45 @@ export function Playback({
           pointerEvents="box-none"
           accessibilityLabel="Playback controls"
         >
-          <Pressable style={styles.centre} onPress={onCentre} accessibilityLabel={centreLabel}>
-            <MaterialCommunityIcons name={centreIcon} size={44} color={colors.text} />
-          </Pressable>
+          {!scrubbing && (
+            <Pressable style={styles.centre} onPress={onCentre} accessibilityLabel={centreLabel}>
+              <MaterialCommunityIcons name={centreIcon} size={44} color={colors.text} />
+            </Pressable>
+          )}
           <SeekTrack
             progress={playback.progress}
             accent={theme.accent}
             insetBottom={insetBottom}
             expanded
             onSeek={onSeek}
+            onScrubbing={onScrubbing}
           />
-          <Pressable
-            style={[styles.button, { right: 58, bottom: BUTTON_BOTTOM + insetBottom }]}
-            onPress={onStage}
-            accessibilityLabel={immersive ? 'Exit fullscreen' : 'Fullscreen'}
-          >
-            <MaterialCommunityIcons
-              name={immersive ? 'fullscreen-exit' : 'fullscreen'}
-              size={24}
-              color={colors.text}
-            />
-          </Pressable>
-          <Pressable
-            style={[styles.button, { right: 10, bottom: BUTTON_BOTTOM + insetBottom }]}
-            onPress={onSpeaker}
-            accessibilityLabel={playback.muted ? 'Unmute' : 'Mute'}
-          >
-            <MaterialCommunityIcons
-              name={playback.muted ? 'volume-off' : 'volume-high'}
-              size={22}
-              color={colors.text}
-            />
-          </Pressable>
+          {!scrubbing && (
+            <Pressable
+              style={[styles.button, { right: 58, bottom: BUTTON_BOTTOM + insetBottom }]}
+              onPress={onStage}
+              accessibilityLabel={immersive ? 'Exit fullscreen' : 'Fullscreen'}
+            >
+              <MaterialCommunityIcons
+                name={immersive ? 'fullscreen-exit' : 'fullscreen'}
+                size={24}
+                color={colors.text}
+              />
+            </Pressable>
+          )}
+          {!scrubbing && (
+            <Pressable
+              style={[styles.button, { right: 10, bottom: BUTTON_BOTTOM + insetBottom }]}
+              onPress={onSpeaker}
+              accessibilityLabel={playback.muted ? 'Unmute' : 'Mute'}
+            >
+              <MaterialCommunityIcons
+                name={playback.muted ? 'volume-off' : 'volume-high'}
+                size={22}
+                color={colors.text}
+              />
+            </Pressable>
+          )}
         </Animated.View>
       )}
     </>
@@ -413,38 +464,57 @@ function SeekTrack({
   insetBottom,
   expanded,
   onSeek,
+  onScrubbing,
 }: {
   progress: number;
   accent: string;
   insetBottom: number;
   expanded: boolean;
   onSeek?: (fraction: number) => void;
+  /** A scrub began (true, on the grant) or ended (false, on release or
+   * termination). */
+  onScrubbing?: (underway: boolean) => void;
 }) {
   const width = useRef(0);
+  /** The band's left edge in PAGE coordinates, taken at the grant: the
+   * touch-down's target is the band itself (its children are never
+   * targets), so pageX − locationX is exactly it. Every move maps
+   * `pageX` against this edge, never `locationX`: Android re-resolves
+   * the view UNDER THE FINGER on every move and reports locationX
+   * relative to THAT view (JSTouchDispatcher, TouchesHelper), so a
+   * finger crossing a button or the badge pill mid-scrub jumped the
+   * fraction into that element's coordinates and back out (S23,
+   * 2026-09-14). */
+  const pageLeft = useRef(0);
   const [scrub, setScrub] = useState<number | null>(null);
   const responder = useMemo(() => {
-    const seekAt = (event: GestureResponderEvent) => {
+    const seekAt = (pageX: number) => {
       // The track is inset by the thumb's radius on both ends (styles):
       // the fraction maps the inset width, so 0 and 1 sit at the ends.
       const inner = width.current - 2 * SEEK_THUMB_R;
       if (inner <= 0) return;
-      const fraction = Math.min(
-        1,
-        Math.max(0, (event.nativeEvent.locationX - SEEK_THUMB_R) / inner),
-      );
+      const fraction = Math.min(1, Math.max(0, (pageX - pageLeft.current - SEEK_THUMB_R) / inner));
       setScrub(fraction);
       onSeek?.(fraction);
+    };
+    const end = () => {
+      setScrub(null);
+      onScrubbing?.(false);
     };
     return PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
       onPanResponderTerminationRequest: () => false,
-      onPanResponderGrant: seekAt,
-      onPanResponderMove: seekAt,
-      onPanResponderRelease: () => setScrub(null),
-      onPanResponderTerminate: () => setScrub(null),
+      onPanResponderGrant: (event: GestureResponderEvent) => {
+        pageLeft.current = event.nativeEvent.pageX - event.nativeEvent.locationX;
+        onScrubbing?.(true);
+        seekAt(event.nativeEvent.pageX);
+      },
+      onPanResponderMove: (event: GestureResponderEvent) => seekAt(event.nativeEvent.pageX),
+      onPanResponderRelease: end,
+      onPanResponderTerminate: end,
     });
-  }, [onSeek]);
+  }, [onSeek, onScrubbing]);
   const shown = scrub ?? progress;
   if (!expanded) {
     return (
@@ -456,7 +526,7 @@ function SeekTrack({
   return (
     <View
       {...responder.panHandlers}
-      style={[styles.seekBand, { bottom: insetBottom + SEEK_EXPANDED_LIFT }]}
+      style={[styles.seekBand, { bottom: insetBottom }]}
       onLayout={(event: LayoutChangeEvent) => {
         width.current = event.nativeEvent.layout.width;
       }}
@@ -465,8 +535,8 @@ function SeekTrack({
       {/* The inner box IS the inset track's width: an absolute child's
           percentage `left` measures the parent's padding box (Yoga), so
           the thumb rides the track's ends only from inside it. Never a
-          touch target: `locationX` is local to the view a touch lands
-          on, and the seek maps the BAND's width. */}
+          touch target: the grant's page-edge arithmetic above needs the
+          band itself to be what the touch lands on. */}
       <View style={styles.seekInner} pointerEvents="none">
         <View style={styles.seekTrack}>
           <View style={[styles.seekFill, { width: `${shown * 100}%`, backgroundColor: accent }]} />
@@ -481,24 +551,24 @@ function SeekTrack({
 }
 
 /** The hairline's height; the expanded track is 3× and its thumb 9×.
- * The expanded form lifts off the stage edge and insets by the thumb's
- * radius so the whole circle stays inside the stage's clipped box. */
+ * The expanded track sits a thumb's radius up from the stage edge and
+ * is inset by it at both ends, so the whole circle stays inside the
+ * stage's clipped box — the hairline thickens (nearly) in place. */
 const SEEK_LINE = 2;
 const SEEK_THUMB_R = (SEEK_LINE * 9) / 2;
-/** The chrome's bottom row: the speaker and expand buttons' size and
- * their distance from the stage edge (the badge pill shares the row). */
-const BUTTON_SIZE = 40;
-const BUTTON_BOTTOM = 12;
-/** The expanded track's touch band starts where the bottom row ENDS —
- * no overlap: the buttons are later siblings and win any shared strip,
- * and a band whose lower edge ran 8 dp into the row put a thumb-aimed
- * touch that landed low near the right end on the Fullscreen button —
- * its press flipped immersive and its drag, unblocked, paged (S23,
- * 2026-09-14). The band is twice the thumb's diameter with the track
- * at its middle, so a touch lands inside it up to a thumb's diameter
- * above or below the thumb's centre. */
-const SEEK_EXPANDED_LIFT = BUTTON_BOTTOM + BUTTON_SIZE;
+/** The touch band: from the stage edge up, twice the thumb's diameter,
+ * so a touch aimed at the thumb lands inside it up to a thumb's
+ * diameter high. Its lower part is where the hairline lives — the
+ * touch form is the hairline's own place (the tester, 2026-09-14: the
+ * earlier float read as a jump away from it). */
 const SEEK_BAND_HEIGHT = SEEK_THUMB_R * 4;
+/** The chrome's buttons (speaker, expand) sit ABOVE the band, never on
+ * it: a later sibling wins any shared strip, and a band whose edge ran
+ * into the buttons' row put a thumb-aimed touch that landed low near
+ * the right end on the Fullscreen button — its press flipped immersive
+ * and its drag, unblocked, paged (S23, 2026-09-14). */
+const BUTTON_SIZE = 40;
+const BUTTON_BOTTOM = SEEK_BAND_HEIGHT + 8;
 
 const styles = StyleSheet.create({
   centre: {
@@ -529,8 +599,9 @@ const styles = StyleSheet.create({
     right: 0,
     height: SEEK_BAND_HEIGHT,
     justifyContent: 'flex-end',
-    // The track's centre at the band's middle.
-    paddingBottom: SEEK_BAND_HEIGHT / 2 - (SEEK_LINE * 3) / 2,
+    // The track's centre a thumb's radius up: the thumb's bottom on the
+    // stage edge.
+    paddingBottom: SEEK_THUMB_R - (SEEK_LINE * 3) / 2,
     paddingHorizontal: SEEK_THUMB_R,
   },
   seekHairline: {

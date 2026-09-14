@@ -1032,6 +1032,11 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * page at a time. Held here so the tap rule sits beside the photo's;
    * a page change clears it so a return finds the page at rest. */
   const [playbackChrome, setPlaybackChrome] = useState<string | null>(null);
+  /** A scrub on the current page's seek track is underway: the stage
+   * chrome (corner, badges, position) hides for its duration, the way
+   * the eye hides it — nothing else on the stage can be reached during
+   * a scrub, and the bar alone reads as the scrub (Playback's header). */
+  const [scrubbing, setScrubbing] = useState(false);
   const playbackChromeRef = useRef(playbackChrome);
   playbackChromeRef.current = playbackChrome;
   useEffect(() => {
@@ -1947,6 +1952,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
         onChromeVisibleChange: (visible) => setChromeFor(item.id, visible),
         onExpand: expandStage,
         onCollapse: collapseStage,
+        onScrubbingChange: setScrubbing,
       };
       if (item.kind === 'video') {
         return (
@@ -2308,7 +2314,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 claim, not decoration (M19). The details overlay stays
                 mounted; with the corner gone it simply has no opener
                 until the eye reopens. */}
-            {!stageHidden && (
+            {!stageHidden && !scrubbing && (
               <>
                 <View style={styles.posBadge} pointerEvents="none">
                   <Text style={styles.posBadgeText}>
@@ -2326,10 +2332,16 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 >
                   <Text style={styles.timeBadgeText}>{cornerLabel}</Text>
                 </Pressable>
+                {/* Glance-only while a page's playback chrome is up: the
+                    pill sits on the seek band's strip (this slot renders
+                    ABOVE the pager, so it would win the touch-down and
+                    open the details instead of starting a scrub — codex,
+                    2026-09-14); the corner still opens the details. */}
                 <Pressable
                   style={styles.flagBadge}
                   onPress={() => setDetailsOpen(true)}
                   accessibilityLabel="Show photo details"
+                  pointerEvents={playbackChrome !== null ? 'none' : 'auto'}
                 >
                   <BadgeCluster badges={badgesFor(view.current)} size={24} />
                 </Pressable>

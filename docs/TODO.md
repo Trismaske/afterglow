@@ -141,6 +141,7 @@ Numbers change whenever an item closes, so **cross-references from code or other
    Investigation wanted before any further patching: the design and its pros and cons, and the simpler shapes that avoid the re-layout race altogether — a pager whose page width never changes across the flip (the stage inset drawn inside the page, or the flip scaling a fixed-width pager), a pager component with a native page index (`react-native-pager-view` keeps its page through size changes natively), `maintainVisibleContentPosition` with an exact anchor, or a per-page immersive that does not re-lay the list.
    Each candidate is measured against the constraints the deck already carries: no remount across the flip (a playing clip keeps playing), the virtual-detector rules in MediaStage.tsx, the per-unit keyed list, and the settle fence.
    The goal is to delete the assert loop, not to tune it.
+   Scheduled at the phase-5 close (Tristan, 2026-09-14): a design pass BEFORE m0.9 phase 6 opens — each candidate probed on the S23, the shape settled in a grilling before any rewrite; plan appendix 27 stays open until it lands.
 
 ## Waiting for a trigger
 

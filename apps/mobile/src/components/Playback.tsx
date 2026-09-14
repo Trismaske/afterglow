@@ -284,7 +284,7 @@ export function Playback({
           />
           {!scrubbing && (
             <Pressable
-              style={[styles.button, { right: 58, bottom: BUTTON_BOTTOM + insetBottom }]}
+              style={[styles.button, { right: 58, bottom: STAGE_BOTTOM_ROW + insetBottom }]}
               onPress={onStage}
               accessibilityLabel={immersive ? 'Exit fullscreen' : 'Fullscreen'}
             >
@@ -297,7 +297,7 @@ export function Playback({
           )}
           {!scrubbing && (
             <Pressable
-              style={[styles.button, { right: 10, bottom: BUTTON_BOTTOM + insetBottom }]}
+              style={[styles.button, { right: 10, bottom: STAGE_BOTTOM_ROW + insetBottom }]}
               onPress={onSpeaker}
               accessibilityLabel={playback.muted ? 'Unmute' : 'Mute'}
             >
@@ -571,7 +571,16 @@ const SEEK_BAND_HEIGHT = SEEK_THUMB_R * 4;
  * the right end on the Fullscreen button — its press flipped immersive
  * and its drag, unblocked, paged (S23, 2026-09-14). */
 const BUTTON_SIZE = 40;
-const BUTTON_BOTTOM = SEEK_BAND_HEIGHT + 8;
+/** The bottom edge of EVERYTHING at the stage's foot: the buttons, the
+ * deck's badge pill and the stage's zoom notice all rest on this line,
+ * above the seek band, so nothing overlaps the track and the foot reads
+ * as one row (the tester's call, 2026-09-14). */
+export const STAGE_BOTTOM_ROW = SEEK_BAND_HEIGHT + 8;
+/** The row's right end the buttons take (speaker at 10, expand at 58,
+ * each BUTTON_SIZE wide, plus a gap): what the deck's badge pill must
+ * leave free so a full badge set wraps upward instead of running under
+ * the Fullscreen button on a narrow stage (codex, 2026-09-14). */
+export const STAGE_BOTTOM_ROW_BUTTONS = 58 + BUTTON_SIZE + 8;
 
 const styles = StyleSheet.create({
   centre: {

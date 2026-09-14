@@ -92,6 +92,7 @@ import {
   zoomTouchFrame,
 } from '../lib/zoomTarget';
 import type { RegionZoomState } from './useRegionZoom';
+import { STAGE_BOTTOM_ROW } from './Playback';
 
 /** The deck-canonical pager-negotiating driver set: stage pinch claims
  * two-finger streams from the pager by ACTIVATION; pan + double-tap on
@@ -479,6 +480,10 @@ export interface MediaStageViewProps {
    * (the deck's position/time badges + badge cluster; Compare's pane
    * label). Phase 6 replaces these with the declarative builder. */
   chrome?: React.ReactNode;
+  /** What the stage's foot keeps clear of at the bottom (the OS
+   * navigation bar in the deck's immersive mode): the zoom notice sits
+   * on the stage's bottom row above it, like the host's own chrome. */
+  footInset?: number;
   /** The host content under the stage gestures — the pager block. */
   children?: React.ReactNode;
 }
@@ -496,6 +501,7 @@ export function MediaStageView({
   regionZoom,
   identityOk = true,
   backdropColor,
+  footInset = 0,
   chrome,
   children,
 }: MediaStageViewProps) {
@@ -548,7 +554,7 @@ export function MediaStageView({
                     Overlay settings and the eye never govern it. */}
                 {regionZoom.failed &&
                   overlayFor !== null &&
-                  regionZoom.forPhotoId === overlayFor.id && <ZoomFailNotice />}
+                  regionZoom.forPhotoId === overlayFor.id && <ZoomFailNotice inset={footInset} />}
               </Animated.View>
             </VirtualGestureDetector>
             {chrome}
@@ -640,9 +646,9 @@ export function StagePaneLayers({
  * layer so it never scales. DELIBERATELY un-hideable: it is a fidelity
  * claim, not decoration (m0.9 grilling M19) — the Overlay settings and
  * the eye never govern it. */
-export function ZoomFailNotice() {
+export function ZoomFailNotice({ inset = 0 }: { inset?: number }) {
   return (
-    <View style={[styles.zoomNotice]} pointerEvents="none">
+    <View style={[styles.zoomNotice, { bottom: STAGE_BOTTOM_ROW + inset }]} pointerEvents="none">
       <Text style={styles.zoomNoticeText}>
         Full detail unavailable — image file can't be fully read
       </Text>
@@ -876,7 +882,8 @@ const styles = StyleSheet.create({
   /** The zoom-time fail-soft notice (see the overlay render comment). */
   zoomNotice: {
     position: 'absolute',
-    bottom: 12,
+    // The stage's bottom row (Playback's STAGE_BOTTOM_ROW, set per
+    // render with the host's foot inset): the foot is one line.
     alignSelf: 'center',
     backgroundColor: 'rgba(0,0,0,0.55)',
     borderRadius: 6,

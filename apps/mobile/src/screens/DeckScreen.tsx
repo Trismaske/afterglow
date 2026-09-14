@@ -41,7 +41,11 @@ import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { OsThumbnail } from '../components/OsThumbnail';
 import { VideoPage } from '../components/VideoPage';
 import { PhotoPage } from '../components/PhotoPage';
-import type { PlaybackStage } from '../components/Playback';
+import {
+  STAGE_BOTTOM_ROW,
+  STAGE_BOTTOM_ROW_BUTTONS,
+  type PlaybackStage,
+} from '../components/Playback';
 import { PLAYBACK_KEYS, parsePlaybackMode, type PlaybackMode } from '../lib/playbackPrefs';
 import type { SurfaceType } from 'expo-video';
 import { thumbBucketPx } from '../lib/thumbnailSize';
@@ -164,6 +168,8 @@ const VERDICT_ROW_MIN_HEIGHT = 50;
 // 1.4 → 1.5 → 1.6 → 1.75 (S23 device pass, Tristan): 1.75 ACCEPTED.
 const VERDICT_FLEX = 1.75;
 const FINISH_MIN_HEIGHT = 56;
+/** The badge pill's inset from the stage's left edge. */
+const FLAG_BADGE_LEFT = 10;
 /** Frames an unconfirmed pager alignment (`pagerAssertRef`) is re-issued
  * over: the re-laid content grows in the frame traversal after its
  * mount, one to a few frames after the commit; the bound keeps a target
@@ -2320,6 +2326,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
         regionZoom={regionZoom}
         identityOk={current?.id === view.current.id}
         backdropColor={immersive ? '#000' : colors.surface}
+        footInset={immersive ? insets.bottom : 0}
         chrome={
           // Immersive is edge to edge: the corner, the badge cluster and
           // the details overlay keep clear of the OS navigation bar
@@ -2354,16 +2361,15 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 >
                   <Text style={styles.timeBadgeText}>{cornerLabel}</Text>
                 </Pressable>
-                {/* Glance-only while a page's playback chrome is up: the
-                    pill sits on the seek band's strip (this slot renders
-                    ABOVE the pager, so it would win the touch-down and
-                    open the details instead of starting a scrub — codex,
-                    2026-09-14); the corner still opens the details. */}
                 <Pressable
-                  style={styles.flagBadge}
+                  // The pill wraps its badges upward before the buttons'
+                  // end of the row (a full badge set on a narrow stage).
+                  style={[
+                    styles.flagBadge,
+                    { maxWidth: Math.max(0, pageW - FLAG_BADGE_LEFT - STAGE_BOTTOM_ROW_BUTTONS) },
+                  ]}
                   onPress={() => setDetailsOpen(true)}
                   accessibilityLabel="Show photo details"
-                  pointerEvents={playbackChrome !== null ? 'none' : 'auto'}
                 >
                   <BadgeCluster badges={badgesFor(view.current)} size={24} />
                 </Pressable>
@@ -2848,8 +2854,10 @@ const styles = StyleSheet.create({
   },
   flagBadge: {
     position: 'absolute',
-    bottom: 10,
-    left: 10,
+    // On the stage's bottom row with the playback chrome's buttons,
+    // clear of the seek band (Playback's STAGE_BOTTOM_ROW).
+    bottom: STAGE_BOTTOM_ROW,
+    left: FLAG_BADGE_LEFT,
     backgroundColor: 'rgba(0,0,0,0.55)',
     borderRadius: 6,
     paddingHorizontal: 9,

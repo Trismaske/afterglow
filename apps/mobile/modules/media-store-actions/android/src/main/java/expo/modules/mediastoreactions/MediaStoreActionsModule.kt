@@ -9,6 +9,8 @@ import android.content.res.Configuration
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Process
@@ -582,6 +584,69 @@ class MediaStoreActionsModule : Module() {
      * OS may reclaim the cache dir at any time. Idempotent: an existing
      * file of the expected length is returned without re-reading.
      */
+    // THE FRAME STRIP (m0.9 phase 6, the spike's second arm — M30): a
+    // clip's frames at thumbnail scale in ONE bitmap, `frames` square
+    // tiles of `px` side by side, drawn from MediaMetadataRetriever's
+    // nearest keyframes at evenly spaced times. A motion photo's clip is
+    // read IN PLACE through its byte range (no extraction); a video
+    // through its content URI. RGB_565: a thumbnail needs no alpha and
+    // the strip's memory is the arm's cost (frames × px² × 2 bytes).
+    // Crosses as a SharedRef<Bitmap> like every bitmap here.
+    AsyncFunction("extractFrameStrip") Coroutine {
+      uri: Uri, offset: Double, length: Double, frames: Int, px: Int ->
+      withContext(Dispatchers.IO) {
+        val context = appContext.reactContext
+          ?: throw IllegalStateException("Android context unavailable")
+        require(frames in 1..64 && px in 16..1024) { "frame strip: $frames frames of $px px" }
+        val strip = Bitmap.createBitmap(frames * px, px, Bitmap.Config.RGB_565)
+        val canvas = android.graphics.Canvas(strip)
+        val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+        // Every decoded frame is recycled once drawn (a dozen frames a
+        // cell, two dozen cells: GC would lag them), and a failed strip
+        // goes with the failure rather than waiting for the collector.
+        var last: Bitmap? = null
+        try {
+        MediaMetadataRetriever().use { reader ->
+          if (length > 0) {
+            val pfd = context.contentResolver.openFileDescriptor(uri, "r")
+              ?: throw IllegalStateException("openFileDescriptor returned null")
+            pfd.use { reader.setDataSource(it.fileDescriptor, offset.toLong(), length.toLong()) }
+          } else {
+            reader.setDataSource(context, uri)
+          }
+          val durationMs = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            ?.toLongOrNull() ?: throw IllegalStateException("no duration for $uri")
+          for (i in 0 until frames) {
+            val timeUs = durationMs * 1000L * (2L * i + 1L) / (2L * frames)
+            val decoded = reader.getScaledFrameAtTime(
+              timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, px, px,
+            )
+            val frame = decoded ?: last ?: throw IllegalStateException("no frame at $timeUs us of $uri")
+            if (decoded != null && last != null && last !== decoded) last.recycle()
+            last = frame
+            // Cover the square tile: scale the shorter side to px, centre.
+            val scale = px.toFloat() / minOf(frame.width, frame.height)
+            val w = frame.width * scale
+            val h = frame.height * scale
+            val dst = android.graphics.RectF(
+              i * px + (px - w) / 2f, (px - h) / 2f, i * px + (px + w) / 2f, (px + h) / 2f,
+            )
+            canvas.save()
+            canvas.clipRect(i * px, 0, (i + 1) * px, px)
+            canvas.drawBitmap(frame, null, dst, paint)
+            canvas.restore()
+          }
+        }
+        } catch (error: Throwable) {
+          strip.recycle()
+          throw error
+        } finally {
+          last?.recycle()
+        }
+        RegionBitmapRef(strip, appContext)
+      }
+    }
+
     AsyncFunction("extractMotionClip") Coroutine { uri: Uri, offset: Double, length: Double, name: String ->
       withContext(Dispatchers.IO) {
         val context = appContext.reactContext

@@ -4640,3 +4640,72 @@ export async function setContentHash(
     ...params,
   );
 }
+
+// ---------------------------------------------------------------------
+// The animated-thumbnail spike's population (m0.9 phase 6, M29): the
+// newest present rows of each animating kind — videos, motion photos
+// (a clip byte range), GIFs (by MIME) — for the probe screen's cells.
+// Probe-only: the screen and this query leave with the spike.
+// ---------------------------------------------------------------------
+
+export interface AnimatedProbeRow {
+  id: string;
+  uri: string;
+  kind: StoredMediaKind;
+  version: number;
+  animated: 'video' | 'motion' | 'gif';
+  motion: MotionClipRow | null;
+}
+
+export async function fetchAnimatedProbeRows(
+  db: SQLiteDatabase,
+  mounted: readonly string[] | null,
+  limits: { videos: number; motion: number; gifs: number },
+): Promise<AnimatedProbeRow[]> {
+  // Rows on an ejected card stay present and are excluded at read time
+  // (the reachability rule every list applies), so a limit never fills
+  // with cells that cannot play.
+  const reach = reachClause(mounted, 'p.volume_name');
+  const columns =
+    'p.asset_id AS id, p.uri, p.kind, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us';
+  const base = `FROM photos p WHERE p.is_present = 1 AND p.state <> 'trashed'${reach.sql}`;
+  type Raw = {
+    id: string;
+    uri: string;
+    kind: StoredMediaKind;
+    image_version: number;
+    motion_offset: number | null;
+    motion_length: number | null;
+    motion_presentation_us: number | null;
+  };
+  const [videos, motion, gifs] = await Promise.all([
+    db.getAllAsync<Raw>(
+      `SELECT ${columns} ${base} AND p.kind = 'video' ORDER BY p.taken_at DESC LIMIT ?`,
+      ...reach.params,
+      limits.videos,
+    ),
+    db.getAllAsync<Raw>(
+      `SELECT ${columns} ${base} AND p.kind = 'photo' AND p.motion_video_offset IS NOT NULL ORDER BY p.taken_at DESC LIMIT ?`,
+      ...reach.params,
+      limits.motion,
+    ),
+    db.getAllAsync<Raw>(
+      `SELECT ${columns} ${base} AND p.mime_type = 'image/gif' ORDER BY p.taken_at DESC LIMIT ?`,
+      ...reach.params,
+      limits.gifs,
+    ),
+  ]);
+  const shape = (row: Raw, animated: AnimatedProbeRow['animated']): AnimatedProbeRow => ({
+    id: row.id,
+    uri: row.uri,
+    kind: row.kind,
+    version: Number(row.image_version),
+    animated,
+    motion: motionClipOf(row),
+  });
+  return [
+    ...videos.map((r) => shape(r, 'video')),
+    ...motion.map((r) => shape(r, 'motion')),
+    ...gifs.map((r) => shape(r, 'gif')),
+  ];
+}

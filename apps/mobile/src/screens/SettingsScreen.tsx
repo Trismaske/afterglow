@@ -914,6 +914,17 @@ export function SettingsScreen({ navigation }: Props) {
           </View>
         </Pressable>
 
+        <Text style={styles.sectionLabel}>Diagnostics</Text>
+        <Pressable style={styles.row} onPress={() => navigation.navigate('AnimatedThumbProbe')}>
+          <View style={styles.rowBody}>
+            <Text style={styles.rowTitle}>Animated thumbnails probe</Text>
+            <Text style={styles.rowHint}>
+              The phase-6 spike: grid cells animating under each mechanism.
+            </Text>
+          </View>
+          <Text style={[styles.chevron, { color: theme.accent }]}>›</Text>
+        </Pressable>
+
         <Text style={styles.sectionLabel}>About</Text>
         <View style={styles.row}>
           <View style={styles.rowBody}>

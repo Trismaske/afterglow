@@ -18,6 +18,7 @@ import { logFootprint } from './src/lib/footprint';
 import { installShareResolution } from './src/lib/shareResolution';
 import { ReviewProvider, useReview } from './src/review/ReviewContext';
 import { HomeScreen } from './src/screens/HomeScreen';
+import { AnimatedThumbProbeScreen } from './src/screens/AnimatedThumbProbeScreen';
 import { TimelineScreen } from './src/screens/TimelineScreen';
 import { DeckScreen } from './src/screens/DeckScreen';
 import { CompareScreen } from './src/screens/CompareScreen';
@@ -243,6 +244,11 @@ function ThemedNavigator() {
           options={{ title: 'Photo source' }}
         />
         <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
+        <Stack.Screen
+          name="AnimatedThumbProbe"
+          component={AnimatedThumbProbeScreen}
+          options={{ title: 'Animated thumbnails probe' }}
+        />
       </Stack.Navigator>
     </NavigationContainer>
   );

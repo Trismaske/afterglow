@@ -85,6 +85,17 @@ export const CHROME_HIDE_MS = 2000;
 /** Progress ticks per second for the seek track — coarse on purpose (a
  * hairline cannot show finer). */
 const TIME_UPDATE_INTERVAL_S = 0.25;
+/** A seek's target stands in for the reported time until a tick lands
+ * within this fraction of it, or SEEK_SETTLE_TICKS ticks have passed.
+ * expo-video posts the seek to the main thread while its clock's next
+ * tick may already be queued ahead of it (IntervalUpdateClock: the
+ * clock runs paused or playing), so exactly one stale tick — the
+ * pre-seek position — can arrive after a seek; shown, it snapped the
+ * thumb back on every release (S23, 2026-09-14). ExoPlayer masks the
+ * position at the target from the seek call on, so the tick after that
+ * one agrees. */
+const SEEK_SETTLE_FRACTION = 0.02;
+const SEEK_SETTLE_TICKS = 2;
 /** The buffer bound (header): seconds ahead and bytes of samples per
  * player. 16 MiB holds ~3 s of a 45 Mbps 4K clip and ~90 s of 1080p. */
 const PLAYBACK_BUFFER_S = 4;
@@ -225,7 +236,7 @@ export function Playback({
             onSeek={onSeek}
           />
           <Pressable
-            style={[styles.button, { right: 58, bottom: 12 + insetBottom }]}
+            style={[styles.button, { right: 58, bottom: BUTTON_BOTTOM + insetBottom }]}
             onPress={onStage}
             accessibilityLabel={immersive ? 'Exit fullscreen' : 'Fullscreen'}
           >
@@ -236,7 +247,7 @@ export function Playback({
             />
           </Pressable>
           <Pressable
-            style={[styles.button, { right: 10, bottom: 12 + insetBottom }]}
+            style={[styles.button, { right: 10, bottom: BUTTON_BOTTOM + insetBottom }]}
             onPress={onSpeaker}
             accessibilityLabel={playback.muted ? 'Unmute' : 'Mute'}
           >
@@ -292,6 +303,20 @@ function usePlayer(source: string, active: boolean, mode: PlaybackMode): PlayerS
   });
   const [ended, setEnded] = useState(false);
   const [underway, setUnderway] = useState(false);
+  /** The last seek's target while the ticks have not caught up with it
+   * (SEEK_SETTLE_FRACTION). */
+  const [sought, setSought] = useState<{ fraction: number; ticks: number } | null>(null);
+  useEffect(() => {
+    setSought((pending) => {
+      if (pending === null) return null;
+      const duration = player.duration;
+      const reported = duration > 0 ? time.currentTime / duration : 0;
+      const ticks = pending.ticks + 1;
+      if (Math.abs(reported - pending.fraction) <= SEEK_SETTLE_FRACTION) return null;
+      if (ticks >= SEEK_SETTLE_TICKS) return null;
+      return { fraction: pending.fraction, ticks };
+    });
+  }, [player, time]);
 
   useEffect(() => {
     const sub = player.addListener('playToEnd', () => {
@@ -322,6 +347,7 @@ function usePlayer(source: string, active: boolean, mode: PlaybackMode): PlayerS
     player.muted = true;
     setEnded(false);
     setUnderway(false);
+    setSought(null);
   }, [player, active, mode, source]);
 
   const play = useCallback(() => {
@@ -339,6 +365,7 @@ function usePlayer(source: string, active: boolean, mode: PlaybackMode): PlayerS
       const duration = player.duration;
       if (!(duration > 0)) return;
       player.currentTime = fraction * duration;
+      setSought({ fraction, ticks: 0 });
       // A seek leaves the ended state (ExoPlayer is READY again) and
       // shows the sought frame: the control reads Play, not Replay.
       setEnded(false);
@@ -348,7 +375,8 @@ function usePlayer(source: string, active: boolean, mode: PlaybackMode): PlayerS
   );
 
   const duration = player.duration;
-  const progress = duration > 0 ? Math.min(1, time.currentTime / duration) : 0;
+  const progress =
+    sought !== null ? sought.fraction : duration > 0 ? Math.min(1, time.currentTime / duration) : 0;
   return useMemo(
     () => ({
       player,
@@ -457,10 +485,20 @@ function SeekTrack({
  * radius so the whole circle stays inside the stage's clipped box. */
 const SEEK_LINE = 2;
 const SEEK_THUMB_R = (SEEK_LINE * 9) / 2;
-/** The expanded track floats above the bottom row (the speaker and
- * expand buttons, the stage's badge pill), so neither end of it and no
- * thumb position sits under a button — the fullscreen-player layout. */
-const SEEK_EXPANDED_LIFT = 44;
+/** The chrome's bottom row: the speaker and expand buttons' size and
+ * their distance from the stage edge (the badge pill shares the row). */
+const BUTTON_SIZE = 40;
+const BUTTON_BOTTOM = 12;
+/** The expanded track's touch band starts where the bottom row ENDS —
+ * no overlap: the buttons are later siblings and win any shared strip,
+ * and a band whose lower edge ran 8 dp into the row put a thumb-aimed
+ * touch that landed low near the right end on the Fullscreen button —
+ * its press flipped immersive and its drag, unblocked, paged (S23,
+ * 2026-09-14). The band is twice the thumb's diameter with the track
+ * at its middle, so a touch lands inside it up to a thumb's diameter
+ * above or below the thumb's centre. */
+const SEEK_EXPANDED_LIFT = BUTTON_BOTTOM + BUTTON_SIZE;
+const SEEK_BAND_HEIGHT = SEEK_THUMB_R * 4;
 
 const styles = StyleSheet.create({
   centre: {
@@ -478,9 +516,9 @@ const styles = StyleSheet.create({
   },
   button: {
     position: 'absolute',
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: BUTTON_SIZE,
+    height: BUTTON_SIZE,
+    borderRadius: BUTTON_SIZE / 2,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: 'rgba(0,0,0,0.45)',
@@ -489,9 +527,10 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: 0,
-    height: 32,
+    height: SEEK_BAND_HEIGHT,
     justifyContent: 'flex-end',
-    paddingBottom: SEEK_THUMB_R - (SEEK_LINE * 3) / 2,
+    // The track's centre at the band's middle.
+    paddingBottom: SEEK_BAND_HEIGHT / 2 - (SEEK_LINE * 3) / 2,
     paddingHorizontal: SEEK_THUMB_R,
   },
   seekHairline: {

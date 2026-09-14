@@ -164,6 +164,11 @@ const VERDICT_ROW_MIN_HEIGHT = 50;
 // 1.4 → 1.5 → 1.6 → 1.75 (S23 device pass, Tristan): 1.75 ACCEPTED.
 const VERDICT_FLEX = 1.75;
 const FINISH_MIN_HEIGHT = 56;
+/** Frames an unconfirmed pager alignment (`pagerAssertRef`) is re-issued
+ * over: the re-laid content grows in the frame traversal after its
+ * mount, one to a few frames after the commit; the bound keeps a target
+ * the list cannot reach from re-issuing forever. */
+const PAGER_ASSERT_FRAMES = 12;
 
 /** The write-error surface for the deck's DIRECT queue writes (codex r7:
  * toggleShare/toggleOrganize bypass the provider, so its decision alert
@@ -1551,6 +1556,64 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * pending photo. Within a unit the dedup stays (it is what keeps this
    * effect from snapping jumpTo's animation). */
   const alignedUnitRef = useRef<string | null>(null);
+  /** An unanimated alignment the native list has not yet CONFIRMED —
+   * the offset it must report — re-issued every frame until it does.
+   * Fabric runs a scroll command before the mount items queued in the
+   * same frame (MountItemDispatcher: "execute all ViewCommands first"),
+   * and an Android scroll view lays out its content ITSELF, so the mount
+   * only measures the re-laid content and requests a layout — the
+   * content grows in that frame's traversal, after every React callback
+   * phase. A scroll to the cursor at the new width therefore executes
+   * against the OLD extent and clamps (the immersive flip on a last
+   * page: S23 2026-09-11/13/14 — the page before it with a slice of the
+   * one before that), and so does any re-issue made from a commit-time
+   * layout event or from the clamped scroll's own event (traced on the
+   * S23: the re-issue ran in the same frame, before the traversal). A
+   * `requestAnimationFrame` callback fires in the frame's timers phase,
+   * so a command it issues executes in the NEXT frame's dispatch — after
+   * this frame's traversal; a scroll event reporting the target confirms
+   * and ends the loop. Cleared by a finger (`onScrollBeginDrag`) and by
+   * jumpTo. A list that already sits on the target moves nothing and
+   * reports nothing: the loop ends silently when the last reported
+   * offset is the target, and warns once when it is not. */
+  const pagerAssertRef = useRef<{ offset: number; frames: number; frame: number } | null>(null);
+  /** The offset the last scroll event reported (the list's physical
+   * position — a re-layout changes its extent, never its position). */
+  const pagerReportedRef = useRef(0);
+  const clearPagerAssert = useCallback(() => {
+    const assert = pagerAssertRef.current;
+    if (assert === null) return;
+    cancelAnimationFrame(assert.frame);
+    pagerAssertRef.current = null;
+  }, []);
+  const assertPagerOffset = useCallback(
+    (offset: number) => {
+      clearPagerAssert();
+      pagerTargetRef.current = offset;
+      const assert = { offset, frames: 0, frame: 0 };
+      pagerAssertRef.current = assert;
+      const issue = () => listRef.current?.scrollToOffset({ offset, animated: false });
+      const tick = () => {
+        if (pagerAssertRef.current !== assert) return;
+        if (assert.frames >= PAGER_ASSERT_FRAMES) {
+          pagerAssertRef.current = null;
+          if (Math.abs(pagerReportedRef.current - offset) >= 1) {
+            console.warn(
+              `[deck] pager never confirmed offset ${offset} (last reported ${pagerReportedRef.current}) over ${PAGER_ASSERT_FRAMES} frames`,
+            );
+          }
+          return;
+        }
+        assert.frames += 1;
+        issue();
+        assert.frame = requestAnimationFrame(tick);
+      };
+      issue();
+      assert.frame = requestAnimationFrame(tick);
+    },
+    [clearPagerAssert],
+  );
+  useEffect(() => clearPagerAssert, [clearPagerAssert]);
   // Keep the pager aligned with the cursor whenever the deck's membership
   // changes (cull/undo/make-single/re-decide) or a new unit starts.
   //
@@ -1571,9 +1634,16 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     const offset = cursor * pageW;
     const unitChanged = alignedUnitRef.current !== unitKey;
     if (!unitChanged && pagerTargetRef.current === offset) return;
+    if (unitChanged) {
+      // A new unit is a NEW native list (keyed), mounted at this cursor
+      // (initialScrollIndex) — a position no scroll event reports while
+      // the settle fence discards the dying list's deliveries. Seed the
+      // report with it (codex 2026-09-14): the outgoing list's last
+      // offset would read as a missed alignment of the new one.
+      pagerReportedRef.current = offset;
+    }
     alignedUnitRef.current = unitKey;
-    pagerTargetRef.current = offset;
-    listRef.current?.scrollToOffset({ offset, animated: false });
+    assertPagerOffset(offset);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deckKey, pageW, cursor, holding, unitKey]);
   /** The settle's END re-asserts the pager's position and highlight
@@ -1582,18 +1652,13 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * legitimate could), the unit leaves its settle standing on the
    * cursor with badge, strip and stage in agreement. */
   const wasSettlingRef = useRef(false);
-  /** The page width the pager's content was last measured at (the
-   * onContentSizeChange re-assert below fires once per width). */
-  const contentWidthRef = useRef(0);
   useEffect(() => {
     const was = wasSettlingRef.current;
     wasSettlingRef.current = pagerSettling;
     if (!was || pagerSettling || holding || !pageW) return; // fire on true → false only
-    const offset = cursor * pageW;
-    pagerTargetRef.current = offset;
-    listRef.current?.scrollToOffset({ offset, animated: false });
+    assertPagerOffset(cursor * pageW);
     setPagerIndex(cursor);
-  }, [pagerSettling, holding, pageW, cursor]);
+  }, [pagerSettling, holding, pageW, cursor, assertPagerOffset]);
 
   const onMomentumEnd = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -1635,6 +1700,12 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       if (!pageW || holding || pagerSettling) return;
       const offset = event.nativeEvent.contentOffset.x;
+      pagerReportedRef.current = offset;
+      const assert = pagerAssertRef.current;
+      if (assert !== null) {
+        if (Math.abs(offset - assert.offset) >= 1) return; // a clamp, not a page
+        clearPagerAssert();
+      }
       if (pagerAnimatingRef.current) {
         if (Math.abs(offset - pagerTargetRef.current) >= 1) return; // still travelling
         pagerAnimatingRef.current = false;
@@ -1642,7 +1713,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       const index = Math.round(offset / pageW);
       setPagerIndex((previous) => (previous === index ? previous : index));
     },
-    [pageW, holding, pagerSettling],
+    [pageW, holding, pagerSettling, clearPagerAssert],
   );
 
   const jumpTo = useCallback(
@@ -1650,11 +1721,12 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       if (!pageW) return;
       setBrowseCursor(index);
       setPagerIndex(index);
+      clearPagerAssert(); // an animated scroll is its own arrival
       pagerAnimatingRef.current = true;
       pagerTargetRef.current = index * pageW;
       listRef.current?.scrollToOffset({ offset: index * pageW, animated: true });
     },
-    [pageW],
+    [pageW, clearPagerAssert],
   );
 
   // -------------------- list-mode anchor plumbing (P2-3) --------------
@@ -2301,27 +2373,17 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 index,
               })}
               onScroll={onPagerScroll}
-              scrollEventThrottle={32}
+              // Under 17 ms: Android DROPS scroll events inside the throttle
+              // window (ReactScrollViewHelper.emitScrollEvent), and the
+              // alignment assert above is confirmed only by the event of
+              // the move it waits for — at 32 ms the S23 lost that event
+              // (traced 2026-09-14) and the assert ran out its frames.
+              scrollEventThrottle={16}
               onScrollBeginDrag={() => {
                 pagerAnimatingRef.current = false;
+                clearPagerAssert(); // the finger is the intent now
               }}
               onMomentumScrollEnd={onMomentumEnd}
-              // The immersive flip re-lays every page at a new width. The
-              // alignment effect's scroll to the cursor lands BEFORE the
-              // native list has grown to the new extent, so on the last
-              // pages the offset is clamped to the OLD extent and nothing
-              // re-corrects it (S23, 2026-09-11/13: page 19 of 19 in
-              // immersive showed 18 with a slice of 17; earlier pages fit
-              // either extent). Re-assert the cursor's offset once the
-              // content is measured at THIS width — once per width, so a
-              // list-mode append never jumps a pager mid-drag.
-              onContentSizeChange={() => {
-                if (!pageW || holding || contentWidthRef.current === pageW) return;
-                contentWidthRef.current = pageW;
-                const offset = cursor * pageW;
-                pagerTargetRef.current = offset;
-                listRef.current?.scrollToOffset({ offset, animated: false });
-              }}
               // Phase 5 (M26): one page each side of the current one —
               // at most three players alive — and the pages re-render
               // on the facts they read through refs.

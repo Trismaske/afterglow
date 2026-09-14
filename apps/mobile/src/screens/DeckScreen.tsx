@@ -1037,6 +1037,9 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * the eye hides it — nothing else on the stage can be reached during
    * a scrub, and the bar alone reads as the scrub (Playback's header). */
   const [scrubbing, setScrubbing] = useState(false);
+  const scrubbingRef = useRef(false);
+  /** The pager took the drag a scrub started (see `scrollEnabled`). */
+  const scrubDragRef = useRef(false);
   const playbackChromeRef = useRef(playbackChrome);
   playbackChromeRef.current = playbackChrome;
   useEffect(() => {
@@ -1619,6 +1622,24 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     [clearPagerAssert],
   );
   useEffect(() => clearPagerAssert, [clearPagerAssert]);
+  /** A scrub's start and end (Playback's header). The pager's scroll is
+   * disabled for the scrub's duration: the seek responder's native
+   * block and this prop both land one frame after the touch-down, and
+   * a fast first move can cross the scroll view's slop before either —
+   * the S23 paged under a scrub started beneath the badge pill
+   * (2026-09-14). The disabled scroll view drops the drag it took (its
+   * onTouchEvent returns false), so the pager rests a few dp off the
+   * page; the scrub's end asserts the page back. */
+  const onScrubbingChange = useCallback(
+    (underway: boolean) => {
+      scrubbingRef.current = underway;
+      setScrubbing(underway);
+      if (underway || !scrubDragRef.current) return;
+      scrubDragRef.current = false;
+      if (pagerTargetRef.current >= 0) assertPagerOffset(pagerTargetRef.current);
+    },
+    [assertPagerOffset],
+  );
   // Keep the pager aligned with the cursor whenever the deck's membership
   // changes (cull/undo/make-single/re-decide) or a new unit starts.
   //
@@ -1952,7 +1973,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
         onChromeVisibleChange: (visible) => setChromeFor(item.id, visible),
         onExpand: expandStage,
         onCollapse: collapseStage,
-        onScrubbingChange: setScrubbing,
+        onScrubbingChange,
       };
       if (item.kind === 'video') {
         return (
@@ -2000,6 +2021,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       scale,
       expandStage,
       collapseStage,
+      onScrubbingChange,
       setChromeFor,
       setClipAvailability,
     ],
@@ -2376,7 +2398,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               // every guard ignores it. A JUST-SWAPPED deck also
               // ignores swipes for its settle window — see
               // `pagerSettling`.
-              scrollEnabled={!inert && !pagerSettling}
+              scrollEnabled={!inert && !pagerSettling && !scrubbing}
               showsHorizontalScrollIndicator={false}
               initialScrollIndex={Math.min(view.cursor, view.items.length - 1)}
               getItemLayout={(_data, index) => ({
@@ -2394,6 +2416,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               onScrollBeginDrag={() => {
                 pagerAnimatingRef.current = false;
                 clearPagerAssert(); // the finger is the intent now
+                if (scrubbingRef.current) scrubDragRef.current = true;
               }}
               onMomentumScrollEnd={onMomentumEnd}
               // Phase 5 (M26): one page each side of the current one —

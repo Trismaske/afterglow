@@ -454,10 +454,13 @@ function usePlayer(source: string, active: boolean, mode: PlaybackMode): PlayerS
  * Handler pan beside the pager's native scroll (MediaStage.tsx: the
  * worklets crash class) — and one that blocks the native responder on
  * grant, so the pager stands down for the drag. The block lands one
- * bridge hop after touch-down: a thumb that starts a scrub is well
- * inside that (measured on the S10e, 2026-09-10: a 1.5 s drag seeks
- * continuously end to end), a flick that crosses the scroll slop within
- * ~10 ms pages instead — a flick IS the page gesture. */
+ * frame after touch-down (a Fabric mount item), and a first move that
+ * crosses the scroll view's slop before it is taken by the pager too;
+ * the deck closes that gap by disabling the pager's scroll for the
+ * scrub's duration and asserting the page back at its end
+ * (DeckScreen's `onScrubbingChange`). A touch that starts on the band
+ * is a seek, never a page — the tester's rule (2026-09-14): nothing
+ * else is reachable while seeking. */
 function SeekTrack({
   progress,
   accent,

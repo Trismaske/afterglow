@@ -15,7 +15,7 @@
  * immersive flip is what keeps a playing video playing through it.
  */
 import React from 'react';
-import { Pressable, StyleSheet } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 import type { SurfaceType } from 'expo-video';
 import { OsThumbnail } from './OsThumbnail';
 import { Playback, type PlaybackStage } from './Playback';
@@ -28,6 +28,7 @@ export function VideoPage({
   uri,
   version,
   width,
+  inset,
   posterPx,
   near,
   active,
@@ -41,6 +42,9 @@ export function VideoPage({
   uri: string;
   version: number;
   width: number;
+  /** The deck stage's gutter, drawn INSIDE the page: a page is the
+   * window's width in both stages (DeckScreen's `pageW`). */
+  inset: number;
   /** The poster's OS-thumbnail bucket (the stage's first-paint size). */
   posterPx: number;
   /** The current page or its neighbour (M26): only then does a player
@@ -56,28 +60,30 @@ export function VideoPage({
 }) {
   return (
     <Pressable style={{ width, height: '100%' }} onPress={onPress}>
-      <OsThumbnail
-        assetId={id}
-        kind={kind}
-        uri={uri}
-        version={version}
-        px={posterPx}
-        contentFit="contain"
-        style={StyleSheet.absoluteFill}
-      />
-      {near && (
-        <Playback
-          // The version rides the uri so an edited file is a new source
-          // (item 3's rule, same as expo-image) — and, by the key, a new
-          // instance (Playback's header).
-          key={versionedUri(uri, version)}
-          source={versionedUri(uri, version)}
-          active={active}
-          mode={mode}
-          stage={stage}
-          surfaceType={surfaceType}
+      <View style={{ flex: 1, marginHorizontal: inset }}>
+        <OsThumbnail
+          assetId={id}
+          kind={kind}
+          uri={uri}
+          version={version}
+          px={posterPx}
+          contentFit="contain"
+          style={StyleSheet.absoluteFill}
         />
-      )}
+        {near && (
+          <Playback
+            // The version rides the uri so an edited file is a new source
+            // (item 3's rule, same as expo-image) — and, by the key, a new
+            // instance (Playback's header).
+            key={versionedUri(uri, version)}
+            source={versionedUri(uri, version)}
+            active={active}
+            mode={mode}
+            stage={stage}
+            surfaceType={surfaceType}
+          />
+        )}
+      </View>
     </Pressable>
   );
 }

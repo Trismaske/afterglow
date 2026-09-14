@@ -135,14 +135,6 @@ Numbers change whenever an item closes, so **cross-references from code or other
    The Playback rows use `components/SegmentedControl`; the daily goal, keeping-up and grouping rows still use loose chips for the same one-of-a-few choice.
    A small sweep, waiting only on the type-scale pass above so the pill sizes land once; the chip styles and the goal rows' write fences are the parts to keep.
 
-14. **The deck pager's alignment mechanism: too complex for what it does** (Tristan, 2026-09-14 S23 pass).
-   Keeping the pager on the cursor across the immersive flip took a frame-paced assert loop confirmed by the list's own scroll events, a scroll-event throttle tuned to Android's drop threshold, and a bounded give-up with a warning (`DeckScreen.tsx`, `pagerAssertRef`; plan m0.9 appendix 27 has the traced mechanism: Fabric's commit-time layout events, commands before mount items, the scroll view's own content layout in the frame traversal).
-   The complexity is real but it is the cost of ONE design choice: a horizontal FlatList whose pages re-lay at a new width while it must keep showing the same page.
-   Investigation wanted before any further patching: the design and its pros and cons, and the simpler shapes that avoid the re-layout race altogether — a pager whose page width never changes across the flip (the stage inset drawn inside the page, or the flip scaling a fixed-width pager), a pager component with a native page index (`react-native-pager-view` keeps its page through size changes natively), `maintainVisibleContentPosition` with an exact anchor, or a per-page immersive that does not re-lay the list.
-   Each candidate is measured against the constraints the deck already carries: no remount across the flip (a playing clip keeps playing), the virtual-detector rules in MediaStage.tsx, the per-unit keyed list, and the settle fence.
-   The goal is to delete the assert loop, not to tune it.
-   Scheduled at the phase-5 close (Tristan, 2026-09-14): a design pass BEFORE m0.9 phase 6 opens — each candidate probed on the S23, the shape settled in a grilling before any rewrite; plan appendix 27 stays open until it lands.
-
 ## Waiting for a trigger
 
 This section holds fixes whose shape is known but whose value is unproven, and questions whose answer needs evidence that does not exist yet.

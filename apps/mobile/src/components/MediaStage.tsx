@@ -456,9 +456,6 @@ export interface MediaStageViewProps {
    * measured stage itself stays borderless (the rule in the header).
    * Omit for an undecorated stage. */
   frameStyle?: StyleProp<ViewStyle>;
-  /** Fired after the internal stageW/stageH shared-value writes — for
-   * hosts that also need the width as React state (the deck's pageW). */
-  onStageLayout?: (width: number, height: number) => void;
   /** The photo the zoom overlay shows (usually the host's CURRENT item;
    * the deck passes its frozen view's photo). Null renders an empty
    * overlay. */
@@ -495,7 +492,6 @@ export interface MediaStageViewProps {
 export function MediaStageView({
   controller,
   frameStyle,
-  onStageLayout,
   overlayFor,
   overlayUri,
   regionZoom,
@@ -511,7 +507,6 @@ export function MediaStageView({
     const { width, height } = event.nativeEvent.layout;
     stageW.value = width;
     stageH.value = height;
-    onStageLayout?.(width, height);
   };
   return (
     <View style={[styles.frame, frameStyle]}>

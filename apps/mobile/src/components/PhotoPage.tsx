@@ -22,7 +22,7 @@
  * over to the pager's scroll exactly like any list row.
  */
 import React, { useState } from 'react';
-import { Pressable, StyleSheet, type GestureResponderEvent } from 'react-native';
+import { Pressable, StyleSheet, type GestureResponderEvent, View } from 'react-native';
 import { Image } from 'expo-image';
 import type { SurfaceType } from 'expo-video';
 import type { SharedValue } from 'react-native-reanimated';
@@ -39,6 +39,7 @@ export function PhotoPage({
   version,
   motion,
   width,
+  inset,
   posterPx,
   near,
   active,
@@ -55,6 +56,9 @@ export function PhotoPage({
   /** The motion clip riding the row, or null for a plain photo. */
   motion: MotionClipRow | null;
   width: number;
+  /** The deck stage's gutter, drawn INSIDE the page: a page is the
+   * window's width in both stages (DeckScreen's `pageW`). */
+  inset: number;
   /** The poster's OS-thumbnail bucket (the stage's first-paint size). */
   posterPx: number;
   /** The current page or its neighbour (M26): only then does a motion
@@ -78,42 +82,44 @@ export function PhotoPage({
   const [decoded, setDecoded] = useState<string | null>(null);
   return (
     <Pressable style={{ width, height: '100%' }} onPress={onPress}>
-      {decoded !== source && (
-        <OsThumbnail
-          assetId={id}
-          kind="photo"
-          uri={uri}
-          version={version}
-          px={posterPx}
-          contentFit="contain"
+      <View style={{ flex: 1, marginHorizontal: inset }}>
+        {decoded !== source && (
+          <OsThumbnail
+            assetId={id}
+            kind="photo"
+            uri={uri}
+            version={version}
+            px={posterPx}
+            contentFit="contain"
+            style={StyleSheet.absoluteFill}
+          />
+        )}
+        <Image
+          source={{ uri: source }}
           style={StyleSheet.absoluteFill}
+          contentFit="contain"
+          // The version is part of the recycling identity (DeckItem's
+          // doc): an edited photo is a NEW image to expo-image.
+          recyclingKey={imageCacheKey(id, version)}
+          transition={40}
+          onLoad={() => setDecoded(source)}
         />
-      )}
-      <Image
-        source={{ uri: source }}
-        style={StyleSheet.absoluteFill}
-        contentFit="contain"
-        // The version is part of the recycling identity (DeckItem's
-        // doc): an edited photo is a NEW image to expo-image.
-        recyclingKey={imageCacheKey(id, version)}
-        transition={40}
-        onLoad={() => setDecoded(source)}
-      />
-      {motion !== null && (
-        // The motion photo's clip over its still (F25/G6) — mounted
-        // WITH the page (the clip rides the row), props-only handoff.
-        <MotionClipOverlay
-          id={id}
-          clip={motion}
-          near={near}
-          active={active}
-          mode={mode}
-          stage={stage}
-          surfaceType={surfaceType}
-          zoomScale={zoomScale}
-          onClipAvailability={onClipAvailability}
-        />
-      )}
+        {motion !== null && (
+          // The motion photo's clip over its still (F25/G6) — mounted
+          // WITH the page (the clip rides the row), props-only handoff.
+          <MotionClipOverlay
+            id={id}
+            clip={motion}
+            near={near}
+            active={active}
+            mode={mode}
+            stage={stage}
+            surfaceType={surfaceType}
+            zoomScale={zoomScale}
+            onClipAvailability={onClipAvailability}
+          />
+        )}
+      </View>
     </Pressable>
   );
 }

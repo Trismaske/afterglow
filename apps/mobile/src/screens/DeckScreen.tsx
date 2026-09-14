@@ -12,6 +12,7 @@ import {
   TextInput,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  useWindowDimensions,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -170,11 +171,13 @@ const VERDICT_FLEX = 1.75;
 const FINISH_MIN_HEIGHT = 56;
 /** The badge pill's inset from the stage's left edge. */
 const FLAG_BADGE_LEFT = 10;
-/** Frames an unconfirmed pager alignment (`pagerAssertRef`) is re-issued
- * over: the re-laid content grows in the frame traversal after its
- * mount, one to a few frames after the commit; the bound keeps a target
- * the list cannot reach from re-issuing forever. */
-const PAGER_ASSERT_FRAMES = 12;
+/** The deck stage's gutter, per side: the root's horizontal padding plus
+ * the frame's border — the ONE width difference between the deck stage
+ * and immersive's edge-to-edge stage. The pager never sees it: each page
+ * draws it inside itself (see `pageW`). */
+const STAGE_PADDING = 12;
+const STAGE_BORDER = 1;
+const STAGE_GUTTER = STAGE_PADDING + STAGE_BORDER;
 
 /** The write-error surface for the deck's DIRECT queue writes (codex r7:
  * toggleShare/toggleOrganize bypass the provider, so its decision alert
@@ -437,7 +440,21 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * label never flashes for the normal case; a genuinely slow write —
    * the scan-stall probe's territory — still says what is happening. */
   const [finishSlow, setFinishSlow] = useState(false);
-  const [pageW, setPageW] = useState(0);
+  /** A pager page is the WINDOW's width in BOTH stages (the pager design
+   * pass of 2026-09-14): the deck's gutter is drawn inside each page
+   * (`gutter`, below) and the frame clips the list, so the immersive flip
+   * never re-lays the list — its extent and the cursor's offset are the
+   * same numbers before and after, nothing scrolls, nothing races. A page
+   * as wide as the stage box re-laid every page 26 dp wider at the flip,
+   * and a scroll to the cursor at the new width executed against the OLD
+   * extent (Fabric runs view commands before the frame's mount items; an
+   * Android scroll view grows its content in the frame's traversal after
+   * them) and clamped on the last pages — the semi-scrolled page the S23
+   * showed three times, which a frame-paced assert loop then held. Measured
+   * on the S10e: this shape fires no scroll event at the flip. The app is
+   * portrait-locked, so the width changes only under a resize
+   * (split-screen): the list is keyed by it and remounts at the cursor. */
+  const pageW = useWindowDimensions().width;
   const [comparePicker, setComparePicker] = useState(false);
   /** P2-6: the details overlay — the metadata corner's tap target. */
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -449,6 +466,11 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * in `immersiveFlip` masks the reflow). Never a navigate: no
    * remount, no zoom-pipeline re-warm. */
   const [immersive, setImmersive] = useState(false);
+  /** The gutter each page draws inside itself; immersive is edge to edge.
+   * The deck's OWN constant, never the measured stage box: a measured value
+   * lags the flip's commit by one layout, and the list was 26 dp wider for
+   * that layout — and clamped (the S10e, 2026-09-14). */
+  const gutter = immersive ? 0 : STAGE_GUTTER;
   const listRef = useRef<FlatList<DeckItem>>(null);
 
   // m0.5: an explicit group (overview tap) pins the deck to it; the
@@ -1079,8 +1101,8 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   } = stage;
 
   /** P2-7 (revised, device pass 2026-08-28): the toggle re-lays-out the
-   * whole tree at once (chrome unmounts, pageW grows to the screen
-   * edge, the FlatList re-paginates) — frame-tweening that with
+   * whole tree at once (chrome unmounts, the stage grows to the screen
+   * edge, each page's gutter goes) — frame-tweening that with
    * LayoutAnimation left the photo itself snapping, which read as no
    * animation at all. A DIP TO BLACK masks the reflow instead: fade a
    * black cover in, flip the layout under it, fade out. Plain RN
@@ -1570,64 +1592,39 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * pending photo. Within a unit the dedup stays (it is what keeps this
    * effect from snapping jumpTo's animation). */
   const alignedUnitRef = useRef<string | null>(null);
-  /** An unanimated alignment the native list has not yet CONFIRMED —
-   * the offset it must report — re-issued every frame until it does.
-   * Fabric runs a scroll command before the mount items queued in the
-   * same frame (MountItemDispatcher: "execute all ViewCommands first"),
-   * and an Android scroll view lays out its content ITSELF, so the mount
-   * only measures the re-laid content and requests a layout — the
-   * content grows in that frame's traversal, after every React callback
-   * phase. A scroll to the cursor at the new width therefore executes
-   * against the OLD extent and clamps (the immersive flip on a last
-   * page: S23 2026-09-11/13/14 — the page before it with a slice of the
-   * one before that), and so does any re-issue made from a commit-time
-   * layout event or from the clamped scroll's own event (traced on the
-   * S23: the re-issue ran in the same frame, before the traversal). A
-   * `requestAnimationFrame` callback fires in the frame's timers phase,
-   * so a command it issues executes in the NEXT frame's dispatch — after
-   * this frame's traversal; a scroll event reporting the target confirms
-   * and ends the loop. Cleared by a finger (`onScrollBeginDrag`) and by
-   * jumpTo. A list that already sits on the target moves nothing and
-   * reports nothing: the loop ends silently when the last reported
-   * offset is the target, and warns once when it is not. */
-  const pagerAssertRef = useRef<{ offset: number; frames: number; frame: number } | null>(null);
-  /** The offset the last scroll event reported (the list's physical
-   * position — a re-layout changes its extent, never its position). */
-  const pagerReportedRef = useRef(0);
-  const clearPagerAssert = useCallback(() => {
-    const assert = pagerAssertRef.current;
-    if (assert === null) return;
-    cancelAnimationFrame(assert.frame);
-    pagerAssertRef.current = null;
+  /** An UNANIMATED alignment: the command now, and once more from the
+   * next frame. The list's extent never changes at the immersive flip
+   * (see `pageW`), so the flip needs no alignment at all; the second
+   * issue covers the one growth an open deck can still see — list
+   * mode's rows growing or re-ordering BEFORE the cursor on a write
+   * (the reconcile below) while the cursor stands on the last page:
+   * Fabric runs a scroll
+   * command before the mount items of its frame, and an Android scroll
+   * view grows its content in that frame's traversal after them, so a
+   * target past the OLD extent clamps; a frame callback fires in the
+   * timers phase and its command runs in the NEXT frame's dispatch
+   * (traced on the S23, 2026-09-14). A finger or an animated jump
+   * cancels the pending issue: the finger is the intent then. */
+  const pendingAlignRef = useRef(0);
+  const cancelAlign = useCallback(() => {
+    if (pendingAlignRef.current === 0) return;
+    cancelAnimationFrame(pendingAlignRef.current);
+    pendingAlignRef.current = 0;
   }, []);
-  const assertPagerOffset = useCallback(
+  const alignPager = useCallback(
     (offset: number) => {
-      clearPagerAssert();
+      cancelAlign();
       pagerTargetRef.current = offset;
-      const assert = { offset, frames: 0, frame: 0 };
-      pagerAssertRef.current = assert;
       const issue = () => listRef.current?.scrollToOffset({ offset, animated: false });
-      const tick = () => {
-        if (pagerAssertRef.current !== assert) return;
-        if (assert.frames >= PAGER_ASSERT_FRAMES) {
-          pagerAssertRef.current = null;
-          if (Math.abs(pagerReportedRef.current - offset) >= 1) {
-            console.warn(
-              `[deck] pager never confirmed offset ${offset} (last reported ${pagerReportedRef.current}) over ${PAGER_ASSERT_FRAMES} frames`,
-            );
-          }
-          return;
-        }
-        assert.frames += 1;
-        issue();
-        assert.frame = requestAnimationFrame(tick);
-      };
       issue();
-      assert.frame = requestAnimationFrame(tick);
+      pendingAlignRef.current = requestAnimationFrame(() => {
+        pendingAlignRef.current = 0;
+        issue();
+      });
     },
-    [clearPagerAssert],
+    [cancelAlign],
   );
-  useEffect(() => clearPagerAssert, [clearPagerAssert]);
+  useEffect(() => cancelAlign, [cancelAlign]);
   /** A scrub's start and end (Playback's header). The pager's scroll is
    * disabled for the scrub's duration: the seek responder's native
    * block and this prop both land one frame after the touch-down, and
@@ -1635,16 +1632,16 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * the S23 paged under a scrub started beneath the badge pill
    * (2026-09-14). The disabled scroll view drops the drag it took (its
    * onTouchEvent returns false), so the pager rests a few dp off the
-   * page; the scrub's end asserts the page back. */
+   * page; the scrub's end aligns the page back. */
   const onScrubbingChange = useCallback(
     (underway: boolean) => {
       scrubbingRef.current = underway;
       setScrubbing(underway);
       if (underway || !scrubDragRef.current) return;
       scrubDragRef.current = false;
-      if (pagerTargetRef.current >= 0) assertPagerOffset(pagerTargetRef.current);
+      if (pagerTargetRef.current >= 0) alignPager(pagerTargetRef.current);
     },
-    [assertPagerOffset],
+    [alignPager],
   );
   // Keep the pager aligned with the cursor whenever the deck's membership
   // changes (cull/undo/make-single/re-decide) or a new unit starts.
@@ -1662,23 +1659,15 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   // unhold render re-runs this with the swapped data.
   const deckKey = `${singlesMode ? 'singles' : (groupId ?? '')}:${browse ? 'b' : 'r'}:${deckItems.map((i) => i.id).join(',')}`;
   useEffect(() => {
-    if (!pageW || deckItems.length === 0 || holding) return;
+    if (deckItems.length === 0 || holding) return;
     const offset = cursor * pageW;
     const unitChanged = alignedUnitRef.current !== unitKey;
     if (!unitChanged && pagerTargetRef.current === offset) return;
-    if (unitChanged) {
-      // A new unit is a NEW native list (keyed), mounted at this cursor
-      // (initialScrollIndex) — a position no scroll event reports while
-      // the settle fence discards the dying list's deliveries. Seed the
-      // report with it (codex 2026-09-14): the outgoing list's last
-      // offset would read as a missed alignment of the new one.
-      pagerReportedRef.current = offset;
-    }
     alignedUnitRef.current = unitKey;
-    assertPagerOffset(offset);
+    alignPager(offset);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deckKey, pageW, cursor, holding, unitKey]);
-  /** The settle's END re-asserts the pager's position and highlight
+  /** The settle's END re-aligns the pager's position and highlight
    * exactly once — the final snap. Whatever a stale delivery or native
    * quirk did during the window (scroll was disabled, so nothing
    * legitimate could), the unit leaves its settle standing on the
@@ -1687,14 +1676,13 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   useEffect(() => {
     const was = wasSettlingRef.current;
     wasSettlingRef.current = pagerSettling;
-    if (!was || pagerSettling || holding || !pageW) return; // fire on true → false only
-    assertPagerOffset(cursor * pageW);
+    if (!was || pagerSettling || holding) return; // fire on true → false only
+    alignPager(cursor * pageW);
     setPagerIndex(cursor);
-  }, [pagerSettling, holding, pageW, cursor, assertPagerOffset]);
+  }, [pagerSettling, holding, pageW, cursor, alignPager]);
 
   const onMomentumEnd = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      if (!pageW) return;
       // A swipe on the FROZEN deck (rows still loading) must not write
       // the new unit's cursor from the old unit's pages — and neither
       // may a SETTLING one: scroll is disabled for the whole settle
@@ -1730,14 +1718,8 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * badge and the stage (Tristan's S10e repro, caught by screenshot). */
   const onPagerScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      if (!pageW || holding || pagerSettling) return;
+      if (holding || pagerSettling) return;
       const offset = event.nativeEvent.contentOffset.x;
-      pagerReportedRef.current = offset;
-      const assert = pagerAssertRef.current;
-      if (assert !== null) {
-        if (Math.abs(offset - assert.offset) >= 1) return; // a clamp, not a page
-        clearPagerAssert();
-      }
       if (pagerAnimatingRef.current) {
         if (Math.abs(offset - pagerTargetRef.current) >= 1) return; // still travelling
         pagerAnimatingRef.current = false;
@@ -1745,20 +1727,19 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       const index = Math.round(offset / pageW);
       setPagerIndex((previous) => (previous === index ? previous : index));
     },
-    [pageW, holding, pagerSettling, clearPagerAssert],
+    [pageW, holding, pagerSettling],
   );
 
   const jumpTo = useCallback(
     (index: number) => {
-      if (!pageW) return;
       setBrowseCursor(index);
       setPagerIndex(index);
-      clearPagerAssert(); // an animated scroll is its own arrival
+      cancelAlign(); // an animated scroll is its own arrival
       pagerAnimatingRef.current = true;
       pagerTargetRef.current = index * pageW;
       listRef.current?.scrollToOffset({ offset: index * pageW, animated: true });
     },
-    [pageW, clearPagerAssert],
+    [pageW, cancelAlign],
   );
 
   // -------------------- list-mode anchor plumbing (P2-3) --------------
@@ -1989,6 +1970,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
             uri={item.uri}
             version={item.version}
             width={pageW}
+            inset={gutter}
             posterPx={STAGE_THUMB_PX}
             near={near}
             active={active}
@@ -2008,6 +1990,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
           version={item.version}
           motion={item.motion}
           width={pageW}
+          inset={gutter}
           posterPx={STAGE_THUMB_PX}
           near={near}
           active={active}
@@ -2022,6 +2005,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     },
     [
       pageW,
+      gutter,
       onPagePress,
       fireStageTap,
       scale,
@@ -2320,7 +2304,6 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       <MediaStageView
         controller={stage}
         frameStyle={immersive ? styles.stageFrameImmersive : styles.stageFrame}
-        onStageLayout={(width) => setPageW(width)}
         overlayFor={view.current}
         overlayUri={versionedUri(view.current.uri, view.current.version)}
         regionZoom={regionZoom}
@@ -2366,7 +2349,12 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                   // end of the row (a full badge set on a narrow stage).
                   style={[
                     styles.flagBadge,
-                    { maxWidth: Math.max(0, pageW - FLAG_BADGE_LEFT - STAGE_BOTTOM_ROW_BUTTONS) },
+                    {
+                      maxWidth: Math.max(
+                        0,
+                        pageW - 2 * gutter - FLAG_BADGE_LEFT - STAGE_BOTTOM_ROW_BUTTONS,
+                      ),
+                    },
                   ]}
                   onPress={() => setDetailsOpen(true)}
                   accessibilityLabel="Show photo details"
@@ -2384,66 +2372,64 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
           </View>
         }
       >
-        {pageW > 0 && (
-          <View style={styles.pager}>
-            <FlatList
-              // Keyed by the DISPLAYED unit: a unit change swaps in
-              // a fresh native list at its own first pending photo
-              // (initialScrollIndex), and the outgoing list's
-              // offsets, momentum and in-flight animations are
-              // discarded with it — see DeckView.unitKey.
-              key={view.unitKey}
-              ref={listRef}
-              data={view.items}
-              keyExtractor={(i) => i.id}
-              renderItem={renderPage}
-              horizontal
-              pagingEnabled
-              // A FROZEN deck is fully inert (codex device-pass
-              // round): a swipe would move the native offset while
-              // every guard ignores it. A JUST-SWAPPED deck also
-              // ignores swipes for its settle window — see
-              // `pagerSettling`.
-              scrollEnabled={!inert && !pagerSettling && !scrubbing}
-              showsHorizontalScrollIndicator={false}
-              initialScrollIndex={Math.min(view.cursor, view.items.length - 1)}
-              getItemLayout={(_data, index) => ({
-                length: pageW,
-                offset: pageW * index,
-                index,
-              })}
-              onScroll={onPagerScroll}
-              // Under 17 ms: Android DROPS scroll events inside the throttle
-              // window (ReactScrollViewHelper.emitScrollEvent), and the
-              // alignment assert above is confirmed only by the event of
-              // the move it waits for — at 32 ms the S23 lost that event
-              // (traced 2026-09-14) and the assert ran out its frames.
-              scrollEventThrottle={16}
-              onScrollBeginDrag={() => {
-                pagerAnimatingRef.current = false;
-                clearPagerAssert(); // the finger is the intent now
-                if (scrubbingRef.current) scrubDragRef.current = true;
-              }}
-              onMomentumScrollEnd={onMomentumEnd}
-              // Phase 5 (M26): one page each side of the current one —
-              // at most three players alive — and the pages re-render
-              // on the facts they read through refs.
-              windowSize={3}
-              initialNumToRender={3}
-              extraData={[
-                view.current.id,
-                playback,
-                playbackChrome,
-                immersive,
-                pagerSettling,
-                holding,
-                isFocused,
-              ]}
-              onEndReached={view.listMode ? loadMoreList : undefined}
-              onEndReachedThreshold={2}
-            />
-          </View>
-        )}
+        {/* The pager sits one gutter OUTSIDE the stage box on each side
+            (the frame clips it) so its pages are the window's width in
+            both stages — see `pageW`. */}
+        <View style={[styles.pager, { marginHorizontal: -gutter }]}>
+          <FlatList
+            // Keyed by the DISPLAYED unit: a unit change swaps in
+            // a fresh native list at its own first pending photo
+            // (initialScrollIndex), and the outgoing list's
+            // offsets, momentum and in-flight animations are
+            // discarded with it — see DeckView.unitKey. And by the
+            // page width: a window resize is a fresh list at the
+            // cursor, never a scroll against a re-laid extent.
+            key={`${view.unitKey}:${pageW}`}
+            ref={listRef}
+            data={view.items}
+            keyExtractor={(i) => i.id}
+            renderItem={renderPage}
+            horizontal
+            pagingEnabled
+            // A FROZEN deck is fully inert (codex device-pass
+            // round): a swipe would move the native offset while
+            // every guard ignores it. A JUST-SWAPPED deck also
+            // ignores swipes for its settle window — see
+            // `pagerSettling`.
+            scrollEnabled={!inert && !pagerSettling && !scrubbing}
+            showsHorizontalScrollIndicator={false}
+            initialScrollIndex={Math.min(view.cursor, view.items.length - 1)}
+            getItemLayout={(_data, index) => ({
+              length: pageW,
+              offset: pageW * index,
+              index,
+            })}
+            onScroll={onPagerScroll}
+            scrollEventThrottle={32}
+            onScrollBeginDrag={() => {
+              pagerAnimatingRef.current = false;
+              cancelAlign(); // the finger is the intent now
+              if (scrubbingRef.current) scrubDragRef.current = true;
+            }}
+            onMomentumScrollEnd={onMomentumEnd}
+            // Phase 5 (M26): one page each side of the current one —
+            // at most three players alive — and the pages re-render
+            // on the facts they read through refs.
+            windowSize={3}
+            initialNumToRender={3}
+            extraData={[
+              view.current.id,
+              playback,
+              playbackChrome,
+              immersive,
+              pagerSettling,
+              holding,
+              isFocused,
+            ]}
+            onEndReached={view.listMode ? loadMoreList : undefined}
+            onEndReachedThreshold={2}
+          />
+        </View>
       </MediaStageView>
 
       {/* The strip FOLLOWS the current photo (m0.8.5, F7). It used to be
@@ -2795,7 +2781,7 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: colors.background,
-    paddingHorizontal: 12,
+    paddingHorizontal: STAGE_PADDING,
     gap: 10,
     paddingTop: 8,
   },
@@ -2813,7 +2799,7 @@ const styles = StyleSheet.create({
   stageFrame: {
     flex: 1,
     borderRadius: touch.radius,
-    borderWidth: 1,
+    borderWidth: STAGE_BORDER,
     borderColor: colors.border,
     backgroundColor: colors.surface,
     overflow: 'hidden',

@@ -592,12 +592,15 @@ class MediaStoreActionsModule : Module() {
     // through its content URI. RGB_565: a thumbnail needs no alpha and
     // the strip's memory is the arm's cost (frames × px² × 2 bytes).
     // Crosses as a SharedRef<Bitmap> like every bitmap here.
+    // `spanMs` > 0 samples an EXCERPT of that length from `startMs` (the
+    // frames then play at real pace when stepped at frames / span); 0
+    // samples the whole clip evenly.
     AsyncFunction("extractFrameStrip") Coroutine {
-      uri: Uri, offset: Double, length: Double, frames: Int, px: Int ->
+      uri: Uri, offset: Double, length: Double, frames: Int, px: Int, startMs: Double, spanMs: Double ->
       withContext(Dispatchers.IO) {
         val context = appContext.reactContext
           ?: throw IllegalStateException("Android context unavailable")
-        require(frames in 1..64 && px in 16..1024) { "frame strip: $frames frames of $px px" }
+        require(frames in 1..128 && px in 16..1024) { "frame strip: $frames frames of $px px" }
         val strip = Bitmap.createBitmap(frames * px, px, Bitmap.Config.RGB_565)
         val canvas = android.graphics.Canvas(strip)
         val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
@@ -616,8 +619,10 @@ class MediaStoreActionsModule : Module() {
           }
           val durationMs = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
             ?.toLongOrNull() ?: throw IllegalStateException("no duration for $uri")
+          val from = if (spanMs > 0) minOf(startMs.toLong(), durationMs) else 0L
+          val span = if (spanMs > 0) minOf(spanMs.toLong(), durationMs - from) else durationMs
           for (i in 0 until frames) {
-            val timeUs = durationMs * 1000L * (2L * i + 1L) / (2L * frames)
+            val timeUs = (from + span * (2L * i + 1L) / (2L * frames)) * 1000L
             val decoded = reader.getScaledFrameAtTime(
               timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, px, px,
             )

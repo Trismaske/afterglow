@@ -4655,6 +4655,8 @@ export interface AnimatedProbeRow {
   version: number;
   animated: 'video' | 'motion' | 'gif';
   motion: MotionClipRow | null;
+  /** The clip's length (a motion photo's is its clip's), or null. */
+  durationMs: number | null;
 }
 
 export async function fetchAnimatedProbeRows(
@@ -4667,7 +4669,7 @@ export async function fetchAnimatedProbeRows(
   // with cells that cannot play.
   const reach = reachClause(mounted, 'p.volume_name');
   const columns =
-    'p.asset_id AS id, p.uri, p.kind, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us';
+    'p.asset_id AS id, p.uri, p.kind, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.duration_ms AS duration_ms';
   const base = `FROM photos p WHERE p.is_present = 1 AND p.state <> 'trashed'${reach.sql}`;
   type Raw = {
     id: string;
@@ -4677,6 +4679,7 @@ export async function fetchAnimatedProbeRows(
     motion_offset: number | null;
     motion_length: number | null;
     motion_presentation_us: number | null;
+    duration_ms: number | null;
   };
   const [videos, motion, gifs] = await Promise.all([
     db.getAllAsync<Raw>(
@@ -4702,6 +4705,7 @@ export async function fetchAnimatedProbeRows(
     version: Number(row.image_version),
     animated,
     motion: motionClipOf(row),
+    durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
   });
   return [
     ...videos.map((r) => shape(r, 'video')),

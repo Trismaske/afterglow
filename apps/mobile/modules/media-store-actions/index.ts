@@ -65,15 +65,6 @@ interface NativeApi {
   queryMediaFacts(volume: string, rawIds: string[]): Promise<NativeMediaRow[]>;
   readMediaFacts(requests: MediaFactsRequest[]): Promise<MediaFactsResult[]>;
   extractMotionClip(uri: string, offset: number, length: number, name: string): Promise<string>;
-  extractFrameStrip(
-    uri: string,
-    offset: number,
-    length: number,
-    frames: number,
-    px: number,
-    startMs: number,
-    spanMs: number,
-  ): Promise<RegionBitmap>;
   listMountedVolumes(): Promise<string[]>;
   openRegionDecoder(uri: string): Promise<RegionDecoderInfo>;
   decodeRegion(
@@ -421,34 +412,6 @@ export async function extractMotionClip(
 ): Promise<string> {
   if (!available()) throw new Error('motion clip extraction unavailable');
   return native!.extractMotionClip(contentUris([contentUri])[0], offset, length, name);
-}
-
-/** A clip's frames at thumbnail scale in one bitmap (m0.9 phase 6, the
- * spike's frame-strip arm): `frames` square tiles of `px` side by side,
- * nearest keyframes at evenly spaced times over the whole clip, or over
- * an EXCERPT of `spanMs` from `startMs` when `spanMs` > 0 (stepped at
- * frames / span the excerpt plays at real pace). `length` > 0 reads a
- * motion photo's clip in place through its byte range; 0 reads the whole
- * file (a video). Release the ref when the cell unmounts. */
-export async function extractFrameStrip(
-  contentUri: string,
-  offset: number,
-  length: number,
-  frames: number,
-  px: number,
-  startMs = 0,
-  spanMs = 0,
-): Promise<RegionBitmap> {
-  if (!available()) throw new Error('frame strip extraction unavailable');
-  return native!.extractFrameStrip(
-    contentUris([contentUri])[0],
-    offset,
-    length,
-    frames,
-    px,
-    startMs,
-    spanMs,
-  );
 }
 
 /** Motion detection plus the measurement rescue, one open per file

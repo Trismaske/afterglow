@@ -24,8 +24,6 @@ export type MainTabParamList = {
 
 export type RootStackParamList = {
   Main: NavigatorScreenParams<MainTabParamList> | undefined;
-  /** m0.9 phase 6: the animated-thumbnail spike's probe screen (Settings › Diagnostics); leaves with the spike. */
-  AnimatedThumbProbe: undefined;
   Timeline: undefined;
   /**
    * Swipe-deck review (m0.4): page through a unit, cull as you go.

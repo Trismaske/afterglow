@@ -19,7 +19,10 @@
 import type { StoredMediaKind } from '../../lib/mediaIdentity';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
-import { OsThumbnail } from '../OsThumbnail';
+import { AnimatedThumb } from '../AnimatedThumb';
+import { useAnimatedCells, useAnimatedThumbsMode } from '../useAnimatedCells';
+import { animatedKindOf, type AnimatedKind } from '../../lib/animatedCells';
+import { motionClipOf, type MotionClipRow } from '../../db/store';
 import { thumbBucketPx } from '../../lib/thumbnailSize';
 import { PixelRatio, useWindowDimensions } from 'react-native';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -64,6 +67,10 @@ export interface GridPhoto {
   kind: StoredMediaKind;
   /** The image cache version (item 3). */
   version: number;
+  /** What the tile animates as (phase 6): null = a plain photo. */
+  animated: AnimatedKind | null;
+  /** A motion photo's clip, for the animated tile. */
+  motion: MotionClipRow | null;
   takenAt: number;
   /** Capture day (m0.8.6 change 5): a string day from the DB; null =
    * TRACKED and honestly undated (takenAt is the mtime fallback —
@@ -194,6 +201,10 @@ export function PhotoStateGrid({
   const { width: windowWidth } = useWindowDimensions();
   const tilePx = thumbBucketPx(windowWidth / 3, PixelRatio.get());
   const db = useSQLiteContext();
+  // Animated thumbnails (phase 6): the clips on screen play, per the
+  // Settings row; the list's viewability drives it.
+  const animatedMode = useAnimatedThumbsMode();
+  const itemsRef = useRef<GridPhoto[]>([]);
   const { accent } = useTheme();
   const [items, setItems] = useState<GridPhoto[]>([]);
   const [loading, setLoading] = useState(false);
@@ -252,6 +263,12 @@ export function PhotoStateGrid({
             uri: r.uri,
             kind: r.kind,
             version: r.image_version,
+            animated: animatedKindOf({
+              kind: r.kind,
+              mimeType: r.mime_type,
+              hasMotion: r.motion_offset !== null,
+            }),
+            motion: motionClipOf(r),
             takenAt: r.taken_at,
             day: r.day,
             dbState: r.state,
@@ -281,6 +298,12 @@ export function PhotoStateGrid({
             uri: r.uri,
             kind: r.kind,
             version: r.version,
+            animated: animatedKindOf({
+              kind: r.kind,
+              mimeType: r.mimeType,
+              hasMotion: r.motion !== null,
+            }),
+            motion: r.motion,
             takenAt: r.takenAt,
             day: r.day,
             dbState: r.dbState,
@@ -346,17 +369,31 @@ export function PhotoStateGrid({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter, refreshKey, scopeKey, rootsKey, albumsKey, startMs, endMs, mounted]);
 
+  itemsRef.current = items;
+  const kindAt = useCallback((index: number) => itemsRef.current[index]?.animated ?? null, []);
+  const cellOf = useCallback((token: { index: number | null; item: unknown }) => {
+    const item = token.item as GridPhoto;
+    return { index: token.index ?? -1, key: `${item.id}:${item.version}` };
+  }, []);
+  const cells = useAnimatedCells({
+    mode: animatedMode,
+    columns: 3,
+    tileDp: useWindowDimensions().width / 3,
+    kindAt,
+    rows: items,
+    cellOf,
+  });
   const renderItem = useCallback(
     ({ item, index }: { item: GridPhoto; index: number }) => (
       <Pressable style={styles.tileWrap} onPress={() => onPhotoPress(item, items, index)}>
         {/* The OS thumbnail source (phase 3, item 2): a third of the
-            screen at device scale, bucketed. */}
-        <OsThumbnail
-          assetId={item.id}
-          kind={item.kind}
-          uri={item.uri}
-          version={item.version}
+            screen at device scale, bucketed — playing its clip while on
+            screen (phase 6). */}
+        <AnimatedThumb
+          row={item}
           px={tilePx}
+          cell={cells.cellFor(index, `${item.id}:${item.version}`)}
+          pool={cells.pool}
           style={styles.tile}
         />
         {/* The shared inspection-dot row (StateDots' header): verdict
@@ -377,7 +414,7 @@ export function PhotoStateGrid({
         />
       </Pressable>
     ),
-    [onPhotoPress, items, tilePx],
+    [onPhotoPress, items, tilePx, cells],
   );
 
   return (
@@ -387,6 +424,10 @@ export function PhotoStateGrid({
       keyExtractor={(p) => p.id}
       renderItem={renderItem}
       numColumns={3}
+      viewabilityConfig={cells.listProps.viewabilityConfig}
+      onViewableItemsChanged={cells.listProps.onViewableItemsChanged}
+      onLayout={cells.listProps.onLayout}
+      extraData={cells.listProps.extraData}
       ListHeaderComponent={header}
       onEndReachedThreshold={0.6}
       onEndReached={() => {

@@ -372,65 +372,74 @@ await step('home library totals line', null, async () => {
   // not an unconditional assertion any more.
   if (!findNode(home, /items? total/)) throw new Error('totals line missing');
 });
+/** Select `chip` ("Off", "All visible", …) on the Playback row titled
+ * `label`, on the Settings screen, and prove it committed. The row's own
+ * chip is the one NEAREST its title by vertical distance (the rows are
+ * ~170 px apart on the S10e; a two-line title such as "Animated
+ * thumbnails" centres its text slightly BELOW its chips, so "below the
+ * title" is not the rule — nearest is). The chip reports selected only
+ * after the optimistic state lands, and a failed write rolls it back,
+ * so a selected chip is the durable value. */
+async function selectPlaybackChip(label, chip) {
+  const nearest = (nodes, row, wantSelected) =>
+    nodes
+      .filter((n) => n.text === chip && (!wantSelected || n.selected))
+      .map((n) => ({ n, d: Math.abs(n.y - row.y) }))
+      .filter((c) => c.d < 150)
+      .sort((a, b) => a.d - b.d)[0]?.n ?? null;
+  // The Playback rows sit below the fold, and the cards are taller than
+  // a phone screen holds at once — the row is found on its own,
+  // scrolling in HALF screens (a full-screen fling overshoots).
+  let nodes = [];
+  for (let i = 0; i < 16; i += 1) {
+    nodes = dumpUi();
+    if (findNode(nodes, label)) break;
+    shell('input swipe 540 1500 540 900 300');
+    await new Promise((r) => setTimeout(r, 900));
+  }
+  let row = findNode(nodes, label);
+  if (!row) throw new Error(`Playback row ${label} not on screen`);
+  // A title that just entered the screen has its chips still below the
+  // fold — nudge a quarter screen and look again.
+  let target = null;
+  for (let i = 0; i < 4 && !target; i += 1) {
+    target = nearest(nodes, row, false);
+    if (target) break;
+    shell('input swipe 540 1400 540 1000 300');
+    await new Promise((r) => setTimeout(r, 900));
+    nodes = dumpUi();
+    row = findNode(nodes, label) ?? row;
+  }
+  if (!target) throw new Error(`no ${chip} chip beside ${label}`);
+  tap(target);
+  const deadline = Date.now() + 8000;
+  let committed = false;
+  while (Date.now() < deadline && !committed) {
+    await new Promise((r) => setTimeout(r, 400));
+    const now = dumpUi();
+    const again = findNode(now, label);
+    committed = !!again && nearest(now, again, true) !== null;
+  }
+  if (!committed) throw new Error(`${chip} did not commit beside ${label}`);
+}
+
 await step('playback off for the walk', null, async () => {
   // A PLAYING video never lets the UI reach idle, and `uiautomator dump`
   // writes nothing until it does — every deck assertion after a video
   // page then reads an empty dump and times out (phase 5 finding,
   // 2026-09-09: page 3 of 4 on screen, the dump still saying 1 of 4).
-  // The walk parks both Playback modes on Off through the same Settings
-  // rows a tester uses; a test device keeps the setting.
+  // The walk parks the Playback rows on Off through the same Settings
+  // rows a tester uses; a test device keeps the setting. The third row
+  // (m0.9 phase 6): animated thumbnails play in every grid, which keeps
+  // the UI from idling just as a stage video does.
   await tapText(/^Settings$/, 10000);
   // A marker that exists ONLY on the Settings screen: Home's own header
   // icon carries the desc "Settings", so waiting for that word would
   // pass before the screen has changed.
   await waitFor(/^Photo source$/, 15000, 'settings screen');
   try {
-    // The Playback rows sit below the fold, and the two cards are taller
-    // than a phone screen holds at once — so each row is found on its
-    // own, scrolling in HALF screens (a full-screen fling overshoots the
-    // section between two dumps).
-    for (const label of [/^Videos$/, /^Motion photos$/]) {
-      let nodes = [];
-      for (let i = 0; i < 16; i += 1) {
-        nodes = dumpUi();
-        if (findNode(nodes, label)) break;
-        shell('input swipe 540 1500 540 900 300');
-        await new Promise((r) => setTimeout(r, 900));
-      }
-      let row = findNode(nodes, label);
-      if (!row) throw new Error(`Playback row ${label} not on screen`);
-      // The row's own Off chip: the nearest "Off" BELOW its title (the
-      // coverage goal has an Off chip of its own, higher up the page).
-      // A title that just entered the screen has its chips still below
-      // the fold — nudge a quarter screen and look again.
-      let off = null;
-      for (let i = 0; i < 4 && !off; i += 1) {
-        off = nodes
-          .filter((n) => n.text === 'Off' && n.y > row.y && n.y - row.y < 500)
-          .sort((a, b) => a.y - b.y)[0];
-        if (off) break;
-        shell('input swipe 540 1400 540 1000 300');
-        await new Promise((r) => setTimeout(r, 900));
-        nodes = dumpUi();
-        row = findNode(nodes, label) ?? row;
-      }
-      if (!off) throw new Error(`no Off chip under ${label}`);
-      tap(off);
-      // Prove the mode COMMITTED: the chip reports selected only after
-      // the optimistic state lands, and a failed write rolls it back —
-      // so a selected Off is the durable Off, and only then may the
-      // idle-dependent walk continue.
-      const deadline = Date.now() + 8000;
-      let committed = false;
-      while (Date.now() < deadline && !committed) {
-        await new Promise((r) => setTimeout(r, 400));
-        const now = dumpUi();
-        const again = findNode(now, label);
-        committed =
-          !!again &&
-          now.some((n) => n.text === 'Off' && n.selected && n.y > again.y && n.y - again.y < 500);
-      }
-      if (!committed) throw new Error(`Off did not commit under ${label}`);
+    for (const label of [/^Videos$/, /^Motion photos$/, /^Animated thumbnails$/]) {
+      await selectPlaybackChip(label, 'Off');
     }
   } finally {
     // Whatever happened, the walk continues from Home.
@@ -1372,5 +1381,61 @@ console.log('\n== Afterglow UI gate report ==');
 for (const r of results) {
   console.log(` ${r.ok ? 'PASS' : 'FAIL'}  ${r.name}  (${r.ms} ms)${r.note ? ` — ${r.note}` : ''}`);
 }
+await step('animated thumbnails play on the Progress grid', null, async () => {
+  // The design's validation (docs/AnimatedThumbnails_design.md §8): with
+  // the row on All visible the Progress grid's clips PLAY — the
+  // controller logs the playing set to the diag sink — and the row goes
+  // back to Off for the phone's next walk. The grid cannot be dumped
+  // while it plays (no UI idle), so the sink is the assertion.
+  const since = new Date().toISOString();
+  // The walk before this may have backed out of the app (a cold relaunch
+  // takes seconds) or left the shade down: collapse it, bring Afterglow
+  // back, and wait for Home to RENDER before any scroll — a scroll-up on
+  // the launcher opens the shade.
+  shell('cmd statusbar collapse');
+  await ensureForeground();
+  await waitFor(/^Daily goal/, 30000, 'home after relaunch');
+  await waitForHome();
+  await tapText(/^Settings$/, 10000);
+  await waitFor(/^Photo source$/, 15000, 'settings screen');
+  try {
+    await selectPlaybackChip(/^Animated thumbnails$/, 'All visible');
+    shell('input keyevent KEYCODE_BACK');
+    await waitForHome();
+    // The card's subtitle is dynamic ("All items · state browsing" or a
+    // pace line): match its title only.
+    await tapText(/^◔, Progress, /, 10000);
+    // Let the grid load, its visible set settle (500 ms) and its
+    // players borrow; then read the sink.
+    await new Promise((r) => setTimeout(r, 6000));
+    const lines = shell(
+      `grep -h '\\[thumbs\\] playing' /sdcard/Android/data/${APP_ID}/files/diag/*.log 2>/dev/null || true`,
+    )
+      .split('\n')
+      .filter((l) => l.trim() !== '' && l.slice(0, 24) >= since);
+    const named = lines.find((l) => /playing: \d/.test(l));
+    if (!named) {
+      throw new Error(
+        `no [thumbs] playing line since ${since} — the grid did not animate (lines: ${lines.length}); a corpus without a clip in its first screenful also lands here: seed a video or a motion photo`,
+      );
+    }
+  } finally {
+    // The row goes back to Off whatever happened above; a failure HERE
+    // must not mask the step's own error, so it is logged, not thrown.
+    try {
+      shell('cmd statusbar collapse');
+      shell('input keyevent KEYCODE_BACK');
+      await waitForHome();
+      await tapText(/^Settings$/, 10000);
+      await waitFor(/^Photo source$/, 15000, 'settings screen');
+      await selectPlaybackChip(/^Animated thumbnails$/, 'Off');
+      shell('input keyevent KEYCODE_BACK');
+      await waitForHome();
+    } catch (error) {
+      console.warn(`  … could not park Animated thumbnails on Off afterwards: ${String(error)}`);
+    }
+  }
+});
+
 console.log(failures === 0 ? '\nGATE PASSED' : `\nGATE FAILED (${failures})`);
 process.exit(failures === 0 ? 0 : 1);

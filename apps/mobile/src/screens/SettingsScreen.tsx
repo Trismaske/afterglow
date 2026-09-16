@@ -7,6 +7,13 @@
  * for suppressed confirmation dialogs, and the app version. Values
  * persist in the m0.3.1 settings table.
  */
+import {
+  ANIMATED_THUMBS_KEY,
+  ANIMATED_THUMBS_MODES,
+  DEFAULT_ANIMATED_THUMBS_MODE,
+  parseAnimatedThumbsMode,
+  type AnimatedThumbsMode,
+} from '../lib/animatedCells';
 import { SegmentedControl } from '../components/SegmentedControl';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { plural } from '../lib/format';
@@ -138,6 +145,31 @@ export function SettingsScreen({ navigation }: Props) {
     motion: 'once',
   });
   const playbackWriteGen = useRef<Record<PlaybackKind, number>>({ video: 0, motion: 0 });
+  /** Phase 6 (D3): the animated-thumbnails row, All visible by default,
+   * with the same durable anchor and write fence as the modes. */
+  const [animatedThumbs, setAnimatedThumbs] = useState<AnimatedThumbsMode>(
+    DEFAULT_ANIMATED_THUMBS_MODE,
+  );
+  const durableAnimatedRef = useRef<AnimatedThumbsMode>(DEFAULT_ANIMATED_THUMBS_MODE);
+  const animatedWriteGen = useRef(0);
+  const pickAnimatedThumbs = useCallback(
+    (mode: AnimatedThumbsMode) => {
+      const gen = (animatedWriteGen.current += 1);
+      setAnimatedThumbs(mode);
+      void setSetting(db, ANIMATED_THUMBS_KEY, mode).then(
+        () => {
+          durableAnimatedRef.current = mode;
+        },
+        (error) => {
+          console.warn('[settings] animated thumbnails write failed:', String(error));
+          if (animatedWriteGen.current !== gen) return;
+          setAnimatedThumbs(durableAnimatedRef.current);
+          showToast('Could not save the playback setting');
+        },
+      );
+    },
+    [db],
+  );
   const pickPlayback = useCallback(
     (kind: PlaybackKind, mode: PlaybackMode) => {
       const gen = (playbackWriteGen.current[kind] += 1);
@@ -325,13 +357,15 @@ export function SettingsScreen({ navigation }: Props) {
     useCallback(() => {
       let cancelled = false;
       (async () => {
-        const [rawGoal, rawCoverage, rawStrictness, rawVideo, rawMotion] = await Promise.all([
-          getSetting(db, DAILY_GOAL_KEY),
-          getSetting(db, COVERAGE_GOAL_KEY),
-          getSetting(db, GROUPING_STRICTNESS_KEY),
-          getSetting(db, PLAYBACK_KEYS.video),
-          getSetting(db, PLAYBACK_KEYS.motion),
-        ]);
+        const [rawGoal, rawCoverage, rawStrictness, rawVideo, rawMotion, rawAnimated] =
+          await Promise.all([
+            getSetting(db, DAILY_GOAL_KEY),
+            getSetting(db, COVERAGE_GOAL_KEY),
+            getSetting(db, GROUPING_STRICTNESS_KEY),
+            getSetting(db, PLAYBACK_KEYS.video),
+            getSetting(db, PLAYBACK_KEYS.motion),
+            getSetting(db, ANIMATED_THUMBS_KEY),
+          ]);
         if (!cancelled) {
           // FENCED against user writes (codex r9): a selection made while
           // this read was in flight must not be overwritten by the read's
@@ -360,6 +394,11 @@ export function SettingsScreen({ navigation }: Props) {
           if (playbackWriteGen.current.video === 0) durablePlaybackRef.current.video = loaded.video;
           if (playbackWriteGen.current.motion === 0)
             durablePlaybackRef.current.motion = loaded.motion;
+          if (animatedWriteGen.current === 0) {
+            const loadedAnimated = parseAnimatedThumbsMode(rawAnimated);
+            durableAnimatedRef.current = loadedAnimated;
+            setAnimatedThumbs(loadedAnimated);
+          }
         }
         // Resolving sources needs MediaStore access; without permission
         // (or on failure) the row still navigates, just without a label.
@@ -814,6 +853,23 @@ export function SettingsScreen({ navigation }: Props) {
               </View>
             </View>
           ))}
+          {/* Animated thumbnails (m0.9 phase 6, D3): thumbnails play their
+              clips while on screen — all of them, or one at a time — and
+              GIF thumbnails follow this row. */}
+          <Text style={styles.explainer}>
+            Thumbnails play their clips while on screen; GIFs follow this too.
+          </Text>
+          <View style={styles.playbackRow}>
+            <Text style={styles.playbackRowTitle}>Animated thumbnails</Text>
+            <View style={styles.playbackControl}>
+              <SegmentedControl
+                options={ANIMATED_THUMBS_MODES}
+                value={animatedThumbs}
+                onChange={pickAnimatedThumbs}
+                accessibilityLabel="Animated thumbnails playback"
+              />
+            </View>
+          </View>
         </View>
 
         <Text style={styles.sectionLabel}>Appearance</Text>
@@ -912,17 +968,6 @@ export function SettingsScreen({ navigation }: Props) {
               Compare's remembered "after keep" and "after cull" answers ask again.
             </Text>
           </View>
-        </Pressable>
-
-        <Text style={styles.sectionLabel}>Diagnostics</Text>
-        <Pressable style={styles.row} onPress={() => navigation.navigate('AnimatedThumbProbe')}>
-          <View style={styles.rowBody}>
-            <Text style={styles.rowTitle}>Animated thumbnails probe</Text>
-            <Text style={styles.rowHint}>
-              The phase-6 spike: grid cells animating under each mechanism.
-            </Text>
-          </View>
-          <Text style={[styles.chevron, { color: theme.accent }]}>›</Text>
         </Pressable>
 
         <Text style={styles.sectionLabel}>About</Text>

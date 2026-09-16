@@ -1,6 +1,6 @@
 # Animated thumbnails — design (m0.9 phase 6)
 
-**Status:** agreed 2026-09-16 (Tristan + agent), awaiting the build.
+**Status:** agreed 2026-09-16 (Tristan + agent); implementation phase 1 landed the same day (the shared pieces, the setting, the kind mark, the Progress grid and the cull list, the probe deleted); phase 2 next.
 **Audience:** the agent building phase 6; Tristan reviewing the decisions.
 **Lifecycle:** lives while phase 6 is open; its durable content moves into the owning headers, PLAN.md and docs/STATE_MODEL.md at the phase close, and this file is deleted.
 
@@ -96,7 +96,7 @@ Each surface swaps `OsThumbnail` for `AnimatedThumb` on its clip cells and mount
 
 ## 7. Implementation phases
 
-1. **The shared pieces**: `lib/playerPool`, `lib/animatedCells` (+ tests), `components/useAnimatedCells`, `components/AnimatedThumb` with the kind mark, the setting row and pref, the gate preflight; the Progress grid and the cull list wired. Lands with the probe deleted (D13).
+1. **The shared pieces — LANDED 2026-09-16**: `lib/playerPool`, `lib/animatedCells` (+ tests), `lib/motionClips` (the shared one-in-flight clip resolver, the stage's overlay on it too), `components/useAnimatedCells`, `components/AnimatedThumb` with the kind mark (top-left; the StateDots sit bottom-right), the setting row and pref (`animated_thumbnails` in lib/animatedCells), the gate preflight and its positive leg; the Progress grid and the cull list wired; the probe deleted (D13). Five codex rounds shaped it: resume after a background return (AppState in the active predicate), the player layer keyed by the row version, cells keyed by identity (index + id:version) through the settle, the walk and the cell's decision, one hand-over per spotlight turn, the extension MIME fallback for untracked rows only, a remembered clip failure, and the gate reading a wrapped row title by nearest chip. S10e gate green with the positive leg.
 2. **The remaining surfaces**: queue grids, Timeline cards, DayProgress cards, the three row lists, the deck strip.
 3. **The device pass**: both phones — every surface judged (prune per D9), the deck screen with the strip animating measured (heap, CPU) against the stage's own playback, five minutes of grid browsing UNPLUGGED on each phone for battery, the S23 under thermal load, the S10e gate. Phase 6 closes on that pass with the appendix entries vetted.
 

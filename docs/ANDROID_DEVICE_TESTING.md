@@ -493,6 +493,6 @@ Compare builds, never runs of different content: the surface type is fixed per b
 ### Sustained sampling (m0.9 phase 6, the animated-thumbnail spike)
 
 `scripts/device-sample.sh SERIAL SECONDS out.csv` writes one row per sample (about 1.5 a second: the four dumps pace it) of the app's CPU share (`top`, one core = 100), TOTAL PSS (MB), the AP temperature (`dumpsys thermalservice`) and the battery temperature, resets `gfxinfo` at the start and prints frames rendered and janky at the end.
-Run it while Settings › Diagnostics › Animated thumbnails probe is RUNNING an arm; the probe writes `[probe] animated START/STOP` lines to the diag sink.
-While the cells animate `uiautomator dump` never reaches idle (the phase-5 gate finding), so drive the probe's controls by coordinates, not by text.
+Run it on a grid with Settings › Playback › Animated thumbnails on All visible (the Progress grid, the cull list).
+While the cells animate `uiautomator dump` never reaches idle (the phase-5 gate finding), so drive by coordinates, not by text, and compare `dumpsys gfxinfo` frame-time percentiles for the same scripted scroll with the row on Off and on All visible.
 

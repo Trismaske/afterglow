@@ -26,8 +26,7 @@
 import React, { useEffect, useState } from 'react';
 import type { SurfaceType } from 'expo-video';
 import type { SharedValue } from 'react-native-reanimated';
-import { extractMotionClip } from '../../modules/media-store-actions';
-import { canonicalContentUri, rawIdOf, volumeOf } from '../lib/mediaIdentity';
+import { motionClipKey, resolveMotionClip } from '../lib/motionClips';
 import { Playback, type PlaybackStage } from './Playback';
 import type { PlaybackMode } from '../lib/playbackPrefs';
 import type { MotionClipRow } from '../db/store';
@@ -74,21 +73,16 @@ function MotionClipPlayer({
   onClipAvailability: (id: string, available: boolean) => void;
 }) {
   const [source, setSource] = useState<{ key: string; uri: string } | null>(null);
-  // The cache name carries the VOLUME: raw ids and generations are
-  // allocated per volume, so primary and an SD card can share both.
-  const clipKey = `${volumeOf(id)}-${rawIdOf(id)}-${clip.version}`;
+  const clipKey = motionClipKey(id, clip);
   const sourceUri = source !== null && source.key === clipKey ? source.uri : null;
 
-  // Resolve the clip file once per volume + id + version; a new version
-  // re-extracts and remounts Playback on the new file.
+  // Resolve the clip file once per volume + id + version (the shared
+  // resolver, one extraction in flight per key across the stage and the
+  // animated thumbnails); a new version re-extracts and remounts
+  // Playback on the new file.
   useEffect(() => {
     let cancelled = false;
-    void extractMotionClip(
-      canonicalContentUri(id, 'photo'),
-      clip.offset,
-      clip.length,
-      clipKey,
-    ).then(
+    void resolveMotionClip(id, clip).then(
       (fileUri) => {
         if (cancelled) return;
         setSource({ key: clipKey, uri: fileUri });
@@ -105,7 +99,7 @@ function MotionClipPlayer({
     return () => {
       cancelled = true;
     };
-  }, [id, clip.offset, clip.length, clip.version, clipKey, onClipAvailability]);
+  }, [id, clip, clipKey, onClipAvailability]);
 
   // Playback mounts only once the file is known (its header: a player
   // is never prepared empty); the still stands alone until then.

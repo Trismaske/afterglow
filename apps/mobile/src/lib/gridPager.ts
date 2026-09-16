@@ -56,6 +56,8 @@ export interface LibraryGridPhoto {
   kind: StoredMediaKind;
   /** A tracked motion photo's clip (phase 5); untracked rows have none. */
   motion: MotionClipRow | null;
+  /** The tracked row's MIME (a GIF animates by it, phase 6); untracked rows have none. */
+  mimeType: string | null;
   /** The image cache version (item 3): the DB row's, else MediaStore's
    * own timestamp for an untracked photo. */
   version: number;
@@ -192,6 +194,16 @@ export function createLibraryGridStream(
               uri: p.uri,
               kind: p.kind,
               motion: row ? motionClipOf(row) : null,
+              // An UNTRACKED row has no MIME yet (the scan writes it): its
+              // file's extension stands in, so a GIF the scan has not reached
+              // still animates and wears its mark (codex round 1). A tracked
+              // row's stored MIME is the truth, null included.
+              mimeType:
+                row !== undefined
+                  ? row.mime_type
+                  : p.uri.toLowerCase().endsWith('.gif')
+                    ? 'image/gif'
+                    : null,
               version: row?.image_version ?? p.timestamp,
               takenAt: row?.taken_at ?? p.timestamp,
               day: row !== undefined ? row.day : p.undated ? null : undefined,

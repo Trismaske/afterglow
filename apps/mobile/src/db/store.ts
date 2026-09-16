@@ -267,6 +267,8 @@ export interface StagedCullRow {
   /** The media kind (v24, m0.9 phase 4): which MediaStore collection
    * the row's content URI addresses. */
   kind: StoredMediaKind;
+  /** MediaStore's MIME (v24): a GIF's 'image/gif' is what animates it (phase 6). */
+  mime_type: string | null;
   /** The motion clip's byte range (v24): null = not a motion photo. */
   motion_offset: number | null;
   motion_length: number | null;
@@ -293,7 +295,7 @@ export async function getStagedCulls(
   const reach = reachClause(mounted);
   const src = sourceClause(roots);
   return db.getAllAsync<StagedCullRow>(
-    `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind, motion_video_offset AS motion_offset, motion_video_length AS motion_length, motion_presentation_us AS motion_presentation_us, taken_at, day FROM photos
+    `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind, mime_type, motion_video_offset AS motion_offset, motion_video_length AS motion_length, motion_presentation_us AS motion_presentation_us, taken_at, day FROM photos
      WHERE state = 'culled' AND is_present = 1${reach.sql}${src.sql}
      ORDER BY taken_at ASC${limit === undefined ? '' : ' LIMIT ?'}`,
     ...reach.params,
@@ -3297,6 +3299,8 @@ export interface AssetStateRow {
   /** The media kind (v24, m0.9 phase 4): which MediaStore collection
    * the row's content URI addresses. */
   kind: StoredMediaKind;
+  /** MediaStore's MIME (v24): a GIF's 'image/gif' is what animates it (phase 6). */
+  mime_type: string | null;
   /** The motion clip's byte range (v24): null = not a motion photo. */
   motion_offset: number | null;
   motion_length: number | null;
@@ -3319,6 +3323,7 @@ export async function getStateRowsForAssets(
       rescued: number;
       image_version: number;
       kind: StoredMediaKind;
+      mime_type: string | null;
       /** The motion clip's byte range (v24): null = not a motion photo. */
       motion_offset: number | null;
       motion_length: number | null;
@@ -3327,7 +3332,7 @@ export async function getStateRowsForAssets(
       `SELECT asset_id, state, taken_at, day,
               (exif_checked_mod_time IS NOT NULL AND day IS NOT NULL) AS rescued,
               EXISTS (SELECT 1 FROM photo_group_assignments a
-                      WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped, COALESCE(file_generation, file_mtime) AS image_version, kind, motion_video_offset AS motion_offset, motion_video_length AS motion_length, motion_presentation_us AS motion_presentation_us
+                      WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped, COALESCE(file_generation, file_mtime) AS image_version, kind, mime_type, motion_video_offset AS motion_offset, motion_video_length AS motion_length, motion_presentation_us AS motion_presentation_us
        FROM photos WHERE asset_id IN (${placeholders})`,
       ...ids,
     );
@@ -3339,6 +3344,7 @@ export async function getStateRowsForAssets(
         day: row.day,
         rescued: !!row.rescued,
         image_version: row.image_version,
+        mime_type: row.mime_type,
         kind: row.kind,
         motion_offset: row.motion_offset,
         motion_length: row.motion_length,
@@ -3411,6 +3417,8 @@ export interface GridPhotoRow {
   /** The media kind (v24, m0.9 phase 4): which MediaStore collection
    * the row's content URI addresses. */
   kind: StoredMediaKind;
+  /** MediaStore's MIME (v24): a GIF's 'image/gif' is what animates it (phase 6). */
+  mime_type: string | null;
   /** The motion clip's byte range (v24): null = not a motion photo. */
   motion_offset: number | null;
   motion_length: number | null;
@@ -3473,7 +3481,7 @@ export async function getGridPhotosByFilter(
   const filterSql = GRID_FILTER_SQL[filter];
   if (filterSql === undefined) throw new Error(`unknown grid filter: ${filter}`);
   return db.getAllAsync<GridPhotoRow>(
-    `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind, motion_video_offset AS motion_offset, motion_video_length AS motion_length, motion_presentation_us AS motion_presentation_us, taken_at, day, state,
+    `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind, mime_type, motion_video_offset AS motion_offset, motion_video_length AS motion_length, motion_presentation_us AS motion_presentation_us, taken_at, day, state,
             EXISTS (SELECT 1 FROM photo_group_assignments a
                     WHERE a.photo_id = photos.asset_id AND a.group_id IS NOT NULL) AS grouped,
             EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = photos.asset_id
@@ -4639,77 +4647,4 @@ export async function setContentHash(
     `UPDATE photos SET content_hash = ? WHERE asset_id = ? AND content_hash IS NULL${guard}`,
     ...params,
   );
-}
-
-// ---------------------------------------------------------------------
-// The animated-thumbnail spike's population (m0.9 phase 6, M29): the
-// newest present rows of each animating kind — videos, motion photos
-// (a clip byte range), GIFs (by MIME) — for the probe screen's cells.
-// Probe-only: the screen and this query leave with the spike.
-// ---------------------------------------------------------------------
-
-export interface AnimatedProbeRow {
-  id: string;
-  uri: string;
-  kind: StoredMediaKind;
-  version: number;
-  animated: 'video' | 'motion' | 'gif';
-  motion: MotionClipRow | null;
-  /** The clip's length (a motion photo's is its clip's), or null. */
-  durationMs: number | null;
-}
-
-export async function fetchAnimatedProbeRows(
-  db: SQLiteDatabase,
-  mounted: readonly string[] | null,
-  limits: { videos: number; motion: number; gifs: number },
-): Promise<AnimatedProbeRow[]> {
-  // Rows on an ejected card stay present and are excluded at read time
-  // (the reachability rule every list applies), so a limit never fills
-  // with cells that cannot play.
-  const reach = reachClause(mounted, 'p.volume_name');
-  const columns =
-    'p.asset_id AS id, p.uri, p.kind, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.duration_ms AS duration_ms';
-  const base = `FROM photos p WHERE p.is_present = 1 AND p.state <> 'trashed'${reach.sql}`;
-  type Raw = {
-    id: string;
-    uri: string;
-    kind: StoredMediaKind;
-    image_version: number;
-    motion_offset: number | null;
-    motion_length: number | null;
-    motion_presentation_us: number | null;
-    duration_ms: number | null;
-  };
-  const [videos, motion, gifs] = await Promise.all([
-    db.getAllAsync<Raw>(
-      `SELECT ${columns} ${base} AND p.kind = 'video' ORDER BY p.taken_at DESC LIMIT ?`,
-      ...reach.params,
-      limits.videos,
-    ),
-    db.getAllAsync<Raw>(
-      `SELECT ${columns} ${base} AND p.kind = 'photo' AND p.motion_video_offset IS NOT NULL ORDER BY p.taken_at DESC LIMIT ?`,
-      ...reach.params,
-      limits.motion,
-    ),
-    db.getAllAsync<Raw>(
-      `SELECT ${columns} ${base} AND p.mime_type = 'image/gif' ORDER BY p.taken_at DESC LIMIT ?`,
-      ...reach.params,
-      limits.gifs,
-    ),
-  ]);
-  const shape = (row: Raw, animated: AnimatedProbeRow['animated']): AnimatedProbeRow => ({
-    id: row.id,
-    uri: row.uri,
-    kind: row.kind,
-    version: Number(row.image_version),
-    animated,
-    motion: motionClipOf(row),
-    durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
-  });
-  return [
-    ...videos.map((r) => shape(r, 'video')),
-    ...motion.map((r) => shape(r, 'motion')),
-    ...gifs.map((r) => shape(r, 'gif')),
-  ];
 }

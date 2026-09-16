@@ -1,8 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { plural } from '../lib/format';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { PixelRatio, useWindowDimensions } from 'react-native';
-import { OsThumbnail } from '../components/OsThumbnail';
+import { AnimatedThumb, type AnimatedThumbRow } from '../components/AnimatedThumb';
+import { useAnimatedCells, useAnimatedThumbsMode } from '../components/useAnimatedCells';
+import { animatedKindOf } from '../lib/animatedCells';
+import { motionClipOf } from '../db/store';
 import { thumbBucketPx } from '../lib/thumbnailSize';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -109,6 +112,41 @@ export function CullListScreen({ navigation, route }: Props) {
     () => new Map((globalRows ?? []).map((row) => [row.asset_id, row.image_version])),
     [globalRows],
   );
+  /** The tiles' rows for the animated thumbnail (phase 6): kind, clip
+   * and MIME from the staged rows, in the grid's order. */
+  const thumbRows = useMemo<AnimatedThumbRow[]>(
+    () =>
+      (globalRows ?? []).map((row) => ({
+        id: row.asset_id,
+        kind: row.kind,
+        uri: row.uri,
+        version: row.image_version,
+        animated: animatedKindOf({
+          kind: row.kind,
+          mimeType: row.mime_type,
+          hasMotion: row.motion_offset !== null,
+        }),
+        motion: motionClipOf(row),
+      })),
+    [globalRows],
+  );
+  const thumbRowsRef = useRef(thumbRows);
+  thumbRowsRef.current = thumbRows;
+  const animatedMode = useAnimatedThumbsMode();
+  const kindAt = useCallback((index: number) => thumbRowsRef.current[index]?.animated ?? null, []);
+  const cellOf = useCallback((token: { index: number | null; item: unknown }) => {
+    const item = token.item as MediaItem;
+    const version = thumbRowsRef.current[token.index ?? -1]?.version ?? 0;
+    return { index: token.index ?? -1, key: `${item.id}:${version}` };
+  }, []);
+  const cells = useAnimatedCells({
+    mode: animatedMode,
+    columns: 3,
+    tileDp: useWindowDimensions().width / 3,
+    kindAt,
+    rows: thumbRows,
+    cellOf,
+  });
 
   const runConfirm = useCallback(async () => {
     if (busy) return;
@@ -241,14 +279,13 @@ export function CullListScreen({ navigation, route }: Props) {
   }, []);
 
   const renderItem = useCallback(
-    ({ item }: { item: MediaItem }) => (
+    ({ item, index }: { item: MediaItem; index: number }) => (
       <Pressable style={styles.tile} onPress={() => onTilePress(item)} disabled={busy}>
-        <OsThumbnail
-          assetId={item.id}
-          kind={item.kind}
-          uri={item.uri}
-          version={versionOf.get(item.id) ?? 0}
+        <AnimatedThumb
+          row={thumbRows[index]}
           px={tilePx}
+          cell={cells.cellFor(index, `${item.id}:${thumbRows[index]?.version ?? 0}`)}
+          pool={cells.pool}
           style={styles.tileImage}
         />
         <View style={styles.tileBadge}>
@@ -256,7 +293,7 @@ export function CullListScreen({ navigation, route }: Props) {
         </View>
       </Pressable>
     ),
-    [busy, onTilePress, tilePx, versionOf],
+    [busy, onTilePress, tilePx, thumbRows, cells],
   );
 
   return (
@@ -276,6 +313,10 @@ export function CullListScreen({ navigation, route }: Props) {
         keyExtractor={(i) => i.id}
         renderItem={renderItem}
         numColumns={3}
+        viewabilityConfig={cells.listProps.viewabilityConfig}
+        onViewableItemsChanged={cells.listProps.onViewableItemsChanged}
+        onLayout={cells.listProps.onLayout}
+        extraData={cells.listProps.extraData}
         columnWrapperStyle={staged.length > 0 ? styles.column : undefined}
         contentContainerStyle={styles.list}
         ListEmptyComponent={

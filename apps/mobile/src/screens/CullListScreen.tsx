@@ -316,6 +316,10 @@ export function CullListScreen({ navigation, route }: Props) {
         viewabilityConfig={cells.listProps.viewabilityConfig}
         onViewableItemsChanged={cells.listProps.onViewableItemsChanged}
         onLayout={cells.listProps.onLayout}
+        onScrollBeginDrag={cells.listProps.onScrollBeginDrag}
+        onScrollEndDrag={cells.listProps.onScrollEndDrag}
+        onMomentumScrollBegin={cells.listProps.onMomentumScrollBegin}
+        onMomentumScrollEnd={cells.listProps.onMomentumScrollEnd}
         columnWrapperStyle={staged.length > 0 ? styles.column : undefined}
         contentContainerStyle={styles.list}
         ListEmptyComponent={

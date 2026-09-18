@@ -86,7 +86,7 @@ export const AnimatedThumb = React.memo(function AnimatedThumb({
       />
       {playing &&
         (row.animated === 'gif' ? (
-          <GifLayer uri={versionedUri(row.uri, row.version)} />
+          <GifLayer uri={versionedUri(row.uri, row.version)} held={cell.held} />
         ) : (
           // Keyed by the VERSION too: an in-place edit keeps the id and the
           // URI, and the layer must restart on the new bytes rather than
@@ -107,10 +107,18 @@ export const AnimatedThumb = React.memo(function AnimatedThumb({
   );
 });
 
-function GifLayer({ uri }: { uri: string }) {
+function GifLayer({ uri, held }: { uri: string; held: boolean }) {
   const [loaded, setLoaded] = useState(false);
+  const image = useRef<Image>(null);
+  // Held while the list moves: the GIF stops on its frame and resumes.
+  useEffect(() => {
+    if (!loaded) return;
+    if (held) void image.current?.stopAnimating();
+    else void image.current?.startAnimating();
+  }, [held, loaded]);
   return (
     <Image
+      ref={image}
       source={{ uri }}
       style={[StyleSheet.absoluteFill, { opacity: loaded ? 1 : 0 }]}
       contentFit="cover"
@@ -198,6 +206,15 @@ function PlayerLayer({
       setFramed(false);
     };
   }, [uri, loop, pool]);
+  // Held while the list moves: the player pauses on its frame — the view
+  // and the borrow stay, so nothing flashes and nothing is re-made — and
+  // plays on when the list stops.
+  const held = cell.held;
+  useEffect(() => {
+    if (player === null) return;
+    if (held) player.pause();
+    else player.play();
+  }, [player, held]);
   if (player === null) return null;
   return (
     <VideoView

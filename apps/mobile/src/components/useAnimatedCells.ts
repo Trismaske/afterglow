@@ -24,7 +24,15 @@
  * 1): every cell hands its player back, and the foreground return
  * lets the settled cells borrow and play again.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { AppState, type LayoutChangeEvent, type ViewToken } from 'react-native';
 import { useIsFocused } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -73,6 +81,9 @@ export function useAnimatedThumbsMode(): AnimatedThumbsMode | null {
 
 export interface CellPlayback {
   playing: boolean;
+  /** The list is being dragged or flung: a playing cell HOLDS its frame
+   * (the player pauses, the view and the borrow stay) until it stops. */
+  held: boolean;
   /** One at a time: a new key restarts the spotlight's player. */
   spotKey: number;
   loop: boolean;
@@ -86,6 +97,10 @@ export interface AnimatedCells {
     viewabilityConfig: typeof VIEWABILITY;
     onViewableItemsChanged: (info: { viewableItems: ViewToken[] }) => void;
     onLayout: (event: LayoutChangeEvent) => void;
+    onScrollBeginDrag: () => void;
+    onScrollEndDrag: () => void;
+    onMomentumScrollBegin: () => void;
+    onMomentumScrollEnd: () => void;
   };
   subscribe: (listener: () => void) => () => void;
   /** A cell's playback as a primitive snapshot, by its index AND its
@@ -96,17 +111,21 @@ export interface AnimatedCells {
   pool: () => PlayerPool | null;
 }
 
-const IDLE = '0:0:1';
+const IDLE = '0:0:1:0';
+/** A drag's end waits this long for a fling to begin before the list
+ * counts as still. */
+const DRAG_END_MS = 120;
 
 /** A cell's own playback: re-renders THIS cell only when its answer
  * changes. */
 export function useCellPlayback(cells: AnimatedCells, index: number, key: string): CellPlayback {
   const snapshot = useSyncExternalStore(cells.subscribe, () => cells.snapshotFor(index, key));
   return useMemo(() => {
-    const [playing, spotKey, loop] = snapshot.split(':');
+    const [playing, spotKey, loop, held] = snapshot.split(':');
     const turn = Number(spotKey);
     return {
       playing: playing === '1',
+      held: held === '1',
       spotKey: turn,
       loop: loop === '1',
       onEnd: loop === '1' ? undefined : () => cells.advance(turn),
@@ -236,14 +255,46 @@ export function useAnimatedCells({
     setListHeight(event.nativeEvent.layout.height);
   }, []);
 
+  // The list in MOTION (a drag or its fling): playing cells hold their
+  // frame. Seventeen live video textures cost the S10e's render thread
+  // 18.9 % janky frames under a drag against 0 % with one (2026-09-18);
+  // a held player updates no texture, and resumes when the list stops.
+  const [moving, setMoving] = useState(false);
+  const dragEnd = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearDragEnd = useCallback(() => {
+    if (dragEnd.current !== null) clearTimeout(dragEnd.current);
+    dragEnd.current = null;
+  }, []);
+  const onScrollBeginDrag = useCallback(() => {
+    clearDragEnd();
+    setMoving(true);
+  }, [clearDragEnd]);
+  const onScrollEndDrag = useCallback(() => {
+    clearDragEnd();
+    dragEnd.current = setTimeout(() => setMoving(false), DRAG_END_MS);
+  }, [clearDragEnd]);
+  const onMomentumScrollBegin = useCallback(() => {
+    clearDragEnd();
+    setMoving(true);
+  }, [clearDragEnd]);
+  const onMomentumScrollEnd = useCallback(() => {
+    clearDragEnd();
+    setMoving(false);
+  }, [clearDragEnd]);
+  useEffect(() => clearDragEnd, [clearDragEnd]);
+
   // The store the cells subscribe to: the current answer lives in a ref,
   // and a change notifies the listeners — the list itself is untouched.
-  const answer = useRef({ active, playing, kindAt, mode, spotCell, spot, advance });
-  answer.current = { active, playing, kindAt, mode, spotCell, spot, advance };
+  // PUBLISHED AT COMMIT, never during render (codex, 2026-09-18): a
+  // concurrent render can be abandoned after it ran, and the cells must
+  // only ever read an answer React committed — so the ref is written and
+  // the listeners told in one layout effect.
+  const answer = useRef({ active, playing, kindAt, mode, spotCell, spot, advance, moving });
   const listeners = useRef(new Set<() => void>()).current;
-  useEffect(() => {
+  useLayoutEffect(() => {
+    answer.current = { active, playing, kindAt, mode, spotCell, spot, advance, moving };
     for (const listener of listeners) listener();
-  }, [listeners, active, playing, mode, spotCell, spot]);
+  }, [listeners, active, playing, kindAt, mode, spotCell, spot, advance, moving]);
   const subscribe = useCallback(
     (listener: () => void) => {
       listeners.add(listener);
@@ -257,20 +308,39 @@ export function useAnimatedCells({
     if (now.mode === 'one' && now.kindAt(index) !== 'gif') {
       const spotted =
         now.spotCell !== null && now.spotCell.index === index && now.spotCell.key === key;
-      return `${spotted ? 1 : 0}:${now.spot}:0`;
+      return `${spotted ? 1 : 0}:${now.spot}:0:${now.moving ? 1 : 0}`;
     }
-    return '1:0:1';
+    return `1:0:1:${now.moving ? 1 : 0}`;
   }, []);
   const advanceTurn = useCallback((turn: number) => answer.current.advance(turn), []);
 
   return useMemo(
     () => ({
-      listProps: { viewabilityConfig: VIEWABILITY, onViewableItemsChanged, onLayout },
+      listProps: {
+        viewabilityConfig: VIEWABILITY,
+        onViewableItemsChanged,
+        onLayout,
+        onScrollBeginDrag,
+        onScrollEndDrag,
+        onMomentumScrollBegin,
+        onMomentumScrollEnd,
+      },
       subscribe,
       snapshotFor,
       advance: advanceTurn,
       pool,
     }),
-    [onViewableItemsChanged, onLayout, subscribe, snapshotFor, advanceTurn, pool],
+    [
+      onViewableItemsChanged,
+      onLayout,
+      onScrollBeginDrag,
+      onScrollEndDrag,
+      onMomentumScrollBegin,
+      onMomentumScrollEnd,
+      subscribe,
+      snapshotFor,
+      advanceTurn,
+      pool,
+    ],
   );
 }

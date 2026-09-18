@@ -25,7 +25,7 @@ import { Image } from 'expo-image';
 import { VideoView, type VideoPlayer } from 'expo-video';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { OsThumbnail } from './OsThumbnail';
-import type { CellPlayback } from './useAnimatedCells';
+import { useCellPlayback, type AnimatedCells, type CellPlayback } from './useAnimatedCells';
 import type { AnimatedKind } from '../lib/animatedCells';
 import type { PlayerPool } from '../lib/playerPool';
 import type { StoredMediaKind } from '../lib/mediaIdentity';
@@ -55,20 +55,24 @@ export interface AnimatedThumbRow {
 export const AnimatedThumb = React.memo(function AnimatedThumb({
   row,
   px,
-  cell,
-  pool,
+  index,
+  cells,
   style,
   markSize = 14,
 }: {
   row: AnimatedThumbRow;
   /** The OS-thumbnail bucket the surface renders at. */
   px: number;
-  cell: CellPlayback;
-  /** The list's pool (useAnimatedCells' `pool`). */
-  pool: () => PlayerPool | null;
+  /** The cell's list index; with the row's id:version it is the cell's
+   * identity to the controller. */
+  index: number;
+  /** The list's controller (useAnimatedCells) — stable, subscribed to. */
+  cells: AnimatedCells;
   style?: StyleProp<ViewStyle>;
   markSize?: number;
 }) {
+  const cell = useCellPlayback(cells, index, `${row.id}:${row.version}`);
+  const pool = cells.pool;
   const playing = cell.playing && row.animated !== null;
   return (
     <View style={[styles.cell, style]}>

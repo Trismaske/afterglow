@@ -389,13 +389,7 @@ export function PhotoStateGrid({
         {/* The OS thumbnail source (phase 3, item 2): a third of the
             screen at device scale, bucketed — playing its clip while on
             screen (phase 6). */}
-        <AnimatedThumb
-          row={item}
-          px={tilePx}
-          cell={cells.cellFor(index, `${item.id}:${item.version}`)}
-          pool={cells.pool}
-          style={styles.tile}
-        />
+        <AnimatedThumb row={item} px={tilePx} index={index} cells={cells} style={styles.tile} />
         {/* The shared inspection-dot row (StateDots' header): verdict
             dot + weighted action glyphs, the same marks the deck strip
             and the timeline cards wear. */}
@@ -427,7 +421,6 @@ export function PhotoStateGrid({
       viewabilityConfig={cells.listProps.viewabilityConfig}
       onViewableItemsChanged={cells.listProps.onViewableItemsChanged}
       onLayout={cells.listProps.onLayout}
-      extraData={cells.listProps.extraData}
       ListHeaderComponent={header}
       onEndReachedThreshold={0.6}
       onEndReached={() => {

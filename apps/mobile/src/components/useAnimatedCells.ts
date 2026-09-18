@@ -10,14 +10,21 @@
  * The host list passes `listProps` to its FlatList — the viewability
  * config is fixed at mount, so a rule change would need a new list; the
  * rule never changes, the MODE does, and the mode only gates the cells.
- * Each cell asks `cellFor(index)` what to do.
+ * Each cell SUBSCRIBES to its own playback (`useCellPlayback`): the
+ * list's props never change when the playing set does. They must not —
+ * React Native resets a list's viewability whenever `data` or
+ * `extraData` changes (VirtualizedList.componentDidUpdate), and an
+ * `extraData` that followed the playing set made a feedback loop: every
+ * change emptied the visible set, which regrew row by row, handing
+ * sixteen players back and re-borrowing them within a second (the
+ * S10e's sink, 2026-09-18).
  *
  * The app in the BACKGROUND empties the playing set (expo-video pauses
  * attached players there and nothing would restart them — codex round
  * 1): every cell hands its player back, and the foreground return
  * lets the settled cells borrow and play again.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { AppState, type LayoutChangeEvent, type ViewToken } from 'react-native';
 import { useIsFocused } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -72,18 +79,39 @@ export interface CellPlayback {
   onEnd?: () => void;
 }
 
+/** The controller a list hands its cells: STABLE for the list's life, so
+ * handing it down never re-renders a cell or resets viewability. */
 export interface AnimatedCells {
   listProps: {
     viewabilityConfig: typeof VIEWABILITY;
     onViewableItemsChanged: (info: { viewableItems: ViewToken[] }) => void;
     onLayout: (event: LayoutChangeEvent) => void;
-    /** Hand this to `extraData`: the cells re-render on it. */
-    extraData: readonly unknown[];
   };
-  /** A cell's playback, by its index AND its row's identity (id:version):
-   * a replacement row at a settled index plays only after its own settle. */
-  cellFor: (index: number, key: string) => CellPlayback;
+  subscribe: (listener: () => void) => () => void;
+  /** A cell's playback as a primitive snapshot, by its index AND its
+   * row's identity (id:version): a replacement row at a settled index
+   * plays only after its own settle. */
+  snapshotFor: (index: number, key: string) => string;
+  advance: (turn: number) => void;
   pool: () => PlayerPool | null;
+}
+
+const IDLE = '0:0:1';
+
+/** A cell's own playback: re-renders THIS cell only when its answer
+ * changes. */
+export function useCellPlayback(cells: AnimatedCells, index: number, key: string): CellPlayback {
+  const snapshot = useSyncExternalStore(cells.subscribe, () => cells.snapshotFor(index, key));
+  return useMemo(() => {
+    const [playing, spotKey, loop] = snapshot.split(':');
+    const turn = Number(spotKey);
+    return {
+      playing: playing === '1',
+      spotKey: turn,
+      loop: loop === '1',
+      onEnd: loop === '1' ? undefined : () => cells.advance(turn),
+    };
+  }, [snapshot, cells]);
 }
 
 export function useAnimatedCells({
@@ -208,33 +236,41 @@ export function useAnimatedCells({
     setListHeight(event.nativeEvent.layout.height);
   }, []);
 
-  const cellFor = useCallback(
-    (index: number, key: string): CellPlayback => {
-      if (!active || !playing.some((c) => c.index === index && c.key === key)) {
-        return { playing: false, spotKey: 0, loop: true };
-      }
-      const kind = kindAt(index);
-      if (mode === 'one' && kind !== 'gif') {
-        return {
-          playing: spotCell !== null && spotCell.index === index && spotCell.key === key,
-          spotKey: spot,
-          loop: false,
-          onEnd: () => advance(spot),
-        };
-      }
-      return { playing: true, spotKey: 0, loop: true };
+  // The store the cells subscribe to: the current answer lives in a ref,
+  // and a change notifies the listeners — the list itself is untouched.
+  const answer = useRef({ active, playing, kindAt, mode, spotCell, spot, advance });
+  answer.current = { active, playing, kindAt, mode, spotCell, spot, advance };
+  const listeners = useRef(new Set<() => void>()).current;
+  useEffect(() => {
+    for (const listener of listeners) listener();
+  }, [listeners, active, playing, mode, spotCell, spot]);
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
-    [active, playing, kindAt, mode, spotCell, spot, advance],
+    [listeners],
   );
+  const snapshotFor = useCallback((index: number, key: string): string => {
+    const now = answer.current;
+    if (!now.active || !now.playing.some((c) => c.index === index && c.key === key)) return IDLE;
+    if (now.mode === 'one' && now.kindAt(index) !== 'gif') {
+      const spotted =
+        now.spotCell !== null && now.spotCell.index === index && now.spotCell.key === key;
+      return `${spotted ? 1 : 0}:${now.spot}:0`;
+    }
+    return '1:0:1';
+  }, []);
+  const advanceTurn = useCallback((turn: number) => answer.current.advance(turn), []);
 
-  return {
-    listProps: {
-      viewabilityConfig: VIEWABILITY,
-      onViewableItemsChanged,
-      onLayout,
-      extraData: [playing, spotCell, spot],
-    },
-    cellFor,
-    pool,
-  };
+  return useMemo(
+    () => ({
+      listProps: { viewabilityConfig: VIEWABILITY, onViewableItemsChanged, onLayout },
+      subscribe,
+      snapshotFor,
+      advance: advanceTurn,
+      pool,
+    }),
+    [onViewableItemsChanged, onLayout, subscribe, snapshotFor, advanceTurn, pool],
+  );
 }

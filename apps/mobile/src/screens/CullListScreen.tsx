@@ -284,8 +284,8 @@ export function CullListScreen({ navigation, route }: Props) {
         <AnimatedThumb
           row={thumbRows[index]}
           px={tilePx}
-          cell={cells.cellFor(index, `${item.id}:${thumbRows[index]?.version ?? 0}`)}
-          pool={cells.pool}
+          index={index}
+          cells={cells}
           style={styles.tileImage}
         />
         <View style={styles.tileBadge}>
@@ -316,7 +316,6 @@ export function CullListScreen({ navigation, route }: Props) {
         viewabilityConfig={cells.listProps.viewabilityConfig}
         onViewableItemsChanged={cells.listProps.onViewableItemsChanged}
         onLayout={cells.listProps.onLayout}
-        extraData={cells.listProps.extraData}
         columnWrapperStyle={staged.length > 0 ? styles.column : undefined}
         contentContainerStyle={styles.list}
         ListEmptyComponent={

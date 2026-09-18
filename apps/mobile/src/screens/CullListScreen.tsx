@@ -1,11 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { plural } from '../lib/format';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { PixelRatio, useWindowDimensions } from 'react-native';
-import { AnimatedThumb, type AnimatedThumbRow } from '../components/AnimatedThumb';
-import { useAnimatedCells, useAnimatedThumbsMode } from '../components/useAnimatedCells';
-import { animatedKindOf } from '../lib/animatedCells';
-import { motionClipOf } from '../db/store';
+import { AnimatedThumb } from '../components/AnimatedThumb';
+import { useAnimatedList } from '../components/useAnimatedCells';
+import { thumbRowOf } from '../lib/animatedThumbRow';
 import { thumbBucketPx } from '../lib/thumbnailSize';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -33,6 +32,8 @@ type Props = NativeStackScreenProps<RootStackParamList, 'CullList'>;
  * app that deletes anything; the system dialog moves the batch to
  * recoverable system trash (retention is gallery-controlled).
  */
+const stagedThumb = (row: StagedCullRow) => thumbRowOf(row.asset_id, row);
+
 export function CullListScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
   const { version, confirmStagedCulls } = useReview();
@@ -112,40 +113,14 @@ export function CullListScreen({ navigation, route }: Props) {
     () => new Map((globalRows ?? []).map((row) => [row.asset_id, row.image_version])),
     [globalRows],
   );
-  /** The tiles' rows for the animated thumbnail (phase 6): kind, clip
-   * and MIME from the staged rows, in the grid's order. */
-  const thumbRows = useMemo<AnimatedThumbRow[]>(
-    () =>
-      (globalRows ?? []).map((row) => ({
-        id: row.asset_id,
-        kind: row.kind,
-        uri: row.uri,
-        version: row.image_version,
-        animated: animatedKindOf({
-          kind: row.kind,
-          mimeType: row.mime_type,
-          hasMotion: row.motion_offset !== null,
-        }),
-        motion: motionClipOf(row),
-      })),
-    [globalRows],
-  );
-  const thumbRowsRef = useRef(thumbRows);
-  thumbRowsRef.current = thumbRows;
-  const animatedMode = useAnimatedThumbsMode();
-  const kindAt = useCallback((index: number) => thumbRowsRef.current[index]?.animated ?? null, []);
-  const cellOf = useCallback((token: { index: number | null; item: unknown }) => {
-    const item = token.item as MediaItem;
-    const version = thumbRowsRef.current[token.index ?? -1]?.version ?? 0;
-    return { index: token.index ?? -1, key: `${item.id}:${version}` };
-  }, []);
-  const cells = useAnimatedCells({
-    mode: animatedMode,
+  /** The tiles play their clips (phase 6): the staged rows, in the grid's
+   * order, through the shared list helper. */
+  const stagedRows = useMemo(() => globalRows ?? [], [globalRows]);
+  const { cells, thumbRows } = useAnimatedList({
+    rows: stagedRows,
+    thumbOf: stagedThumb,
     columns: 3,
     tileDp: useWindowDimensions().width / 3,
-    kindAt,
-    rows: thumbRows,
-    cellOf,
   });
 
   const runConfirm = useCallback(async () => {
@@ -313,13 +288,7 @@ export function CullListScreen({ navigation, route }: Props) {
         keyExtractor={(i) => i.id}
         renderItem={renderItem}
         numColumns={3}
-        viewabilityConfig={cells.listProps.viewabilityConfig}
-        onViewableItemsChanged={cells.listProps.onViewableItemsChanged}
-        onLayout={cells.listProps.onLayout}
-        onScrollBeginDrag={cells.listProps.onScrollBeginDrag}
-        onScrollEndDrag={cells.listProps.onScrollEndDrag}
-        onMomentumScrollBegin={cells.listProps.onMomentumScrollBegin}
-        onMomentumScrollEnd={cells.listProps.onMomentumScrollEnd}
+        {...cells.listProps}
         columnWrapperStyle={staged.length > 0 ? styles.column : undefined}
         contentContainerStyle={styles.list}
         ListEmptyComponent={

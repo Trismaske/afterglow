@@ -15,6 +15,8 @@
  *   events survive the clear for History.
  */
 import { shareMimeType } from '../lib/editActions';
+import { useAnimatedList } from '../components/useAnimatedCells';
+import { thumbRowOf } from '../lib/animatedThumbRow';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -26,6 +28,7 @@ import {
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -59,6 +62,8 @@ import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
 import { useReview } from '../review/ReviewContext';
 
 type Props = MainTabScreenProps<'ShareQueue'>;
+
+const queueThumb = (row: ShareQueueRow) => thumbRowOf(row.photo_id, row);
 
 export function ShareQueueScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
@@ -414,13 +419,21 @@ export function ShareQueueScreen({ navigation }: Props) {
     await reload();
   }, [db, selected, reload]);
 
+  // The cells play their clips while on screen (phase 6).
+  const { width: windowWidth } = useWindowDimensions();
+  const listRows = useMemo(() => rows ?? [], [rows]);
+  const { cells, thumbRows } = useAnimatedList({
+    rows: listRows,
+    thumbOf: queueThumb,
+    columns: 4,
+    tileDp: windowWidth / 4,
+  });
   const renderItem = useCallback(
-    ({ item }: { item: ShareQueueRow }) => (
+    ({ item, index }: { item: ShareQueueRow; index: number }) => (
       <QueueGridCell
-        id={item.photo_id}
-        kind={item.kind}
-        uri={item.uri}
-        version={item.image_version}
+        row={thumbRows[index]}
+        index={index}
+        cells={cells}
         selected={selected.has(item.photo_id)}
         accent={theme.accent}
         onPress={() => toggle(item.photo_id)}
@@ -441,7 +454,7 @@ export function ShareQueueScreen({ navigation }: Props) {
         ) : null}
       </QueueGridCell>
     ),
-    [selected, theme.accent, toggle, navigation],
+    [selected, theme.accent, toggle, navigation, cells, thumbRows],
   );
 
   const count = rows?.length ?? 0;
@@ -490,8 +503,9 @@ export function ShareQueueScreen({ navigation }: Props) {
         <Text style={styles.refreshFailed}>{QUEUE_REFRESH_FAILED}</Text>
       ) : null}
       <FlatList
-        data={rows ?? []}
+        data={listRows}
         numColumns={4}
+        {...cells.listProps}
         keyExtractor={(r) => r.photo_id}
         renderItem={renderItem}
         contentContainerStyle={{ paddingBottom: 140, gap: 4 }}

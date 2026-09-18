@@ -886,6 +886,8 @@ export interface ReviewMemberRow {
   /** The media kind (v24, m0.9 phase 4): which MediaStore collection
    * the row's content URI addresses. */
   kind: StoredMediaKind;
+  /** MediaStore's MIME (v24): a GIF's 'image/gif' is what animates its thumbnail (phase 6). */
+  mime_type: string | null;
   /** The motion clip's byte range (v24): null = not a motion photo. */
   motion_offset: number | null;
   motion_length: number | null;
@@ -975,7 +977,7 @@ async function listReviewGroupsIn(
     // newer SD member must not pull a group ahead of what the page
     // actually shows — the timeline's anchors come from visible members.
     const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
-      `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+      `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id IN (${groups.map(() => '?').join(',')}) AND p.is_present = 1${reach.sql}
@@ -1006,6 +1008,7 @@ async function listReviewGroupsIn(
         uri: m.uri,
         image_version: m.image_version,
         kind: m.kind,
+        mime_type: m.mime_type,
         motion_offset: m.motion_offset,
         motion_length: m.motion_length,
         motion_presentation_us: m.motion_presentation_us,
@@ -1112,7 +1115,7 @@ export async function fetchBrowseGroupsPage(
     const ids = heads.map((h) => Number(h.id));
     const placeholders = ids.map(() => '?').join(',');
     const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
-      `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+      `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
          FROM photo_group_assignments a
          JOIN photos p ON p.asset_id = a.photo_id
         WHERE a.group_id IN (${placeholders}) AND p.is_present = 1 AND p.state <> 'trashed'${reach.sql}
@@ -1143,6 +1146,7 @@ export async function fetchBrowseGroupsPage(
         uri: m.uri,
         image_version: m.image_version,
         kind: m.kind,
+        mime_type: m.mime_type,
         motion_offset: m.motion_offset,
         motion_length: m.motion_length,
         motion_presentation_us: m.motion_presentation_us,
@@ -1191,7 +1195,7 @@ export async function fetchBrowseSinglesPage(
     before === undefined ? '' : ' AND (p.taken_at < ? OR (p.taken_at = ? AND p.asset_id < ?))';
   const keysetParams = before === undefined ? [] : [before.takenAt, before.takenAt, before.assetId];
   return db.getAllAsync<ReviewMemberRow>(
-    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
       WHERE a.group_id IS NULL AND p.is_present = 1 AND p.state <> 'trashed'${src.sql}${reach.sql}${keyset}
@@ -1224,7 +1228,7 @@ export async function getReviewGroup(
     );
     if (!group) return;
     const members = await txn.getAllAsync<ReviewMemberRow>(
-      `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+      `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id = ? AND p.is_present = 1${reach.sql}
@@ -1272,7 +1276,7 @@ async function listSinglesFeedIn(
   const src = sourceClause(roots, 'p.uri');
   const reach = reachClause(mounted, 'p.volume_name');
   const page = await txn.getAllAsync<ReviewMemberRow>(
-    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
      WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled') AND p.is_present = 1${src.sql}${reach.sql}
@@ -1293,7 +1297,7 @@ async function listSinglesFeedIn(
   if (page.length >= limit && !page.some((row) => row.state === 'unreviewed')) {
     const tail = page[page.length - 1];
     const pending = await txn.getAllAsync<ReviewMemberRow>(
-      `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+      `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id IS NULL AND p.state = 'unreviewed' AND p.is_present = 1${src.sql}${reach.sql}
@@ -1361,7 +1365,7 @@ export async function listSinglesForDeck(
   // run's inclusive range).
   const rangePredicate = range ? ' AND p.taken_at BETWEEN ? AND ?' : '';
   return db.getAllAsync<ReviewMemberRow>(
-    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
      WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled', 'kept') AND p.is_present = 1${src.sql}${reach.sql}${dayPredicate}${rangePredicate}
@@ -1425,7 +1429,7 @@ export async function listGroupsForDay(
         ...batch,
       );
       const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
-        `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, ${memberInSource.sql} AS in_source
+        `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, ${memberInSource.sql} AS in_source
          FROM photo_group_assignments a
          JOIN photos p ON p.asset_id = a.photo_id
          WHERE a.group_id IN (${placeholders}) AND p.is_present = 1${reach.sql}
@@ -1441,6 +1445,7 @@ export async function listGroupsForDay(
           uri: m.uri,
           image_version: m.image_version,
           kind: m.kind,
+          mime_type: m.mime_type,
           motion_offset: m.motion_offset,
           motion_length: m.motion_length,
           motion_presentation_us: m.motion_presentation_us,
@@ -1525,7 +1530,7 @@ export async function getPhotoFacts(
   assetId: string,
 ): Promise<PhotoFacts | null> {
   return db.getFirstAsync<PhotoFacts>(
-    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, p.reviewed_at,
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, p.reviewed_at,
             (EXISTS (SELECT 1 FROM photo_actions e WHERE e.photo_id = p.asset_id
                       AND e.kind = 'edit' AND e.state IN ('queued', 'error'))) AS needs_edit,
             (SELECT CAST(f.target AS INTEGER) FROM photo_actions f
@@ -2544,6 +2549,7 @@ export async function getPhotoQueueFacts(
       day: string | null;
       imageVersion: number;
       kind: StoredMediaKind;
+      mimeType: string | null;
       motion: MotionClipRow | null;
     }
   >
@@ -2556,6 +2562,7 @@ export async function getPhotoQueueFacts(
       day: string | null;
       imageVersion: number;
       kind: StoredMediaKind;
+      mimeType: string | null;
       motion: MotionClipRow | null;
     }
   >();
@@ -2567,6 +2574,8 @@ export async function getPhotoQueueFacts(
       uri: string;
       image_version: number;
       kind: StoredMediaKind;
+      /** MediaStore's MIME (v24): a GIF's 'image/gif' is what animates its thumbnail (phase 6). */
+      mime_type: string | null;
       /** The motion clip's byte range (v24): null = not a motion photo. */
       motion_offset: number | null;
       motion_length: number | null;
@@ -2574,7 +2583,7 @@ export async function getPhotoQueueFacts(
       taken_at: number;
       day: string | null;
     }>(
-      `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind, motion_video_offset AS motion_offset, motion_video_length AS motion_length, motion_presentation_us AS motion_presentation_us, taken_at, day FROM photos WHERE asset_id IN (${placeholders})`,
+      `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind, mime_type, motion_video_offset AS motion_offset, motion_video_length AS motion_length, motion_presentation_us AS motion_presentation_us, taken_at, day FROM photos WHERE asset_id IN (${placeholders})`,
       ...ids,
     );
     for (const row of rows) {
@@ -2584,6 +2593,7 @@ export async function getPhotoQueueFacts(
         day: row.day,
         imageVersion: row.image_version,
         kind: row.kind,
+        mimeType: row.mime_type,
         motion: motionClipOf(row),
       });
     }
@@ -2668,6 +2678,8 @@ export interface ToEditRow {
   /** The media kind (v24, m0.9 phase 4): which MediaStore collection
    * the row's content URI addresses. */
   kind: StoredMediaKind;
+  /** MediaStore's MIME (v24): a GIF's 'image/gif' is what animates its thumbnail (phase 6). */
+  mime_type: string | null;
   /** The motion clip's byte range (v24): null = not a motion photo. */
   motion_offset: number | null;
   motion_length: number | null;
@@ -2693,7 +2705,7 @@ export async function getToEditPhotos(
   const reach = reachClause(mounted, 'p.volume_name');
   const src = sourceClause(roots, 'p.uri');
   return db.getAllAsync<ToEditRow>(
-    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day FROM photos p
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day FROM photos p
        JOIN photo_actions pa ON pa.photo_id = p.asset_id
       WHERE pa.kind = 'edit' AND pa.state IN ('queued', 'error')
         AND ${livePhotoClause('p.asset_id', 'edit')}${reach.sql}${src.sql}
@@ -2708,6 +2720,8 @@ export interface EditDetectionRow {
   asset_id: string;
   uri: string;
   kind: StoredMediaKind;
+  /** MediaStore's MIME (v24): a GIF's 'image/gif' is what animates its thumbnail (phase 6). */
+  mime_type: string | null;
   /** The motion clip's byte range (v24): null = not a motion photo. */
   motion_offset: number | null;
   motion_length: number | null;
@@ -2726,7 +2740,7 @@ export async function getEditDetectionRows(
 ): Promise<EditDetectionRow[]> {
   const reach = reachClause(mounted, 'p.volume_name');
   return db.getAllAsync<EditDetectionRow>(
-    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.mod_time, p.content_hash,
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.mod_time, p.content_hash,
             pa.queued_at AS to_edit_at
        FROM photos p
        JOIN photo_actions pa ON pa.photo_id = p.asset_id
@@ -2913,6 +2927,8 @@ export interface HistoryPhotoRow {
   /** The media kind (v24, m0.9 phase 4): which MediaStore collection
    * the row's content URI addresses. */
   media_kind: StoredMediaKind;
+  /** MediaStore's MIME (v24): a GIF's 'image/gif' is what animates its thumbnail (phase 6). */
+  mime_type: string | null;
   /** The motion clip's byte range (v24): null = not a motion photo. */
   motion_offset: number | null;
   motion_length: number | null;
@@ -3074,7 +3090,7 @@ export async function getHistoryPage(
     photoPos === 'end'
       ? []
       : await db.getAllAsync<Omit<HistoryPhotoRow, 'kind'>>(
-          `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind AS media_kind, motion_video_offset AS motion_offset, motion_video_length AS motion_length, motion_presentation_us AS motion_presentation_us, taken_at, state, day, activity_at, is_present,
+          `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind AS media_kind, mime_type, motion_video_offset AS motion_offset, motion_video_length AS motion_length, motion_presentation_us AS motion_presentation_us, taken_at, state, day, activity_at, is_present,
                   EXISTS (SELECT 1 FROM photo_actions pa_edit WHERE pa_edit.photo_id = photos.asset_id AND pa_edit.kind = 'edit' AND pa_edit.state IN ('queued', 'error')) AS needs_edit,
                   EXISTS (SELECT 1 FROM photo_actions pc_edit WHERE pc_edit.photo_id = photos.asset_id AND pc_edit.kind = 'edit' AND pc_edit.resolved_at IS NOT NULL) AS edit_applied,
                   EXISTS (SELECT 1 FROM photo_actions pl_fav WHERE pl_fav.photo_id = photos.asset_id AND pl_fav.kind = 'favourite' AND pl_fav.state IN ('queued', 'error') AND pl_fav.target = '1') AS favourite_live,
@@ -3365,6 +3381,8 @@ export interface RescuedPhotoRow {
   /** The media kind (v24, m0.9 phase 4): which MediaStore collection
    * the row's content URI addresses. */
   kind: StoredMediaKind;
+  /** MediaStore's MIME (v24): a GIF's 'image/gif' is what animates its thumbnail (phase 6). */
+  mime_type: string | null;
   /** The motion clip's byte range (v24): null = not a motion photo. */
   motion_offset: number | null;
   motion_length: number | null;
@@ -3393,7 +3411,7 @@ export async function getRescuedPhotoPage(
     before === undefined ? '' : ' AND (taken_at < ? OR (taken_at = ? AND asset_id < ?))';
   const keysetParams = before === undefined ? [] : [before.takenAt, before.takenAt, before.assetId];
   return db.getAllAsync<RescuedPhotoRow>(
-    `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind, motion_video_offset AS motion_offset, motion_video_length AS motion_length, motion_presentation_us AS motion_presentation_us, taken_at, day
+    `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind, mime_type, motion_video_offset AS motion_offset, motion_video_length AS motion_length, motion_presentation_us AS motion_presentation_us, taken_at, day
        FROM photos
       WHERE exif_checked_mod_time IS NOT NULL AND day IS NOT NULL
         AND state <> 'trashed' AND is_present = 1${src.sql}${reach.sql}${keyset}
@@ -3858,6 +3876,8 @@ export interface MotionClipRow {
 
 /** The clip of a row that projects the motion columns, or null. */
 export function motionClipOf(row: {
+  /** MediaStore's MIME (v24): a GIF's 'image/gif' is what animates its thumbnail (phase 6). */
+  mime_type: string | null;
   motion_offset: number | null;
   motion_length: number | null;
   motion_presentation_us: number | null;

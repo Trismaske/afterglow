@@ -7,32 +7,32 @@
  * coloured fill), per-kind status renders as small overlay badges the
  * caller supplies. The chip is the screens' small header/action button.
  */
-import type { StoredMediaKind } from '../lib/mediaIdentity';
 import React from 'react';
 import { Pressable, StyleSheet, Text, type StyleProp, type ViewStyle } from 'react-native';
 import { PixelRatio, useWindowDimensions } from 'react-native';
-import { OsThumbnail } from './OsThumbnail';
+import { AnimatedThumb } from './AnimatedThumb';
+import type { AnimatedCells } from './useAnimatedCells';
+import type { AnimatedThumbRow } from '../lib/animatedThumbRow';
 import { thumbBucketPx } from '../lib/thumbnailSize';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors } from '../theme';
 
 export function QueueGridCell({
-  id,
-  kind,
-  uri,
-  version,
+  row,
+  index,
+  cells,
   selected,
   accent,
   onPress,
   onLongPress,
   children,
 }: {
-  id: string;
-  kind: StoredMediaKind;
-  uri: string;
-  /** The image cache version (item 3). */
-  version: number;
+  /** The cell's thumbnail row, its list index and the list's animated
+   * controller (phase 6): the cell plays its clip while on screen. */
+  row: AnimatedThumbRow;
+  index: number;
+  cells: AnimatedCells;
   selected: boolean;
   accent: string;
   onPress: () => void;
@@ -45,12 +45,11 @@ export function QueueGridCell({
   const cellPx = thumbBucketPx(width / 4, PixelRatio.get());
   return (
     <Pressable style={styles.cell} onPress={onPress} onLongPress={onLongPress}>
-      <OsThumbnail
-        assetId={id}
-        kind={kind}
-        uri={uri}
-        version={version}
+      <AnimatedThumb
+        row={row}
         px={cellPx}
+        index={index}
+        cells={cells}
         style={[styles.thumb, selected && { borderColor: accent }]}
       />
       {children}

@@ -20,7 +20,7 @@ import type { StoredMediaKind } from '../../lib/mediaIdentity';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { AnimatedThumb } from '../AnimatedThumb';
-import { useAnimatedCells, useAnimatedThumbsMode } from '../useAnimatedCells';
+import { useAnimatedList } from '../useAnimatedCells';
 import { animatedKindOf, type AnimatedKind } from '../../lib/animatedCells';
 import { motionClipOf, type MotionClipRow } from '../../db/store';
 import { thumbBucketPx } from '../../lib/thumbnailSize';
@@ -163,6 +163,9 @@ async function hydrateActionWeights(
   }
 }
 
+/** A grid photo IS its thumbnail row (it carries the animated facts). */
+const gridThumb = (photo: GridPhoto) => photo;
+
 export function PhotoStateGrid({
   scope,
   startMs,
@@ -203,8 +206,6 @@ export function PhotoStateGrid({
   const db = useSQLiteContext();
   // Animated thumbnails (phase 6): the clips on screen play, per the
   // Settings row; the list's viewability drives it.
-  const animatedMode = useAnimatedThumbsMode();
-  const itemsRef = useRef<GridPhoto[]>([]);
   const { accent } = useTheme();
   const [items, setItems] = useState<GridPhoto[]>([]);
   const [loading, setLoading] = useState(false);
@@ -369,19 +370,11 @@ export function PhotoStateGrid({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter, refreshKey, scopeKey, rootsKey, albumsKey, startMs, endMs, mounted]);
 
-  itemsRef.current = items;
-  const kindAt = useCallback((index: number) => itemsRef.current[index]?.animated ?? null, []);
-  const cellOf = useCallback((token: { index: number | null; item: unknown }) => {
-    const item = token.item as GridPhoto;
-    return { index: token.index ?? -1, key: `${item.id}:${item.version}` };
-  }, []);
-  const cells = useAnimatedCells({
-    mode: animatedMode,
+  const { cells } = useAnimatedList({
+    rows: items,
+    thumbOf: gridThumb,
     columns: 3,
     tileDp: useWindowDimensions().width / 3,
-    kindAt,
-    rows: items,
-    cellOf,
   });
   const renderItem = useCallback(
     ({ item, index }: { item: GridPhoto; index: number }) => (
@@ -418,13 +411,7 @@ export function PhotoStateGrid({
       keyExtractor={(p) => p.id}
       renderItem={renderItem}
       numColumns={3}
-      viewabilityConfig={cells.listProps.viewabilityConfig}
-      onViewableItemsChanged={cells.listProps.onViewableItemsChanged}
-      onLayout={cells.listProps.onLayout}
-      onScrollBeginDrag={cells.listProps.onScrollBeginDrag}
-      onScrollEndDrag={cells.listProps.onScrollEndDrag}
-      onMomentumScrollBegin={cells.listProps.onMomentumScrollBegin}
-      onMomentumScrollEnd={cells.listProps.onMomentumScrollEnd}
+      {...cells.listProps}
       ListHeaderComponent={header}
       onEndReachedThreshold={0.6}
       onEndReached={() => {

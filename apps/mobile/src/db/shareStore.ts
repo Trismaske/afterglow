@@ -47,6 +47,8 @@ export interface ShareQueueRow {
   /** The media kind (v24, m0.9 phase 4): which MediaStore collection
    * the row's content URI addresses. */
   kind: StoredMediaKind;
+  /** MediaStore's MIME (v24): a GIF's 'image/gif' is what animates its thumbnail (phase 6). */
+  mime_type: string | null;
   /** The motion clip's byte range (v24): null = not a motion photo. */
   motion_offset: number | null;
   motion_length: number | null;
@@ -192,7 +194,7 @@ export async function getShareQueue(
   const reach = reachExists(mounted, 'q.photo_id');
   const src = sourceExists(roots, 'q.photo_id');
   return db.getAllAsync<ShareQueueRow>(
-    `SELECT q.photo_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, q.queued_at,
+    `SELECT q.photo_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, q.queued_at,
        (SELECT COUNT(*) FROM share_batch_members m
           JOIN share_batches b ON b.id = m.batch_id
         WHERE m.photo_id = q.photo_id

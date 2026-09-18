@@ -33,6 +33,7 @@ const member = (
   uri: `file://${id}`,
   image_version: 0,
   kind: 'photo',
+  mime_type: 'image/jpeg',
   motion_offset: null,
   motion_length: null,
   motion_presentation_us: null,

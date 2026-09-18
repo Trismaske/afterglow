@@ -83,15 +83,47 @@ export function poolSizeFor(columns: number, listHeight: number, tileDp: number)
   return columns * (rows + 3);
 }
 
-/** The spotlight's walk: the playing set's video and motion cells. */
+/** One thumbnail inside a visible ITEM: a grid cell or a list row holds
+ * one (sub 0); a timeline card holds a row of them. */
+export interface SpotCell extends VisibleCell {
+  sub: number;
+}
+
+/** The spotlight's walk: the playing items' video and motion thumbnails,
+ * item by item and left to right within one. `kindsAt` lists an item's
+ * thumbnails' kinds. */
 export function spotWalk(
   playing: readonly VisibleCell[],
-  kindAt: (index: number) => AnimatedKind | null,
-): readonly VisibleCell[] {
-  return playing.filter((c) => {
-    const kind = kindAt(c.index);
-    return kind === 'video' || kind === 'motion';
-  });
+  kindsAt: (index: number) => readonly (AnimatedKind | null)[],
+): readonly SpotCell[] {
+  const walk: SpotCell[] = [];
+  for (const cell of playing) {
+    kindsAt(cell.index).forEach((kind, sub) => {
+      if (kind === 'video' || kind === 'motion') walk.push({ ...cell, sub });
+    });
+  }
+  return walk;
+}
+
+/** Which of a list's items a scrolled viewport shows any part of, for a
+ * host WITHOUT a virtualized list (a header's cards, the deck's strip):
+ * items laid out one after another from `start`, each `extent` long with
+ * `gap` between. */
+export function visibleRange(
+  count: number,
+  start: number,
+  extent: number,
+  gap: number,
+  offset: number,
+  viewport: number,
+): readonly number[] {
+  if (!(extent > 0) || !(viewport > 0)) return [];
+  const out: number[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const from = start + i * (extent + gap);
+    if (from + extent > offset && from < offset + viewport) out.push(i);
+  }
+  return out;
 }
 
 /** Whether two cell lists are the same cells in the same order. */

@@ -15,7 +15,10 @@
  * to show. Photos deleted outside Afterglow while UNDECIDED still drop
  * out through the reconcile, exactly as before.
  */
-import React, { useCallback, useRef, useState } from 'react';
+import { AnimatedThumb } from '../components/AnimatedThumb';
+import { useAnimatedList } from '../components/useAnimatedCells';
+import { thumbRowOf, type AnimatedThumbRow } from '../lib/animatedThumbRow';
+import React, { useCallback, useRef, useState, useMemo } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { PixelRatio } from 'react-native';
 import { OsThumbnail } from '../components/OsThumbnail';
@@ -87,6 +90,23 @@ function badgesOf(row: Extract<HistoryRow, { kind: 'photo' }>): PhotoBadge[] {
     }),
   });
 }
+
+/** A History row's extent along the list: the 56 dp thumb plus its
+ * padding and the rows' gap (the pool is sized from it). */
+const HISTORY_ROW_DP = 80;
+/** A photo row's thumbnail; a share-event row has none of its own (its
+ * thumbs are plain URI images), so it never animates. */
+const historyThumb = (row: HistoryRow): AnimatedThumbRow =>
+  row.kind === 'photo'
+    ? thumbRowOf(row.asset_id, { ...row, kind: row.media_kind })
+    : {
+        id: `share-${row.batch_id}`,
+        kind: 'photo',
+        uri: '',
+        version: 0,
+        animated: null,
+        motion: null,
+      };
 
 export function HistoryScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
@@ -232,8 +252,16 @@ export function HistoryScreen({ navigation }: Props) {
     }
   }, [db, filter, next, loadingMore, reconcilePage]);
 
+  // The rows' thumbnails play their clips while on screen (phase 6).
+  const listRows = useMemo(() => rows ?? [], [rows]);
+  const { cells, thumbRows } = useAnimatedList({
+    rows: listRows,
+    thumbOf: historyThumb,
+    columns: 1,
+    tileDp: HISTORY_ROW_DP,
+  });
   const renderItem = useCallback(
-    ({ item }: { item: HistoryRow }) => {
+    ({ item, index }: { item: HistoryRow; index: number }) => {
       if (item.kind === 'share') {
         return (
           <View style={styles.shareRow}>
@@ -285,13 +313,13 @@ export function HistoryScreen({ navigation }: Props) {
               <MaterialCommunityIcons name="image-off-outline" size={22} color={colors.textDim} />
             </View>
           ) : (
-            <OsThumbnail
-              assetId={item.asset_id}
-              kind={item.media_kind}
-              uri={item.uri}
-              version={item.image_version}
+            <AnimatedThumb
+              row={thumbRows[index]}
               px={ROW_THUMB_PX}
+              index={index}
+              cells={cells}
               style={styles.thumb}
+              markSize={11}
             />
           )}
           <View style={styles.rowBody}>
@@ -316,7 +344,7 @@ export function HistoryScreen({ navigation }: Props) {
         </Pressable>
       );
     },
-    [filter, navigation],
+    [filter, navigation, cells, thumbRows],
   );
 
   return (
@@ -353,7 +381,8 @@ export function HistoryScreen({ navigation }: Props) {
         ))}
       </View>
       <FlatList
-        data={rows ?? []}
+        data={listRows}
+        {...cells.listProps}
         keyExtractor={(r) => (r.kind === 'share' ? `share-${r.batch_id}` : r.asset_id)}
         renderItem={renderItem}
         onEndReached={() => void loadMore()}

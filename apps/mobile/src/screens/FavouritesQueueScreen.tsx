@@ -5,6 +5,11 @@
  * visible and retryable across restarts.
  */
 import type { StoredMediaKind } from '../lib/mediaIdentity';
+import { AnimatedThumb } from '../components/AnimatedThumb';
+import { useAnimatedList } from '../components/useAnimatedCells';
+import type { AnimatedThumbRow } from '../lib/animatedThumbRow';
+import { animatedKindOf } from '../lib/animatedCells';
+import type { MotionClipRow } from '../db/store';
 import React, { useCallback, useMemo, useState } from 'react';
 import { plural } from '../lib/format';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -48,6 +53,10 @@ interface FavouriteQueueRow {
   /** The image cache version (item 3). */
   image_version: number;
   kind: StoredMediaKind;
+  /** What animates the row's thumbnail (phase 6): a GIF by its MIME, a
+   * motion photo by its clip. */
+  mime_type: string | null;
+  motion: MotionClipRow | null;
   taken_at: number;
   /** Capture day; null = honestly undated (m0.8.6 change 5). */
   day: string | null;
@@ -57,6 +66,21 @@ interface FavouriteQueueRow {
    * retry rather than a first attempt, and the row has to say so. */
   state: string;
 }
+
+/** A favourites-queue row's extent along the list (the 52 dp thumb, padding, gap). */
+const FAVOURITE_ROW_DP = 76;
+const favouriteThumb = (row: FavouriteQueueRow): AnimatedThumbRow => ({
+  id: row.asset_id,
+  kind: row.kind,
+  uri: row.uri,
+  version: row.image_version,
+  animated: animatedKindOf({
+    kind: row.kind,
+    mimeType: row.mime_type,
+    hasMotion: row.motion !== null,
+  }),
+  motion: row.motion,
+});
 
 export function FavouritesQueueScreen() {
   // P2-2: browse taps navigate to the deck's list mode.
@@ -88,6 +112,8 @@ export function FavouritesQueueScreen() {
         taken_at: byId.get(action.photoId)?.takenAt ?? action.queuedAt,
         image_version: byId.get(action.photoId)?.imageVersion ?? 0,
         kind: byId.get(action.photoId)?.kind ?? 'photo',
+        mime_type: byId.get(action.photoId)?.mimeType ?? null,
+        motion: byId.get(action.photoId)?.motion ?? null,
         day: byId.get(action.photoId)?.day ?? null,
         favourite_target: decodeFavouriteTarget(action.target) === false ? 0 : 1,
         state: action.state,
@@ -96,6 +122,14 @@ export function FavouritesQueueScreen() {
     'favourite',
   );
   const [busyTarget, setBusyTarget] = useState<boolean | null>(null);
+  // The rows' thumbnails play their clips while on screen (phase 6).
+  const listRows = useMemo(() => rows ?? [], [rows]);
+  const { cells, thumbRows } = useAnimatedList({
+    rows: listRows,
+    thumbOf: favouriteThumb,
+    columns: 1,
+    tileDp: FAVOURITE_ROW_DP,
+  });
   /** Thumbnail tap opens the deck in list mode over this queue (gate 5). */
 
   const applyRows = useMemo(() => (rows ?? []).filter((row) => row.favourite_target === 1), [rows]);
@@ -305,7 +339,8 @@ export function FavouritesQueueScreen() {
         <Text style={styles.refreshFailed}>{QUEUE_REFRESH_FAILED}</Text>
       ) : null}
       <FlatList
-        data={rows ?? []}
+        data={listRows}
+        {...cells.listProps}
         keyExtractor={(row) => row.asset_id}
         contentContainerStyle={styles.list}
         ListEmptyComponent={
@@ -317,7 +352,7 @@ export function FavouritesQueueScreen() {
             <Text style={styles.empty}>{QUEUE_REFRESH_FAILED}</Text>
           ) : null
         }
-        renderItem={({ item }) => (
+        renderItem={({ item, index }) => (
           <View style={styles.row}>
             <Pressable
               onPress={() =>
@@ -327,13 +362,13 @@ export function FavouritesQueueScreen() {
                 })
               }
             >
-              <OsThumbnail
-                assetId={item.asset_id}
-                kind={item.kind}
-                uri={item.uri}
-                version={item.image_version}
+              <AnimatedThumb
+                row={thumbRows[index]}
                 px={ROW_THUMB_PX}
+                index={index}
+                cells={cells}
                 style={styles.thumb}
+                markSize={11}
               />
             </Pressable>
             <MaterialCommunityIcons

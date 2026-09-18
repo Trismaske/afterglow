@@ -27,6 +27,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { OsThumbnail } from './OsThumbnail';
 import { useCellPlayback, type AnimatedCells, type CellPlayback } from './useAnimatedCells';
 import type { AnimatedKind } from '../lib/animatedCells';
+import type { AnimatedThumbRow } from '../lib/animatedThumbRow';
 import type { PlayerPool } from '../lib/playerPool';
 import type { StoredMediaKind } from '../lib/mediaIdentity';
 import type { MotionClipRow } from '../db/store';
@@ -43,19 +44,12 @@ const KIND_ICON: Record<
   gif: 'file-gif-box',
 };
 
-export interface AnimatedThumbRow {
-  id: string;
-  kind: StoredMediaKind;
-  uri: string;
-  version: number;
-  animated: AnimatedKind | null;
-  motion: MotionClipRow | null;
-}
-
 export const AnimatedThumb = React.memo(function AnimatedThumb({
   row,
   px,
   index,
+  cellKey,
+  sub = 0,
   cells,
   style,
   markSize = 14,
@@ -63,15 +57,19 @@ export const AnimatedThumb = React.memo(function AnimatedThumb({
   row: AnimatedThumbRow;
   /** The OS-thumbnail bucket the surface renders at. */
   px: number;
-  /** The cell's list index; with the row's id:version it is the cell's
-   * identity to the controller. */
+  /** The ITEM's list index and identity to the controller: a grid cell's
+   * or a row's is its own `id:version`, a card's thumbnails share the
+   * card's. Defaults to the row's own. */
   index: number;
+  cellKey?: string;
+  /** The thumbnail's place inside its item (a card's row); 0 otherwise. */
+  sub?: number;
   /** The list's controller (useAnimatedCells) — stable, subscribed to. */
   cells: AnimatedCells;
   style?: StyleProp<ViewStyle>;
   markSize?: number;
 }) {
-  const cell = useCellPlayback(cells, index, `${row.id}:${row.version}`);
+  const cell = useCellPlayback(cells, index, cellKey ?? `${row.id}:${row.version}`, sub);
   const pool = cells.pool;
   const playing = cell.playing && row.animated !== null;
   return (

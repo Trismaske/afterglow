@@ -51,6 +51,7 @@ import {
   type VisibleCell,
 } from '../lib/animatedCells';
 import { makePlayerPool, type PlayerPool } from '../lib/playerPool';
+import type { AnimatedThumbRow } from '../lib/animatedThumbRow';
 import { getSetting } from '../db/store';
 
 /** The Settings row's value, re-read on every focus (a mode saved in
@@ -101,12 +102,20 @@ export interface AnimatedCells {
     onScrollEndDrag: () => void;
     onMomentumScrollBegin: () => void;
     onMomentumScrollEnd: () => void;
+    onTouchEnd: () => void;
   };
   subscribe: (listener: () => void) => () => void;
-  /** A cell's playback as a primitive snapshot, by its index AND its
-   * row's identity (id:version): a replacement row at a settled index
-   * plays only after its own settle. */
-  snapshotFor: (index: number, key: string) => string;
+  /** A thumbnail's playback as a primitive snapshot, by its item's index
+   * AND identity (a replacement row at a settled index plays only after
+   * its own settle) and its place inside the item (`sub`: 0 for a grid
+   * cell or a row, the position in a card's row of thumbnails). */
+  snapshotFor: (index: number, key: string, sub: number) => string;
+  /** For a host WITHOUT a virtualized list (a header's cards, the deck's
+   * strip): the items any part of which is on screen, from the host's
+   * own scroll geometry (lib/animatedCells `visibleRange`). */
+  reportVisible: (cells: readonly VisibleCell[]) => void;
+  /** The same motion signal a list's scroll callbacks give. */
+  reportMoving: (moving: boolean) => void;
   advance: (turn: number) => void;
   pool: () => PlayerPool | null;
 }
@@ -118,8 +127,13 @@ const DRAG_END_MS = 120;
 
 /** A cell's own playback: re-renders THIS cell only when its answer
  * changes. */
-export function useCellPlayback(cells: AnimatedCells, index: number, key: string): CellPlayback {
-  const snapshot = useSyncExternalStore(cells.subscribe, () => cells.snapshotFor(index, key));
+export function useCellPlayback(
+  cells: AnimatedCells,
+  index: number,
+  key: string,
+  sub = 0,
+): CellPlayback {
+  const snapshot = useSyncExternalStore(cells.subscribe, () => cells.snapshotFor(index, key, sub));
   return useMemo(() => {
     const [playing, spotKey, loop, held] = snapshot.split(':');
     const turn = Number(spotKey);
@@ -137,15 +151,18 @@ export function useAnimatedCells({
   mode,
   columns,
   tileDp,
-  kindAt,
+  kindsAt,
   rows,
   cellOf,
 }: {
   mode: AnimatedThumbsMode | null;
+  /** Thumbnails across the list: a grid's columns, a card's row. */
   columns: number;
+  /** An item's extent along the scroll: a tile, a row, a card. */
   tileDp: number;
-  /** What the cell at an index animates as (null = a photo). */
-  kindAt: (index: number) => AnimatedKind | null;
+  /** What the thumbnails of the item at an index animate as (null = a
+   * photo): one entry for a grid cell or a row, a card's row of them. */
+  kindsAt: (index: number) => readonly (AnimatedKind | null)[];
   /** The list's data: its identity re-reads the kinds (a re-decided
    * cull can change what an index holds without moving the indices). */
   rows: readonly unknown[];
@@ -185,10 +202,10 @@ export function useAnimatedCells({
   // The sink line the release gate asserts on (design §8), once per
   // change of a non-empty set.
   const playingKey = playing.map((c) => c.index).join(',');
-  const playerCount = playing.filter((c) => {
-    const kind = kindAt(c.index);
-    return kind === 'video' || kind === 'motion';
-  }).length;
+  const playerCount = playing.reduce(
+    (n, c) => n + kindsAt(c.index).filter((k) => k === 'video' || k === 'motion').length,
+    0,
+  );
   useEffect(() => {
     if (playingKey !== '') console.log(`[thumbs] playing: ${playingKey} (players ${playerCount})`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -196,7 +213,7 @@ export function useAnimatedCells({
 
   // One at a time: the walk over the playing set's clips.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const walk = useMemo(() => spotWalk(playing, kindAt), [playing, kindAt, rows]);
+  const walk = useMemo(() => spotWalk(playing, kindsAt), [playing, kindsAt, rows]);
   // The spot is a step WITHIN a walk: a new walk starts at its first
   // cell in the same render (a reset from an effect would let the old
   // step's cell borrow a player for one commit — codex round 2), and
@@ -204,7 +221,7 @@ export function useAnimatedCells({
   // the dwell cap comes first.
   // The walk's key carries the cells' identities: a replacement row at
   // a walked index is a new walk.
-  const walkKey = walk.map((c) => `${c.index}:${c.key}`).join(',');
+  const walkKey = walk.map((c) => `${c.index}:${c.key}:${c.sub}`).join(',');
   const [step, setStep] = useState({ walkKey, index: 0 });
   const spot = step.walkKey === walkKey ? step.index : 0;
   // One hand-over per turn: the clip's end and the dwell timer both
@@ -219,11 +236,15 @@ export function useAnimatedCells({
     [walkKey],
   );
   const spotting = mode === 'one' && walk.length > 0;
+  // The dwell does not run while the list MOVES (held cells keep their
+  // view, their borrow and their turn — codex 2026-09-19); it starts over
+  // when the list stops.
+  const [moving, setMoving] = useState(false);
   useEffect(() => {
-    if (!spotting) return;
+    if (!spotting || moving) return;
     const timer = setTimeout(() => advance(spot), DWELL_MS);
     return () => clearTimeout(timer);
-  }, [spotting, spot, advance]);
+  }, [spotting, moving, spot, advance]);
   const spotCell = spotting ? walk[spot % walk.length] : null;
 
   // The pool: lazy, sized from the layout at the first borrow.
@@ -259,7 +280,6 @@ export function useAnimatedCells({
   // frame. Seventeen live video textures cost the S10e's render thread
   // 18.9 % janky frames under a drag against 0 % with one (2026-09-18);
   // a held player updates no texture, and resumes when the list stops.
-  const [moving, setMoving] = useState(false);
   const dragEnd = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearDragEnd = useCallback(() => {
     if (dragEnd.current !== null) clearTimeout(dragEnd.current);
@@ -281,6 +301,17 @@ export function useAnimatedCells({
     clearDragEnd();
     setMoving(false);
   }, [clearDragEnd]);
+  // A finger that STOPS a fling with a tap gets no momentum-end event
+  // (React Native cancels it on ACTION_DOWN) and begins no drag: the
+  // touch's end is then the only signal, and it releases the hold like a
+  // drag's end does unless a fling follows (codex 2026-09-19).
+  const onTouchEnd = onScrollEndDrag;
+  // A list that is not animating holds nothing over for its return.
+  useEffect(() => {
+    if (active) return;
+    clearDragEnd();
+    setMoving(false);
+  }, [active, clearDragEnd]);
   useEffect(() => clearDragEnd, [clearDragEnd]);
 
   // The store the cells subscribe to: the current answer lives in a ref,
@@ -289,12 +320,12 @@ export function useAnimatedCells({
   // concurrent render can be abandoned after it ran, and the cells must
   // only ever read an answer React committed — so the ref is written and
   // the listeners told in one layout effect.
-  const answer = useRef({ active, playing, kindAt, mode, spotCell, spot, advance, moving });
+  const answer = useRef({ active, playing, kindsAt, mode, spotCell, spot, advance, moving });
   const listeners = useRef(new Set<() => void>()).current;
   useLayoutEffect(() => {
-    answer.current = { active, playing, kindAt, mode, spotCell, spot, advance, moving };
+    answer.current = { active, playing, kindsAt, mode, spotCell, spot, advance, moving };
     for (const listener of listeners) listener();
-  }, [listeners, active, playing, kindAt, mode, spotCell, spot, advance, moving]);
+  }, [listeners, active, playing, kindsAt, mode, spotCell, spot, advance, moving]);
   const subscribe = useCallback(
     (listener: () => void) => {
       listeners.add(listener);
@@ -302,17 +333,30 @@ export function useAnimatedCells({
     },
     [listeners],
   );
-  const snapshotFor = useCallback((index: number, key: string): string => {
+  const snapshotFor = useCallback((index: number, key: string, sub: number): string => {
     const now = answer.current;
     if (!now.active || !now.playing.some((c) => c.index === index && c.key === key)) return IDLE;
-    if (now.mode === 'one' && now.kindAt(index) !== 'gif') {
+    if (now.mode === 'one' && now.kindsAt(index)[sub] !== 'gif') {
       const spotted =
-        now.spotCell !== null && now.spotCell.index === index && now.spotCell.key === key;
+        now.spotCell !== null &&
+        now.spotCell.index === index &&
+        now.spotCell.key === key &&
+        now.spotCell.sub === sub;
       return `${spotted ? 1 : 0}:${now.spot}:0:${now.moving ? 1 : 0}`;
     }
     return `1:0:1:${now.moving ? 1 : 0}`;
   }, []);
   const advanceTurn = useCallback((turn: number) => answer.current.advance(turn), []);
+  const reportVisible = useCallback((next: readonly VisibleCell[]) => {
+    setVisible((previous) => (sameCells(previous, next) ? previous : next));
+  }, []);
+  const reportMoving = useCallback(
+    (next: boolean) => {
+      clearDragEnd();
+      setMoving(next);
+    },
+    [clearDragEnd],
+  );
 
   return useMemo(
     () => ({
@@ -324,9 +368,12 @@ export function useAnimatedCells({
         onScrollEndDrag,
         onMomentumScrollBegin,
         onMomentumScrollEnd,
+        onTouchEnd,
       },
       subscribe,
       snapshotFor,
+      reportVisible,
+      reportMoving,
       advance: advanceTurn,
       pool,
     }),
@@ -337,10 +384,42 @@ export function useAnimatedCells({
       onScrollEndDrag,
       onMomentumScrollBegin,
       onMomentumScrollEnd,
+      onTouchEnd,
       subscribe,
       snapshotFor,
+      reportVisible,
+      reportMoving,
       advanceTurn,
       pool,
     ],
   );
+}
+
+/** The common host: a FlatList of rows with ONE thumbnail each (a grid
+ * cell or a list row). Spread `listProps` on the FlatList and render
+ * `<AnimatedThumb row={thumbRows[index]} index={index} cells={cells} />`.
+ * `thumbOf` must be stable (a module-level function). */
+export function useAnimatedList<T>({
+  rows,
+  thumbOf,
+  columns,
+  tileDp,
+}: {
+  rows: readonly T[];
+  thumbOf: (row: T) => AnimatedThumbRow;
+  columns: number;
+  tileDp: number;
+}): { cells: AnimatedCells; thumbRows: readonly AnimatedThumbRow[] } {
+  const mode = useAnimatedThumbsMode();
+  const thumbRows = useMemo(() => rows.map(thumbOf), [rows, thumbOf]);
+  const current = useRef(thumbRows);
+  current.current = thumbRows;
+  const kindsAt = useCallback((index: number) => [current.current[index]?.animated ?? null], []);
+  const cellOf = useCallback((token: ViewToken) => {
+    const index = token.index ?? -1;
+    const row = current.current[index];
+    return { index, key: row ? `${row.id}:${row.version}` : String(index) };
+  }, []);
+  const cells = useAnimatedCells({ mode, columns, tileDp, kindsAt, rows: thumbRows, cellOf });
+  return { cells, thumbRows };
 }

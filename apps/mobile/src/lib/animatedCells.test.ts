@@ -6,6 +6,7 @@ import {
   poolSizeFor,
   sameCells,
   spotWalk,
+  visibleRange,
 } from './animatedCells';
 
 const cells = (...indices: number[]) => indices.map((index) => ({ index, key: `row${index}` }));
@@ -53,10 +54,33 @@ describe('spotWalk (one at a time skips GIFs)', () => {
     [4, 'video' as const],
   ]);
   it('walks the playing set in order, video and motion only', () => {
-    expect(spotWalk(cells(0, 1, 2, 3, 4), (i) => kinds.get(i) ?? null)).toEqual(cells(0, 2, 4));
+    expect(spotWalk(cells(0, 1, 2, 3, 4), (i) => [kinds.get(i) ?? null])).toEqual(
+      cells(0, 2, 4).map((c) => ({ ...c, sub: 0 })),
+    );
   });
   it('is empty when only GIFs and photos are on screen', () => {
-    expect(spotWalk(cells(1, 3), (i) => kinds.get(i) ?? null)).toEqual([]);
+    expect(spotWalk(cells(1, 3), (i) => [kinds.get(i) ?? null])).toEqual([]);
+  });
+  it('walks the thumbnails inside an item left to right (a timeline card)', () => {
+    const card = () => ['video' as const, null, 'gif' as const, 'motion' as const];
+    expect(spotWalk(cells(7), card)).toEqual([
+      { index: 7, key: 'row7', sub: 0 },
+      { index: 7, key: 'row7', sub: 3 },
+    ]);
+  });
+});
+
+describe('visibleRange (a host without a virtualized list)', () => {
+  it('names the items any part of which the viewport shows', () => {
+    // Cards 100 tall with a 10 gap from y=50: 50–150, 160–260, 270–370, 380–480.
+    expect(visibleRange(4, 50, 100, 10, 0, 200)).toEqual([0, 1]);
+    expect(visibleRange(4, 50, 100, 10, 155, 200)).toEqual([1, 2]);
+    expect(visibleRange(4, 50, 100, 10, 149, 12)).toEqual([0, 1]);
+    expect(visibleRange(4, 50, 100, 10, 600, 200)).toEqual([]);
+  });
+  it('is empty before the geometry is known', () => {
+    expect(visibleRange(4, 0, 0, 10, 0, 200)).toEqual([]);
+    expect(visibleRange(4, 0, 100, 10, 0, 0)).toEqual([]);
   });
 });
 

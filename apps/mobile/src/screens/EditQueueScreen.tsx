@@ -1,4 +1,7 @@
-import React, { useCallback, useState } from 'react';
+import { AnimatedThumb } from '../components/AnimatedThumb';
+import { useAnimatedList } from '../components/useAnimatedCells';
+import { thumbRowOf } from '../lib/animatedThumbRow';
+import React, { useCallback, useState, useMemo } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { PixelRatio } from 'react-native';
 import { OsThumbnail } from '../components/OsThumbnail';
@@ -39,6 +42,10 @@ type Props = MainTabScreenProps<'EditQueue'>;
  * own edit button has its own write powers (Samsung Gallery-style). Mark
  * done is always available manually (edit *detection* is m0.3).
  */
+/** An edit-queue row's extent along the list (the 84 dp thumb, padding, gap). */
+const EDIT_ROW_DP = 110;
+const editThumb = (row: ToEditRow) => thumbRowOf(row.asset_id, row);
+
 export function EditQueueScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
@@ -185,8 +192,16 @@ export function EditQueueScreen({ navigation }: Props) {
     [busyId, askMarkDone, failureAlert],
   );
 
+  // The rows' thumbnails play their clips while on screen (phase 6).
+  const listRows = useMemo(() => rows ?? [], [rows]);
+  const { cells, thumbRows } = useAnimatedList({
+    rows: listRows,
+    thumbOf: editThumb,
+    columns: 1,
+    tileDp: EDIT_ROW_DP,
+  });
   const renderItem = useCallback(
-    ({ item }: { item: ToEditRow }) => (
+    ({ item, index }: { item: ToEditRow; index: number }) => (
       <View style={styles.row}>
         <Pressable
           // P2-2: the deck IS the browse surface — one route, list mode
@@ -198,12 +213,11 @@ export function EditQueueScreen({ navigation }: Props) {
             })
           }
         >
-          <OsThumbnail
-            assetId={item.asset_id}
-            kind={item.kind}
-            uri={item.uri}
-            version={item.image_version}
+          <AnimatedThumb
+            row={thumbRows[index]}
             px={ROW_THUMB_PX}
+            index={index}
+            cells={cells}
             style={styles.thumb}
           />
         </Pressable>
@@ -242,7 +256,7 @@ export function EditQueueScreen({ navigation }: Props) {
         </View>
       </View>
     ),
-    [busyId, openEditor, openGallery, markDone, theme.accent, navigation],
+    [busyId, openEditor, openGallery, markDone, theme.accent, navigation, cells, thumbRows],
   );
 
   return (
@@ -277,7 +291,8 @@ export function EditQueueScreen({ navigation }: Props) {
         <Text style={styles.refreshFailed}>{QUEUE_REFRESH_FAILED}</Text>
       ) : null}
       <FlatList
-        data={rows ?? []}
+        data={listRows}
+        {...cells.listProps}
         keyExtractor={(r) => r.asset_id}
         renderItem={renderItem}
         contentContainerStyle={[styles.list, { paddingBottom: 16 }]}

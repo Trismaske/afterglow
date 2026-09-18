@@ -124,6 +124,8 @@ export interface OrganizeQueueRow {
   /** The media kind (v24, m0.9 phase 4): which MediaStore collection
    * the row's content URI addresses. */
   kind: StoredMediaKind;
+  /** MediaStore's MIME (v24): a GIF's 'image/gif' is what animates its thumbnail (phase 6). */
+  mime_type: string | null;
   /** The motion clip's byte range (v24): null = not a motion photo. */
   motion_offset: number | null;
   motion_length: number | null;
@@ -279,7 +281,7 @@ export async function getOrganizeQueue(
   // NULL-safe target projection: an untargeted row (m0.8.2) comes back
   // with NULL volume/path rather than substr() noise.
   return db.getAllAsync<OrganizeQueueRow>(
-    `SELECT p.asset_id AS photo_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, pa.state,
+    `SELECT p.asset_id AS photo_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, pa.state,
             CASE WHEN pa.target IS NULL THEN NULL
                  ELSE substr(pa.target, 1, instr(pa.target, char(10)) - 1) END AS organize_volume,
             CASE WHEN pa.target IS NULL THEN NULL

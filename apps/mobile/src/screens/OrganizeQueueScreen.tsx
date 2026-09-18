@@ -13,9 +13,19 @@
  * (organizeStore.ts); untargeted rows are structurally unmovable and are
  * said out loud, never silently skipped.
  */
+import { useAnimatedList } from '../components/useAnimatedCells';
+import { thumbRowOf } from '../lib/animatedThumbRow';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { plural } from '../lib/format';
-import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  Alert,
+  FlatList,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -66,6 +76,8 @@ function surfaceQueueWriteError(detail: string, error: unknown): void {
     `${detail}\n\n${error instanceof Error ? error.message : String(error)}`,
   );
 }
+
+const queueThumb = (row: OrganizeQueueRow) => thumbRowOf(row.photo_id, row);
 
 export function OrganizeQueueScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
@@ -416,13 +428,21 @@ export function OrganizeQueueScreen({ navigation }: Props) {
     }
   }, [busy, db, rows, reload, refreshReview]);
 
+  // The cells play their clips while on screen (phase 6).
+  const { width: windowWidth } = useWindowDimensions();
+  const listRows = useMemo(() => rows ?? [], [rows]);
+  const { cells, thumbRows } = useAnimatedList({
+    rows: listRows,
+    thumbOf: queueThumb,
+    columns: 4,
+    tileDp: windowWidth / 4,
+  });
   const renderItem = useCallback(
-    ({ item }: { item: OrganizeQueueRow }) => (
+    ({ item, index }: { item: OrganizeQueueRow; index: number }) => (
       <QueueGridCell
-        id={item.photo_id}
-        kind={item.kind}
-        uri={item.uri}
-        version={item.image_version}
+        row={thumbRows[index]}
+        index={index}
+        cells={cells}
         selected={selected.has(item.photo_id)}
         accent={theme.accent}
         onPress={() => toggle(item.photo_id)}
@@ -453,7 +473,7 @@ export function OrganizeQueueScreen({ navigation }: Props) {
         ) : null}
       </QueueGridCell>
     ),
-    [selected, theme.accent, toggle, navigation],
+    [selected, theme.accent, toggle, navigation, cells, thumbRows],
   );
 
   const count = rows?.length ?? 0;
@@ -501,8 +521,9 @@ export function OrganizeQueueScreen({ navigation }: Props) {
         <Text style={styles.refreshFailed}>{QUEUE_REFRESH_FAILED}</Text>
       ) : null}
       <FlatList
-        data={rows ?? []}
+        data={listRows}
         numColumns={4}
+        {...cells.listProps}
         keyExtractor={(r) => r.photo_id}
         renderItem={renderItem}
         contentContainerStyle={{ paddingBottom: 150, gap: 4 }}

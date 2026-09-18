@@ -272,6 +272,9 @@ function memberEquals(a: ReviewMemberRow, b: ReviewMemberRow): boolean {
     a.motion_offset === b.motion_offset &&
     a.motion_length === b.motion_length &&
     a.motion_presentation_us === b.motion_presentation_us &&
+    // The MIME (phase 6): a GIF's thumbnail animates and wears its kind
+    // mark by it, and a facts read can land it for an unchanged version.
+    a.mime_type === b.mime_type &&
     a.state === b.state &&
     a.needs_edit === b.needs_edit &&
     a.time_attached === b.time_attached &&

@@ -37,6 +37,11 @@ export function makePlayerPool(size: number): PlayerPool {
   for (let i = 0; i < size; i += 1) {
     const p = createVideoPlayer(null);
     p.muted = true;
+    // No audio TRACK at all, not just silence: a muted player still
+    // decodes its audio, and the S23's media resource manager showed one
+    // AAC decoder per thumbnail player (eighteen beside eighteen video
+    // decoders, 2026-09-18). The selection persists across replace().
+    p.audioTrack = null;
     p.timeUpdateEventInterval = 0;
     p.bufferOptions = {
       preferredForwardBufferDuration: BUFFER_S,
@@ -62,7 +67,6 @@ export function makePlayerPool(size: number): PlayerPool {
     giveBack(player) {
       if (released) return;
       player.pause();
-      player.muted = true;
       free.push(player);
     },
     release() {

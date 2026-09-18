@@ -30,7 +30,7 @@ The evidence behind every decision is the phase-6 spike (docs/Plan_m0.9.md, phas
 | D8 | Kind mark | A kind glyph (video · motion · GIF) on every clip thumbnail on every surface, ALWAYS shown, playing or not, in the StateDots corner language; plain photos carry none. Phase 7's stage chips use the same glyphs. | Tristan 2026-09-16: "if we are not playing it, we need to show it", and playing kinds must still be told apart. |
 | D9 | Surfaces | EVERY thumbnail surface animates in the build; the device pass prunes any that reads wrong (the deck strip beside a playing stage, 52 dp rows). | Tristan 2026-09-16: build all and see; the conservative fallback is Progress and Timeline only. |
 | D10 | Sources | A video plays its content URI; a motion photo its clip through the deck's `extractMotionClip` (run-scoped cache, one in-flight extraction per key); a GIF through expo-image's native playback. | The deck's paths, reused; single-flight from codex round 1 of the probe. |
-| D11 | Cost bound per player | A THUMBNAIL bound: 1 s ahead, 4 MiB of samples, half a second to start; muted, `timeUpdateEventInterval` 0, TextureView. **Amended 2026-09-18:** the deck's 16 MiB times a dozen players was the heap. | The S23 crash of 2026-09-18 (OutOfMemoryError on ExoPlayer's playback thread at 256 MB); after: 72 MB average Java heap on the grid. |
+| D11 | Cost bound per player | A THUMBNAIL bound: 1 s ahead, 4 MiB of samples, half a second to start; NO audio track (`audioTrack = null` — a muted player still decodes its audio: the S23's resource manager showed one AAC decoder per thumbnail player, 2026-09-18), `timeUpdateEventInterval` 0, TextureView. **Amended 2026-09-18:** the deck's 16 MiB times a dozen players was the heap. | The S23 crash of 2026-09-18 (OutOfMemoryError on ExoPlayer's playback thread at 256 MB); after: 72 MB average Java heap on the grid. |
 | D12 | Schema | NONE: no cache table, no column. v24 stays; M18's "DDL finalizes after the design doc" closes with no addition. | Players read files the store already knows; the motion cache is run-scoped files. |
 | D13 | What leaves | The probe screen, its Settings row and route, `fetchAnimatedProbeRows`, the module's `extractFrameStrip`. `scripts/device-sample.sh` and its §6 recipe STAY (a reusable protocol). | M29: the probe leaves once the plan holds the numbers. |
 
@@ -84,6 +84,13 @@ The UI gate's `playback off` preflight parks this row on Off as well (a playing 
 | Deck strip | horizontal ScrollView | `onScroll` + the strip's own geometry (`lib/stripScroll.ts` already knows it) | visible slots + 2 |
 
 Each surface swaps `OsThumbnail` for `AnimatedThumb` on its clip cells and mounts the hook; the pruning decision (D9) is per surface at the device pass.
+
+## 5b. Decoders (measured 2026-09-18, `dumpsys media.resource_manager`)
+
+Both phones declare 16 concurrent instances per hardware decoder type (AVC and HEVC each; the vendors' `media_codecs` tables).
+The S23 with 18 players on screen ran 16 `c2.qti.hevc.decoder` — the limit exactly — plus 2 `c2.android.hevc.decoder`: players past the limit FALL BACK to the software decoder and keep playing, at CPU cost (the S23's janky frames doubled from 12 to 22 players).
+That fallback is why there is no ceiling (D2): every visible clip plays, and the floor phone's cost at a full screen (four cores in the spike) is the software decoders' share.
+The tester's S10e observation of a one-second scroll stall after a long play is unexplained: a scripted repeat stayed under 65 ms a frame; decoder reclaim events appear in its logcat, and a blocked surface detach is the suspect — a device-pass line.
 
 ## 6. Validation against the driving cases
 

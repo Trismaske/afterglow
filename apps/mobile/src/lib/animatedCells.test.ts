@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_PLAYERS,
   animatedKindOf,
   parseAnimatedThumbsMode,
   playingSet,
@@ -20,6 +21,13 @@ describe('playingSet (settled ∩ visible: entering waits, leaving stops)', () =
   it('lets a cell that entered play only once it is in the settled set', () => {
     expect(playingSet(cells(0, 1, 2), cells(0, 1, 2, 3))).toEqual(cells(0, 1, 2));
     expect(playingSet(cells(0, 1, 2, 3), cells(0, 1, 2, 3))).toEqual(cells(0, 1, 2, 3));
+  });
+  it('caps the player cells at the ceiling, top rows first, and never counts GIFs', () => {
+    const kinds = (i: number) => (i % 3 === 2 ? ('gif' as const) : ('video' as const));
+    const all = cells(0, 1, 2, 3, 4, 5, 6, 7, 8);
+    // Six players allowed: indices 0,1,3,4,6,7 are players; 2,5,8 GIFs.
+    expect(playingSet(all, all, kinds, 4)).toEqual(cells(0, 1, 2, 3, 4, 5, 8));
+    expect(playingSet(all, all, kinds, 0)).toEqual(cells(2, 5, 8));
   });
   it('treats a replacement row at a settled index as a new cell that must settle', () => {
     const settled = cells(0, 1, 2);
@@ -71,6 +79,12 @@ describe('animatedKindOf', () => {
     expect(animatedKindOf({ kind: 'photo', mimeType: 'image/gif', hasMotion: false })).toBe('gif');
     expect(animatedKindOf({ kind: 'photo', mimeType: 'image/jpeg', hasMotion: false })).toBeNull();
     expect(animatedKindOf({ kind: 'photo', mimeType: null, hasMotion: false })).toBeNull();
+  });
+});
+
+describe('MAX_PLAYERS', () => {
+  it('is the measured ceiling, twelve', () => {
+    expect(MAX_PLAYERS).toBe(12);
   });
 });
 

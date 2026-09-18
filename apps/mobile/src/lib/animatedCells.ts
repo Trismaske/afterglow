@@ -37,6 +37,14 @@ export function parseAnimatedThumbsMode(raw: string | null): AnimatedThumbsMode 
 /** The tunables the tester settled on the probe (2026-09-16). */
 export const SETTLE_MS = 500;
 export const DWELL_MS = 5000;
+/** The most PLAYERS a list runs at once, whatever the viewport holds
+ * (2026-09-18: the S23's tall screen held 24 cells with any part
+ * visible, and 24 players — the probe's 2 GB — took the Java heap down
+ * on the Progress grid; twelve measured 910 MB on the S23 and 454 MB on
+ * the S10e, the ceiling the spike saw hold for ten minutes). GIF cells
+ * are expo-image decoders, not players, and do not count. The cells
+ * beyond the ceiling stay stills, top rows first. */
+export const MAX_PLAYERS = 12;
 /** Any part of a cell on screen counts (D5). */
 export const VIEWABILITY = { itemVisiblePercentThreshold: 1, minimumViewTime: 100 } as const;
 
@@ -60,13 +68,23 @@ export interface VisibleCell {
   key: string;
 }
 
-/** Settled ∩ visible (by identity), in index order. */
+/** Settled ∩ visible (by identity), in index order, with at most
+ * MAX_PLAYERS player cells — the first by index; GIF cells always. */
 export function playingSet(
   settled: readonly VisibleCell[],
   visible: readonly VisibleCell[],
+  kindAt: (index: number) => AnimatedKind | null = () => 'video',
+  maxPlayers: number = MAX_PLAYERS,
 ): readonly VisibleCell[] {
   const seen = new Set(visible.map((c) => `${c.index}:${c.key}`));
-  return settled.filter((c) => seen.has(`${c.index}:${c.key}`));
+  let players = 0;
+  return settled.filter((c) => {
+    if (!seen.has(`${c.index}:${c.key}`)) return false;
+    const kind = kindAt(c.index);
+    if (kind === 'gif' || kind === null) return true;
+    players += 1;
+    return players <= maxPlayers;
+  });
 }
 
 /** The cells a list can hold with any part visible: its columns times

@@ -8,15 +8,18 @@
  * the pool the S10e's scripted 300-cell scroll has the same frame-time
  * percentiles with the cells playing and stopped.
  *
- * Every player carries the deck's bound (D11): muted, the 4 s / 16 MiB
- * buffer, no time-update ticks. Impure by nature (native players);
+ * Every player carries a THUMBNAIL bound (D11 amended 2026-09-18):
+ * muted, one second ahead and 4 MiB of samples — a cell shows a few
+ * seconds of a clip at 120 dp, and the deck's 16 MiB times a dozen
+ * players took the S23's Java heap down — no time-update ticks. Impure by nature (native players);
  * the sizing rule is pure in lib/animatedCells.ts.
  */
 import { createVideoPlayer, type VideoPlayer } from 'expo-video';
 
-/** The deck's buffer bound (components/Playback). */
-const BUFFER_S = 4;
-const BUFFER_BYTES = 16 * 1024 * 1024;
+/** The thumbnail bound: a second ahead, 4 MiB of samples (a dozen
+ * players stay under 50 MB of Java heap together). */
+const BUFFER_S = 1;
+const BUFFER_BYTES = 4 * 1024 * 1024;
 
 export interface PlayerPool {
   /** A free player, or null when every player is out (the pool was
@@ -37,7 +40,7 @@ export function makePlayerPool(size: number): PlayerPool {
     p.timeUpdateEventInterval = 0;
     p.bufferOptions = {
       preferredForwardBufferDuration: BUFFER_S,
-      minBufferForPlayback: 1,
+      minBufferForPlayback: 0.5,
       maxBufferBytes: BUFFER_BYTES,
       prioritizeTimeOverSizeThreshold: false,
     };

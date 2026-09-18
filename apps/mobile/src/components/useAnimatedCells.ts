@@ -24,6 +24,7 @@ import { useSQLiteContext } from 'expo-sqlite';
 import {
   ANIMATED_THUMBS_KEY,
   DWELL_MS,
+  MAX_PLAYERS,
   SETTLE_MS,
   VIEWABILITY,
   parseAnimatedThumbsMode,
@@ -131,15 +132,23 @@ export function useAnimatedCells({
     const timer = setTimeout(() => setSettled(visible), SETTLE_MS);
     return () => clearTimeout(timer);
   }, [visible]);
+  // `rows` is a dependency on purpose: kindAt reads the rows through a
+  // ref, and a re-decided cull can change a kind without moving an index.
   const playing = useMemo(
-    () => (active ? playingSet(settled, visible) : []),
-    [active, settled, visible],
+    () => (active ? playingSet(settled, visible, kindAt) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [active, settled, visible, kindAt, rows],
   );
   // The sink line the release gate asserts on (design §8), once per
   // change of a non-empty set.
   const playingKey = playing.map((c) => c.index).join(',');
+  const playerCount = playing.filter((c) => {
+    const kind = kindAt(c.index);
+    return kind === 'video' || kind === 'motion';
+  }).length;
   useEffect(() => {
-    if (playingKey !== '') console.log(`[thumbs] playing: ${playingKey}`);
+    if (playingKey !== '') console.log(`[thumbs] playing: ${playingKey} (players ${playerCount})`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playingKey]);
 
   // One at a time: the walk over the playing set's clips.
@@ -182,7 +191,9 @@ export function useAnimatedCells({
   const pool = useCallback(() => {
     if (poolRef.current === null) {
       const g = geometry.current;
-      poolRef.current = makePlayerPool(poolSizeFor(g.columns, g.listHeight, g.tileDp));
+      poolRef.current = makePlayerPool(
+        Math.min(MAX_PLAYERS, poolSizeFor(g.columns, g.listHeight, g.tileDp)),
+      );
     }
     return poolRef.current;
   }, []);

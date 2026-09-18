@@ -43,7 +43,7 @@ One component replaces the bare `OsThumbnail` on every clip cell (photos keep `O
   - video / motion: a `VideoView` over a POOLED player (`surfaceType="textureView"`, `nativeControls={false}`, `contentFit="cover"`), opacity 0 until `onFirstFrameRender`; on mount the layer borrows a player, sets `loop`, `replace({ uri })`, `play()`; on unmount it pauses and returns the player. A `playToEnd` before the source has ever reported playing is ignored (an empty player's ENDED, Playback's header).
   - GIF: `expo-image` with `autoplay`, opacity 0 until `onLoad`.
 - Kind mark (D8): a small glyph in the corner the StateDots row does not use (the corner is a device-pass call), from the phase-7 chip vocabulary; `pointerEvents="none"`.
-- Props: `{ row (id, kind, uri, version, animated: 'video'|'motion'|'gif'|null, motion), px, playing, spotKey, loop, onEnd, pool }`. Memoised: only a changed cell re-renders when the playing set changes.
+- Props: `{ row (id, kind, uri, version, animated: 'video'|'motion'|'gif'|null, motion), px, index, cells }`. Subscribed, not re-rendered: the cell reads its own playback from the list's controller (`useCellPlayback(cells, index, id:version)`), so only a cell whose answer changed re-renders, and the list's `data` / `extraData` never change with the playing set (a change there resets React Native's viewability).
 
 ## 2. The controller — `lib/animatedCells.ts` (pure) + `components/useAnimatedCells.ts` (impure)
 
@@ -90,7 +90,7 @@ Each surface swaps `OsThumbnail` for `AnimatedThumb` on its clip cells and mount
 Both phones declare 16 concurrent instances per hardware decoder type (AVC and HEVC each; the vendors' `media_codecs` tables).
 The S23 with 18 players on screen ran 16 `c2.qti.hevc.decoder` — the limit exactly — plus 2 `c2.android.hevc.decoder`: players past the limit FALL BACK to the software decoder and keep playing, at CPU cost (the S23's janky frames doubled from 12 to 22 players).
 That fallback is why there is no ceiling (D2): every visible clip plays, and the floor phone's cost at a full screen (four cores in the spike) is the software decoders' share.
-The tester's S10e observation of a one-second scroll stall after a long play is unexplained: a scripted repeat stayed under 65 ms a frame; decoder reclaim events appear in its logcat, and a blocked surface detach is the suspect — a device-pass line.
+The tester's S10e scroll stalls (an 814 ms frame, "Skipped 31 frames", 2026-09-18) had two parts. FIXED: a feedback loop — React Native resets a list's viewability whenever `data` or `extraData` changes, and an `extraData` that followed the playing set emptied the visible set on every change, which regrew row by row: sixteen players handed back and re-borrowed within a second. Cells now SUBSCRIBE to the controller (`useCellPlayback`, a stable store), the list's props never change with the playing set, and the S10e's sink shows the set shrinking a row at a time through a scroll and growing once on the settle, with no skipped-frame line over six scrolls. OPEN: both recorded stalls fall as the S10e's players go from 16 to 17, with `MediaCodec::reclaim(OMX.Exynos.avc.dec)` in the app's own process at that instant — the S10e's OMX stack RECLAIMS a hardware decoder from one of our players instead of giving the newcomer a software one, as the S23's Codec2 does.
 
 ## 6. Validation against the driving cases
 

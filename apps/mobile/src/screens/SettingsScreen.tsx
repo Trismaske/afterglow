@@ -145,7 +145,7 @@ export function SettingsScreen({ navigation }: Props) {
     motion: 'once',
   });
   const playbackWriteGen = useRef<Record<PlaybackKind, number>>({ video: 0, motion: 0 });
-  /** Phase 6 (D3): the animated-thumbnails row, All visible by default,
+  /** Phase 6 (D3): the animated-thumbnails row, All by default,
    * with the same durable anchor and write fence as the modes. */
   const [animatedThumbs, setAnimatedThumbs] = useState<AnimatedThumbsMode>(
     DEFAULT_ANIMATED_THUMBS_MODE,
@@ -857,7 +857,8 @@ export function SettingsScreen({ navigation }: Props) {
               clips while on screen — all of them, or one at a time — and
               GIF thumbnails follow this row. */}
           <Text style={styles.explainer}>
-            Thumbnails play their clips while on screen; GIFs follow this too.
+            Thumbnails play their clips while on screen — all of them, or one at a time; GIFs follow
+            this too.
           </Text>
           <View style={styles.playbackRow}>
             <Text style={styles.playbackRowTitle}>Animated thumbnails</Text>

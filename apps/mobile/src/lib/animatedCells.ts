@@ -19,13 +19,14 @@ import type { StoredMediaKind } from './mediaIdentity';
 /** What a thumbnail can animate as; null = a plain photo. */
 export type AnimatedKind = 'video' | 'motion' | 'gif';
 
-/** The Settings row (D3): Off · One at a time · All visible. */
+/** The Settings row (D3): Off · One · All (the short labels — the row's
+ * explanation says what One and All mean; Tristan, 2026-09-18). */
 export type AnimatedThumbsMode = 'off' | 'one' | 'all';
 export const ANIMATED_THUMBS_KEY = 'animated_thumbnails';
 export const ANIMATED_THUMBS_MODES: readonly { id: AnimatedThumbsMode; label: string }[] = [
   { id: 'off', label: 'Off' },
-  { id: 'one', label: 'One at a time' },
-  { id: 'all', label: 'All visible' },
+  { id: 'one', label: 'One' },
+  { id: 'all', label: 'All' },
 ];
 export const DEFAULT_ANIMATED_THUMBS_MODE: AnimatedThumbsMode = 'all';
 /** A stored value → mode; anything unrecognised (a missing row too) is

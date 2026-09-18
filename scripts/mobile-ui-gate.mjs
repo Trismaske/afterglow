@@ -1399,7 +1399,7 @@ await step('animated thumbnails play on the Progress grid', null, async () => {
   await tapText(/^Settings$/, 10000);
   await waitFor(/^Photo source$/, 15000, 'settings screen');
   try {
-    await selectPlaybackChip(/^Animated thumbnails$/, 'All visible');
+    await selectPlaybackChip(/^Animated thumbnails$/, 'All');
     shell('input keyevent KEYCODE_BACK');
     await waitForHome();
     // The card's subtitle is dynamic ("All items · state browsing" or a

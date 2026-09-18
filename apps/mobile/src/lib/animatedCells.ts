@@ -37,14 +37,15 @@ export function parseAnimatedThumbsMode(raw: string | null): AnimatedThumbsMode 
 /** The tunables the tester settled on the probe (2026-09-16). */
 export const SETTLE_MS = 500;
 export const DWELL_MS = 5000;
-/** The most PLAYERS a list runs at once, whatever the viewport holds
- * (2026-09-18: the S23's tall screen held 24 cells with any part
- * visible, and 24 players — the probe's 2 GB — took the Java heap down
- * on the Progress grid; twelve measured 910 MB on the S23 and 454 MB on
- * the S10e, the ceiling the spike saw hold for ten minutes). GIF cells
- * are expo-image decoders, not players, and do not count. The cells
- * beyond the ceiling stay stills, top rows first. */
-export const MAX_PLAYERS = 12;
+/** The most PLAYERS a list runs at once — a SAFETY NET, not a budget:
+ * the viewport decides (the S23's tall screen holds 21–24 cells with
+ * any part visible), and the ceiling only stops a pathological list.
+ * Measured on the S23 (2026-09-18, 90 s of scrolling the Progress grid
+ * with the thumbnail buffer): 22 players run in the same memory as 12
+ * (PSS ~1.5 GB peak, Java heap ≤ 124 MB) at twice the jank (26 % vs
+ * 14 %); Tristan chose every visible clip over the smoothness. GIF
+ * cells are expo-image decoders, not players, and do not count. */
+export const MAX_PLAYERS = 24;
 /** Any part of a cell on screen counts (D5). */
 export const VIEWABILITY = { itemVisiblePercentThreshold: 1, minimumViewTime: 100 } as const;
 

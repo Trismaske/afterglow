@@ -83,8 +83,8 @@ describe('animatedKindOf', () => {
 });
 
 describe('MAX_PLAYERS', () => {
-  it('is the measured ceiling, twelve', () => {
-    expect(MAX_PLAYERS).toBe(12);
+  it('is the safety net the S23 measured safe, twenty-four', () => {
+    expect(MAX_PLAYERS).toBe(24);
   });
 });
 

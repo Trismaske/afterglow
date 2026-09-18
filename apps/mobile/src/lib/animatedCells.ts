@@ -37,15 +37,6 @@ export function parseAnimatedThumbsMode(raw: string | null): AnimatedThumbsMode 
 /** The tunables the tester settled on the probe (2026-09-16). */
 export const SETTLE_MS = 500;
 export const DWELL_MS = 5000;
-/** The most PLAYERS a list runs at once — a SAFETY NET, not a budget:
- * the viewport decides (the S23's tall screen holds 21–24 cells with
- * any part visible), and the ceiling only stops a pathological list.
- * Measured on the S23 (2026-09-18, 90 s of scrolling the Progress grid
- * with the thumbnail buffer): 22 players run in the same memory as 12
- * (PSS ~1.5 GB peak, Java heap ≤ 124 MB) at twice the jank (26 % vs
- * 14 %); Tristan chose every visible clip over the smoothness. GIF
- * cells are expo-image decoders, not players, and do not count. */
-export const MAX_PLAYERS = 24;
 /** Any part of a cell on screen counts (D5). */
 export const VIEWABILITY = { itemVisiblePercentThreshold: 1, minimumViewTime: 100 } as const;
 
@@ -69,23 +60,17 @@ export interface VisibleCell {
   key: string;
 }
 
-/** Settled ∩ visible (by identity), in index order, with at most
- * MAX_PLAYERS player cells — the first by index; GIF cells always. */
+/** Settled ∩ visible (by identity), in index order. The viewport is the
+ * only bound (2026-09-18, Tristan): with any part of a cell counting,
+ * the set can never exceed the list's geometry — columns × the rows on
+ * screen plus the two cut rows — which is what the pool is sized from;
+ * a ceiling on top would only restate the pool's size. */
 export function playingSet(
   settled: readonly VisibleCell[],
   visible: readonly VisibleCell[],
-  kindAt: (index: number) => AnimatedKind | null = () => 'video',
-  maxPlayers: number = MAX_PLAYERS,
 ): readonly VisibleCell[] {
   const seen = new Set(visible.map((c) => `${c.index}:${c.key}`));
-  let players = 0;
-  return settled.filter((c) => {
-    if (!seen.has(`${c.index}:${c.key}`)) return false;
-    const kind = kindAt(c.index);
-    if (kind === 'gif' || kind === null) return true;
-    players += 1;
-    return players <= maxPlayers;
-  });
+  return settled.filter((c) => seen.has(`${c.index}:${c.key}`));
 }
 
 /** The cells a list can hold with any part visible: its columns times

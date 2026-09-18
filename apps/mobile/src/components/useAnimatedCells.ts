@@ -24,7 +24,6 @@ import { useSQLiteContext } from 'expo-sqlite';
 import {
   ANIMATED_THUMBS_KEY,
   DWELL_MS,
-  MAX_PLAYERS,
   SETTLE_MS,
   VIEWABILITY,
   parseAnimatedThumbsMode,
@@ -132,12 +131,9 @@ export function useAnimatedCells({
     const timer = setTimeout(() => setSettled(visible), SETTLE_MS);
     return () => clearTimeout(timer);
   }, [visible]);
-  // `rows` is a dependency on purpose: kindAt reads the rows through a
-  // ref, and a re-decided cull can change a kind without moving an index.
   const playing = useMemo(
-    () => (active ? playingSet(settled, visible, kindAt) : []),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [active, settled, visible, kindAt, rows],
+    () => (active ? playingSet(settled, visible) : []),
+    [active, settled, visible],
   );
   // The sink line the release gate asserts on (design §8), once per
   // change of a non-empty set.
@@ -191,9 +187,7 @@ export function useAnimatedCells({
   const pool = useCallback(() => {
     if (poolRef.current === null) {
       const g = geometry.current;
-      poolRef.current = makePlayerPool(
-        Math.min(MAX_PLAYERS, poolSizeFor(g.columns, g.listHeight, g.tileDp)),
-      );
+      poolRef.current = makePlayerPool(poolSizeFor(g.columns, g.listHeight, g.tileDp));
     }
     return poolRef.current;
   }, []);

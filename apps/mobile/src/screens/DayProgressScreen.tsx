@@ -8,24 +8,32 @@
  * too — completed ones included — and reopen in the deck's
  * browse/re-decide mode.
  */
-import React, { useCallback, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
+import React, { useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useExternalRefresh } from '../components/useExternalRefresh';
 import { useSQLiteContext } from 'expo-sqlite';
 import { mountedVolumeSet } from '../lib/mountedVolumes';
-import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import type {
+  NativeStackNavigationProp,
+  NativeStackScreenProps,
+} from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { formatClock } from '../lib/format';
 import { UNDATED_DAY_KEY } from '../lib/dates';
 import { remainingReviewable, type StateBreakdown, classifyPhotoState } from '../lib/progress';
-import { listGroupsForDay, type ReviewGroupRow } from '../db/store';
+import { listGroupsForDay, type ReviewGroupRow, type ReviewMemberRow } from '../db/store';
 import { resolveSources } from '../lib/sourceCatalog';
 import { ProgressView } from '../components/progress/ProgressView';
 import { useReview } from '../review/ReviewContext';
 import { StateDots } from '../components/DecisionBadge';
 import { isSdPhoto, photoBadges, type PhotoBadge } from '../lib/photoBadges';
-import { UnitCard } from '../components/UnitCard';
+import { UNIT_CARD_HEIGHT, UnitCard, cardThumbRows } from '../components/UnitCard';
+import {
+  ListMotionContext,
+  useAnimatedCells,
+  useAnimatedThumbsMode,
+} from '../components/useAnimatedCells';
 import { BigButton } from '../components/BigButton';
 import { colors } from '../theme';
 
@@ -174,38 +182,7 @@ export function DayProgressScreen({ route, navigation }: Props) {
           {loaded !== null && loaded.length > 0 && (
             <>
               <Text style={styles.groupsLabel}>Groups this day</Text>
-              {loaded.map((group) => {
-                const pending = group.members.filter((m) => m.state === 'unreviewed').length;
-                const first = group.members[0];
-                // The disclosure outranks the tap hint on the single
-                // status line (codex r7: the uniform header clips
-                // instead of wrapping; the suffix is load-bearing).
-                const away =
-                  (group.unreachableCount ?? 0) > 0
-                    ? ` · ${group.unreachableCount} on unmounted SD card`
-                    : '';
-                const done = away === '' ? 'Reviewed · tap to revisit' : 'Reviewed';
-                return (
-                  <UnitCard
-                    key={group.groupId}
-                    title={`${group.members.length} shots${first ? ` · ${formatClock(first.taken_at)}` : ''}`}
-                    status={(pending === 0 ? done : `${pending} pending`) + away}
-                    statusDone={pending === 0}
-                    members={group.members}
-                    onPress={() => navigation.navigate('Deck', { groupId: String(group.groupId) })}
-                    renderOverlay={(assetId) => {
-                      const member = group.members.find((m) => m.asset_id === assetId);
-                      return member ? (
-                        <StateDots
-                          effective={classifyPhotoState({ state: member.state })}
-                          badges={badgesFor(member)}
-                          style={styles.badges}
-                        />
-                      ) : null;
-                    }}
-                  />
-                );
-              })}
+              <DayGroupCards groups={loaded} badgesFor={badgesFor} />
             </>
           )}
         </View>
@@ -215,6 +192,119 @@ export function DayProgressScreen({ route, navigation }: Props) {
   );
 
   return <ProgressView target={{ kind: 'day', day }} renderCta={renderCta} />;
+}
+
+/** The day's group cards, inside the grid's scrolling HEADER (phase 6):
+ * they are not list items, so no viewability reaches them — the cards
+ * run their own animated controller, hear the grid's motion through
+ * ListMotionContext, and when the list is still measure themselves in
+ * the window to say which of them are on screen. */
+function DayGroupCards({
+  groups,
+  badgesFor,
+}: {
+  groups: readonly ReviewGroupRow[];
+  badgesFor: (member: ReviewMemberRow) => PhotoBadge[];
+}) {
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const mode = useAnimatedThumbsMode();
+  const windowHeight = useWindowDimensions().height;
+  const current = useRef(groups);
+  current.current = groups;
+  const kindsAt = useCallback(
+    (index: number) =>
+      cardThumbRows(current.current[index]?.members ?? []).map((row) => row.animated),
+    [],
+  );
+  const cells = useAnimatedCells({
+    mode,
+    columns: 5,
+    tileDp: UNIT_CARD_HEIGHT,
+    kindsAt,
+    rows: groups,
+    extentDp: windowHeight,
+  });
+  const cardRefs = useRef(new Map<number, View>()).current;
+  const hostList = useContext(ListMotionContext);
+  const measure = useCallback(() => {
+    // Inside the LIST's viewport, not the window's: the list clips its
+    // content below the screen's header (codex 2026-09-19).
+    if (hostList === null) return;
+    hostList.measureViewport((top, bottom) => measureWithin(top, bottom));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hostList]);
+  const measureWithin = (top: number, bottom: number) => {
+    const entries = [...cardRefs.entries()];
+    const seen: { index: number; key: string }[] = [];
+    let pending = entries.length;
+    if (pending === 0) cells.reportVisible([]);
+    for (const [index, view] of entries) {
+      view.measureInWindow((_x, y, _w, h) => {
+        if (h > 0 && y + h > top && y < bottom) {
+          seen.push({ index, key: `g:${current.current[index]?.groupId ?? index}` });
+        }
+        pending -= 1;
+        if (pending === 0) cells.reportVisible(seen.sort((a, b) => a.index - b.index));
+      });
+    }
+  };
+  useEffect(() => {
+    // Whenever the list stops (a card's layout measures too, below).
+    const off = hostList?.subscribeMotion((moving) => {
+      cells.reportMoving(moving);
+      if (!moving) measure();
+    });
+    return () => {
+      off?.();
+    };
+  }, [hostList, cells, measure]);
+  return (
+    <>
+      {groups.map((group, index) => {
+        const pending = group.members.filter((m) => m.state === 'unreviewed').length;
+        const first = group.members[0];
+        // The disclosure outranks the tap hint on the single status
+        // line (codex r7: the uniform header clips instead of wrapping;
+        // the suffix is load-bearing).
+        const away =
+          (group.unreachableCount ?? 0) > 0
+            ? ` · ${group.unreachableCount} on unmounted SD card`
+            : '';
+        const done = away === '' ? 'Reviewed · tap to revisit' : 'Reviewed';
+        return (
+          <View
+            key={group.groupId}
+            collapsable={false}
+            // A card laid out (or moved by the header above it) measures.
+            onLayout={measure}
+            ref={(view) => {
+              if (view) cardRefs.set(index, view);
+              else cardRefs.delete(index);
+            }}
+          >
+            <UnitCard
+              title={`${group.members.length} shots${first ? ` · ${formatClock(first.taken_at)}` : ''}`}
+              status={(pending === 0 ? done : `${pending} pending`) + away}
+              statusDone={pending === 0}
+              members={group.members}
+              animated={{ cells, index, cellKey: `g:${group.groupId}` }}
+              onPress={() => navigation.navigate('Deck', { groupId: String(group.groupId) })}
+              renderOverlay={(assetId) => {
+                const member = group.members.find((m) => m.asset_id === assetId);
+                return member ? (
+                  <StateDots
+                    effective={classifyPhotoState({ state: member.state })}
+                    badges={badgesFor(member)}
+                    style={styles.badges}
+                  />
+                ) : null;
+              }}
+            />
+          </View>
+        );
+      })}
+    </>
+  );
 }
 
 const styles = StyleSheet.create({

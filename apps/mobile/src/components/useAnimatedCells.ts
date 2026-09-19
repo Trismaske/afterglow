@@ -24,7 +24,7 @@
  * 1): every cell hands its player back, and the foreground return
  * lets the settled cells borrow and play again.
  */
-import {
+import React, {
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -116,6 +116,10 @@ export interface AnimatedCells {
   reportVisible: (cells: readonly VisibleCell[]) => void;
   /** The same motion signal a list's scroll callbacks give. */
   reportMoving: (moving: boolean) => void;
+  /** This list's motion, for content that scrolls INSIDE it but runs its
+   * own controller (the day page's cards in the grid's header): told
+   * when the list starts moving and when it stops. */
+  subscribeMotion: (listener: (moving: boolean) => void) => () => void;
   advance: (turn: number) => void;
   pool: () => PlayerPool | null;
 }
@@ -154,6 +158,7 @@ export function useAnimatedCells({
   kindsAt,
   rows,
   cellOf,
+  extentDp,
 }: {
   mode: AnimatedThumbsMode | null;
   /** Thumbnails across the list: a grid's columns, a card's row. */
@@ -167,8 +172,13 @@ export function useAnimatedCells({
    * cull can change what an index holds without moving the indices). */
   rows: readonly unknown[];
   /** A viewable token's cell: its list index and its row's identity
-   * (id + version) — a replacement row at the same index is a new cell. */
-  cellOf: (token: ViewToken) => VisibleCell;
+   * (id + version) — a replacement row at the same index is a new cell.
+   * Omitted by a host that reports its own visibility (`reportVisible`). */
+  cellOf?: (token: ViewToken) => VisibleCell;
+  /** The scrolled extent the pool sizes from, for a host that is no
+   * list of its own (a header's cards: the window's height; the deck's
+   * strip: its width). A list leaves it out and is measured (`onLayout`). */
+  extentDp?: number;
 }): AnimatedCells {
   const [foreground, setForeground] = useState(AppState.currentState === 'active');
   useEffect(() => {
@@ -183,9 +193,9 @@ export function useAnimatedCells({
   const cellOfRef = useRef(cellOf);
   cellOfRef.current = cellOf;
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
-    const next = viewableItems
-      .map((token) => cellOfRef.current(token))
-      .sort((a, b) => a.index - b.index);
+    const cellOfNow = cellOfRef.current;
+    if (cellOfNow === undefined) return;
+    const next = viewableItems.map((token) => cellOfNow(token)).sort((a, b) => a.index - b.index);
     setVisible((previous) => (sameCells(previous, next) ? previous : next));
   }).current;
 
@@ -250,7 +260,7 @@ export function useAnimatedCells({
   // The pool: lazy, sized from the layout at the first borrow.
   const [listHeight, setListHeight] = useState(0);
   const geometry = useRef({ columns, tileDp, listHeight });
-  geometry.current = { columns, tileDp, listHeight };
+  geometry.current = { columns, tileDp, listHeight: extentDp ?? listHeight };
   const poolRef = useRef<PlayerPool | null>(null);
   const pool = useCallback(() => {
     if (poolRef.current === null) {
@@ -347,6 +357,22 @@ export function useAnimatedCells({
     return `1:0:1:${now.moving ? 1 : 0}`;
   }, []);
   const advanceTurn = useCallback((turn: number) => answer.current.advance(turn), []);
+  const motionListeners = useRef(new Set<(moving: boolean) => void>()).current;
+  const movingNow = useRef(moving);
+  useEffect(() => {
+    movingNow.current = moving;
+    for (const listener of motionListeners) listener(moving);
+  }, [motionListeners, moving]);
+  const subscribeMotion = useCallback(
+    (listener: (moving: boolean) => void) => {
+      motionListeners.add(listener);
+      // A late subscriber hears the CURRENT motion at once (codex
+      // 2026-09-19): content that mounts during a fling must hold too.
+      listener(movingNow.current);
+      return () => motionListeners.delete(listener);
+    },
+    [motionListeners],
+  );
   const reportVisible = useCallback((next: readonly VisibleCell[]) => {
     setVisible((previous) => (sameCells(previous, next) ? previous : next));
   }, []);
@@ -374,6 +400,7 @@ export function useAnimatedCells({
       snapshotFor,
       reportVisible,
       reportMoving,
+      subscribeMotion,
       advance: advanceTurn,
       pool,
     }),
@@ -389,6 +416,7 @@ export function useAnimatedCells({
       snapshotFor,
       reportVisible,
       reportMoving,
+      subscribeMotion,
       advanceTurn,
       pool,
     ],
@@ -423,3 +451,13 @@ export function useAnimatedList<T>({
   const cells = useAnimatedCells({ mode, columns, tileDp, kindsAt, rows: thumbRows, cellOf });
   return { cells, thumbRows };
 }
+
+/** The list some content scrolls inside (provided by PhotoStateGrid for
+ * its header's content; null outside one): its motion, and its viewport
+ * in WINDOW coordinates — the list clips its content below the screen's
+ * header, so "on screen" is inside these bounds, not inside the window. */
+export interface HostList {
+  subscribeMotion: AnimatedCells['subscribeMotion'];
+  measureViewport: (done: (top: number, bottom: number) => void) => void;
+}
+export const ListMotionContext = React.createContext<HostList | null>(null);

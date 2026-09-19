@@ -1,6 +1,6 @@
 # Animated thumbnails — design (m0.9 phase 6)
 
-**Status:** agreed 2026-09-16 (Tristan + agent); implementation phase 1 landed the same day (the shared pieces, the setting, the kind mark, the Progress grid and the cull list, the probe deleted); phase 2 next.
+**Status:** agreed 2026-09-16 (Tristan + agent); implementation phase 1 landed the same day (the shared pieces, the setting, the kind mark, the Progress grid and the cull list, the probe deleted); phase 2 (every remaining surface) landed 2026-09-19; the device pass is next.
 **Audience:** the agent building phase 6; Tristan reviewing the decisions.
 **Lifecycle:** lives while phase 6 is open; its durable content moves into the owning headers, PLAN.md and docs/STATE_MODEL.md at the phase close, and this file is deleted.
 
@@ -58,13 +58,15 @@ Impure hook, one per list:
 - Feeds `visible` from the list's `onViewableItemsChanged` with `{ itemVisiblePercentThreshold: 1, minimumViewTime: 100 }` (D5, any part) — the rule is fixed at mount (FlatList), so the list is keyed by it.
 - `settled` = `visible` after `SETTLE_MS` of no change; `playing` = `playingSet(settled, visible)`.
 - The spotlight: `spot` advances on `onEnd` or `DWELL_MS`; a new settled set restarts the walk.
-- The pool: made in the same tick the mode turns on (BEFORE the cells' effects run — a child's effects precede its parent's), released when the mode turns off or the list unmounts.
+- The pool: made lazily at the first borrow (sized from the layout by then, or from `extentDp` for a host that is no list of its own), released when the mode turns off or the list unmounts.
+- An item may hold several thumbnails (a card's row): the controller's item is the CARD, a thumbnail is addressed by `(index, key, sub)`, `kindsAt(index)` lists the row's kinds, and the spotlight walks thumbnails.
+- A host without a virtualized list reports its own visibility (`reportVisible`, from `visibleRange` or a window measure) and motion (`reportMoving`); content scrolling inside another list's header hears that list's motion through `ListMotionContext`.
 - Reads the setting (D3) through the same provider the Playback rows use; a null mode animates nothing until read.
 
 ## 3. The pool — `lib/playerPool.ts`
 
-`makePool(size)`: `size` players from `createVideoPlayer(null)` with D11 applied; `borrow()`/`giveBack(player)` (pause, mute); `release()` releases every player and marks the pool dead so a late giveBack is dropped.
-Pools are per list; the deck screen therefore holds the stage's players (M26) AND the strip's pool — the device pass measures the deck with the strip animating (a 52 dp strip pool is 7 × (1 + 3) = 28 by the formula, capped at the strip's visible slots plus two; the cap is the device pass's number).
+`makePlayerPool(size)`: up to `size` players from `createVideoPlayer(null)` with D11 applied, each made at its first borrow and kept (a list of cards sizes its pool at some forty, most of its thumbnails are photos, and an idle ExoPlayer still owns a playback thread); `borrow()`/`giveBack(player)` (pause, mute); `release()` releases every player and marks the pool dead so a late giveBack is dropped.
+Pools are per list; the deck screen therefore holds the stage's players (M26) AND the strip's pool — the device pass measures the deck with the strip animating (the strip's pool is its visible slots + 3).
 
 ## 4. The setting — `lib/playbackPrefs.ts`
 
@@ -80,9 +82,9 @@ The UI gate's `playback off` preflight parks this row on Off as well (a playing 
 | Cull list grid (`CullListScreen`) | FlatList, 3 columns | viewability | 3 × (rows + 3) |
 | Queue grids (`QueueGrid` cells in the share/organize FlatLists) | FlatList, 4 columns | viewability | 4 × (rows + 3) |
 | Timeline cards (`TimelineScreen` → `UnitCard`) | FlatList of cards (viewability already used) | a visible CARD's thumbs are all visible | 5 × (cards + 3) |
-| DayProgress cards | ScrollView | card visibility from `onLayout` + `onScroll` (the one non-list surface; or the screen moves to a FlatList) | 5 × (cards + 3) |
+| DayProgress cards (`DayGroupCards`) | the Progress grid's scrolling header | each card measures itself in the window on layout and whenever the grid stops (`ListMotionContext`) | 5 × (cards the window holds + 3) |
 | History, Favourites, Edit queue rows | FlatList, one thumb per row | viewability | 1 × (rows + 3) |
-| Deck strip | horizontal ScrollView | `onScroll` + the strip's own geometry (`lib/stripScroll.ts` already knows it) | visible slots + 2 |
+| Deck strip (`StripAnimation` in `DeckScreen`) | horizontal ScrollView | `visibleRange` over the strip's scroll geometry on every scroll and layout; the CURRENT item is left out (the stage plays it — one file, one decoder) and keeps its kind mark; the host owns the controller so the deck never re-renders with the playing set | visible slots + 3 |
 
 Each surface swaps `OsThumbnail` for `AnimatedThumb` on its clip cells and mounts the hook; the pruning decision (D9) is per surface at the device pass.
 
@@ -105,7 +107,7 @@ The tester's S10e scroll stalls (an 814 ms frame, "Skipped 31 frames", 2026-09-1
 ## 7. Implementation phases
 
 1. **The shared pieces — LANDED 2026-09-16**: `lib/playerPool`, `lib/animatedCells` (+ tests), `lib/motionClips` (the shared one-in-flight clip resolver, the stage's overlay on it too), `components/useAnimatedCells`, `components/AnimatedThumb` with the kind mark (top-left; the StateDots sit bottom-right), the setting row and pref (`animated_thumbnails` in lib/animatedCells), the gate preflight and its positive leg; the Progress grid and the cull list wired; the probe deleted (D13). Five codex rounds shaped it: resume after a background return (AppState in the active predicate), the player layer keyed by the row version, cells keyed by identity (index + id:version) through the settle, the walk and the cell's decision, one hand-over per spotlight turn, the extension MIME fallback for untracked rows only, a remembered clip failure, and the gate reading a wrapped row title by nearest chip. S10e gate green with the positive leg.
-2. **The remaining surfaces**: queue grids, Timeline cards, DayProgress cards, the three row lists, the deck strip.
+2. **The remaining surfaces — LANDED 2026-09-19**: the queue grids, History, the edit and favourites queues (`useAnimatedList`, `thumbRowOf` over the facts every row projection now carries, `mime_type` included), then the Timeline and DayProgress cards and the deck strip.
 3. **The device pass**: both phones — every surface judged (prune per D9), the deck screen with the strip animating measured (heap, CPU) against the stage's own playback, five minutes of grid browsing UNPLUGGED on each phone for battery, the S23 under thermal load, the S10e gate. Phase 6 closes on that pass with the appendix entries vetted.
 
 ## 8. Testing

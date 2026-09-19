@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -31,7 +31,12 @@ import type { MediaItem } from '@afterglow/core';
 /** A deck page's item: the core item plus its image version (item 3) and,
  * for a motion photo, its clip (phase 5) — on the row, so the page mounts
  * its overlay synchronously (MediaStage's no-mid-touch-mount rule). */
-type DeckItem = MediaItem & { version: number; motion: MotionClipRow | null };
+type DeckItem = MediaItem & {
+  version: number;
+  motion: MotionClipRow | null;
+  /** What the item's STRIP thumbnail animates as (phase 6). */
+  animated: AnimatedKind | null;
+};
 import type { RootStackParamList } from '../navigation';
 import { useReview, type RedecideTarget } from '../review/ReviewContext';
 import type { ReviewGroupRow, ReviewMemberRow } from '../db/store';
@@ -106,6 +111,14 @@ import {
 import { requestTargetedRescan } from '../scan/scanRunner';
 import { withUserWritePriority } from '../lib/writePriority';
 import { DeckDetailsOverlay } from '../components/DeckDetailsOverlay';
+import { AnimatedThumb } from '../components/AnimatedThumb';
+import {
+  useAnimatedCells,
+  useAnimatedThumbsMode,
+  type AnimatedCells,
+} from '../components/useAnimatedCells';
+import { visibleRange, type AnimatedKind } from '../lib/animatedCells';
+import { thumbRowOf } from '../lib/animatedThumbRow';
 import { flushRegionZoomRetention } from '../components/useRegionZoom';
 import { useStageMaxScale, useStageRegionZoom } from '../components/useStageZoom';
 import { MediaStageView, useMediaStage } from '../components/MediaStage';
@@ -184,6 +197,61 @@ const STAGE_GUTTER = STAGE_PADDING + STAGE_BORDER;
  * never fires for them, and run() swallows rejections assuming it did;
  * CompareScreen carries the same helper) — the durable row is unchanged,
  * so the user simply retries the tap. */
+/** The strip's animated thumbnails (phase 6): the controller lives in
+ * this host, so a change of the playing set re-renders the strip and
+ * never the deck. The strip is no virtualized list — its visible items
+ * come from its own scroll geometry (`report`, called on every scroll
+ * and layout). The CURRENT item is left out: the stage is playing it,
+ * and one file does not take two decoders; its kind mark still shows. */
+function StripAnimation({
+  items,
+  current,
+  settled,
+  offsetRef,
+  viewportRef,
+  children,
+}: {
+  items: readonly DeckItem[];
+  /** The page the pager SHOWS and the page the stage is settled on: both
+   * are left out — through a slow swipe the stage still plays the
+   * settled one while the live index has moved on (codex 2026-09-19). */
+  current: number;
+  settled: number;
+  offsetRef: React.RefObject<number>;
+  viewportRef: React.RefObject<number>;
+  children: (cells: AnimatedCells, report: () => void) => React.ReactNode;
+}) {
+  const mode = useAnimatedThumbsMode();
+  const live = useRef({ items, current, settled });
+  live.current = { items, current, settled };
+  const kindsAt = useCallback((index: number) => [live.current.items[index]?.animated ?? null], []);
+  const cells = useAnimatedCells({
+    mode,
+    columns: 1,
+    tileDp: THUMB + THUMB_GAP,
+    kindsAt,
+    rows: items,
+    extentDp: useWindowDimensions().width,
+  });
+  const report = useCallback(() => {
+    const now = live.current;
+    cells.reportVisible(
+      visibleRange(
+        now.items.length,
+        THUMB_INSET,
+        THUMB,
+        THUMB_GAP,
+        offsetRef.current,
+        viewportRef.current,
+      )
+        .filter((index) => index !== now.current && index !== now.settled)
+        .map((index) => ({ index, key: `${now.items[index].id}:${now.items[index].version}` })),
+    );
+  }, [cells, offsetRef, viewportRef]);
+  useEffect(report, [report, items, current, settled]);
+  return <>{children(cells, report)}</>;
+}
+
 function surfaceQueueWriteError(error: unknown): void {
   Alert.alert(
     'Change not saved',
@@ -900,6 +968,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     kind: m.kind,
     version: m.image_version,
     motion: motionClipOf(m),
+    animated: thumbRowOf(m.asset_id, m).animated,
   });
   const aliveItems: DeckItem[] = useMemo(
     () => (group ? group.members.filter((m) => m.state === 'unreviewed').map(toItem) : []),
@@ -925,6 +994,8 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
         kind: r.kind,
         version: r.version,
         motion: r.motion,
+        // A flat list has no strip, the one reader of this.
+        animated: null,
       })),
     [shownListRows],
   );
@@ -1312,6 +1383,19 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * content width — and returns null, leaving a half-reviewed unit open
    * with its current thumbnail off-screen (codex r3). */
   const [stripMeasured, setStripMeasured] = useState(0);
+  // A strip that UNMOUNTS (immersive, a flat list) comes back as a new
+  // native scroll view at offset 0 with, usually, the same width and
+  // content — so its geometry is forgotten with it, and the layout
+  // handlers of the new one re-measure, re-report and re-run the follow
+  // (codex 2026-09-19: the old deep offset named off-screen thumbnails
+  // visible).
+  const stripHidden = immersive || listMode;
+  useLayoutEffect(() => {
+    if (!stripHidden) return;
+    stripOffsetRef.current = 0;
+    stripViewportRef.current = 0;
+    stripContentRef.current = 0;
+  }, [stripHidden]);
   /**
    * The page the native pager currently SHOWS (F7 round 2, §10 check
    * 8): `cursor` settles only at momentum end, so the strip highlight
@@ -2439,70 +2523,87 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
           — the rule and its edge cases live in lib/stripScroll.ts. */}
       {/* P2: flat lists hide the strip — the stage grows. */}
       {!view.listMode && !immersive && (
-        <ScrollView
-          ref={stripRef}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.thumbStrip}
-          contentContainerStyle={styles.thumbStripContent}
-          scrollEventThrottle={16}
-          onScroll={(event) => {
-            stripOffsetRef.current = event.nativeEvent.contentOffset.x;
-          }}
-          onLayout={(event) => {
-            if (stripViewportRef.current === event.nativeEvent.layout.width) return;
-            stripViewportRef.current = event.nativeEvent.layout.width;
-            setStripMeasured((n) => n + 1);
-          }}
-          onContentSizeChange={(width) => {
-            if (stripContentRef.current === width) return;
-            stripContentRef.current = width;
-            setStripMeasured((n) => n + 1);
-          }}
+        <StripAnimation
+          items={view.items}
+          current={inert ? view.cursor : pagerIndex}
+          settled={view.cursor}
+          offsetRef={stripOffsetRef}
+          viewportRef={stripViewportRef}
         >
-          {view.items.map((item, index) => (
-            <Pressable
-              key={item.id}
-              onPress={() => {
-                if (!inert) jumpTo(index);
+          {(cells, report) => (
+            <ScrollView
+              ref={stripRef}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.thumbStrip}
+              contentContainerStyle={styles.thumbStripContent}
+              scrollEventThrottle={16}
+              onScroll={(event) => {
+                stripOffsetRef.current = event.nativeEvent.contentOffset.x;
+                report();
               }}
-              onLongPress={() => {
-                // Compare via long-press works in browse too (F11): two
-                // KEPT members are a legitimate duel — the dialog can
-                // re-decide one.
-                if (!inert && item.id !== view.current.id) openCompare(item.id);
+              onScrollBeginDrag={cells.listProps.onScrollBeginDrag}
+              onScrollEndDrag={cells.listProps.onScrollEndDrag}
+              onMomentumScrollBegin={cells.listProps.onMomentumScrollBegin}
+              onMomentumScrollEnd={cells.listProps.onMomentumScrollEnd}
+              onTouchEnd={cells.listProps.onTouchEnd}
+              onLayout={(event) => {
+                if (stripViewportRef.current === event.nativeEvent.layout.width) return;
+                stripViewportRef.current = event.nativeEvent.layout.width;
+                report();
+                setStripMeasured((n) => n + 1);
+              }}
+              onContentSizeChange={(width) => {
+                if (stripContentRef.current === width) return;
+                stripContentRef.current = width;
+                setStripMeasured((n) => n + 1);
               }}
             >
-              <OsThumbnail
-                assetId={item.id}
-                kind={item.kind}
-                uri={item.uri}
-                version={item.version}
-                px={STRIP_THUMB_PX}
-                style={[
-                  styles.thumb,
-                  // The LIVE pager index (§10 check 8): the highlight moves
-                  // with the page crossing, not at momentum end. A frozen
-                  // deck keeps its own settled cursor.
-                  index === (inert ? view.cursor : pagerIndex) && styles.thumbActive,
-                ]}
-              />
-              {/* Small badges wrapping into rows: a 52 px thumbnail fits
+              {view.items.map((item, index) => (
+                <Pressable
+                  key={item.id}
+                  onPress={() => {
+                    if (!inert) jumpTo(index);
+                  }}
+                  onLongPress={() => {
+                    // Compare via long-press works in browse too (F11): two
+                    // KEPT members are a legitimate duel — the dialog can
+                    // re-decide one.
+                    if (!inert && item.id !== view.current.id) openCompare(item.id);
+                  }}
+                >
+                  <AnimatedThumb
+                    row={item}
+                    px={STRIP_THUMB_PX}
+                    index={index}
+                    cells={cells}
+                    markSize={11}
+                    style={[
+                      styles.thumb,
+                      // The LIVE pager index (§10 check 8): the highlight moves
+                      // with the page crossing, not at momentum end. A frozen
+                      // deck keeps its own settled cursor.
+                      index === (inert ? view.cursor : pagerIndex) && styles.thumbActive,
+                    ]}
+                  />
+                  {/* Small badges wrapping into rows: a 52 px thumbnail fits
                   three per row, so a fully-flagged photo shows all of
                   them stacked instead of hiding any. */}
-              {/* The shared inspection dots (StateDots' header) — the
+                  {/* The shared inspection dots (StateDots' header) — the
                   Progress grid's language on the strip; eye-exempt by
                   that component's rule (the eye clears the STAGE). */}
-              <StateDots
-                effective={classifyPhotoState({
-                  state: view.stateOf.get(item.id) ?? 'unreviewed',
-                })}
-                badges={badgesFor(item)}
-                style={styles.thumbBadges}
-              />
-            </Pressable>
-          ))}
-        </ScrollView>
+                  <StateDots
+                    effective={classifyPhotoState({
+                      state: view.stateOf.get(item.id) ?? 'unreviewed',
+                    })}
+                    badges={badgesFor(item)}
+                    style={styles.thumbBadges}
+                  />
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+        </StripAnimation>
       )}
 
       {/* ONE control block for BOTH modes (m0.8.6 §9, the browse-swap

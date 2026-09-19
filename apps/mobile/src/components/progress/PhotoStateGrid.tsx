@@ -20,7 +20,7 @@ import type { StoredMediaKind } from '../../lib/mediaIdentity';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { AnimatedThumb } from '../AnimatedThumb';
-import { useAnimatedList } from '../useAnimatedCells';
+import { ListMotionContext, useAnimatedList, type HostList } from '../useAnimatedCells';
 import { animatedKindOf, type AnimatedKind } from '../../lib/animatedCells';
 import { motionClipOf, type MotionClipRow } from '../../db/store';
 import { thumbBucketPx } from '../../lib/thumbnailSize';
@@ -404,45 +404,63 @@ export function PhotoStateGrid({
     [onPhotoPress, items, tilePx, cells],
   );
 
+  const listRef = useRef<FlatList<GridPhoto>>(null);
+  const hostList = useMemo<HostList>(
+    () => ({
+      subscribeMotion: cells.subscribeMotion,
+      measureViewport: (done) => {
+        const node = listRef.current?.getNativeScrollRef() as View | null | undefined;
+        node?.measureInWindow((_x, y, _w, h) => done(y, y + h));
+      },
+    }),
+    [cells],
+  );
+
   return (
-    <FlatList
-      style={styles.root}
-      data={items}
-      keyExtractor={(p) => p.id}
-      renderItem={renderItem}
-      numColumns={3}
-      {...cells.listProps}
-      ListHeaderComponent={header}
-      onEndReachedThreshold={0.6}
-      onEndReached={() => {
-        if (!exhausted && loadingGenRef.current === null) void loadMore(genRef.current, false);
-      }}
-      contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: bottomInset + 24 }}
-      ListEmptyComponent={
-        !loading && (exhausted || failed) ? (
-          <Text style={styles.empty}>
-            {failed
-              ? 'Could not read your library just now. Pull back and reopen to try again.'
-              : 'No items in this state.'}
-          </Text>
-        ) : null
-      }
-      ListFooterComponent={
-        loading ? (
-          <ActivityIndicator color={accent} style={styles.footer} />
-        ) : failed && items.length > 0 ? (
-          // A truncated grid must SAY it is truncated (fail closed): the
-          // failure copy used to live only in the empty state, so a
-          // LATER page's failure read as "that's everything". The copy
-          // promises only what BOTH engines deliver — the MediaStore
-          // pager drains a failed bucket's cursor, so an in-place scroll
-          // retry is not universally true (codex r3); reopening is.
-          <Text style={styles.empty}>
-            Could not read all of your photos just now — pull back and reopen to try again.
-          </Text>
-        ) : null
-      }
-    />
+    // The header's content scrolls inside this list: it hears the list's
+    // motion through the context (the day page's cards run their own
+    // animated controller).
+    <ListMotionContext.Provider value={hostList}>
+      <FlatList
+        ref={listRef}
+        style={styles.root}
+        data={items}
+        keyExtractor={(p) => p.id}
+        renderItem={renderItem}
+        numColumns={3}
+        {...cells.listProps}
+        ListHeaderComponent={header}
+        onEndReachedThreshold={0.6}
+        onEndReached={() => {
+          if (!exhausted && loadingGenRef.current === null) void loadMore(genRef.current, false);
+        }}
+        contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: bottomInset + 24 }}
+        ListEmptyComponent={
+          !loading && (exhausted || failed) ? (
+            <Text style={styles.empty}>
+              {failed
+                ? 'Could not read your library just now. Pull back and reopen to try again.'
+                : 'No items in this state.'}
+            </Text>
+          ) : null
+        }
+        ListFooterComponent={
+          loading ? (
+            <ActivityIndicator color={accent} style={styles.footer} />
+          ) : failed && items.length > 0 ? (
+            // A truncated grid must SAY it is truncated (fail closed): the
+            // failure copy used to live only in the empty state, so a
+            // LATER page's failure read as "that's everything". The copy
+            // promises only what BOTH engines deliver — the MediaStore
+            // pager drains a failed bucket's cursor, so an in-place scroll
+            // retry is not universally true (codex r3); reopening is.
+            <Text style={styles.empty}>
+              Could not read all of your photos just now — pull back and reopen to try again.
+            </Text>
+          ) : null
+        }
+      />
+    </ListMotionContext.Provider>
   );
 }
 

@@ -24,7 +24,7 @@
  * counts on every filter — they describe work, not the view.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Pressable, StyleSheet, Text, View, type ViewToken } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -33,7 +33,8 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { useReview } from '../review/ReviewContext';
 import { BigButton } from '../components/BigButton';
-import { UNIT_CARD_HEIGHT, UnitCard } from '../components/UnitCard';
+import { UNIT_CARD_HEIGHT, UnitCard, cardThumbRows } from '../components/UnitCard';
+import { useAnimatedCells, useAnimatedThumbsMode } from '../components/useAnimatedCells';
 import { StateDots } from '../components/DecisionBadge';
 import { colors, useTheme } from '../theme';
 import { formatClock, plural } from '../lib/format';
@@ -91,6 +92,19 @@ const BROWSE_BATCH = 40;
  * rests on UNIT_CARD_HEIGHT being style-pinned. */
 const ROW_GAP = 12;
 const ROW_H = UNIT_CARD_HEIGHT + ROW_GAP;
+
+/** A unit's list key — and its identity to the animated controller.
+ * Browse runs page in with stable full ranges per load generation; the
+ * pending key shape (day:to) relies on pending-only runs shrinking from
+ * the bottom. */
+function unitKeyOf(unit: TimelineUnit, filter: string | null): string {
+  if (unit.kind === 'group') return `g:${unit.group.groupId}`;
+  return filter === 'everything'
+    ? `r:${unit.day}:${unit.from}:${unit.to}`
+    : `r:${unit.day}:${unit.to}`;
+}
+const membersOf = (unit: TimelineUnit) =>
+  unit.kind === 'group' ? unit.group.members : unit.members;
 /** Depth past which the back-to-top disc shows — and below which a
  * landing hides it (~a dozen cards: flinging back is a chore). */
 const DEEP_PX = 1600;
@@ -439,6 +453,39 @@ export function TimelineScreen({ navigation }: Props) {
     return timeline;
   }, [filter, timeline, browse]);
 
+  // ------------------------------------ animated thumbnails (phase 6)
+  // A card's thumbnails play their clips while the card is on screen:
+  // the controller's item is the CARD, its sub-cells the shown thumbs.
+  const animatedMode = useAnimatedThumbsMode();
+  const dataRef = useRef(data);
+  dataRef.current = data;
+  const filterRef = useRef(filter);
+  filterRef.current = filter;
+  const kindsAt = useCallback((index: number) => {
+    const unit = dataRef.current[index];
+    return unit ? cardThumbRows(membersOf(unit)).map((row) => row.animated) : [];
+  }, []);
+  const cellOf = useCallback(
+    (token: ViewToken) => ({
+      index: token.index ?? -1,
+      key: unitKeyOf(token.item as TimelineUnit, filterRef.current),
+    }),
+    [],
+  );
+  const cells = useAnimatedCells({
+    mode: animatedMode,
+    columns: 5,
+    tileDp: ROW_H,
+    kindsAt,
+    rows: data,
+    cellOf,
+  });
+
+  // The list is keyed by the filter: one switched mid-fling unmounts
+  // before its momentum-end arrives, and the controller outlives it —
+  // the new list starts still (codex 2026-09-19).
+  useEffect(() => cells.reportMoving(false), [cells, filter]);
+
   // -------------------------------------------- filter-switch anchor
   const listRef = useRef<FlatList<TimelineUnit>>(null);
   const onViewableItemsChanged = useRef(
@@ -453,6 +500,21 @@ export function TimelineScreen({ navigation }: Props) {
     },
   ).current;
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 }).current;
+  // TWO viewability pairs on the one list (fixed at mount, as React
+  // Native requires): the anchor mirror above, and the animated
+  // controller's any-part rule.
+  const viewabilityPairs = useRef([
+    {
+      viewabilityConfig,
+      onViewableItemsChanged: onViewableItemsChanged as (info: {
+        viewableItems: ViewToken[];
+      }) => void,
+    },
+    {
+      viewabilityConfig: cells.listProps.viewabilityConfig,
+      onViewableItemsChanged: cells.listProps.onViewableItemsChanged,
+    },
+  ]).current;
   /** Fires a held jump once Everything's data has grown. */
   const [jumpNudge, setJumpNudge] = useState(0);
   /** The back-to-top control shows once the reader is deep enough that
@@ -629,14 +691,15 @@ export function TimelineScreen({ navigation }: Props) {
   );
 
   const renderUnit = useCallback(
-    ({ item: unit }: { item: TimelineUnit }) => {
-      const card = renderUnitCard(unit);
+    ({ item: unit, index }: { item: TimelineUnit; index: number }) => {
+      const card = renderUnitCard(unit, index);
       return <View style={styles.row}>{card}</View>;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [badgesFor, openUnit],
+    [badgesFor, openUnit, cells, filter],
   );
-  const renderUnitCard = (unit: TimelineUnit) => {
+  const renderUnitCard = (unit: TimelineUnit, index: number) => {
+    const animated = { cells, index, cellKey: unitKeyOf(unit, filter) };
     if (unit.kind === 'group') {
       const group = unit.group;
       const pending = group.members.filter((m) => m.state === 'unreviewed').length;
@@ -657,6 +720,7 @@ export function TimelineScreen({ navigation }: Props) {
           status={(pending === 0 ? done : `${pending} pending`) + away}
           statusDone={pending === 0}
           members={group.members}
+          animated={animated}
           onPress={() => openUnit(unit)}
           renderOverlay={(id) => (
             <StateDots
@@ -677,6 +741,7 @@ export function TimelineScreen({ navigation }: Props) {
         status={pending === 0 ? 'Reviewed · tap to revisit' : `${pending} pending`}
         statusDone={pending === 0}
         members={unit.members}
+        animated={animated}
         onPress={() => openUnit(unit)}
         renderOverlay={(id) => (
           <StateDots
@@ -769,11 +834,15 @@ export function TimelineScreen({ navigation }: Props) {
           offset: ROW_H * index,
           index,
         })}
-        onViewableItemsChanged={onViewableItemsChanged}
-        viewabilityConfig={viewabilityConfig}
+        viewabilityConfigCallbackPairs={viewabilityPairs}
         onLayout={(e) => {
           viewportHRef.current = e.nativeEvent.layout.height;
+          cells.listProps.onLayout(e);
         }}
+        onScrollEndDrag={cells.listProps.onScrollEndDrag}
+        onMomentumScrollBegin={cells.listProps.onMomentumScrollBegin}
+        onMomentumScrollEnd={cells.listProps.onMomentumScrollEnd}
+        onTouchEnd={cells.listProps.onTouchEnd}
         onScroll={(e) => {
           // ANY event inside the post-jump window is a straggler from
           // before the jump (programmatic scrolls emit none): believing
@@ -793,17 +862,9 @@ export function TimelineScreen({ navigation }: Props) {
         onScrollBeginDrag={() => {
           holdDragRef.current = true;
           jumpAtRef.current = 0;
+          cells.listProps.onScrollBeginDrag();
         }}
-        keyExtractor={(unit) =>
-          unit.kind === 'group'
-            ? `g:${unit.group.groupId}`
-            : filter === 'everything'
-              ? // Browse runs page in with stable full ranges per load
-                // generation; the pending key shape (day:to) relies on
-                // pending-only runs shrinking from the bottom.
-                `r:${unit.day}:${unit.from}:${unit.to}`
-              : `r:${unit.day}:${unit.to}`
-        }
+        keyExtractor={(unit) => unitKeyOf(unit, filter)}
         renderItem={renderUnit}
         contentContainerStyle={styles.list}
         extraData={version}

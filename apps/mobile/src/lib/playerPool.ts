@@ -1,9 +1,9 @@
 /**
  * The player pool (m0.9 phase 6, docs/AnimatedThumbnails_design.md D6):
- * a fixed set of expo-video players made once for a list and borrowed
- * by its cells — a cell entering the screen swaps its source into a
+ * a bounded set of expo-video players, each made at its first borrow and
+ * kept for the list's life, borrowed by its cells — a cell entering the screen swaps its source into a
  * borrowed player, a cell leaving pauses it and hands it back — so a
- * scroll CREATES and DESTROYS nothing. Releasing players mid-scroll was
+ * scroll DESTROYS nothing and creates only until the screen is served. Releasing players mid-scroll was
  * the lag spike the S23 showed under thermal load (2026-09-16); with
  * the pool the S10e's scripted 300-cell scroll has the same frame-time
  * percentiles with the cells playing and stopped.
@@ -33,8 +33,11 @@ export interface PlayerPool {
 }
 
 export function makePlayerPool(size: number): PlayerPool {
+  // Players are made ON DEMAND, up to the size: a list of cards sizes
+  // its pool at some forty (five thumbnails a card), and most of them
+  // hold photos — an idle ExoPlayer still owns a playback thread.
   const all: VideoPlayer[] = [];
-  for (let i = 0; i < size; i += 1) {
+  const make = (): VideoPlayer => {
     const p = createVideoPlayer(null);
     p.muted = true;
     // No audio TRACK at all, not just silence: a muted player still
@@ -50,14 +53,15 @@ export function makePlayerPool(size: number): PlayerPool {
       prioritizeTimeOverSizeThreshold: false,
     };
     all.push(p);
-  }
-  const free = [...all];
+    return p;
+  };
+  const free: VideoPlayer[] = [];
   let released = false;
   return {
     size,
     borrow() {
       if (released) return null;
-      const p = free.pop();
+      const p = free.pop() ?? (all.length < size ? make() : undefined);
       if (p === undefined) {
         console.warn(`[thumbs] player pool of ${size} exhausted`);
         return null;

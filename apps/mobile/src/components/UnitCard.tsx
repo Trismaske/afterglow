@@ -16,11 +16,12 @@
  * also settles the §5 observation that sparse cards rendered LARGER
  * than dense ones. Thumb-count configurability is parked to m0.8.7.
  */
-import type { StoredMediaKind } from '../lib/mediaIdentity';
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { PixelRatio } from 'react-native';
-import { OsThumbnail } from './OsThumbnail';
+import { AnimatedThumb } from './AnimatedThumb';
+import type { AnimatedCells } from './useAnimatedCells';
+import { thumbRowOf, type AnimatedThumbRow, type ThumbFacts } from '../lib/animatedThumbRow';
 import { thumbBucketPx } from '../lib/thumbnailSize';
 import { colors, touch } from '../theme';
 
@@ -41,12 +42,18 @@ const CARD_GAP = 10;
  * by style, never by content). */
 export const UNIT_CARD_HEIGHT = CARD_PAD * 2 + HEADER_H + CARD_GAP + THUMB_H + 2;
 
-export interface UnitCardMember {
+/** A card member: its identity plus the facts its thumbnail animates by
+ * (phase 6; every member projection carries them). */
+export interface UnitCardMember extends ThumbFacts {
   asset_id: string;
-  uri: string;
-  kind: StoredMediaKind;
-  /** The image cache version (item 3). */
-  image_version: number;
+}
+
+/** The members a card SHOWS (the rest wear the "+N" chip), as thumbnail
+ * rows — the card renders them and its host's controller reads their
+ * kinds, so both go through here. */
+export function cardThumbRows(members: readonly UnitCardMember[]): AnimatedThumbRow[] {
+  const shown = members.length > STRIP_THUMBS ? STRIP_THUMBS - 1 : members.length;
+  return members.slice(0, shown).map((m) => thumbRowOf(m.asset_id, m));
 }
 
 export function UnitCard({
@@ -56,6 +63,7 @@ export function UnitCard({
   members,
   onPress,
   renderOverlay,
+  animated,
 }: {
   title: string;
   status: string;
@@ -66,9 +74,13 @@ export function UnitCard({
   onPress: () => void;
   /** Absolutely-positioned overlay inside a thumbnail (badges). */
   renderOverlay?: (assetId: string) => React.ReactNode;
+  /** The host list's animated controller and this card's place in it
+   * (phase 6): the card's thumbnails play their clips while the card is
+   * on screen, each addressed by its position in the row. */
+  animated: { cells: AnimatedCells; index: number; cellKey: string };
 }) {
-  const shown = members.length > STRIP_THUMBS ? STRIP_THUMBS - 1 : members.length;
-  const rest = members.length - shown;
+  const thumbs = useMemo(() => cardThumbRows(members), [members]);
+  const rest = members.length - thumbs.length;
   return (
     <Pressable style={styles.card} onPress={onPress}>
       <View style={styles.header}>
@@ -80,17 +92,19 @@ export function UnitCard({
         </Text>
       </View>
       <View style={styles.strip}>
-        {members.slice(0, shown).map((member) => (
-          <View key={member.asset_id} style={styles.thumbWrap} pointerEvents="none">
-            <OsThumbnail
-              assetId={member.asset_id}
-              kind={member.kind}
-              uri={member.uri}
-              version={member.image_version}
+        {thumbs.map((thumb, sub) => (
+          <View key={thumb.id} style={styles.thumbWrap} pointerEvents="none">
+            <AnimatedThumb
+              row={thumb}
               px={CARD_THUMB_PX}
+              index={animated.index}
+              cellKey={animated.cellKey}
+              sub={sub}
+              cells={animated.cells}
               style={styles.thumb}
+              markSize={11}
             />
-            {renderOverlay?.(member.asset_id)}
+            {renderOverlay?.(thumb.id)}
           </View>
         ))}
         {rest > 0 && (

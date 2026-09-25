@@ -1382,7 +1382,7 @@ for (const r of results) {
   console.log(` ${r.ok ? 'PASS' : 'FAIL'}  ${r.name}  (${r.ms} ms)${r.note ? ` — ${r.note}` : ''}`);
 }
 await step('animated thumbnails play on the Progress grid', null, async () => {
-  // The design's validation (docs/AnimatedThumbnails_design.md §8): with
+  // Phase 6's validation: with
   // the row on All visible the Progress grid's clips PLAY — the
   // controller logs the playing set to the diag sink — and the row goes
   // back to Off for the phone's next walk. The grid cannot be dumped

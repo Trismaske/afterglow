@@ -145,7 +145,7 @@ export function SettingsScreen({ navigation }: Props) {
     motion: 'once',
   });
   const playbackWriteGen = useRef<Record<PlaybackKind, number>>({ video: 0, motion: 0 });
-  /** Phase 6 (D3): the animated-thumbnails row, All by default,
+  /** Phase 6: the animated-thumbnails row, All by default,
    * with the same durable anchor and write fence as the modes. */
   const [animatedThumbs, setAnimatedThumbs] = useState<AnimatedThumbsMode>(
     DEFAULT_ANIMATED_THUMBS_MODE,

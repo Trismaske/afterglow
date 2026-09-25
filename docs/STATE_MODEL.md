@@ -248,6 +248,7 @@ Six rules. They apply to every surface that paints a state.
   Their count is the grid's population by construction, so a tapped chip always shows exactly the number it printed.
 - **Grid dots and badges** — verdict first, then actions, then the two quiet annotations (folder pill, SD glyph — m0.8.7), in the one order `photoBadges.ts` defines.
   Time-attachment stays internal and draws nothing.
+  A clip thumbnail (video, motion photo, GIF) wears its kind mark top-left on every surface, playing or not — an annotation, exempt from the eye; a plain photo carries none.
   Badges answer "what does this photo carry", and a finished edit keeps its pencil at the `carried` weight.
   To *carry* an action and to *wait* on one are different questions.
   The deck's action **buttons** are not badges. They offer work, so they light on waiting only.

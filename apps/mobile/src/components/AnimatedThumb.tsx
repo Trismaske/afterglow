@@ -1,17 +1,17 @@
 /**
  * AnimatedThumb — a thumbnail that PLAYS its clip while its list says so
- * (m0.9 phase 6, docs/AnimatedThumbnails_design.md §1). The still is a
+ * (m0.9 phase 6). The still is a
  * stable base layer that never remounts — the OS thumbnail every cell
  * shows today (OsThumbnail) — with the playing layer laid OVER it: a
  * VideoView over a POOLED player kept invisible until its first frame
  * has rendered, or a GIF image until it has loaded, so a cell never
- * shows black or blank between its still and its motion (D7; the
+ * shows black or blank between its still and its motion (the
  * S10e recording: no flat tile in 140 frames across a start and a
  * scroll). A video plays its content URI; a motion photo its clip
  * through the shared resolver (lib/motionClips); a GIF through
- * expo-image's native playback (D10).
+ * expo-image's native playback.
  *
- * THE KIND MARK (D8): every clip thumbnail carries its kind — video,
+ * THE KIND MARK: every clip thumbnail carries its kind — video,
  * motion photo, GIF — playing or not, in the StateDots corner language
  * (top-left; the dots sit bottom-right). A plain photo carries none.
  * Exempt from the eye like every thumbnail mark.

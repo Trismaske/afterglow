@@ -1,5 +1,5 @@
 /**
- * The player pool (m0.9 phase 6, docs/AnimatedThumbnails_design.md D6):
+ * The player pool (m0.9 phase 6):
  * a bounded set of expo-video players, each made at its first borrow and
  * kept for the list's life, borrowed by its cells — a cell entering the screen swaps its source into a
  * borrowed player, a cell leaving pauses it and hands it back — so a
@@ -8,11 +8,23 @@
  * the pool the S10e's scripted 300-cell scroll has the same frame-time
  * percentiles with the cells playing and stopped.
  *
- * Every player carries a THUMBNAIL bound (D11 amended 2026-09-18):
+ * Every player carries a THUMBNAIL bound (2026-09-18):
  * muted, one second ahead and 4 MiB of samples — a cell shows a few
  * seconds of a clip at 120 dp, and the deck's 16 MiB times a dozen
  * players took the S23's Java heap down — no time-update ticks. Impure by nature (native players);
  * the sizing rule is pure in lib/animatedCells.ts.
+ *
+ * NO CEILING on players (Tristan 2026-09-18: the clips over the
+ * smoothness): the viewport bounds them through the pool's size, and a
+ * dry pool — a cell left a still, one sink line — is the one tripwire.
+ * Measured on the S23 with the same 90 s scroll, 22 players run in the
+ * same memory as 12 (PSS ~1.5 GB peak, Java heap 124 MB against 94) at
+ * twice the jank (26 % against 14 %), no crash either way. Both phones
+ * declare 16 hardware decoders per type; past that the S23's Codec2
+ * hands a newcomer a software decoder and every clip keeps playing,
+ * while the S10e's OMX stack RECLAIMS a hardware decoder from one of
+ * our players instead (its recorded stalls at the 17th player — an open
+ * observation, no bound built).
  */
 import { createVideoPlayer, type VideoPlayer } from 'expo-video';
 

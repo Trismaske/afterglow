@@ -168,6 +168,26 @@ Implementing it rewrites that header.
 5. **How six-plus switches are carried.** A long switch list is the L6 concern the original refusal was made under, so it is answered rather than assumed away: a chip row or a "Metadata" sub-screen may carry it better than one row per item.
 6. **The zoom fail-soft notice joins the redesign** (m0.8.8 close-out, Tristan): the small "Full detail unavailable — image file can't be fully read" chip the zoom overlay shows when the region pipeline rejects a photo (unreadable EXIF, mirrored orientation, unopenable format — shipped in m0.8.8; the deck's `zoomNotice` comment carries the rationale) — review its copy, placement, and whether it belongs to the overlay vocabulary this section defines.
 
+### F35 · The edit queue shows no state
+
+**Reported (2026-09-25, the phase-6 build on the S23):** the edit queue's rows say nothing about a photo's decisions.
+**Read:** every queue renders a bare thumbnail — the edit and favourites rows (`EditQueueScreen`, `FavouritesQueueScreen`) and the share and organize grid cells (`QueueGrid`) — while the grids, History and the Timeline cards wear StateDots.
+**Fix (phase 7 rider):** the four queues wear the same dots a grid cell wears, in `photoBadges` order; a row's own verb (Edit here, Add to favourites) stays its text.
+Widened from the edit queue to all four queues by the one-shape rule (STATE_MODEL.md) — flagged in the plan as autonomous.
+
+### F36 · To-edit and edited look alike
+
+**Reported (2026-09-25):** the favourite control tells "to favourite" from "favourited"; the edit control does not.
+**Read:** `ActionChip` flips favourite's glyph (heart-outline → heart) when the action waits, and organize's and share's likewise; edit drew `pencil` both ways, so only its hue moved.
+**Fix (landed with the phase 6 close, 2026-09-25):** edit's idle glyph is `pencil-outline`, its waiting glyph `pencil`.
+The tester judges it at phase 7's pass.
+
+### F37 · Samsung Gallery is not offered for a video
+
+**Reported (2026-09-25):** "View only" on a video never lists Samsung Gallery.
+**Read (measured on the S23, 2026-09-25, `cmd package query-activities`):** for `VIEW video/mp4` Android lists Google Photos, MiXplorer and Samsung Video Player; for `EDIT video/mp4` Google Photos alone. Samsung Gallery registers for neither — it registers `VIEW image/*` only, which is the routing the plan's device-pass item 4 records.
+**Fix shape (phase 7 rider, probe first):** an explicit launch of Gallery by component with the video's content URI, if Gallery accepts one; otherwise the row says plainly that Gallery does not open videos from other apps instead of offering a View that cannot reach it.
+
 ---
 
 ## What this round adds to PLAN.md's trigger backlog

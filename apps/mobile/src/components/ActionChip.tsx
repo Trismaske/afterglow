@@ -25,7 +25,10 @@ const META: Record<
   }
 > = {
   edit: {
-    icon: 'pencil',
+    // The idle glyph is the outline, like the other three: a waiting
+    // edit is told from none by the glyph as well as the hue (tester,
+    // phase 6 device round 2026-09-25).
+    icon: 'pencil-outline',
     activeIcon: 'pencil',
     color: colors.edit,
     dim: colors.editDim,

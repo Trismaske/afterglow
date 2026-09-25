@@ -1,25 +1,24 @@
 /**
- * Animated thumbnails — the pure rules (m0.9 phase 6,
- * docs/AnimatedThumbnails_design.md D2/D4/D5/D6). Every thumbnail
+ * Animated thumbnails — the pure rules (m0.9 phase 6). Every thumbnail
  * surface animates the clips on screen through real players; these are
  * the rules that decide WHICH cells play, sized and sequenced without a
  * view in sight. The impure partner is components/useAnimatedCells.ts.
  *
  *  - The playing set is the SETTLED set ∩ the VISIBLE set: a cell that
  *    entered the screen plays only once the visible set has held for
- *    the settle, a cell that left stops at once (D5 — the tester's feel
+ *    the settle, a cell that left stops at once (the tester's feel
  *    on both phones: entering may wait, leaving may not).
- *  - The pool is sized from the list's geometry, never a constant (D6):
+ *  - The pool is sized from the list's geometry, never a constant:
  *    the cells a screen can hold with any part visible.
  *  - One at a time walks the playing set's video and motion cells in
- *    order; GIFs play on their own (D4).
+ *    order; GIFs play on their own.
  */
 import type { StoredMediaKind } from './mediaIdentity';
 
 /** What a thumbnail can animate as; null = a plain photo. */
 export type AnimatedKind = 'video' | 'motion' | 'gif';
 
-/** The Settings row (D3): Off · One · All (the short labels — the row's
+/** The Settings row: Off · One · All (the short labels — the row's
  * explanation says what One and All mean; Tristan, 2026-09-18). */
 export type AnimatedThumbsMode = 'off' | 'one' | 'all';
 export const ANIMATED_THUMBS_KEY = 'animated_thumbnails';
@@ -38,7 +37,7 @@ export function parseAnimatedThumbsMode(raw: string | null): AnimatedThumbsMode 
 /** The tunables the tester settled on the probe (2026-09-16). */
 export const SETTLE_MS = 500;
 export const DWELL_MS = 5000;
-/** Any part of a cell on screen counts (D5). */
+/** Any part of a cell on screen counts. */
 export const VIEWABILITY = { itemVisiblePercentThreshold: 1, minimumViewTime: 100 } as const;
 
 /** What a row animates as, from the facts every row carries. */

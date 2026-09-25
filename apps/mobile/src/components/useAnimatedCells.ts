@@ -1,6 +1,6 @@
 /**
- * useAnimatedCells — one per thumbnail LIST (m0.9 phase 6,
- * docs/AnimatedThumbnails_design.md §2): the impure half of the
+ * useAnimatedCells — one per thumbnail LIST (m0.9 phase 6): the impure
+ * half of the
  * animated-thumbnail rules in lib/animatedCells.ts. It feeds the list's
  * own viewability into the settle-and-stop rule, walks the spotlight
  * for One at a time, and owns the list's player pool, which it makes
@@ -23,6 +23,24 @@
  * attached players there and nothing would restart them — codex round
  * 1): every cell hands its player back, and the foreground return
  * lets the settled cells borrow and play again.
+ *
+ * THE VISIBILITY RULES, settled with the tester on both phones: a cell
+ * counts as visible with ANY PART on screen; an entering cell plays only
+ * once the visible set has held for SETTLE_MS (2 s read as too long,
+ * 0.25 s right until the pool, 0.5 s "great" with it — 2026-09-16); a
+ * leaving cell stops at once (that rule ended a deep scroll's lag);
+ * playback RUNS ON through a drag and its fling (Tristan 2026-09-22,
+ * judged with every surface animating). The scroll's measured cost on
+ * the S10e (2026-09-18, a scripted drag on a player-dense screen):
+ * 18.9 % janky frames with 17 live players against 0 % with one; pausing
+ * every player while the list moved measured 2.8 % at 13 — the known
+ * remedy if a device pass ever reads a scroll as laggy.
+ *
+ * An item may hold several thumbnails (a card's row): the controller's
+ * item is the CARD, a thumbnail is addressed by (index, key, sub), and
+ * the spotlight walks thumbnails. A host without a virtualized list (the
+ * day page's cards, the deck's strip) reports its own visibility
+ * (`reportVisible`) and sizes the pool from `extentDp`.
  */
 import React, {
   useCallback,

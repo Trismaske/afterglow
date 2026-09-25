@@ -481,11 +481,6 @@ export function TimelineScreen({ navigation }: Props) {
     cellOf,
   });
 
-  // The list is keyed by the filter: one switched mid-fling unmounts
-  // before its momentum-end arrives, and the controller outlives it —
-  // the new list starts still (codex 2026-09-19).
-  useEffect(() => cells.reportMoving(false), [cells, filter]);
-
   // -------------------------------------------- filter-switch anchor
   const listRef = useRef<FlatList<TimelineUnit>>(null);
   const onViewableItemsChanged = useRef(
@@ -839,10 +834,6 @@ export function TimelineScreen({ navigation }: Props) {
           viewportHRef.current = e.nativeEvent.layout.height;
           cells.listProps.onLayout(e);
         }}
-        onScrollEndDrag={cells.listProps.onScrollEndDrag}
-        onMomentumScrollBegin={cells.listProps.onMomentumScrollBegin}
-        onMomentumScrollEnd={cells.listProps.onMomentumScrollEnd}
-        onTouchEnd={cells.listProps.onTouchEnd}
         onScroll={(e) => {
           // ANY event inside the post-jump window is a straggler from
           // before the jump (programmatic scrolls emit none): believing
@@ -862,7 +853,6 @@ export function TimelineScreen({ navigation }: Props) {
         onScrollBeginDrag={() => {
           holdDragRef.current = true;
           jumpAtRef.current = 0;
-          cells.listProps.onScrollBeginDrag();
         }}
         keyExtractor={(unit) => unitKeyOf(unit, filter)}
         renderItem={renderUnit}

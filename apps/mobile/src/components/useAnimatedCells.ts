@@ -82,9 +82,6 @@ export function useAnimatedThumbsMode(): AnimatedThumbsMode | null {
 
 export interface CellPlayback {
   playing: boolean;
-  /** The list is being dragged or flung: a playing cell HOLDS its frame
-   * (the player pauses, the view and the borrow stay) until it stops. */
-  held: boolean;
   /** One at a time: a new key restarts the spotlight's player. */
   spotKey: number;
   loop: boolean;
@@ -98,11 +95,6 @@ export interface AnimatedCells {
     viewabilityConfig: typeof VIEWABILITY;
     onViewableItemsChanged: (info: { viewableItems: ViewToken[] }) => void;
     onLayout: (event: LayoutChangeEvent) => void;
-    onScrollBeginDrag: () => void;
-    onScrollEndDrag: () => void;
-    onMomentumScrollBegin: () => void;
-    onMomentumScrollEnd: () => void;
-    onTouchEnd: () => void;
   };
   subscribe: (listener: () => void) => () => void;
   /** A thumbnail's playback as a primitive snapshot, by its item's index
@@ -114,21 +106,11 @@ export interface AnimatedCells {
    * strip): the items any part of which is on screen, from the host's
    * own scroll geometry (lib/animatedCells `visibleRange`). */
   reportVisible: (cells: readonly VisibleCell[]) => void;
-  /** The same motion signal a list's scroll callbacks give. */
-  reportMoving: (moving: boolean) => void;
-  /** This list's motion, for content that scrolls INSIDE it but runs its
-   * own controller (the day page's cards in the grid's header): told
-   * when the list starts moving and when it stops. */
-  subscribeMotion: (listener: (moving: boolean) => void) => () => void;
   advance: (turn: number) => void;
   pool: () => PlayerPool | null;
 }
 
-const IDLE = '0:0:1:0';
-/** A drag's end waits this long for a fling to begin before the list
- * counts as still. */
-const DRAG_END_MS = 120;
-
+const IDLE = '0:0:1';
 /** A cell's own playback: re-renders THIS cell only when its answer
  * changes. */
 export function useCellPlayback(
@@ -139,11 +121,10 @@ export function useCellPlayback(
 ): CellPlayback {
   const snapshot = useSyncExternalStore(cells.subscribe, () => cells.snapshotFor(index, key, sub));
   return useMemo(() => {
-    const [playing, spotKey, loop, held] = snapshot.split(':');
+    const [playing, spotKey, loop] = snapshot.split(':');
     const turn = Number(spotKey);
     return {
       playing: playing === '1',
-      held: held === '1',
       spotKey: turn,
       loop: loop === '1',
       onEnd: loop === '1' ? undefined : () => cells.advance(turn),
@@ -246,15 +227,11 @@ export function useAnimatedCells({
     [walkKey],
   );
   const spotting = mode === 'one' && walk.length > 0;
-  // The dwell does not run while the list MOVES (held cells keep their
-  // view, their borrow and their turn — codex 2026-09-19); it starts over
-  // when the list stops.
-  const [moving, setMoving] = useState(false);
   useEffect(() => {
-    if (!spotting || moving) return;
+    if (!spotting) return;
     const timer = setTimeout(() => advance(spot), DWELL_MS);
     return () => clearTimeout(timer);
-  }, [spotting, moving, spot, advance]);
+  }, [spotting, spot, advance]);
   const spotCell = spotting ? walk[spot % walk.length] : null;
 
   // The pool: lazy, sized from the layout at the first borrow.
@@ -265,7 +242,10 @@ export function useAnimatedCells({
   const pool = useCallback(() => {
     if (poolRef.current === null) {
       const g = geometry.current;
-      poolRef.current = makePlayerPool(poolSizeFor(g.columns, g.listHeight, g.tileDp));
+      poolRef.current = makePlayerPool(
+        poolSizeFor(g.columns, g.listHeight, g.tileDp),
+        `${g.columns} columns, ${Math.round(g.listHeight)} dp of ${g.tileDp} dp items`,
+      );
     }
     return poolRef.current;
   }, []);
@@ -286,56 +266,18 @@ export function useAnimatedCells({
     setListHeight(event.nativeEvent.layout.height);
   }, []);
 
-  // The list in MOTION (a drag or its fling): playing cells hold their
-  // frame. Seventeen live video textures cost the S10e's render thread
-  // 18.9 % janky frames under a drag against 0 % with one (2026-09-18);
-  // a held player updates no texture, and resumes when the list stops.
-  const dragEnd = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const clearDragEnd = useCallback(() => {
-    if (dragEnd.current !== null) clearTimeout(dragEnd.current);
-    dragEnd.current = null;
-  }, []);
-  const onScrollBeginDrag = useCallback(() => {
-    clearDragEnd();
-    setMoving(true);
-  }, [clearDragEnd]);
-  const onScrollEndDrag = useCallback(() => {
-    clearDragEnd();
-    dragEnd.current = setTimeout(() => setMoving(false), DRAG_END_MS);
-  }, [clearDragEnd]);
-  const onMomentumScrollBegin = useCallback(() => {
-    clearDragEnd();
-    setMoving(true);
-  }, [clearDragEnd]);
-  const onMomentumScrollEnd = useCallback(() => {
-    clearDragEnd();
-    setMoving(false);
-  }, [clearDragEnd]);
-  // A finger that STOPS a fling with a tap gets no momentum-end event
-  // (React Native cancels it on ACTION_DOWN) and begins no drag: the
-  // touch's end is then the only signal, and it releases the hold like a
-  // drag's end does unless a fling follows (codex 2026-09-19).
-  const onTouchEnd = onScrollEndDrag;
-  // A list that is not animating holds nothing over for its return.
-  useEffect(() => {
-    if (active) return;
-    clearDragEnd();
-    setMoving(false);
-  }, [active, clearDragEnd]);
-  useEffect(() => clearDragEnd, [clearDragEnd]);
-
   // The store the cells subscribe to: the current answer lives in a ref,
   // and a change notifies the listeners — the list itself is untouched.
   // PUBLISHED AT COMMIT, never during render (codex, 2026-09-18): a
   // concurrent render can be abandoned after it ran, and the cells must
   // only ever read an answer React committed — so the ref is written and
   // the listeners told in one layout effect.
-  const answer = useRef({ active, playing, kindsAt, mode, spotCell, spot, advance, moving });
+  const answer = useRef({ active, playing, kindsAt, mode, spotCell, spot, advance });
   const listeners = useRef(new Set<() => void>()).current;
   useLayoutEffect(() => {
-    answer.current = { active, playing, kindsAt, mode, spotCell, spot, advance, moving };
+    answer.current = { active, playing, kindsAt, mode, spotCell, spot, advance };
     for (const listener of listeners) listener();
-  }, [listeners, active, playing, kindsAt, mode, spotCell, spot, advance, moving]);
+  }, [listeners, active, playing, kindsAt, mode, spotCell, spot, advance]);
   const subscribe = useCallback(
     (listener: () => void) => {
       listeners.add(listener);
@@ -352,74 +294,28 @@ export function useAnimatedCells({
         now.spotCell.index === index &&
         now.spotCell.key === key &&
         now.spotCell.sub === sub;
-      return `${spotted ? 1 : 0}:${now.spot}:0:${now.moving ? 1 : 0}`;
+      return `${spotted ? 1 : 0}:${now.spot}:0`;
     }
-    return `1:0:1:${now.moving ? 1 : 0}`;
+    return '1:0:1';
   }, []);
   const advanceTurn = useCallback((turn: number) => answer.current.advance(turn), []);
-  const motionListeners = useRef(new Set<(moving: boolean) => void>()).current;
-  const movingNow = useRef(moving);
-  useEffect(() => {
-    movingNow.current = moving;
-    for (const listener of motionListeners) listener(moving);
-  }, [motionListeners, moving]);
-  const subscribeMotion = useCallback(
-    (listener: (moving: boolean) => void) => {
-      motionListeners.add(listener);
-      // A late subscriber hears the CURRENT motion at once (codex
-      // 2026-09-19): content that mounts during a fling must hold too.
-      listener(movingNow.current);
-      return () => motionListeners.delete(listener);
-    },
-    [motionListeners],
-  );
   const reportVisible = useCallback((next: readonly VisibleCell[]) => {
     setVisible((previous) => (sameCells(previous, next) ? previous : next));
   }, []);
-  const reportMoving = useCallback(
-    (next: boolean) => {
-      clearDragEnd();
-      setMoving(next);
-    },
-    [clearDragEnd],
-  );
-
   return useMemo(
     () => ({
       listProps: {
         viewabilityConfig: VIEWABILITY,
         onViewableItemsChanged,
         onLayout,
-        onScrollBeginDrag,
-        onScrollEndDrag,
-        onMomentumScrollBegin,
-        onMomentumScrollEnd,
-        onTouchEnd,
       },
       subscribe,
       snapshotFor,
       reportVisible,
-      reportMoving,
-      subscribeMotion,
       advance: advanceTurn,
       pool,
     }),
-    [
-      onViewableItemsChanged,
-      onLayout,
-      onScrollBeginDrag,
-      onScrollEndDrag,
-      onMomentumScrollBegin,
-      onMomentumScrollEnd,
-      onTouchEnd,
-      subscribe,
-      snapshotFor,
-      reportVisible,
-      reportMoving,
-      subscribeMotion,
-      advanceTurn,
-      pool,
-    ],
+    [onViewableItemsChanged, onLayout, subscribe, snapshotFor, reportVisible, advanceTurn, pool],
   );
 }
 
@@ -453,11 +349,11 @@ export function useAnimatedList<T>({
 }
 
 /** The list some content scrolls inside (provided by PhotoStateGrid for
- * its header's content; null outside one): its motion, and its viewport
+ * its header's content; null outside one): told when its scroll stops, and its viewport
  * in WINDOW coordinates — the list clips its content below the screen's
  * header, so "on screen" is inside these bounds, not inside the window. */
 export interface HostList {
-  subscribeMotion: AnimatedCells['subscribeMotion'];
+  subscribeScrollStop: (listener: () => void) => () => void;
   measureViewport: (done: (top: number, bottom: number) => void) => void;
 }
-export const ListMotionContext = React.createContext<HostList | null>(null);
+export const HostListContext = React.createContext<HostList | null>(null);

@@ -30,7 +30,7 @@ import { StateDots } from '../components/DecisionBadge';
 import { isSdPhoto, photoBadges, type PhotoBadge } from '../lib/photoBadges';
 import { UNIT_CARD_HEIGHT, UnitCard, cardThumbRows } from '../components/UnitCard';
 import {
-  ListMotionContext,
+  HostListContext,
   useAnimatedCells,
   useAnimatedThumbsMode,
 } from '../components/useAnimatedCells';
@@ -196,8 +196,8 @@ export function DayProgressScreen({ route, navigation }: Props) {
 
 /** The day's group cards, inside the grid's scrolling HEADER (phase 6):
  * they are not list items, so no viewability reaches them — the cards
- * run their own animated controller, hear the grid's motion through
- * ListMotionContext, and when the list is still measure themselves in
+ * run their own animated controller, hear the grid's scroll stop through
+ * HostListContext, and then measure themselves in
  * the window to say which of them are on screen. */
 function DayGroupCards({
   groups,
@@ -225,7 +225,7 @@ function DayGroupCards({
     extentDp: windowHeight,
   });
   const cardRefs = useRef(new Map<number, View>()).current;
-  const hostList = useContext(ListMotionContext);
+  const hostList = useContext(HostListContext);
   const measure = useCallback(() => {
     // Inside the LIST's viewport, not the window's: the list clips its
     // content below the screen's header (codex 2026-09-19).
@@ -250,10 +250,7 @@ function DayGroupCards({
   };
   useEffect(() => {
     // Whenever the list stops (a card's layout measures too, below).
-    const off = hostList?.subscribeMotion((moving) => {
-      cells.reportMoving(moving);
-      if (!moving) measure();
-    });
+    const off = hostList?.subscribeScrollStop(measure);
     return () => {
       off?.();
     };

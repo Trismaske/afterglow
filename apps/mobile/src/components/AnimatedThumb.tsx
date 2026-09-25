@@ -73,7 +73,9 @@ export const AnimatedThumb = React.memo(function AnimatedThumb({
   const pool = cells.pool;
   const playing = cell.playing && row.animated !== null;
   return (
-    <View style={[styles.cell, style]}>
+    // No touch target of its own: the native video view would swallow the
+    // tap its surface's Pressable is waiting for.
+    <View style={[styles.cell, style]} pointerEvents="none">
       <OsThumbnail
         assetId={row.id}
         kind={row.kind}
@@ -84,7 +86,7 @@ export const AnimatedThumb = React.memo(function AnimatedThumb({
       />
       {playing &&
         (row.animated === 'gif' ? (
-          <GifLayer uri={versionedUri(row.uri, row.version)} held={cell.held} />
+          <GifLayer uri={versionedUri(row.uri, row.version)} />
         ) : (
           // Keyed by the VERSION too: an in-place edit keeps the id and the
           // URI, and the layer must restart on the new bytes rather than
@@ -105,18 +107,10 @@ export const AnimatedThumb = React.memo(function AnimatedThumb({
   );
 });
 
-function GifLayer({ uri, held }: { uri: string; held: boolean }) {
+function GifLayer({ uri }: { uri: string }) {
   const [loaded, setLoaded] = useState(false);
-  const image = useRef<Image>(null);
-  // Held while the list moves: the GIF stops on its frame and resumes.
-  useEffect(() => {
-    if (!loaded) return;
-    if (held) void image.current?.stopAnimating();
-    else void image.current?.startAnimating();
-  }, [held, loaded]);
   return (
     <Image
-      ref={image}
       source={{ uri }}
       style={[StyleSheet.absoluteFill, { opacity: loaded ? 1 : 0 }]}
       contentFit="cover"
@@ -204,15 +198,6 @@ function PlayerLayer({
       setFramed(false);
     };
   }, [uri, loop, pool]);
-  // Held while the list moves: the player pauses on its frame — the view
-  // and the borrow stay, so nothing flashes and nothing is re-made — and
-  // plays on when the list stops.
-  const held = cell.held;
-  useEffect(() => {
-    if (player === null) return;
-    if (held) player.pause();
-    else player.play();
-  }, [player, held]);
   if (player === null) return null;
   return (
     <VideoView

@@ -2542,11 +2542,6 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 stripOffsetRef.current = event.nativeEvent.contentOffset.x;
                 report();
               }}
-              onScrollBeginDrag={cells.listProps.onScrollBeginDrag}
-              onScrollEndDrag={cells.listProps.onScrollEndDrag}
-              onMomentumScrollBegin={cells.listProps.onMomentumScrollBegin}
-              onMomentumScrollEnd={cells.listProps.onMomentumScrollEnd}
-              onTouchEnd={cells.listProps.onTouchEnd}
               onLayout={(event) => {
                 if (stripViewportRef.current === event.nativeEvent.layout.width) return;
                 stripViewportRef.current = event.nativeEvent.layout.width;

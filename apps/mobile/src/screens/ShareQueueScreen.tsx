@@ -471,7 +471,9 @@ export function ShareQueueScreen({ navigation }: Props) {
           : count === 0
             ? 'Queue items with Share during review, then send them in passes.'
             : selectionMode
-              ? `${selected.size} selected · ✓ marks items already shared this cycle`
+              ? // Two lines in both states: a first selection must not shift
+                // the grid (tester 2026-09-22).
+                `${selected.size} selected · ✓ marks items already shared this cycle\nLong-press a photo to open it`
               : // The long-press door was invisible (device pass
                 // 2026-08-28) — say it, on the same subtitle (vertical
                 // space is the scarcest thing on these screens).

@@ -491,7 +491,9 @@ export function OrganizeQueueScreen({ navigation }: Props) {
           : count === 0
             ? 'Queue items with Organize during review, then assign albums here.'
             : selectionMode
-              ? `${selected.size} selected · choose their album, or remove them`
+              ? // Two lines in both states: a first selection must not shift
+                // the grid (tester 2026-09-22).
+                `${selected.size} selected · choose their album, or remove them\nLong-press a photo to open it`
               : // The long-press door was invisible (device pass
                 // 2026-08-28) — say it, on the same subtitle (vertical
                 // space is the scarcest thing on these screens).

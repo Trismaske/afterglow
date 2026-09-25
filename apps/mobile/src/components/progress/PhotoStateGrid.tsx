@@ -20,7 +20,7 @@ import type { StoredMediaKind } from '../../lib/mediaIdentity';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { AnimatedThumb } from '../AnimatedThumb';
-import { ListMotionContext, useAnimatedList, type HostList } from '../useAnimatedCells';
+import { HostListContext, useAnimatedList, type HostList } from '../useAnimatedCells';
 import { animatedKindOf, type AnimatedKind } from '../../lib/animatedCells';
 import { motionClipOf, type MotionClipRow } from '../../db/store';
 import { thumbBucketPx } from '../../lib/thumbnailSize';
@@ -90,6 +90,9 @@ export interface GridPhoto {
 }
 
 const BATCH = 48;
+/** A lifted finger waits this long for a fling to begin before the list
+ * counts as stopped. */
+const RELEASE_MS = 120;
 
 /** EVERY day scope — and since m0.8.6 every MONTH scope (change 1) —
  * pages EVERY filter from SQLite (m0.8.3, D16 — decided with Tristan):
@@ -405,22 +408,47 @@ export function PhotoStateGrid({
   );
 
   const listRef = useRef<FlatList<GridPhoto>>(null);
+  const stopListeners = useRef(new Set<() => void>()).current;
+  const scrollStopped = useCallback(() => {
+    for (const listener of stopListeners) listener();
+  }, [stopListeners]);
+  // A lifted finger is a stop only if no fling follows: the release waits
+  // for a momentum-begin to cancel it (codex 2026-09-22 — a position
+  // measured at the release would outlive a long fling's settle).
+  const release = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelRelease = useCallback(() => {
+    if (release.current !== null) clearTimeout(release.current);
+    release.current = null;
+  }, []);
+  const released = useCallback(() => {
+    cancelRelease();
+    release.current = setTimeout(scrollStopped, RELEASE_MS);
+  }, [cancelRelease, scrollStopped]);
+  const momentumEnded = useCallback(() => {
+    cancelRelease();
+    scrollStopped();
+  }, [cancelRelease, scrollStopped]);
+  useEffect(() => cancelRelease, [cancelRelease]);
   const hostList = useMemo<HostList>(
     () => ({
-      subscribeMotion: cells.subscribeMotion,
+      subscribeScrollStop: (listener) => {
+        stopListeners.add(listener);
+        return () => stopListeners.delete(listener);
+      },
       measureViewport: (done) => {
         const node = listRef.current?.getNativeScrollRef() as View | null | undefined;
         node?.measureInWindow((_x, y, _w, h) => done(y, y + h));
       },
     }),
-    [cells],
+    [stopListeners],
   );
 
   return (
     // The header's content scrolls inside this list: it hears the list's
-    // motion through the context (the day page's cards run their own
-    // animated controller).
-    <ListMotionContext.Provider value={hostList}>
+    // scroll stop through the context (the day page's cards run their own
+    // animated controller). A finger that stops a fling with a tap gets
+    // no momentum-end event, so the touch's end counts as a release too.
+    <HostListContext.Provider value={hostList}>
       <FlatList
         ref={listRef}
         style={styles.root}
@@ -429,6 +457,11 @@ export function PhotoStateGrid({
         renderItem={renderItem}
         numColumns={3}
         {...cells.listProps}
+        onScrollBeginDrag={cancelRelease}
+        onScrollEndDrag={released}
+        onMomentumScrollBegin={cancelRelease}
+        onMomentumScrollEnd={momentumEnded}
+        onTouchEnd={released}
         ListHeaderComponent={header}
         onEndReachedThreshold={0.6}
         onEndReached={() => {
@@ -460,7 +493,7 @@ export function PhotoStateGrid({
           ) : null
         }
       />
-    </ListMotionContext.Provider>
+    </HostListContext.Provider>
   );
 }
 

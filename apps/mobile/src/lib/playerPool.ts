@@ -32,7 +32,9 @@ export interface PlayerPool {
   readonly size: number;
 }
 
-export function makePlayerPool(size: number): PlayerPool {
+/** `sizedFrom` names the geometry the size came from, for the one line a
+ * dry pool writes to the diagnostics sink. */
+export function makePlayerPool(size: number, sizedFrom: string): PlayerPool {
   // Players are made ON DEMAND, up to the size: a list of cards sizes
   // its pool at some forty (five thumbnails a card), and most of them
   // hold photos — an idle ExoPlayer still owns a playback thread.
@@ -57,13 +59,17 @@ export function makePlayerPool(size: number): PlayerPool {
   };
   const free: VideoPlayer[] = [];
   let released = false;
+  let warned = false;
   return {
     size,
     borrow() {
       if (released) return null;
       const p = free.pop() ?? (all.length < size ? make() : undefined);
       if (p === undefined) {
-        console.warn(`[thumbs] player pool of ${size} exhausted`);
+        // Once per pool: the cell stays a still. The sink's preceding
+        // `[thumbs] playing:` line names the cells that held the players.
+        if (!warned) console.warn(`[thumbs] player pool of ${size} exhausted (${sizedFrom})`);
+        warned = true;
         return null;
       }
       return p;

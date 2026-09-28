@@ -52,6 +52,7 @@ import { colors, touch, useTheme } from '../theme';
 import { AlbumPicker } from '../components/AlbumPicker';
 import { Chip, QueueGridCell } from '../components/QueueGrid';
 import { QueueRemoveChip } from '../components/QueueRemoveChip';
+import { useQueueBadges } from '../components/useQueueBadges';
 import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
 import { useReview } from '../review/ReviewContext';
 import { requestRescan } from '../scan/scanRunner';
@@ -431,6 +432,9 @@ export function OrganizeQueueScreen({ navigation }: Props) {
   // The cells play their clips while on screen (phase 6).
   const { width: windowWidth } = useWindowDimensions();
   const listRows = useMemo(() => rows ?? [], [rows]);
+  const dotsFor = useQueueBadges(
+    useMemo(() => rows?.map((r) => ({ id: r.photo_id, state: r.photo_state })) ?? null, [rows]),
+  );
   const { cells, thumbRows } = useAnimatedList({
     rows: listRows,
     thumbOf: queueThumb,
@@ -444,6 +448,9 @@ export function OrganizeQueueScreen({ navigation }: Props) {
         index={index}
         cells={cells}
         selected={selected.has(item.photo_id)}
+        dots={dotsFor(item.photo_id)}
+        // Above the album tag, which owns the bottom edge.
+        dotsStyle={styles.dotsAboveTag}
         accent={theme.accent}
         onPress={() => toggle(item.photo_id)}
         onLongPress={() =>
@@ -473,7 +480,7 @@ export function OrganizeQueueScreen({ navigation }: Props) {
         ) : null}
       </QueueGridCell>
     ),
-    [selected, theme.accent, toggle, navigation, cells, thumbRows],
+    [selected, theme.accent, toggle, navigation, cells, thumbRows, dotsFor],
   );
 
   const count = rows?.length ?? 0;
@@ -576,6 +583,7 @@ const styles = StyleSheet.create({
   refreshFailed: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginBottom: 8 },
   // The cell's album tag: the organize hue marks an assigned target
   // (rule 2 — the hue identifies the kind); "No album" stays neutral.
+  dotsAboveTag: { bottom: 26 },
   targetTag: {
     position: 'absolute',
     left: 4,

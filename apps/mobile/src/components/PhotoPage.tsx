@@ -21,7 +21,7 @@
  * bridge (MediaStage.tsx's crash class), and a horizontal drag hands
  * over to the pager's scroll exactly like any list row.
  */
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, type GestureResponderEvent, View } from 'react-native';
 import { Image } from 'expo-image';
 import type { SurfaceType } from 'expo-video';
@@ -32,6 +32,9 @@ import type { PlaybackStage } from './Playback';
 import type { PlaybackMode } from '../lib/playbackPrefs';
 import type { MotionClipRow } from '../db/store';
 import { imageCacheKey, versionedUri } from '../lib/imageKeys';
+
+/** A press held this long on a motion photo peeks at its still. */
+const PEEK_HOLD_MS = 350;
 
 export function PhotoPage({
   id,
@@ -80,8 +83,34 @@ export function PhotoPage({
   // pixels on the next scan, never Glide's pre-edit entry.
   const source = versionedUri(uri, version);
   const [decoded, setDecoded] = useState<string | null>(null);
+  // HOLD-TO-PEEK (the tester, 2026-09-25): a finger held on a motion
+  // photo shows its still over the playing clip until it lifts — the
+  // quick way to the chosen frame under Loop. A plain photo takes no
+  // long press, so its tap keeps firing on any release; on a motion
+  // photo the long press replaces the tap. Any other gesture claiming
+  // the touch (the pager's scroll, a pinch) ends the hold.
+  const [peek, setPeek] = useState(false);
+  // Armed only once the clip has RESOLVED for this version: before the
+  // extraction reports, and after a failed one, the page is a plain
+  // photo whose tap must keep firing (codex). A stable callback: the
+  // overlay's resolve effect keys on it.
+  const [clipOk, setClipOk] = useState(false);
+  useEffect(() => setClipOk(false), [id, version]);
+  const reportClip = useCallback(
+    (clipId: string, available: boolean) => {
+      setClipOk(available);
+      onClipAvailability(clipId, available);
+    },
+    [onClipAvailability],
+  );
   return (
-    <Pressable style={{ width, height: '100%' }} onPress={onPress}>
+    <Pressable
+      style={{ width, height: '100%' }}
+      onPress={onPress}
+      onLongPress={motion === null || !clipOk ? undefined : () => setPeek(true)}
+      delayLongPress={PEEK_HOLD_MS}
+      onPressOut={() => setPeek(false)}
+    >
       <View style={{ flex: 1, marginHorizontal: inset }}>
         {decoded !== source && (
           <OsThumbnail
@@ -116,7 +145,8 @@ export function PhotoPage({
             stage={stage}
             surfaceType={surfaceType}
             zoomScale={zoomScale}
-            onClipAvailability={onClipAvailability}
+            peek={peek}
+            onClipAvailability={reportClip}
           />
         )}
       </View>

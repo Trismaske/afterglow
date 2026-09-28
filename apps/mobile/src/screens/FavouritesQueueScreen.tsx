@@ -20,6 +20,7 @@ const ROW_THUMB_PX = thumbBucketPx(52, PixelRatio.get());
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSQLiteContext } from 'expo-sqlite';
+import type { PhotoState } from '@afterglow/core';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
@@ -45,6 +46,8 @@ import {
 import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
 import { withUserWritePriority } from '../lib/writePriority';
 import { QueueRemoveChip } from '../components/QueueRemoveChip';
+import { useQueueBadges } from '../components/useQueueBadges';
+import { StateDots } from '../components/DecisionBadge';
 
 /** The row shape this screen renders (was a store type). */
 interface FavouriteQueueRow {
@@ -60,6 +63,8 @@ interface FavouriteQueueRow {
   taken_at: number;
   /** Capture day; null = honestly undated (m0.8.6 change 5). */
   day: string | null;
+  /** The verdict, for the row's inspection dots (F35). */
+  photo_state: PhotoState;
   /** 1 = queued to favourite, 0 = queued to un-favourite. */
   favourite_target: number;
   /** 'error' = Android refused this one; still queued, but it needs a
@@ -115,6 +120,7 @@ export function FavouritesQueueScreen() {
         mime_type: byId.get(action.photoId)?.mimeType ?? null,
         motion: byId.get(action.photoId)?.motion ?? null,
         day: byId.get(action.photoId)?.day ?? null,
+        photo_state: byId.get(action.photoId)?.state ?? 'unreviewed',
         favourite_target: decodeFavouriteTarget(action.target) === false ? 0 : 1,
         state: action.state,
       }));
@@ -124,6 +130,9 @@ export function FavouritesQueueScreen() {
   const [busyTarget, setBusyTarget] = useState<boolean | null>(null);
   // The rows' thumbnails play their clips while on screen (phase 6).
   const listRows = useMemo(() => rows ?? [], [rows]);
+  const dotsFor = useQueueBadges(
+    useMemo(() => rows?.map((r) => ({ id: r.asset_id, state: r.photo_state })) ?? null, [rows]),
+  );
   const { cells, thumbRows } = useAnimatedList({
     rows: listRows,
     thumbOf: favouriteThumb,
@@ -370,6 +379,7 @@ export function FavouritesQueueScreen() {
                 style={styles.thumb}
                 markSize={11}
               />
+              <StateDots {...dotsFor(item.asset_id)} size={9} style={styles.dots} />
             </Pressable>
             <MaterialCommunityIcons
               name={item.favourite_target === 1 ? 'heart-plus' : 'heart-minus'}
@@ -413,6 +423,7 @@ export function FavouritesQueueScreen() {
 }
 
 const styles = StyleSheet.create({
+  dots: { position: 'absolute', right: 4, bottom: 4 },
   heading: { color: colors.text, fontSize: 24, fontWeight: '800', marginBottom: 2 },
   root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 16 },
   intro: { color: colors.textDim, fontSize: 14, lineHeight: 20, marginBottom: 10 },

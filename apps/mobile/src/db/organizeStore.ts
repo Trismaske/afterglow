@@ -25,6 +25,7 @@
  */
 import type { StoredMediaKind } from '../lib/mediaIdentity';
 import type { SQLiteDatabase } from 'expo-sqlite';
+import type { PhotoState } from '@afterglow/core';
 import { withWriteTransaction } from './database';
 import { encodeOrganizeTarget, leaveQueue, livePhotoClause, sourceExists } from './actions';
 import type { SourceRoot } from '../lib/sources';
@@ -130,6 +131,8 @@ export interface OrganizeQueueRow {
   motion_offset: number | null;
   motion_length: number | null;
   motion_presentation_us: number | null;
+  /** The verdict, for the cell's inspection dots (F35). */
+  photo_state: PhotoState;
   taken_at: number;
   day: string | null;
   /** NULL until an album is assigned in the queue (m0.8.2, F6). */
@@ -281,7 +284,7 @@ export async function getOrganizeQueue(
   // NULL-safe target projection: an untargeted row (m0.8.2) comes back
   // with NULL volume/path rather than substr() noise.
   return db.getAllAsync<OrganizeQueueRow>(
-    `SELECT p.asset_id AS photo_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, pa.state,
+    `SELECT p.asset_id AS photo_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.state AS photo_state, p.taken_at, p.day, pa.state,
             CASE WHEN pa.target IS NULL THEN NULL
                  ELSE substr(pa.target, 1, instr(pa.target, char(10)) - 1) END AS organize_volume,
             CASE WHEN pa.target IS NULL THEN NULL

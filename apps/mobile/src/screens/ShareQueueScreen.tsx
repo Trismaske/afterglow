@@ -58,6 +58,7 @@ import { showToast } from '../lib/toast';
 import { colors, touch, useTheme } from '../theme';
 import { Chip, QueueGridCell } from '../components/QueueGrid';
 import { QueueRemoveChip } from '../components/QueueRemoveChip';
+import { useQueueBadges } from '../components/useQueueBadges';
 import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
 import { useReview } from '../review/ReviewContext';
 
@@ -422,6 +423,9 @@ export function ShareQueueScreen({ navigation }: Props) {
   // The cells play their clips while on screen (phase 6).
   const { width: windowWidth } = useWindowDimensions();
   const listRows = useMemo(() => rows ?? [], [rows]);
+  const dotsFor = useQueueBadges(
+    useMemo(() => rows?.map((r) => ({ id: r.photo_id, state: r.photo_state })) ?? null, [rows]),
+  );
   const { cells, thumbRows } = useAnimatedList({
     rows: listRows,
     thumbOf: queueThumb,
@@ -435,6 +439,7 @@ export function ShareQueueScreen({ navigation }: Props) {
         index={index}
         cells={cells}
         selected={selected.has(item.photo_id)}
+        dots={dotsFor(item.photo_id)}
         accent={theme.accent}
         onPress={() => toggle(item.photo_id)}
         onLongPress={() =>
@@ -454,7 +459,7 @@ export function ShareQueueScreen({ navigation }: Props) {
         ) : null}
       </QueueGridCell>
     ),
-    [selected, theme.accent, toggle, navigation, cells, thumbRows],
+    [selected, theme.accent, toggle, navigation, cells, thumbRows, dotsFor],
   );
 
   const count = rows?.length ?? 0;

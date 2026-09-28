@@ -26,6 +26,8 @@ import { imageCacheKey, versionedUri } from '../lib/imageKeys';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { isFavouriteSelected } from '../lib/favouriteState';
 import { ActionChip } from '../components/ActionChip';
+import { useOverlayPrefs } from '../components/useOverlayPrefs';
+import { useBadgesHidden } from '../components/DecisionBadge';
 import { useStageMaxScale, useStageRegionZoom } from '../components/useStageZoom';
 import {
   StagePaneLayers,
@@ -98,6 +100,10 @@ export function CompareScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const db = useSQLiteContext();
+  // The shared overlay set (M21): the pane label is functional and
+  // stays; the clock is the Date & time row's, and the eye mutes it.
+  const overlay = useOverlayPrefs();
+  const overlayHidden = useBadgesHidden();
   const { groupId, aId, bId, singles = false, day, from, to } = route.params;
   const {
     groups,
@@ -637,6 +643,7 @@ export function CompareScreen({ navigation, route }: Props) {
     0;
   const needMs = millisNeeded([pair.a.timestamp, pair.b.timestamp].sort((x, y) => x - y));
   const withMs = needMs[0] || needMs[1];
+  const showClock = overlay.dateTime && !overlayHidden;
 
   return (
     <View style={[styles.root, { paddingBottom: insets.bottom + 8 }]}>
@@ -713,7 +720,8 @@ export function CompareScreen({ navigation, route }: Props) {
               </Animated.View>
               <View style={styles.abBadge} pointerEvents="none">
                 <Text style={styles.abBadgeText}>
-                  {visibleLabel} · {formatClockPrecise(visible.timestamp, withMs)}
+                  {visibleLabel}
+                  {showClock ? ` · ${formatClockPrecise(visible.timestamp, withMs)}` : ''}
                 </Text>
               </View>
               {/* Zoom fail-soft notice (ZoomFailNotice's header).

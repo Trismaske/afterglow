@@ -41,8 +41,11 @@
  * one page shows chrome at a time and a page change hides it. It
  * auto-hides after CHROME_HIDE_MS while the clip plays and stays while
  * paused or ended, so a stopped clip always offers its control. The
- * pieces: play / pause / replay in the centre, the speaker, expand or
- * collapse (immersive in and out — Back exits too), and the seek track
+ * pieces: play / pause / replay in the centre, STOP on the bottom row's
+ * left while a play is underway (the tester, 2026-09-25: a looping motion
+ * photo never showed its still — stop rewinds and rests the clip on it,
+ * a video on its first frame, and Play starts it over), the speaker,
+ * expand or collapse (immersive in and out — Back exits too), and the seek track
  * grown to its touch form on the bottom edge with the buttons above it
  * (tap or drag; a JS responder, so the pager's scroll stands down for
  * it). A DRAG runs the player in Media3's scrubbing mode for its
@@ -147,6 +150,7 @@ export function Playback({
   restsOnStill = false,
   zoomScale,
   playLabel = 'Play',
+  peek = false,
 }: {
   /** The playable file's uri (known before mount and the instance's
    * key — header). */
@@ -166,6 +170,9 @@ export function Playback({
   zoomScale?: SharedValue<number>;
   /** The accessibility label of a fresh play (Pause and Replay are fixed). */
   playLabel?: string;
+  /** The host is showing its still over the clip for a moment (a
+   * motion photo's hold-to-peek): the view hides, the clip plays on. */
+  peek?: boolean;
 }) {
   const theme = useTheme();
   const playback = usePlayer(source, active, mode);
@@ -184,6 +191,18 @@ export function Playback({
   // fresh closure per page) never restarts the timer.
   const [interaction, setInteraction] = useState(0);
   const touched = useCallback(() => setInteraction((n) => n + 1), []);
+  // A finger DOWN on a button suspends the auto-hide until it lifts
+  // (codex): a hold longer than the timer must not unmount the button
+  // under the press it is about to deliver.
+  const [pressing, setPressing] = useState(false);
+  const pressIn = useCallback(() => {
+    setPressing(true);
+    touched();
+  }, [touched]);
+  const pressOut = useCallback(() => {
+    setPressing(false);
+    touched();
+  }, [touched]);
   const hideRef = useRef(onChromeVisibleChange);
   hideRef.current = onChromeVisibleChange;
   // A scrub underway: the rest of the chrome hides (header) and the
@@ -228,17 +247,17 @@ export function Playback({
     [],
   );
   useEffect(() => {
-    if (!chromeVisible || !playback.isPlaying || scrubbing) return;
+    if (!chromeVisible || !playback.isPlaying || scrubbing || pressing) return;
     const timer = setTimeout(() => hideRef.current(false), CHROME_HIDE_MS);
     return () => clearTimeout(timer);
-  }, [chromeVisible, playback.isPlaying, interaction, scrubbing]);
+  }, [chromeVisible, playback.isPlaying, interaction, scrubbing, pressing]);
 
   // ONE opacity rule on the UI thread: zoom hides the player view (the
   // still shows beneath) and the chrome; a still-resting host shows the
   // view only while a play is underway.
   const unzoomed = useSharedValue(1);
   const zoom = zoomScale ?? unzoomed;
-  const viewShown = !restsOnStill || playback.underway;
+  const viewShown = (!restsOnStill || playback.underway) && !peek;
   const viewStyle = useAnimatedStyle(
     () => ({ opacity: viewShown && zoom.value <= 1.001 ? 1 : 0 }),
     [viewShown],
@@ -253,6 +272,10 @@ export function Playback({
   const onSpeaker = useCallback(() => {
     touched();
     playback.toggleMuted();
+  }, [playback, touched]);
+  const onStop = useCallback(() => {
+    touched();
+    playback.stop();
   }, [playback, touched]);
   const onStage = useCallback(() => {
     touched();
@@ -297,7 +320,13 @@ export function Playback({
           accessibilityLabel="Playback controls"
         >
           {!scrubbing && (
-            <Pressable style={styles.centre} onPress={onCentre} accessibilityLabel={centreLabel}>
+            <Pressable
+              style={styles.centre}
+              onPressIn={pressIn}
+              onPressOut={pressOut}
+              onPress={onCentre}
+              accessibilityLabel={centreLabel}
+            >
               <MaterialCommunityIcons name={centreIcon} size={44} color={colors.text} />
             </Pressable>
           )}
@@ -309,9 +338,22 @@ export function Playback({
             onSeek={onSeek}
             onScrubbing={onScrubbing}
           />
+          {!scrubbing && (playback.underway || playback.isPlaying) && (
+            <Pressable
+              style={[styles.button, { right: 106, bottom: STAGE_BOTTOM_ROW + insetBottom }]}
+              onPressIn={pressIn}
+              onPressOut={pressOut}
+              onPress={onStop}
+              accessibilityLabel="Stop"
+            >
+              <MaterialCommunityIcons name="stop" size={24} color={colors.text} />
+            </Pressable>
+          )}
           {!scrubbing && (
             <Pressable
               style={[styles.button, { right: 58, bottom: STAGE_BOTTOM_ROW + insetBottom }]}
+              onPressIn={pressIn}
+              onPressOut={pressOut}
               onPress={onStage}
               accessibilityLabel={immersive ? 'Exit fullscreen' : 'Fullscreen'}
             >
@@ -325,6 +367,8 @@ export function Playback({
           {!scrubbing && (
             <Pressable
               style={[styles.button, { right: 10, bottom: STAGE_BOTTOM_ROW + insetBottom }]}
+              onPressIn={pressIn}
+              onPressOut={pressOut}
               onPress={onSpeaker}
               accessibilityLabel={playback.muted ? 'Unmute' : 'Mute'}
             >
@@ -354,6 +398,9 @@ interface PlayerState {
   progress: number;
   play: () => void;
   pause: () => void;
+  /** Rewind and rest: the still (a motion photo) or the first frame (a
+   * video); the next Play starts over. */
+  stop: () => void;
   toggleMuted: () => void;
   seek: (fraction: number) => void;
   /** A drag on the track began (true) or ended (false, with the landing
@@ -438,6 +485,13 @@ function usePlayer(source: string, active: boolean, mode: PlaybackMode): PlayerS
     else player.play();
   }, [player, ended]);
   const pause = useCallback(() => player.pause(), [player]);
+  const stop = useCallback(() => {
+    player.pause();
+    player.currentTime = 0;
+    setEnded(false);
+    setUnderway(false);
+    setSought(null);
+  }, [player]);
   const toggleMuted = useCallback(() => {
     player.muted = !player.muted;
   }, [player]);
@@ -490,18 +544,38 @@ function usePlayer(source: string, active: boolean, mode: PlaybackMode): PlayerS
       progress,
       play,
       pause,
+      stop,
       toggleMuted,
       seek,
       scrub,
     }),
-    [player, isPlaying, ended, underway, muted, progress, play, pause, toggleMuted, seek, scrub],
+    [
+      player,
+      isPlaying,
+      ended,
+      underway,
+      muted,
+      progress,
+      play,
+      pause,
+      stop,
+      toggleMuted,
+      seek,
+      scrub,
+    ],
   );
 }
 
 /** The seek track, two forms along the bottom edge. THIN (chrome
  * hidden): a 2 dp hairline of progress, inert. EXPANDED (chrome shown):
- * three times the line, a thumb three times that again, inside a taller
- * touch band; tap or drag anywhere on the band seeks to that fraction,
+ * the SAME full-width line grown to three times its height in place,
+ * its bottom still on the stage edge, and a thumb: a HALF disc
+ * standing on the line, its flat side on the track's top edge (the
+ * tester, 2026-09-27: a whole dot touching the line only at its bottom
+ * read wrong; the track never lifts or narrows, 2026-09-25). The thumb's
+ * centre is clamped a radius in from either end so it stays whole at
+ * 0 and 1, and the fill's front is the dome's front the whole way. A taller touch band
+ * above the line; tap or drag anywhere on the band seeks to that fraction,
  * and a seek on an ended clip resumes it (ExoPlayer's own semantic).
  * A JS responder, deliberately — the stage's rules forbid a Gesture
  * Handler pan beside the pager's native scroll (MediaStage.tsx: the
@@ -547,11 +621,13 @@ function SeekTrack({
   const landing = useRef<number | undefined>(undefined);
   const responder = useMemo(() => {
     const seekAt = (pageX: number) => {
-      // The track is inset by the thumb's radius on both ends (styles):
-      // the fraction maps the inset width, so 0 and 1 sit at the ends.
-      const inner = width.current - 2 * SEEK_THUMB_R;
-      if (inner <= 0) return;
-      const fraction = Math.min(1, Math.max(0, (pageX - pageLeft.current - SEEK_THUMB_R) / inner));
+      // The painted track is the band's full width, but the finger maps
+      // the THUMB's travel — a radius in from either end — so a grab on
+      // the thumb at 0 or at 1 moves nothing until the finger does
+      // (codex); a touch past the travel clamps to the end.
+      const travel = width.current - 2 * SEEK_THUMB_R;
+      if (travel <= 0) return;
+      const fraction = Math.min(1, Math.max(0, (pageX - pageLeft.current - SEEK_THUMB_R) / travel));
       landing.current = fraction;
       setScrub(fraction);
       onSeek?.(fraction);
@@ -577,6 +653,12 @@ function SeekTrack({
     });
   }, [onSeek, onScrubbing]);
   const shown = scrub ?? progress;
+  const [bandWidth, setBandWidth] = useState(0);
+  // The thumb's centre rides the same TRAVEL the finger maps (seekAt): a
+  // radius in from either end, so a grab lands where the dot is painted
+  // and the dot stays whole at 0 and at 1. The fill beneath is the full
+  // width, so its end and the dot's centre part by up to a radius.
+  const thumbLeft = SEEK_THUMB_R + shown * Math.max(0, bandWidth - 2 * SEEK_THUMB_R);
   if (!expanded) {
     return (
       <View style={[styles.seekHairline, { bottom: insetBottom }]} pointerEvents="none">
@@ -590,23 +672,24 @@ function SeekTrack({
       style={[styles.seekBand, { bottom: insetBottom }]}
       onLayout={(event: LayoutChangeEvent) => {
         width.current = event.nativeEvent.layout.width;
+        setBandWidth(event.nativeEvent.layout.width);
       }}
       accessibilityLabel="Seek"
     >
-      {/* The inner box IS the inset track's width: an absolute child's
-          percentage `left` measures the parent's padding box (Yoga), so
-          the thumb rides the track's ends only from inside it. Never a
-          touch target: the grant's page-edge arithmetic above needs the
-          band itself to be what the touch lands on. */}
-      <View style={styles.seekInner} pointerEvents="none">
-        <View style={styles.seekTrack}>
-          <View style={[styles.seekFill, { width: `${shown * 100}%`, backgroundColor: accent }]} />
-        </View>
+      {/* Never touch targets: the grant's page-edge arithmetic above
+          needs the band itself to be what the touch lands on. */}
+      <View style={styles.seekTrack} pointerEvents="none">
+        {/* The fill's FRONT is the dome's front (the tester, 2026-09-28):
+            it ends at the dome's leading edge the whole way, so at 0 it
+            sits under the whole dome and at 1 it reaches the end. */}
         <View
-          style={[styles.seekThumb, { left: `${shown * 100}%`, backgroundColor: accent }]}
-          pointerEvents="none"
+          style={[styles.seekFill, { width: thumbLeft + SEEK_THUMB_R, backgroundColor: accent }]}
         />
       </View>
+      <View
+        style={[styles.seekThumb, { left: thumbLeft, backgroundColor: accent }]}
+        pointerEvents="none"
+      />
     </View>
   );
 }
@@ -622,7 +705,10 @@ const SEEK_THUMB_R = (SEEK_LINE * 9) / 2;
  * diameter high. Its lower part is where the hairline lives — the
  * touch form is the hairline's own place (the tester, 2026-09-14: the
  * earlier float read as a jump away from it). */
-const SEEK_BAND_HEIGHT = SEEK_THUMB_R * 4;
+// The band is the dome's height: the buttons' row sits just above it
+// (the tester, 2026-09-27), and a touch that starts on the band still
+// seeks, never pages or presses.
+const SEEK_BAND_HEIGHT = SEEK_THUMB_R * 2 + SEEK_LINE * 3;
 /** The chrome's buttons (speaker, expand) sit ABOVE the band, never on
  * it: a later sibling wins any shared strip, and a band whose edge ran
  * into the buttons' row put a thumb-aimed touch that landed low near
@@ -633,12 +719,12 @@ const BUTTON_SIZE = 40;
  * deck's badge pill and the stage's zoom notice all rest on this line,
  * above the seek band, so nothing overlaps the track and the foot reads
  * as one row (the tester's call, 2026-09-14). */
-export const STAGE_BOTTOM_ROW = SEEK_BAND_HEIGHT + 8;
+export const STAGE_BOTTOM_ROW = SEEK_BAND_HEIGHT + 6;
 /** The row's right end the buttons take (speaker at 10, expand at 58,
  * each BUTTON_SIZE wide, plus a gap): what the deck's badge pill must
  * leave free so a full badge set wraps upward instead of running under
  * the Fullscreen button on a narrow stage (codex, 2026-09-14). */
-export const STAGE_BOTTOM_ROW_BUTTONS = 58 + BUTTON_SIZE + 8;
+export const STAGE_BOTTOM_ROW_BUTTONS = 106 + BUTTON_SIZE + 8;
 
 const styles = StyleSheet.create({
   centre: {
@@ -668,11 +754,8 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: SEEK_BAND_HEIGHT,
+    // The track's bottom on the stage edge, like the hairline's.
     justifyContent: 'flex-end',
-    // The track's centre a thumb's radius up: the thumb's bottom on the
-    // stage edge.
-    paddingBottom: SEEK_THUMB_R - (SEEK_LINE * 3) / 2,
-    paddingHorizontal: SEEK_THUMB_R,
   },
   seekHairline: {
     position: 'absolute',
@@ -681,17 +764,19 @@ const styles = StyleSheet.create({
     height: SEEK_LINE,
     backgroundColor: 'rgba(255,255,255,0.25)',
   },
-  seekInner: { width: '100%' },
   seekTrack: { height: SEEK_LINE * 3, backgroundColor: 'rgba(255,255,255,0.25)' },
   seekFill: { height: '100%' },
   seekThumb: {
     position: 'absolute',
-    // Centred on the track: the track's half-height above the inner
-    // box's bottom, the thumb's radius below it.
-    bottom: (SEEK_LINE * 3) / 2 - SEEK_THUMB_R,
+    // A half disc standing ON the line: its flat side on the track's
+    // top edge, so the whole dome reads and takes the finger; no rim —
+    // the dome and the fill's front are one shape (the tester,
+    // 2026-09-27/28).
+    bottom: SEEK_LINE * 3,
     marginLeft: -SEEK_THUMB_R,
     width: SEEK_THUMB_R * 2,
-    height: SEEK_THUMB_R * 2,
-    borderRadius: SEEK_THUMB_R,
+    height: SEEK_THUMB_R,
+    borderTopLeftRadius: SEEK_THUMB_R,
+    borderTopRightRadius: SEEK_THUMB_R,
   },
 });

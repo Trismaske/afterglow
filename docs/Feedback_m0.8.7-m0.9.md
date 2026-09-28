@@ -172,7 +172,7 @@ Implementing it rewrites that header.
 
 **Reported (2026-09-25, the phase-6 build on the S23):** the edit queue's rows say nothing about a photo's decisions.
 **Read:** every queue renders a bare thumbnail — the edit and favourites rows (`EditQueueScreen`, `FavouritesQueueScreen`) and the share and organize grid cells (`QueueGrid`) — while the grids, History and the Timeline cards wear StateDots.
-**Fix (phase 7 rider):** the four queues wear the same dots a grid cell wears, in `photoBadges` order; a row's own verb (Edit here, Add to favourites) stays its text.
+**Fix (landed 2026-09-25, phase 7):** the four queues wear the same dots a grid cell wears, in `photoBadges` order; a row's own verb (Edit here, Add to favourites) stays its text.
 Widened from the edit queue to all four queues by the one-shape rule (STATE_MODEL.md) — flagged in the plan as autonomous.
 
 ### F36 · To-edit and edited look alike
@@ -186,7 +186,26 @@ The tester judges it at phase 7's pass.
 
 **Reported (2026-09-25):** "View only" on a video never lists Samsung Gallery.
 **Read (measured on the S23, 2026-09-25, `cmd package query-activities`):** for `VIEW video/mp4` Android lists Google Photos, MiXplorer and Samsung Video Player; for `EDIT video/mp4` Google Photos alone. Samsung Gallery registers for neither — it registers `VIEW image/*` only, which is the routing the plan's device-pass item 4 records.
-**Fix shape (phase 7 rider, probe first):** an explicit launch of Gallery by component with the video's content URI, if Gallery accepts one; otherwise the row says plainly that Gallery does not open videos from other apps instead of offering a View that cannot reach it.
+**Probed (S23, 2026-09-25):** an explicit launch of Gallery by component with a video's content URI only brings Gallery's own task forward, on whatever screen it last showed — it takes no video from another app.
+**Fix (landed 2026-09-25, phase 7):** the edit queue's subtitle says so whenever a video is queued ("Gallery opens no video from another app, so a video's View only lists the video players"); the buttons are unchanged, since "Edit here" reaches Google Photos' video editor and "View only" the video players.
+
+### F38 · The seek track lifts and narrows when the chrome shows
+
+**Reported (2026-09-25, the phase-7 build on the S23):** bringing up the video chrome, the progress bar rises from the bottom edge and ends up narrower than the stage.
+**Read:** the expanded track was inset by the thumb's radius at both ends and raised by it, so the thumb could ride the track whole; the thin form was full width on the edge, so the two read as different bars.
+**Fix (landed 2026-09-25; the thumb reshaped 2026-09-27):** the expanded track is the thin line grown in place — full width, its bottom on the edge — and the thumb is a half disc standing on the line, its flat side on the track's top edge, no rim, its centre clamped a radius in from either end (a whole dot touching the line only at its bottom read wrong). The fill's front is the dome's front the whole way (2026-09-28: the two had met only at the end). The stage's bottom row of buttons and badges sits just above the dome.
+
+### F39 · A looping motion photo never shows its chosen frame
+
+**Reported (2026-09-25):** with Motion photos set to Loop there is no way to see the still inside the motion photo; pausing shows the paused frame, which is right for a pause.
+**Read:** the still shows only while no play is underway (`restsOnStill`): a Once play returns to it at the end, a Loop never ends. The tester's candidates: a Stop control, a hold-to-peek, a shortcut to the Off mode.
+**Fix (Tristan 2026-09-25, both; landed the same day):** a STOP control in the playback chrome, bottom-left while a play is underway — it rewinds and rests the clip on the still (a video on its first frame), and Play starts it over — and HOLD-TO-PEEK on the page: a finger held 350 ms on a motion photo shows the still over the playing clip until it lifts. The peek is the page's own press: a pinch or a page swipe claiming the touch ends it, a plain photo takes no long press.
+
+### F40 · Rapid culls cross into the next group
+
+**Reported (2026-09-25, recording `Screen_Recording_20260925_214553_Afterglow.mp4`):** tapping Cull as fast as possible through a group of ten "breaks things"; three tries to reproduce.
+**Read (the recording, frame by frame; reproduced on the S10e with a scripted tap every 250 ms on a seeded 24-shot group):** two faults. Within the unit, a cull's jump to the next pending photo is commanded while the previous jump still animates, and the superseded jump's momentum end then snapped the cursor BACK onto the photo just culled — whose next tap read as the undo of the same verdict, leaving it unreviewed and the deck jumping about (the recording's 1 → 4 → 5 → 9 → 2). At the unit's end, the tap already in flight when the finished group advanced landed on the next group's first photo. The sink holds no fault for the minute: every write was correct, two addressed the wrong photo.
+**Fix (landed 2026-09-25/27):** while a commanded jump is in flight only its own arrival moves the cursor, so a superseded jump's momentum end is ignored; and the verdict controls (and Not related, Keep remaining) are inert for 600 ms after a new unit goes LIVE — the pager's own 400 ms swipe settle, made longer for taps — with a decision arriving inside it dropped (codex: a settle timed from the swap would elapse during a slow load). A tap that arrives while a write is in flight is still dropped: at a tap every 250 ms about half land, each on the photo the deck is moving to.
 
 ---
 

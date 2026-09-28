@@ -246,7 +246,8 @@ Six rules. They apply to every surface that paints a state.
 - **Progress chips** — two rows: verdicts (Unreviewed · Kept · Staged cull), then actions (Edit · Favourite · Organize · Share).
   They answer the **grid** question (third row of the table above), never the queue one.
   Their count is the grid's population by construction, so a tapped chip always shows exactly the number it printed.
-- **Grid dots and badges** — verdict first, then actions, then the two quiet annotations (folder pill, SD glyph — m0.8.7), in the one order `photoBadges.ts` defines.
+- **Grid dots and badges** — verdict first, then actions, then the one quiet annotation (the kind chip: Video · Motion · GIF, near-white, m0.9), in the one order `photoBadges.ts` defines.
+  The folder and the SD card are facts of the stage's metadata corner (`lib/stageMeta.ts`), never badges, and a small square carries no annotation at all.
   Time-attachment stays internal and draws nothing.
   A clip thumbnail (video, motion photo, GIF) wears its kind mark top-left on every surface, playing or not — an annotation, exempt from the eye; a plain photo carries none.
   Badges answer "what does this photo carry", and a finished edit keeps its pencil at the `carried` weight.

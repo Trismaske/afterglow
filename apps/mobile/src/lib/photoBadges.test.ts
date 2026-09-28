@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { demoteForState, folderNameOfUri, isSdPhoto, photoBadges } from './photoBadges';
+import { demoteForState, isSdPhoto, photoBadges } from './photoBadges';
 
 const NONE = {
   state: 'unreviewed',
@@ -72,49 +72,23 @@ describe('the annotation badges (m0.8.7, F14/F19)', () => {
     share: null,
   };
 
-  it('folder and SD render LAST and always quiet — facts, never chores', () => {
-    const badges = photoBadges({
-      ...NONE,
-      state: 'kept',
-      share: 'live',
-      folder: 'Camera',
-      sdCard: true,
-    });
-    expect(badges).toEqual([
+  it('the kind chip renders LAST and always quiet — a fact, never a chore', () => {
+    expect(
+      photoBadges({
+        state: 'kept',
+        edit: 'live',
+        favourite: null,
+        organize: null,
+        share: 'carried',
+        kind: 'motion',
+      }),
+    ).toEqual([
       { kind: 'keep', weight: 'live' },
-      { kind: 'share', weight: 'live' },
-      { kind: 'sd', weight: 'carried' },
-      { kind: 'folder', weight: 'carried', label: 'Camera' },
+      { kind: 'edit', weight: 'live' },
+      { kind: 'share', weight: 'carried' },
+      { kind: 'motion', weight: 'carried' },
     ]);
-  });
-
-  it('absent annotations add nothing', () => {
-    expect(photoBadges({ ...NONE, folder: null, sdCard: false })).toEqual([]);
-  });
-});
-
-describe('folderNameOfUri (F19: last folder name only)', () => {
-  it('takes the segment above the filename', () => {
-    expect(folderNameOfUri('file:///storage/emulated/0/DCIM/Camera/IMG_001.jpg')).toBe('Camera');
-    expect(folderNameOfUri('file:///storage/0A91-E18D/Pictures/Trips/rome.jpg')).toBe('Trips');
-  });
-
-  it('is honest about uris without a usable directory', () => {
-    expect(folderNameOfUri('content://media/external/images/1')).toBeNull();
-    expect(folderNameOfUri('file:///lonely.jpg')).toBeNull();
-    expect(folderNameOfUri(null)).toBeNull();
-  });
-
-  it('a literal % in a folder name never throws — raw segment fallback (codex m0.8.7 r1)', () => {
-    // "100% Photos" is a malformed escape to decodeURIComponent; a
-    // URIError here would crash the deck over a badge label.
-    expect(folderNameOfUri('file:///storage/emulated/0/100% Photos/IMG.jpg')).toBe('100% Photos');
-    // Valid escapes still decode.
-    expect(folderNameOfUri('file:///storage/emulated/0/My%20Trip/IMG.jpg')).toBe('My Trip');
-  });
-
-  it('decodes percent-escapes so the pill shows the real name', () => {
-    expect(folderNameOfUri('file:///storage/emulated/0/My%20Photos/x.jpg')).toBe('My Photos');
+    expect(photoBadges({ ...NONE, kind: null })).toEqual([]);
   });
 });
 

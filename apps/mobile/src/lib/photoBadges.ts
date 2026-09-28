@@ -26,9 +26,17 @@
  * (The time-attached scan annotation is deliberately
  * NOT a badge since m0.8.2 — it is internal scan quality the user cannot
  * act on, and the scan itself rewrites it once embeddings land.)
+ *
+ * m0.9 phase 7 — the KIND CHIP (G6/G7): a video, a motion photo or a GIF
+ * carries its kind LAST, as a layer-3 annotation (docs/STATE_MODEL.md):
+ * quiet, near-white, never an action hue; a plain photo carries none.
+ * The folder and SD annotations left the cluster for the stage's
+ * metadata corner (F31, lib/stageMeta): facts read wrong among the
+ * action glyphs, and small squares carry no annotation at all.
  */
 import type { PhotoState } from '@afterglow/core';
 import type { DecisionKind } from '../components/DecisionBadge';
+import type { AnimatedKind } from './animatedCells';
 import { PRIMARY_VOLUME, volumeOf } from './mediaIdentity';
 
 /** Where an action sits: waiting for you, or done and carried. */
@@ -37,8 +45,6 @@ export type BadgeWeight = 'live' | 'carried';
 export interface PhotoBadge {
   kind: DecisionKind;
   weight: BadgeWeight;
-  /** Text for the folder pill (kind 'folder'); glyph badges carry none. */
-  label?: string;
 }
 
 /** The weighted per-kind action set a surface hydrates for its badges.
@@ -78,34 +84,10 @@ export function demoteForState(
 export interface PhotoBadgeInput extends WeightedActionSet {
   /** Durable review state; 'unreviewed' contributes no verdict badge. */
   state: PhotoState;
-  /** F19 (m0.8.7): the photo's parent-folder name — a quiet text pill
-   * AFTER the glyph badges (facts render last and always quiet).
-   * Null/absent = no folder badge. Derive with folderNameOfUri. */
-  folder?: string | null;
-  /** F14 (m0.8.7): the photo lives on a non-primary (SD) volume — the
-   * quiet micro-SD glyph. Derive with isSdPhoto. */
-  sdCard?: boolean;
-}
-
-/** The photo's parent-folder name from its uri (F19: "last folder name
- * only") — the segment just above the filename; null when the uri has no
- * usable directory (content:// uris, root files). */
-export function folderNameOfUri(uri: string | null | undefined): string | null {
-  if (!uri || !uri.startsWith('file://')) return null;
-  const segments = uri.slice('file://'.length).split('/').filter(Boolean);
-  // Need at least a folder AND a filename.
-  if (segments.length < 2) return null;
-  const folder = segments[segments.length - 2];
-  if (folder.length === 0) return null;
-  // Defensive decode (codex m0.8.7 r1): a literal '%' in a folder name
-  // ("100% Photos") is a malformed escape to decodeURIComponent, and a
-  // URIError here would take the whole deck into the crash boundary over
-  // a badge label. The raw segment is the honest fallback.
-  try {
-    return decodeURIComponent(folder);
-  } catch {
-    return folder;
-  }
+  /** The kind chip (phase 7): what the item is beyond a plain photo
+   * (lib/animatedCells `animatedKindOf`); null or absent = none. Only
+   * the stage cluster draws it — thumbnails carry the kind MARK. */
+  kind?: AnimatedKind | null;
 }
 
 /** Does this canonical id live on a non-primary (SD) volume? (F14). */
@@ -127,9 +109,8 @@ export function photoBadges(input: PhotoBadgeInput): PhotoBadge[] {
   else if (input.favourite) badges.push({ kind: 'fav', weight: input.favourite });
   if (input.organize) badges.push({ kind: 'organize', weight: input.organize });
   if (input.share) badges.push({ kind: 'share', weight: input.share });
-  // Annotations LAST and always quiet (m0.8.7, F14/F19): facts about the
-  // photo, never chores — they must not compete with the to-do badges.
-  if (input.sdCard) badges.push({ kind: 'sd', weight: 'carried' });
-  if (input.folder) badges.push({ kind: 'folder', weight: 'carried', label: input.folder });
+  // The annotation LAST and always quiet: a fact about the item, never
+  // a chore — it must not compete with the to-do badges.
+  if (input.kind) badges.push({ kind: input.kind, weight: 'carried' });
   return badges;
 }

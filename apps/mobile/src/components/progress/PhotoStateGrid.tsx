@@ -47,14 +47,8 @@ import {
   scopeKeyOf,
   type PhotoScope,
 } from '../../db/store';
-import { getActionBadges, getFavouriteActionStates } from '../../db/actions';
-import { favouriteBadgeWeight, type FavouriteStatus } from '../../lib/favouriteState';
-import {
-  demoteForState,
-  isSdPhoto,
-  photoBadges,
-  type WeightedActionSet,
-} from '../../lib/photoBadges';
+import { hydrateActionWeights } from '../../db/actions';
+import { photoBadges, type WeightedActionSet } from '../../lib/photoBadges';
 import { StateDots } from '../DecisionBadge';
 import { UNDATED_DAY_KEY } from '../../lib/dates';
 import { colors, useTheme } from '../../theme';
@@ -128,43 +122,6 @@ interface GridPagedItem {
  * rescued stream's keyset. The merged pager hands each fetcher only its
  * own cursor back, so the union is safe by construction. */
 type GridCursor = string | { takenAt: number; assetId: string };
-
-const NO_FAVOURITE: FavouriteStatus = { state: 'none', target: null };
-
-/** Hydrate one page's WEIGHTED action sets (m0.8.7): two chunked reads
- * for the whole page, demoted per photo verdict. A failed read logs and
- * returns null — the page renders with verdict badges only, never with
- * invented action data. */
-async function hydrateActionWeights(
-  db: Parameters<typeof getActionBadges>[0],
-  photos: readonly GridPhoto[],
-): Promise<Map<string, WeightedActionSet> | null> {
-  if (photos.length === 0) return new Map();
-  try {
-    const ids = photos.map((p) => p.id);
-    const [badges, favourites] = await Promise.all([
-      getActionBadges(db, ids),
-      getFavouriteActionStates(db, ids),
-    ]);
-    const out = new Map<string, WeightedActionSet>();
-    for (const photo of photos) {
-      const entry = badges.get(photo.id) ?? {};
-      out.set(
-        photo.id,
-        demoteForState(photo.dbState, {
-          edit: entry.edit ?? null,
-          favourite: favouriteBadgeWeight(favourites.get(photo.id) ?? NO_FAVOURITE),
-          organize: entry.organize ?? null,
-          share: entry.share ?? null,
-        }),
-      );
-    }
-    return out;
-  } catch (error) {
-    console.warn('[progress] action hydration failed — badges omitted:', String(error));
-    return null;
-  }
-}
 
 /** A grid photo IS its thumbnail row (it carries the animated facts). */
 const gridThumb = (photo: GridPhoto) => photo;
@@ -278,7 +235,10 @@ export function PhotoStateGrid({
             dbState: r.state,
             effective: classifyPhotoState({ state: r.state }),
           }));
-          const weights = await hydrateActionWeights(db, photos);
+          const weights = await hydrateActionWeights(
+            db,
+            photos.map((p) => ({ id: p.id, state: p.dbState })),
+          );
           if (!fresh()) return;
           if (weights !== null) {
             for (const photo of photos) photo.actions = weights.get(photo.id);
@@ -315,7 +275,10 @@ export function PhotoStateGrid({
           }));
           // FULL hydration on the MediaStore engine too (m0.8.7): the
           // All/Unreviewed paths used to render no action data at all.
-          const weights = await hydrateActionWeights(db, collected);
+          const weights = await hydrateActionWeights(
+            db,
+            collected.map((p) => ({ id: p.id, state: p.dbState })),
+          );
           if (!fresh()) return;
           if (weights !== null) {
             for (const photo of collected) photo.actions = weights.get(photo.id);
@@ -394,11 +357,7 @@ export function PhotoStateGrid({
           style={styles.dots}
           badges={
             item.actions !== undefined
-              ? photoBadges({
-                  state: item.dbState ?? 'unreviewed',
-                  ...item.actions,
-                  sdCard: isSdPhoto(item.id),
-                })
+              ? photoBadges({ state: item.dbState ?? 'unreviewed', ...item.actions })
               : []
           }
         />

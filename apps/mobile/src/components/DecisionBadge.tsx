@@ -45,7 +45,17 @@ import { VERDICT_META } from './progress/stateMeta';
  */
 // prettier-ignore
 export type DecisionKind =
-  'cull' | 'keep' | 'trashed' | 'edit' | 'fav' | 'fav_off' | 'share' | 'organize' | 'sd' | 'folder';
+  'cull' | 'keep' | 'trashed' | 'edit' | 'fav' | 'fav_off' | 'share' | 'organize' | 'video' | 'motion' | 'gif';
+
+/** The three KIND CHIPS (m0.9 phase 7, G6): text, not a glyph — the
+ * word is the mark. Layer-3 annotations: near-white on the plain disc,
+ * never an action hue; only BadgeCluster draws them (the thumbnails'
+ * kind MARK lives in AnimatedThumb). */
+export const KIND_CHIP_LABELS: Record<'video' | 'motion' | 'gif', string> = {
+  video: 'Video',
+  motion: 'Motion',
+  gif: 'GIF',
+};
 
 export const DECISION_GLYPHS: Record<
   DecisionKind,
@@ -62,10 +72,11 @@ export const DECISION_GLYPHS: Record<
   fav_off: 'heart-off',
   share: 'share-variant',
   organize: 'folder-move',
-  // The two ANNOTATION badges (m0.8.7, F14/F19): facts, not actions —
-  // neutral dim-on-raised, never an action hue (rule 2 reserves those).
-  sd: 'micro-sd',
-  folder: 'folder-outline',
+  // The kind chips render as TEXT (KindChip); these glyphs serve the
+  // inline icon+text rows that name a kind.
+  video: 'video-outline',
+  motion: 'motion-play-outline',
+  gif: 'file-gif-box',
 };
 
 const BADGE_COLORS: Record<DecisionKind, { fg: string; bg: string }> = {
@@ -80,9 +91,16 @@ const BADGE_COLORS: Record<DecisionKind, { fg: string; bg: string }> = {
   fav_off: { fg: colors.fav, bg: colors.favDim },
   share: { fg: colors.share, bg: colors.shareDim },
   organize: { fg: colors.organize, bg: colors.organizeDim },
-  sd: { fg: colors.textDim, bg: colors.surfaceRaised },
-  folder: { fg: colors.textDim, bg: colors.surfaceRaised },
+  // Annotations: near-white on the plain disc (rule 3's colour for a
+  // thing with no hue of its own), never an action hue (rule 2).
+  video: { fg: colors.text, bg: colors.surfaceRaised },
+  motion: { fg: colors.text, bg: colors.surfaceRaised },
+  gif: { fg: colors.text, bg: colors.surfaceRaised },
 };
+
+export function isKindChip(kind: DecisionKind): kind is 'video' | 'motion' | 'gif' {
+  return kind === 'video' || kind === 'motion' || kind === 'gif';
+}
 
 /** Alpha suffix for a CARRIED glyph: the same hue, ~65% strength, over
  * an OPAQUE disc so it stays legible on any photo underneath. Fading the
@@ -126,14 +144,14 @@ export function DecisionBadge({
   );
 }
 
-/** The folder pill (F19): the parent-folder name as quiet text. Only
- * legible at deck-stage sizes — small thumbnail clusters render the
+/** A kind chip: the kind's word as quiet near-white text on the plain
+ * disc. Only legible at deck-stage sizes — small clusters render the
  * glyph badges alone (see BadgeCluster). */
-function FolderPill({ label, size }: { label: string; size: number }) {
+function KindChip({ kind, size }: { kind: 'video' | 'motion' | 'gif'; size: number }) {
   return (
     <View style={[styles.pill, { height: size, borderRadius: size / 2 }]}>
       <Text style={[styles.pillText, { fontSize: Math.round(size * 0.55) }]} numberOfLines={1}>
-        {label}
+        {KIND_CHIP_LABELS[kind]}
       </Text>
     </View>
   );
@@ -148,7 +166,7 @@ export function useBadgesHidden(): boolean {
 }
 
 /** Text pills are unreadable below this cluster size — smaller clusters
- * keep the glyph badges and drop only the folder pill. */
+ * keep the glyph badges and drop only the kind chip. */
 const MIN_PILL_SIZE = 18;
 
 /**
@@ -172,9 +190,9 @@ export function BadgeCluster({
   return (
     <View style={[styles.cluster, style]} pointerEvents="none">
       {badges.map((badge) =>
-        badge.kind === 'folder' ? (
-          size >= MIN_PILL_SIZE && badge.label ? (
-            <FolderPill key={badge.kind} label={badge.label} size={size} />
+        isKindChip(badge.kind) ? (
+          size >= MIN_PILL_SIZE ? (
+            <KindChip key={badge.kind} kind={badge.kind} size={size} />
           ) : null
         ) : (
           <DecisionBadge key={badge.kind} kind={badge.kind} size={size} weight={badge.weight} />
@@ -190,8 +208,9 @@ export function BadgeCluster({
  * thumbnail-scale surface — grid tiles, the deck's film strip, Timeline
  * and DayProgress cards. The VERDICT is a colored dot (VERDICT_META);
  * actions ride beside it as the weighted glyph badges. Verdict GLYPHS
- * and the folder pill stay out — the dot already carries the verdict,
- * and a pill outgrows a thumbnail. (The trashed glyph stays: browse
+ * and the kind chip stay out — the dot already carries the verdict,
+ * and the thumbnail's kind MARK (AnimatedThumb) carries the kind; a
+ * small square carries no annotation (G12). (The trashed glyph stays: browse
  * decks can hold tombstoned members the dot's effective-state palette
  * cannot express.)
  *
@@ -217,7 +236,7 @@ export function StateDots({
   size?: number;
   style?: StyleProp<ViewStyle>;
 }) {
-  const shown = badges.filter((b) => b.kind !== 'folder' && b.kind !== 'keep' && b.kind !== 'cull');
+  const shown = badges.filter((b) => !isKindChip(b.kind) && b.kind !== 'keep' && b.kind !== 'cull');
   if (effective === 'unreviewed' && shown.length === 0) return null;
   return (
     <View style={[styles.dotsRow, style]} pointerEvents="none">
@@ -247,7 +266,7 @@ const styles = StyleSheet.create({
     maxWidth: 96,
     backgroundColor: colors.surfaceRaised,
   },
-  pillText: { color: colors.textDim, fontWeight: '600' },
+  pillText: { color: colors.text, fontWeight: '600' },
   cluster: {
     flexDirection: 'row',
     flexWrap: 'wrap-reverse',

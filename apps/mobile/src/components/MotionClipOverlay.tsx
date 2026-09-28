@@ -44,6 +44,9 @@ export function MotionClipOverlay(props: {
   surfaceType: SurfaceType;
   /** The stage's zoom scale (1 = unzoomed) — read on the UI thread. */
   zoomScale: SharedValue<number>;
+  /** The page is HELD (hold-to-peek): the still shows over the playing
+   * clip until the finger lifts. */
+  peek: boolean;
   /** Whether the clip file exists to play: false after a failed
    * extraction (the page is a plain photo to the deck's tap rule),
    * true again once a retry or a new version extracts. */
@@ -61,6 +64,7 @@ function MotionClipPlayer({
   stage,
   surfaceType,
   zoomScale,
+  peek,
   onClipAvailability,
 }: {
   id: string;
@@ -70,6 +74,7 @@ function MotionClipPlayer({
   stage: PlaybackStage;
   surfaceType: SurfaceType;
   zoomScale: SharedValue<number>;
+  peek: boolean;
   onClipAvailability: (id: string, available: boolean) => void;
 }) {
   const [source, setSource] = useState<{ key: string; uri: string } | null>(null);
@@ -114,6 +119,7 @@ function MotionClipPlayer({
       stage={stage}
       surfaceType={surfaceType}
       restsOnStill
+      peek={peek}
       zoomScale={zoomScale}
       playLabel="Play motion photo"
     />

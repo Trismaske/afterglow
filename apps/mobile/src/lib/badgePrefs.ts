@@ -1,23 +1,29 @@
 /**
- * The ONE badge-visibility control (m0.8.7, F19/L6): a durable persisted
- * setting that hides the STAGE's badge cluster — verdicts, actions, and
- * the two annotation badges — for an unobstructed look at the photo. No
- * per-badge settings (vetted 2026-08-21: a settings row earned by a
- * guess; if the cluster still feels noisy with the toggle in hand, that
- * complaint arrives with evidence).
+ * The EYE (m0.8.7 F19; rewritten m0.9 phase 7, F34/M20): one durable
+ * boolean that MUTES the deck stage's whole overlay set at once — the
+ * metadata corner, the position counter, the badge cluster and its kind
+ * chip — for an unobstructed look at the photo. The Overlay rows in
+ * Settings (lib/overlayPrefs) say what the set CONTAINS; the eye says
+ * whether to show it. Two layers, one model: rows curate, the eye mutes.
  *
- * SCOPE narrowed to the stage (m0.9, vetted 2026-09-01): the
- * thumbnail-scale inspection dots (StateDots — grid tiles, the deck
- * strip, Timeline/DayProgress cards) are exempt. The eye once hid the
- * strip's markers while the grid's dots stayed, which read as a bug on
- * the S23 (2026-08-29): those marks are wayfinding, not photo
- * obstruction — only the stage cluster competes with the photo.
+ * Its m0.8.7 header refused per-item settings as "a settings row earned
+ * by a guess" and named the trigger for revisiting: "if the cluster
+ * still feels noisy with the toggle in hand, that complaint arrives with
+ * evidence". It arrived 2026-08-25, from the tester holding the toggle,
+ * against a stage about to gain the kind chips, the folder move and two
+ * more facts — so the rows exist, and the eye widened from the cluster
+ * to the set.
  *
- * Module-scope observable, same shape as the scan status: BadgeCluster
- * subscribes, so ONE setting flips every surface at once, and the
- * durable row makes the choice survive restarts. One access point
- * (m0.9 phase 2 — the deck is the one review-and-browse surface): the
- * deck header's eye, where badges visually compete with the photo.
+ * Outside the eye by design: the thumbnails' inspection dots and kind
+ * marks (wayfinding, not obstruction — the eye hiding the strip's
+ * markers while the grid's dots stayed read as a bug on the S23,
+ * 2026-08-29), the playback chrome, the zoom fail-soft notice (a
+ * fidelity claim, M19) and the details overlay (always complete, M21).
+ *
+ * Module-scope observable, same shape as the scan status: the stage
+ * subscribes, so the one setting flips at once, and the durable row
+ * makes the choice survive restarts. One access point: the deck
+ * header's eye, where the overlay visually competes with the photo.
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { showToast } from './toast';

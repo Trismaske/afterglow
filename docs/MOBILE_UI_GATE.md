@@ -126,7 +126,8 @@ They are the specification for extending this gate script; until then, an agent 
 7. **Stats immutability around the trash.**
    Record the ring before confirming culls; after the OS consent and verification the ring must be UNCHANGED (credit happened at staging) and the day row must keep the trashed decisions counted.
 8. **Badges and the eye.**
-   With an SD folder in scope, one deck frame must show the SD glyph on stage and thumbnails, the folder pill on the stage only, and any gallery-flag hearts (F20).
+   With an SD folder in scope, one deck frame must name the folder and the SD card in the stage's metadata corner (its where line) and nowhere on a thumbnail, and show any gallery-flag hearts (F20).
+   A video or motion photo wears its kind chip in the stage cluster; the Overlay rows in Settings remove an item from the stage and the eye removes them all.
    The header eye must empty the badge cluster from the dump and flip its own label; a picker row-select must pixel-diff to nothing outside the tapped row (§6.6).
 
 ## Manual pass (what automation cannot judge)

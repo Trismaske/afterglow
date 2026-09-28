@@ -94,6 +94,13 @@ import {
   serializeComparePref,
 } from '../lib/comparePrefs';
 import { getSetting, setSetting, setSettings } from '../db/store';
+import {
+  DEFAULT_OVERLAY_PREFS,
+  OVERLAY_ROWS,
+  type OverlayPrefs,
+  type OverlayRow,
+} from '../lib/overlayPrefs';
+import { readOverlayPrefs, writeOverlayRow } from '../components/useOverlayPrefs';
 import { ACCENT_PRESETS } from '../lib/accentTheme';
 import { showToast } from '../lib/toast';
 import { colors, touch, useTheme } from '../theme';
@@ -191,6 +198,82 @@ export function SettingsScreen({ navigation }: Props) {
       );
     },
     [db],
+  );
+  /** Phase 7 (F34): the nine Overlay rows, each with the durable anchor
+   * and write fence the playback rows use, read on focus. */
+  const [overlay, setOverlay] = useState<OverlayPrefs>(DEFAULT_OVERLAY_PREFS);
+  const durableOverlayRef = useRef<OverlayPrefs>(DEFAULT_OVERLAY_PREFS);
+  const overlayWriteGen = useRef<Record<OverlayRow, number>>(
+    Object.fromEntries(OVERLAY_ROWS.map((r) => [r.row, 0])) as Record<OverlayRow, number>,
+  );
+  /** The rows' writes go through useOverlayPrefs' module-scope chain
+   * (codex rounds 1 and 6): two rapid taps, or a tap on the way out and
+   * a newer instance's tap, commit in issue order, and the deck's read
+   * waits for them. */
+  /** Rows a write has COMMITTED for since focus: the focus read's value
+   * is the rollback anchor for every other row, even one tapped while
+   * the read was in flight — SQLite still holds the read's value until a
+   * write lands (codex round 3). */
+  const overlayCommitted = useRef(new Set<OverlayRow>());
+  /** Writes in flight per row: a late focus read updates the rendered
+   * value of a row with none (a write that already failed rolled the
+   * switch back to a stale anchor — codex round 4) and only the anchor
+   * of a row with one (its rollback then lands on the read's value). */
+  const overlayInFlight = useRef<Record<OverlayRow, number>>(
+    Object.fromEntries(OVERLAY_ROWS.map((r) => [r.row, 0])) as Record<OverlayRow, number>,
+  );
+  const toggleOverlay = useCallback(
+    (row: OverlayRow, on: boolean) => {
+      const gen = (overlayWriteGen.current[row] += 1);
+      setOverlay((prev) => ({ ...prev, [row]: on }));
+      const key = OVERLAY_ROWS.find((r) => r.row === row)?.key ?? '';
+      overlayInFlight.current[row] += 1;
+      void writeOverlayRow(db, key, on).then(
+        () => {
+          overlayInFlight.current[row] -= 1;
+          durableOverlayRef.current = { ...durableOverlayRef.current, [row]: on };
+          overlayCommitted.current.add(row);
+        },
+        (error) => {
+          overlayInFlight.current[row] -= 1;
+          console.warn('[settings] overlay row write failed:', String(error));
+          if (overlayWriteGen.current[row] !== gen) return;
+          const durable = durableOverlayRef.current[row];
+          setOverlay((prev) => ({ ...prev, [row]: durable }));
+          showToast('Could not save the overlay setting');
+        },
+      );
+    },
+    [db],
+  );
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      overlayCommitted.current.clear();
+      void readOverlayPrefs(db).then(
+        (loaded) => {
+          if (cancelled) return;
+          // A row with a write in flight keeps its optimistic value; one
+          // whose writes have all settled without a commit since focus
+          // shows the read's value (the durable truth).
+          setOverlay((prev) => {
+            const next = { ...prev };
+            for (const r of OVERLAY_ROWS)
+              if (overlayInFlight.current[r.row] === 0 && !overlayCommitted.current.has(r.row))
+                next[r.row] = loaded[r.row];
+            return next;
+          });
+          const durable = { ...durableOverlayRef.current };
+          for (const r of OVERLAY_ROWS)
+            if (!overlayCommitted.current.has(r.row)) durable[r.row] = loaded[r.row];
+          durableOverlayRef.current = durable;
+        },
+        (error) => console.warn('[settings] overlay rows read failed:', String(error)),
+      );
+      return () => {
+        cancelled = true;
+      };
+    }, [db]),
   );
   const [applying, setApplying] = useState(false);
   const applyingRef = useRef(false);
@@ -873,6 +956,32 @@ export function SettingsScreen({ navigation }: Props) {
           </View>
         </View>
 
+        {/* Phase 7 (F34, M22): the Overlay section — nine full switch
+            rows with subtext. The rows say what the stage draws over
+            the photo; the deck's eye hides the whole set at once. */}
+        <Text style={styles.sectionLabel}>Overlay</Text>
+        <View style={styles.card}>
+          <Text style={styles.explainer}>
+            What the review stage shows over a photo. The eye in the deck's header hides all of it
+            at once; these rows choose what is there when it is shown.
+          </Text>
+          {OVERLAY_ROWS.map((row) => (
+            <View key={row.row} style={styles.switchRow}>
+              <View style={styles.switchCopy}>
+                <Text style={styles.playbackRowTitle}>{row.title}</Text>
+                <Text style={styles.explainer}>{row.hint}</Text>
+              </View>
+              <Switch
+                value={overlay[row.row]}
+                onValueChange={(on) => toggleOverlay(row.row, on)}
+                trackColor={{ true: theme.accent, false: colors.surfaceRaised }}
+                thumbColor={colors.text}
+                accessibilityLabel={row.title}
+              />
+            </View>
+          ))}
+        </View>
+
         <Text style={styles.sectionLabel}>Appearance</Text>
         <View style={styles.card}>
           <Text style={styles.rowTitle}>Accent color</Text>
@@ -1029,6 +1138,8 @@ const styles = StyleSheet.create({
   dialogButtonText: { color: colors.textDim, fontSize: 15, fontWeight: '700' },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   playbackRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 10 },
+  switchRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 6 },
+  switchCopy: { flex: 1, gap: 2 },
   playbackRowTitle: { color: colors.text, fontSize: 15, fontWeight: '700', width: 118 },
   playbackControl: { flex: 1 },
   chip: {

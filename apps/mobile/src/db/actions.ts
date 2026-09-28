@@ -29,6 +29,9 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 import { withWriteTransaction } from './database';
 import { chunk, IN_CHUNK, type FavouriteState } from './store';
 import { sourceLikePattern, type SourceRoot } from '../lib/sources';
+import type { PhotoState } from '@afterglow/core';
+import { demoteForState, type WeightedActionSet } from '../lib/photoBadges';
+import { favouriteBadgeWeight, NO_FAVOURITE } from '../lib/favouriteState';
 
 /** The four pending actions. Order matches the tab bar. */
 export const ACTION_KINDS = ['edit', 'favourite', 'organize', 'share'] as const;
@@ -521,4 +524,40 @@ export async function getFavouriteActionStates(
     out.set(photoId, { state, target });
   }
   return out;
+}
+
+/** Hydrate a page's WEIGHTED action sets (m0.8.7; shared by the Progress
+ * grid and the queues since F35): two chunked reads for the whole page,
+ * demoted per photo verdict. A failed read logs and returns null — the
+ * page renders with verdict badges only, never with invented action
+ * data. */
+export async function hydrateActionWeights(
+  db: SQLiteDatabase,
+  photos: ReadonlyArray<{ id: string; state: PhotoState | null }>,
+): Promise<Map<string, WeightedActionSet> | null> {
+  if (photos.length === 0) return new Map();
+  try {
+    const ids = photos.map((p) => p.id);
+    const [badges, favourites] = await Promise.all([
+      getActionBadges(db, ids),
+      getFavouriteActionStates(db, ids),
+    ]);
+    const out = new Map<string, WeightedActionSet>();
+    for (const photo of photos) {
+      const entry = badges.get(photo.id) ?? {};
+      out.set(
+        photo.id,
+        demoteForState(photo.state, {
+          edit: entry.edit ?? null,
+          favourite: favouriteBadgeWeight(favourites.get(photo.id) ?? NO_FAVOURITE),
+          organize: entry.organize ?? null,
+          share: entry.share ?? null,
+        }),
+      );
+    }
+    return out;
+  } catch (error) {
+    console.warn('[badges] action hydration failed — badges omitted:', String(error));
+    return null;
+  }
 }

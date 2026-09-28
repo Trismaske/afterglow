@@ -27,7 +27,7 @@ import { resolveSources } from '../lib/sourceCatalog';
 import { ProgressView } from '../components/progress/ProgressView';
 import { useReview } from '../review/ReviewContext';
 import { StateDots } from '../components/DecisionBadge';
-import { isSdPhoto, photoBadges, type PhotoBadge } from '../lib/photoBadges';
+import { photoBadges, type PhotoBadge } from '../lib/photoBadges';
 import { UNIT_CARD_HEIGHT, UnitCard, cardThumbRows } from '../components/UnitCard';
 import {
   HostListContext,
@@ -110,9 +110,6 @@ export function DayProgressScreen({ route, navigation }: Props) {
         ...weights,
         state: member.state,
         edit: weights.edit ?? (member.needs_edit === 1 ? (trashed ? 'carried' : 'live') : null),
-        // The SD annotation (m0.8.7, F14); thumbnail-size cluster, so no
-        // folder pill here.
-        sdCard: isSdPhoto(member.asset_id),
       });
     },
     [actionWeights],

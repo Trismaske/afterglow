@@ -26,6 +26,8 @@ import { probeEditLaunch, type ProbeLaunchResult } from '../../modules/media-sto
 import { EditDiagnosticsSheet } from '../components/EditDiagnosticsSheet';
 import { QUEUE_REFRESH_FAILED, useQueueRows } from '../components/useQueueRows';
 import { QueueRemoveChip } from '../components/QueueRemoveChip';
+import { useQueueBadges } from '../components/useQueueBadges';
+import { StateDots } from '../components/DecisionBadge';
 import { showToast } from '../lib/toast';
 import { labelForDayKey } from '../lib/dates';
 import { formatClock } from '../lib/format';
@@ -194,6 +196,9 @@ export function EditQueueScreen({ navigation }: Props) {
 
   // The rows' thumbnails play their clips while on screen (phase 6).
   const listRows = useMemo(() => rows ?? [], [rows]);
+  const dotsFor = useQueueBadges(
+    useMemo(() => rows?.map((r) => ({ id: r.asset_id, state: r.photo_state })) ?? null, [rows]),
+  );
   const { cells, thumbRows } = useAnimatedList({
     rows: listRows,
     thumbOf: editThumb,
@@ -220,6 +225,7 @@ export function EditQueueScreen({ navigation }: Props) {
             cells={cells}
             style={styles.thumb}
           />
+          <StateDots {...dotsFor(item.asset_id)} size={11} style={styles.dots} />
         </Pressable>
         <View style={styles.rowBody}>
           <Text style={styles.rowTitle}>
@@ -256,7 +262,17 @@ export function EditQueueScreen({ navigation }: Props) {
         </View>
       </View>
     ),
-    [busyId, openEditor, openGallery, markDone, theme.accent, navigation, cells, thumbRows],
+    [
+      busyId,
+      openEditor,
+      openGallery,
+      markDone,
+      theme.accent,
+      navigation,
+      cells,
+      thumbRows,
+      dotsFor,
+    ],
   );
 
   return (
@@ -272,7 +288,11 @@ export function EditQueueScreen({ navigation }: Props) {
             : 'Loading…'
           : rows.length === 0
             ? 'Nothing queued to edit.'
-            : `${rows.length} queued · “Edit here” opens an editor that can save over the original; “View only” opens the photo read-only (use its own edit button to pick an editor)`}
+            : // A video's View only lists the video players: Samsung Gallery
+              // accepts no video from another app (F37, measured on the
+              // S23 2026-09-25 — it registers VIEW image/* only, and an
+              // explicit launch only brings its own task forward).
+              `${rows.length} queued · “Edit here” opens an editor that can save over the original; “View only” opens the photo read-only (use its own edit button to pick an editor)${rows.some((r) => r.kind === 'video') ? ' · Gallery opens no video from another app, so a video’s “View only” lists the video players' : ''}`}
       </Text>
       {rows !== null && rows.length > 0 ? (
         <View style={styles.chips}>
@@ -326,6 +346,7 @@ const styles = StyleSheet.create({
     padding: 10,
     gap: 12,
   },
+  dots: { position: 'absolute', right: 5, bottom: 5 },
   thumb: {
     width: 84,
     height: 84,

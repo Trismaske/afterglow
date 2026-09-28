@@ -32,6 +32,7 @@
  */
 import type { StoredMediaKind } from '../lib/mediaIdentity';
 import type { SQLiteDatabase } from 'expo-sqlite';
+import type { PhotoState } from '@afterglow/core';
 import { withWriteTransaction } from './database';
 import { leaveQueue, livePhotoClause, reachExists, sourceExists } from './actions';
 import type { SourceRoot } from '../lib/sources';
@@ -53,6 +54,8 @@ export interface ShareQueueRow {
   motion_offset: number | null;
   motion_length: number | null;
   motion_presentation_us: number | null;
+  /** The verdict, for the cell's inspection dots (F35). */
+  photo_state: PhotoState;
   taken_at: number;
   day: string | null;
   queued_at: number;
@@ -194,7 +197,7 @@ export async function getShareQueue(
   const reach = reachExists(mounted, 'q.photo_id');
   const src = sourceExists(roots, 'q.photo_id');
   return db.getAllAsync<ShareQueueRow>(
-    `SELECT q.photo_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, q.queued_at,
+    `SELECT q.photo_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.state AS photo_state, p.taken_at, p.day, q.queued_at,
        (SELECT COUNT(*) FROM share_batch_members m
           JOIN share_batches b ON b.id = m.batch_id
         WHERE m.photo_id = q.photo_id

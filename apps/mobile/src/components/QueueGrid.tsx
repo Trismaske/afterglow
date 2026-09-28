@@ -17,6 +17,8 @@ import { thumbBucketPx } from '../lib/thumbnailSize';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors } from '../theme';
+import { StateDots } from './DecisionBadge';
+import type { QueueDots } from './useQueueBadges';
 
 export function QueueGridCell({
   row,
@@ -26,6 +28,8 @@ export function QueueGridCell({
   accent,
   onPress,
   onLongPress,
+  dots,
+  dotsStyle,
   children,
 }: {
   /** The cell's thumbnail row, its list index and the list's animated
@@ -37,6 +41,12 @@ export function QueueGridCell({
   accent: string;
   onPress: () => void;
   onLongPress: () => void;
+  /** The cell's inspection dots (F35): the verdict and the actions. */
+  dots: QueueDots;
+  /** Where the dots sit when the caller's own badges take the bottom
+   * edge (the organize queue's album tag): a style over the default
+   * bottom-left anchor. */
+  dotsStyle?: StyleProp<ViewStyle>;
   /** Absolutely-positioned status badges (pass ✓, target, error). */
   children?: React.ReactNode;
 }) {
@@ -51,6 +61,12 @@ export function QueueGridCell({
         index={index}
         cells={cells}
         style={[styles.thumb, selected && { borderColor: accent }]}
+      />
+      <StateDots
+        effective={dots.effective}
+        badges={dots.badges}
+        // Lifted clear of the select check while selected (codex round 4).
+        style={[styles.dots, selected && styles.dotsLifted, dotsStyle]}
       />
       {children}
       {selected ? (
@@ -108,6 +124,9 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
   },
   selectBadge: { position: 'absolute', bottom: 4, right: 4 },
+  // Bottom-left: the select check owns the bottom-right corner.
+  dots: { position: 'absolute', left: 6, bottom: 6 },
+  dotsLifted: { bottom: 28 },
   chip: {
     paddingHorizontal: 12,
     paddingVertical: 7,

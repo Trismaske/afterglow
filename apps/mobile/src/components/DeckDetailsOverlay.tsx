@@ -23,14 +23,23 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSQLiteContext } from 'expo-sqlite';
 import { getPhotoFacts, type PhotoFacts } from '../db/store';
 import { isInShareQueue } from '../db/shareStore';
 import { decodeOrganizeTarget } from '../db/actions';
 import { classifyPhotoState } from '../lib/progress';
-import { plural } from '../lib/format';
+import { formatBytes, plural } from '../lib/format';
+import { animatedKindOf } from '../lib/animatedCells';
+import { isSdPhoto } from '../lib/photoBadges';
+import {
+  folderAnnotation,
+  formatDuration,
+  megapixelsOf,
+  resolutionClassOf,
+} from '../lib/stageMeta';
+import { DECISION_GLYPHS, KIND_CHIP_LABELS } from './DecisionBadge';
 import { VERDICT_META } from './progress/stateMeta';
 import { colors } from '../theme';
 
@@ -38,6 +47,67 @@ type FactLine = {
   icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
   text: string;
 };
+
+/** The FILE facts (m0.9 phase 7, F31 + F33): complete here whatever the
+ * Overlay rows show on the stage, every unknown NAMED (M17 — the stage
+ * omits, this surface says). */
+function buildFileLines(facts: PhotoFacts): FactLine[] {
+  const lines: FactLine[] = [];
+  const kind = animatedKindOf({
+    kind: facts.kind,
+    mimeType: facts.mime_type,
+    hasMotion: facts.motion_offset !== null && facts.motion_length !== null,
+  });
+  const kindWord =
+    kind === null ? 'Photo' : kind === 'motion' ? 'Motion photo' : KIND_CHIP_LABELS[kind];
+  lines.push({
+    icon: kind === null ? 'image-outline' : DECISION_GLYPHS[kind],
+    text: facts.display_name ? `${kindWord} · ${facts.display_name}` : `${kindWord} · name unknown`,
+  });
+  // Not READ YET is named apart from unknown: before the per-file read
+  // completes for this version, the columns may hold a former
+  // version's values (codex round 5).
+  const read = Number(facts.facts_complete) === 1;
+  const sized =
+    read && facts.width !== null && facts.height !== null && facts.width > 0 && facts.height > 0;
+  lines.push({
+    icon: 'aspect-ratio',
+    text: sized
+      ? `${facts.width} × ${facts.height} pixels · ${
+          kind === 'video'
+            ? resolutionClassOf(facts.width as number, facts.height as number)
+            : megapixelsOf(facts.width as number, facts.height as number)
+        }`
+      : read
+        ? 'Size in pixels unknown'
+        : 'Size in pixels not read yet',
+  });
+  if (kind === 'video' || kind === 'motion')
+    lines.push({
+      icon: 'timer-outline',
+      text:
+        read && facts.duration_ms !== null && facts.duration_ms > 0
+          ? `${kind === 'motion' ? 'Clip runs' : 'Runs'} ${formatDuration(facts.duration_ms)}`
+          : read
+            ? 'Duration unknown'
+            : 'Duration not read yet',
+    });
+  lines.push({
+    icon: 'file-outline',
+    text:
+      facts.size_bytes !== null && facts.size_bytes > 0
+        ? formatBytes(facts.size_bytes)
+        : 'File size unknown',
+  });
+  const sd = isSdPhoto(facts.asset_id);
+  const folder = folderAnnotation(facts.uri, sd);
+  const where =
+    folder === null && !sd
+      ? 'In the camera roll'
+      : `In ${folder ?? 'the camera roll'}${sd ? ', on the SD card' : ''}`;
+  lines.push({ icon: sd ? 'micro-sd' : 'folder-outline', text: where });
+  return lines;
+}
 
 /** The retired viewer's fact-sentence builder, verbatim. */
 function buildFactLines(facts: PhotoFacts, shareQueued: boolean): FactLine[] {
@@ -174,7 +244,7 @@ export function DeckDetailsOverlay({
   }, [db, open, photoId, tick]);
 
   const meta = facts ? VERDICT_META[classifyPhotoState({ state: facts.state })] : null;
-  const lines = facts ? buildFactLines(facts, shareQueued) : [];
+  const lines = facts ? [...buildFileLines(facts), ...buildFactLines(facts, shareQueued)] : [];
   return (
     <View
       style={[StyleSheet.absoluteFill, styles.root, { opacity: open ? 1 : 0 }]}
@@ -182,37 +252,44 @@ export function DeckDetailsOverlay({
     >
       {open && (
         <Pressable style={styles.sheet} onPress={onClose} accessibilityLabel="Close photo details">
-          <Text style={styles.header}>{header}</Text>
-          {meta && facts && (
-            <View style={styles.stateRow}>
-              <View style={[styles.swatch, { backgroundColor: meta.color }]} />
-              <Text style={styles.stateText}>{meta.label}</Text>
-            </View>
-          )}
-          {lines.map((line) => (
-            <View key={line.icon + line.text} style={styles.line}>
-              <MaterialCommunityIcons name={line.icon} size={16} color={colors.textDim} />
-              <Text style={[styles.lineText, (stale || failed) && styles.staleText]}>
-                {line.text}
+          {/* Scrolls when the lines outgrow the stage (the file facts
+              plus an action-rich history on the floor phone — codex
+              round 3): a tap still closes, a drag reads on. */}
+          <ScrollView style={styles.scroll} contentContainerStyle={styles.lines}>
+            <Text style={styles.header}>{header}</Text>
+            {meta && facts && (
+              <View style={styles.stateRow}>
+                <View style={[styles.swatch, { backgroundColor: meta.color }]} />
+                <Text style={styles.stateText}>{meta.label}</Text>
+              </View>
+            )}
+            {lines.map((line) => (
+              <View key={line.icon + line.text} style={styles.line}>
+                <MaterialCommunityIcons name={line.icon} size={16} color={colors.textDim} />
+                <Text style={[styles.lineText, (stale || failed) && styles.staleText]}>
+                  {line.text}
+                </Text>
+              </View>
+            ))}
+            {facts !== undefined &&
+              facts !== null &&
+              buildFactLines(facts, shareQueued).length === 0 && (
+                <Text style={styles.quietText}>No queued or carried actions.</Text>
+              )}
+            {facts === null && (
+              <Text style={styles.quietText}>
+                Not analyzed yet — it enters review when the scan reaches it.
               </Text>
-            </View>
-          ))}
-          {facts !== undefined && facts !== null && lines.length === 0 && (
-            <Text style={styles.quietText}>No queued or carried actions.</Text>
-          )}
-          {facts === null && (
-            <Text style={styles.quietText}>
-              Not analyzed yet — it enters review when the scan reaches it.
-            </Text>
-          )}
-          {facts === undefined && !failed && <Text style={styles.quietText}>Loading…</Text>}
-          {failed && (
-            <Pressable onPress={() => setTick((t) => t + 1)} hitSlop={8}>
-              <Text style={styles.retryText}>
-                Could not read this photo's details just now — tap to retry.
-              </Text>
-            </Pressable>
-          )}
+            )}
+            {facts === undefined && !failed && <Text style={styles.quietText}>Loading…</Text>}
+            {failed && (
+              <Pressable onPress={() => setTick((t) => t + 1)} hitSlop={8}>
+                <Text style={styles.retryText}>
+                  Could not read this photo's details just now — tap to retry.
+                </Text>
+              </Pressable>
+            )}
+          </ScrollView>
         </Pressable>
       )}
     </View>
@@ -229,6 +306,8 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     paddingBottom: 24,
   },
+  scroll: { flexGrow: 0 },
+  lines: { gap: 8 },
   header: { color: colors.text, fontSize: 15, fontWeight: '700' },
   stateRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   swatch: { width: 12, height: 12, borderRadius: 4 },

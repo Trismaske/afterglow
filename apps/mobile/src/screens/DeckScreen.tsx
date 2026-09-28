@@ -76,10 +76,15 @@ import {
   DECISION_GLYPHS,
   StateDots,
   useBadgesHidden,
+  isKindChip,
 } from '../components/DecisionBadge';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { isFavouriteSelected } from '../lib/favouriteState';
-import { folderNameOfUri, isSdPhoto, photoBadges, type PhotoBadge } from '../lib/photoBadges';
+import { isSdPhoto, photoBadges, type PhotoBadge } from '../lib/photoBadges';
+import { folderAnnotation, stageMetaLines } from '../lib/stageMeta';
+import { animatedKindOf } from '../lib/animatedCells';
+import { useOverlayPrefs } from '../components/useOverlayPrefs';
+import { getStageFacts, type StageFactsRow } from '../db/store';
 import { badgesHidden, setBadgesHidden, subscribeBadgesHidden } from '../lib/badgePrefs';
 import { useSQLiteContext } from 'expo-sqlite';
 import { addToShareQueue, removeFromShareQueue } from '../db/shareStore';
@@ -370,10 +375,10 @@ export function DeckScreen({ navigation, route }: DeckProps) {
   }, [paramKey, route.params]);
 
   // Per-unit title: one route now serves both kinds, so the screen names
-  // itself rather than the navigator naming it once. The header's eye is
-  // the badge-visibility control (m0.8.7, F19/L6): one durable setting,
-  // flipping every badge surface at once through the badgePrefs
-  // observable.
+  // itself rather than the navigator naming it once. The header's eye
+  // MUTES the stage's whole overlay set (lib/badgePrefs, M20): one
+  // durable setting through the badgePrefs observable; the Overlay rows
+  // in Settings say what the set contains.
   const db = useSQLiteContext();
   const [hideBadges, setHideBadges] = useState(badgesHidden);
   useEffect(() => subscribeBadgesHidden(setHideBadges), []);
@@ -388,7 +393,7 @@ export function DeckScreen({ navigation, route }: DeckProps) {
         <Pressable
           onPress={() => void setBadgesHidden(db, !badgesHidden())}
           hitSlop={12}
-          accessibilityLabel={hideBadges ? 'Show photo badges' : 'Hide photo badges'}
+          accessibilityLabel={hideBadges ? 'Show photo overlay' : 'Hide photo overlay'}
         >
           <MaterialCommunityIcons
             name={hideBadges ? 'eye-off-outline' : 'eye-outline'}
@@ -411,6 +416,16 @@ export function DeckScreen({ navigation, route }: DeckProps) {
  * (needsEdit, favouriteStatus, queuedFor, actionWeights) stay live —
  * they are stable id-keyed maps, valid for frozen ids too.
  */
+/** The verdict controls' settle after a unit goes live (F40): longer
+ * than the pager's, since a tap cadence of two or three a second lands a
+ * stray tap later than a swipe would. */
+const DECISION_SETTLE_MS = 600;
+
+/** The stage-facts retry: a few seconds apart, a handful of times per
+ * key (an item the scan reaches later settles on one of them). */
+const STAGE_FACTS_RETRY_MS = 3000;
+const STAGE_FACTS_RETRIES = 5;
+
 interface DeckView {
   /** The unit this view belongs to — it KEYS the pager, so a unit
    * change remounts the native list. That is the structural fix for
@@ -528,6 +543,8 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   /** The F19 eye, as the stage sees it: everything on the stage goes. */
   const stageHidden = useBadgesHidden();
+  /** The Overlay rows (phase 7): which items the stage draws. */
+  const overlay = useOverlayPrefs();
   /** P2-7: fullscreen immersive — a single stage tap collapses every
    * sibling chrome row IN PLACE (flex reflow; contain-fit grows the
    * photo into the freed, edge-to-edge black screen; the dip-to-black
@@ -1013,6 +1030,74 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * the cursor value itself does not change. */
   const [cursorAppliedFor, setCursorAppliedFor] = useState<string | null>(null);
   const cursor = Math.min(browseCursor, Math.max(0, deckItems.length - 1));
+  /** The STAGE FACTS (phase 7, lib/stageMeta): what the corner and the
+   * kind chip say of the current item — read for the current page and
+   * its neighbours and cached by id AND version for the deck's life
+   * (an in-place edit changes the bytes and the facts with them), so a
+   * swipe finds its lines ready. A row is kept for good only when it is
+   * the SAME version the stage shows and its per-file read is complete;
+   * a missing row, a failed read, a newer version (a scan's in-place
+   * edit landing between the list read and this one) or an incomplete
+   * read is asked again at the next cursor move (codex rounds 1–2) —
+   * and an id the deck knows as untracked is not asked at all. */
+  const stageFactsRef = useRef(new Map<string, { row: StageFactsRow; settled: boolean }>());
+  const [stageFactsTick, setStageFactsTick] = useState(0);
+  /** A read that leaves a wanted key unsettled (missing, a newer
+   * version, an incomplete per-file read, a failure) is asked again a
+   * few seconds later, a bounded number of times per key — a one-item
+   * deck has no cursor move to ask through (codex round 4). */
+  const factsAttempts = useRef(new Map<string, number>());
+  const [factsRetry, setFactsRetry] = useState(0);
+  const factsKeyOf = (item: DeckItem) => `${item.id}:${item.version}`;
+  const wantedKey = [cursor - 1, cursor, cursor + 1]
+    .map((i) => deckItems[i])
+    .filter(
+      (item): item is DeckItem =>
+        item !== undefined &&
+        !untrackedIds.has(item.id) &&
+        stageFactsRef.current.get(factsKeyOf(item))?.settled !== true,
+    )
+    .map(factsKeyOf)
+    .join(',');
+  useEffect(() => {
+    if (wantedKey === '') return;
+    const keys = wantedKey.split(',');
+    const idOf = (key: string) => key.slice(0, key.lastIndexOf(':'));
+    let cancelled = false;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    const scheduleRetry = () => {
+      const unsettled = keys.filter((key) => {
+        if (stageFactsRef.current.get(key)?.settled === true) return false;
+        const attempts = factsAttempts.current.get(key) ?? 0;
+        factsAttempts.current.set(key, attempts + 1);
+        return attempts < STAGE_FACTS_RETRIES;
+      });
+      if (unsettled.length > 0)
+        retry = setTimeout(() => setFactsRetry((r) => r + 1), STAGE_FACTS_RETRY_MS);
+    };
+    void getStageFacts(db, keys.map(idOf)).then(
+      (rows) => {
+        if (cancelled) return;
+        for (const key of keys) {
+          const row = rows.get(idOf(key));
+          if (row === undefined) continue;
+          const version = Number(key.slice(key.lastIndexOf(':') + 1));
+          if (Number(row.image_version) !== version) continue;
+          stageFactsRef.current.set(key, { row, settled: Number(row.complete) === 1 });
+        }
+        setStageFactsTick((t) => t + 1);
+        scheduleRetry();
+      },
+      (error) => {
+        console.warn('[deck] stage facts read failed:', String(error));
+        if (!cancelled) scheduleRetry();
+      },
+    );
+    return () => {
+      cancelled = true;
+      if (retry !== null) clearTimeout(retry);
+    };
+  }, [db, wantedKey, cursor, factsRetry]);
   // Capture the CURRENT photo's row while the list still carries it —
   // the copy the pin above renders after the row leaves. Computed from
   // the cursor, NOT read from listAnchorRef: this effect runs before
@@ -1056,6 +1141,14 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * with its scroll disabled; the timer below only lifts it. 400 ms sits
    * under human see-then-react time, so a deliberate swipe on the new
    * unit still feels instant.
+   *
+   * A LONGER window of the same shape holds the VERDICT controls inert
+   * (F40, the tester's S23 recording 2026-09-25): culling a group at a
+   * tap a second, the tap after the one that finished the group landed
+   * on the next group's first photo. DECISION_SETTLE_MS from the moment
+   * the new unit is LIVE, not from when its rows begin loading (codex):
+   * a load longer than the window would otherwise spend it before the
+   * controls exist.
    */
   const [settledUnit, setSettledUnit] = useState<string | null>(null);
   useEffect(() => {
@@ -1064,6 +1157,25 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     return () => clearTimeout(timer);
   }, [holding, settledUnit, unitKey]);
   const pagerSettling = !holding && settledUnit !== unitKey;
+  const [decidedUnit, setDecidedUnit] = useState<string | null>(null);
+  /** The last unit that went live: only a SWAP from one live unit to
+   * another has an outgoing tap to absorb — a cold open and a list deck
+   * decide at once (codex). The settle holds the controls that DECIDE
+   * or ADVANCE a unit (Keep, Cull, Not related, Keep remaining); the
+   * action chips write the action layer and stay live (codex). */
+  const liveUnitRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (holding || decidedUnit === unitKey) return;
+    const swapped = liveUnitRef.current !== null && liveUnitRef.current !== unitKey;
+    liveUnitRef.current = unitKey;
+    if (!swapped || listMode) {
+      setDecidedUnit(unitKey);
+      return;
+    }
+    const timer = setTimeout(() => setDecidedUnit(unitKey), DECISION_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [holding, decidedUnit, unitKey, listMode]);
+  const settling = !holding && decidedUnit !== unitKey;
   const pagerSettlingRef = useRef(pagerSettling);
   pagerSettlingRef.current = pagerSettling;
   const holdingRef = useRef(holding);
@@ -1774,7 +1886,18 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       // dying list (native → JS latency outlives the unmount; caught on
       // the S10e as a strip highlight pointing one photo ahead).
       if (holding || pagerSettling) return;
-      const index = Math.round(event.nativeEvent.contentOffset.x / pageW);
+      const offset = event.nativeEvent.contentOffset.x;
+      // A SUPERSEDED jump's arrival is stale (F40's within-unit half,
+      // the tester's S23 recording 2026-09-25): culling at a tap every
+      // 250 ms, the second cull's jump is commanded while the first
+      // jump still animates, and the first jump's momentum end then
+      // arrived here and snapped the cursor BACK onto the photo just
+      // culled — whose next tap read as the undo of the same verdict,
+      // leaving it unreviewed and the deck jumping about. While a
+      // commanded jump is in flight, only its own arrival moves the
+      // cursor (onPagerScroll's rule).
+      if (pagerAnimatingRef.current && Math.abs(offset - pagerTargetRef.current) >= 1) return;
+      const index = Math.round(offset / pageW);
       // The ref mirrors where the list PHYSICALLY is, swipes included —
       // it held only COMMANDED offsets, so a manual swipe before a
       // finish left it stale, the alignment effect then skipped its
@@ -2254,23 +2377,65 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   const cornerLabel = `${labelForDayKey(view.dayOf.get(view.current.id) ?? UNDATED_DAY_KEY)} · ${formatClockPrecise(
     view.current.timestamp,
     view.needMs[view.cursor] ?? false,
-  )}${currentUntracked ? ' · Not analyzed yet' : ''}`;
+  )}`;
+  // An incomplete row lends its KIND (known from the scan's own columns)
+  // and none of its file facts, which may be a former version's (codex
+  // round 5).
+  const currentEntry = stageFactsRef.current.get(factsKeyOf(view.current)) ?? null;
+  const currentFacts = currentEntry?.row ?? null;
+  const currentFactsSettled = currentEntry?.settled === true;
+  const currentKind =
+    currentFacts === null
+      ? null
+      : animatedKindOf({
+          kind: currentFacts.kind,
+          mimeType: currentFacts.mime_type,
+          hasMotion: currentFacts.motion_offset !== null && currentFacts.motion_length !== null,
+        });
+  const currentSd = isSdPhoto(view.current.id);
+  const cornerLines = stageMetaLines(
+    {
+      when: cornerLabel,
+      folder: folderAnnotation(view.current.uri, currentSd),
+      sdCard: currentSd,
+      kind: currentKind,
+      facts:
+        currentFacts === null || !currentFactsSettled
+          ? null
+          : {
+              displayName: currentFacts.display_name,
+              width: currentFacts.width,
+              height: currentFacts.height,
+              durationMs: currentFacts.duration_ms,
+            },
+    },
+    overlay,
+  );
+  // The untracked note is no fact the rows govern: it explains the
+  // disabled controls, so it stays whatever Date & time says (codex
+  // round 4).
+  if (currentUntracked) cornerLines.push('Not analyzed yet');
+  void stageFactsTick;
+  /** With every row off (or a bare photo whose facts are not yet read),
+   * the corner and the cluster are both empty — the details overlay
+   * still needs an opener, so the corner shows an info glyph alone
+   * (codex round 5). Computed once the cluster's badges are known. */
   /** Every badge a deck photo wears — the verdict AND all four actions,
    * none hiding another (m0.8.1 round 4), each at its own weight: loud
    * while it waits for you, quiet once the photo carries it (m0.8.2).
    * The verdict rides into actionWeights so a staged cull's retained
-   * actions badge quiet — they left the queues with it. */
+   * actions badge quiet — they left the queues with it. The CURRENT
+   * item adds its kind chip when the Overlay row allows (phase 7): the
+   * strip's inspection dots drop it, and the stage cluster below applies
+   * the Status badges row — the dots are wayfinding and stay. */
   const badgesFor = (item: DeckItem): PhotoBadge[] => {
     const state = view.stateOf.get(item.id) ?? 'unreviewed';
-    return photoBadges({
-      state,
-      ...actionWeights(item.id, state),
-      // The annotation badges (m0.8.7): the folder pill renders only at
-      // the stage cluster's size; the SD glyph everywhere.
-      folder: folderNameOfUri(item.uri),
-      sdCard: isSdPhoto(item.id),
-    });
+    const chipped = item.id === view.current.id && overlay.kindChips ? currentKind : null;
+    return photoBadges({ state, ...actionWeights(item.id, state), kind: chipped });
   };
+  const stageBadges = badgesFor(view.current).filter(
+    (b) => overlay.statusBadges || isKindChip(b.kind),
+  );
 
   // Re-decide: tapping the ACTIVE verdict clears back to unreviewed; a
   // A DECIDED photo changing to keep/to-edit takes the state-aware path:
@@ -2318,7 +2483,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * at that one). Unreachable while `inert`: every control that calls
    * it is disabled on a frozen view. */
   const decideCurrent = async (target: RedecideTarget) => {
-    if (inert || current === null) return;
+    if (inert || settling || current === null) return;
     const index = cursor;
     // Advance iff the VERDICT changed to a different decided verdict, or
     // was fresh (m0.8.6 N1, one predicate): unreviewed → decided and
@@ -2412,39 +2577,62 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 until the eye reopens. */}
             {!stageHidden && !scrubbing && (
               <>
-                <View style={styles.posBadge} pointerEvents="none">
-                  <Text style={styles.posBadgeText}>
-                    {view.cursor + 1}/{view.keepCount}
-                  </Text>
-                </View>
+                {overlay.position && (
+                  <View style={styles.posBadge} pointerEvents="none">
+                    <Text style={styles.posBadgeText}>
+                      {view.cursor + 1}/{view.keepCount}
+                    </Text>
+                  </View>
+                )}
                 {/* P2-6: the corner is the GLANCE; tapping it (or the
                     badge cluster) opens the details overlay with the
                     complete truth. Day AND time (F17): rendered from
-                    `day`, NEVER from taken_at. */}
-                <Pressable
-                  style={styles.timeBadge}
-                  onPress={() => setDetailsOpen(true)}
-                  accessibilityLabel="Show photo details"
-                >
-                  <Text style={styles.timeBadgeText}>{cornerLabel}</Text>
-                </Pressable>
-                <Pressable
-                  // The pill wraps its badges upward before the buttons'
-                  // end of the row (a full badge set on a narrow stage).
-                  style={[
-                    styles.flagBadge,
-                    {
-                      maxWidth: Math.max(
-                        0,
-                        pageW - 2 * gutter - FLAG_BADGE_LEFT - STAGE_BOTTOM_ROW_BUTTONS,
-                      ),
-                    },
-                  ]}
-                  onPress={() => setDetailsOpen(true)}
-                  accessibilityLabel="Show photo details"
-                >
-                  <BadgeCluster badges={badgesFor(view.current)} size={24} />
-                </Pressable>
+                    `day`, NEVER from taken_at. Phase 7: lines by kind of
+                    fact (when / where / what) under the Overlay rows;
+                    with nothing on, the corner goes and the cluster is
+                    the overlay's opener. */}
+                {(cornerLines.length > 0 || stageBadges.length === 0) && (
+                  <Pressable
+                    style={styles.timeBadge}
+                    onPress={() => setDetailsOpen(true)}
+                    accessibilityLabel="Show photo details"
+                  >
+                    {cornerLines.length > 0 ? (
+                      cornerLines.map((line, i) => (
+                        <Text key={i} style={styles.timeBadgeText}>
+                          {line}
+                        </Text>
+                      ))
+                    ) : (
+                      <MaterialCommunityIcons
+                        name="information-outline"
+                        size={16}
+                        color={colors.text}
+                      />
+                    )}
+                  </Pressable>
+                )}
+                {stageBadges.length > 0 && (
+                  <Pressable
+                    // The pill wraps its badges upward before the buttons'
+                    // end of the row (a full badge set on a narrow stage).
+                    // Only with something to show: an empty pill's backdrop
+                    // is a mark of its own (codex round 1).
+                    style={[
+                      styles.flagBadge,
+                      {
+                        maxWidth: Math.max(
+                          0,
+                          pageW - 2 * gutter - FLAG_BADGE_LEFT - STAGE_BOTTOM_ROW_BUTTONS,
+                        ),
+                      },
+                    ]}
+                    onPress={() => setDetailsOpen(true)}
+                    accessibilityLabel="Show photo details"
+                  >
+                    <BadgeCluster badges={stageBadges} size={24} />
+                  </Pressable>
+                )}
               </>
             )}
             <DeckDetailsOverlay
@@ -2623,7 +2811,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 // 2026-08-28; untracked caught the same way, 2026-09-01).
                 currentUntracked && styles.middleButtonDead,
               ]}
-              disabled={busy || inert || currentUntracked}
+              disabled={busy || inert || settling || currentUntracked}
               // `redecide` (inside decideCurrent) carries the whole rule
               // set: the active verdict clears back to unreviewed, a
               // staged cull re-decided to Keep takes the state-aware
@@ -2680,9 +2868,13 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               disabled={
                 busy ||
                 inert ||
+                settling ||
                 (view.isGroup ? view.browseControls : notRelatedCount === 0 || currentUntracked)
               }
               onPress={() => {
+                // An ejection can dissolve the group and advance the deck
+                // like a verdict does, so it holds through the settle too.
+                if (settling) return;
                 if (view.isGroup) {
                   if (group) void run(() => makeSingle(current.id, group.groupId));
                   return;
@@ -2711,7 +2903,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 currentState === 'culled' && { borderWidth: 2, borderColor: colors.cull },
                 currentUntracked && styles.middleButtonDead,
               ]}
-              disabled={busy || inert || currentUntracked}
+              disabled={busy || inert || settling || currentUntracked}
               onPress={() => void run(() => decideCurrent('cull'))}
             >
               <MaterialCommunityIcons name="close" size={21} color={colors.cull} />
@@ -2786,16 +2978,21 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
           // state — an empty remainder, an inert frozen deck — and the
           // button's OWN write (`finishing`), so a chip or verdict write
           // elsewhere no longer flickers it.
-          disabled={busy || inert || view.finishCount === 0}
+          disabled={busy || inert || settling || view.finishCount === 0}
           dimmed={inert || view.finishCount === 0 || finishing}
           // F28: the deck's finish cedes 64→56 for stage space; every
           // other BigButton keeps `touch.action`.
           style={{ minHeight: FINISH_MIN_HEIGHT }}
-          onPress={() =>
-            singlesMode
-              ? day && void run(() => keepAllSingles(day, range ?? null).then(() => {}), 'finish')
-              : finishGroup()
-          }
+          onPress={() => {
+            // Fenced in the handler too (codex): a press acquired on the
+            // outgoing unit can release after the successor is live.
+            if (settling) return;
+            if (singlesMode) {
+              if (day) void run(() => keepAllSingles(day, range ?? null).then(() => {}), 'finish');
+              return;
+            }
+            finishGroup();
+          }}
         />
       )}
 

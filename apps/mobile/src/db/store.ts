@@ -171,6 +171,22 @@ export async function getSetting(db: SQLiteDatabase, key: string): Promise<strin
   return row?.value ?? null;
 }
 
+/** Read several settings in one query: key → value for the rows that
+ * exist; an unset key is simply absent (the parser's default applies). */
+export async function getSettings(
+  db: SQLiteDatabase,
+  keys: readonly string[],
+): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  if (keys.length === 0) return out;
+  const rows = await db.getAllAsync<{ key: string; value: string }>(
+    `SELECT key, value FROM settings WHERE key IN (${keys.map(() => '?').join(',')})`,
+    ...keys,
+  );
+  for (const row of rows) out.set(row.key, row.value);
+  return out;
+}
+
 /** Upsert one settings value. */
 export async function setSetting(db: SQLiteDatabase, key: string, value: string): Promise<void> {
   await db.runAsync(
@@ -1480,6 +1496,24 @@ export async function listGroupsForDay(
 export interface PhotoFacts {
   asset_id: string;
   uri: string;
+  image_version: number;
+  kind: StoredMediaKind;
+  mime_type: string | null;
+  motion_offset: number | null;
+  motion_length: number | null;
+  motion_presentation_us: number | null;
+  /** The FILE facts (v24; m0.9 phase 7's details overlay names every
+   * unknown, M17): the display name, the display-space size, the
+   * duration of a video or a motion clip, the byte size. */
+  display_name: string | null;
+  width: number | null;
+  height: number | null;
+  duration_ms: number | null;
+  size_bytes: number | null;
+  /** 1 when the bounded per-file read completed for THIS version: the
+   * size and duration above are this file's; 0 = not read yet (they may
+   * be a former version's, and the details overlay says so). */
+  facts_complete: number;
   taken_at: number;
   /** Capture day; NULL = honestly undated (m0.8.6 change 5) — the
    * viewer and editor render "Unknown day", never the mtime fallback. */
@@ -1530,7 +1564,10 @@ export async function getPhotoFacts(
   assetId: string,
 ): Promise<PhotoFacts | null> {
   return db.getFirstAsync<PhotoFacts>(
-    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, p.reviewed_at,
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.display_name, p.width, p.height, p.duration_ms, p.size_bytes,
+            (p.facts_checked_version IS NOT NULL
+              AND p.facts_checked_version = COALESCE(p.file_generation, p.file_mtime)) AS facts_complete,
+            p.taken_at, p.day, p.state, p.reviewed_at,
             (EXISTS (SELECT 1 FROM photo_actions e WHERE e.photo_id = p.asset_id
                       AND e.kind = 'edit' AND e.state IN ('queued', 'error'))) AS needs_edit,
             (SELECT CAST(f.target AS INTEGER) FROM photo_actions f
@@ -1561,6 +1598,48 @@ export async function getPhotoFacts(
      WHERE p.asset_id = ?`,
     assetId,
   );
+}
+
+/** What the deck STAGE draws in its metadata corner (m0.9 phase 7,
+ * lib/stageMeta): the file facts plus what the item is. Read for the
+ * current page and its neighbours, keyed by id — an untracked id has no
+ * row and is simply absent. */
+export interface StageFactsRow {
+  asset_id: string;
+  /** The row's content version, for the deck's fence: facts are cached
+   * under the version the stage shows, never a newer scan's. */
+  image_version: number;
+  /** The bounded per-file read's completion (facts_checked_version):
+   * true when it completed for THIS version — an incomplete row's facts
+   * may still fill on a later scan pass and are not cached. */
+  complete: number;
+  kind: StoredMediaKind;
+  mime_type: string | null;
+  motion_offset: number | null;
+  motion_length: number | null;
+  display_name: string | null;
+  width: number | null;
+  height: number | null;
+  duration_ms: number | null;
+}
+
+export async function getStageFacts(
+  db: SQLiteDatabase,
+  assetIds: readonly string[],
+): Promise<Map<string, StageFactsRow>> {
+  const out = new Map<string, StageFactsRow>();
+  if (assetIds.length === 0) return out;
+  const rows = await db.getAllAsync<StageFactsRow>(
+    `SELECT asset_id, COALESCE(file_generation, file_mtime) AS image_version,
+            (facts_checked_version IS NOT NULL
+              AND facts_checked_version = COALESCE(file_generation, file_mtime)) AS complete,
+            kind, mime_type, motion_video_offset AS motion_offset,
+            motion_video_length AS motion_length, display_name, width, height, duration_ms
+       FROM photos WHERE asset_id IN (${assetIds.map(() => '?').join(',')})`,
+    ...assetIds,
+  );
+  for (const row of rows) out.set(row.asset_id, row);
+  return out;
 }
 
 /**
@@ -2551,6 +2630,8 @@ export async function getPhotoQueueFacts(
       kind: StoredMediaKind;
       mimeType: string | null;
       motion: MotionClipRow | null;
+      /** The verdict, for the row's inspection dots (F35). */
+      state: PhotoState;
     }
   >
 > {
@@ -2564,6 +2645,7 @@ export async function getPhotoQueueFacts(
       kind: StoredMediaKind;
       mimeType: string | null;
       motion: MotionClipRow | null;
+      state: PhotoState;
     }
   >();
   for (const ids of chunk(assetIds, IN_CHUNK)) {
@@ -2582,8 +2664,9 @@ export async function getPhotoQueueFacts(
       motion_presentation_us: number | null;
       taken_at: number;
       day: string | null;
+      photo_state: PhotoState;
     }>(
-      `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind, mime_type, motion_video_offset AS motion_offset, motion_video_length AS motion_length, motion_presentation_us AS motion_presentation_us, taken_at, day FROM photos WHERE asset_id IN (${placeholders})`,
+      `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind, mime_type, motion_video_offset AS motion_offset, motion_video_length AS motion_length, motion_presentation_us AS motion_presentation_us, taken_at, day, state AS photo_state FROM photos WHERE asset_id IN (${placeholders})`,
       ...ids,
     );
     for (const row of rows) {
@@ -2595,6 +2678,7 @@ export async function getPhotoQueueFacts(
         kind: row.kind,
         mimeType: row.mime_type,
         motion: motionClipOf(row),
+        state: row.photo_state,
       });
     }
   }
@@ -2684,6 +2768,8 @@ export interface ToEditRow {
   motion_offset: number | null;
   motion_length: number | null;
   motion_presentation_us: number | null;
+  /** The verdict, for the row's inspection dots (F35). */
+  photo_state: PhotoState;
   taken_at: number;
   day: string | null;
 }
@@ -2705,7 +2791,7 @@ export async function getToEditPhotos(
   const reach = reachClause(mounted, 'p.volume_name');
   const src = sourceClause(roots, 'p.uri');
   return db.getAllAsync<ToEditRow>(
-    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day FROM photos p
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.state AS photo_state, p.taken_at, p.day FROM photos p
        JOIN photo_actions pa ON pa.photo_id = p.asset_id
       WHERE pa.kind = 'edit' AND pa.state IN ('queued', 'error')
         AND ${livePhotoClause('p.asset_id', 'edit')}${reach.sql}${src.sql}

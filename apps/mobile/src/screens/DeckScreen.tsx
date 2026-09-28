@@ -2931,9 +2931,12 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               dimmed={currentUntracked}
               onPress={() =>
                 void run(() =>
-                  !view.listMode && view.browseControls && currentState !== 'culled'
-                    ? decideCurrent('to_edit')
-                    : toggleNeedsEdit(current.id),
+                  // A FLAGGED photo un-flags, whatever its verdict (the
+                  // tester, 2026-09-28: on a kept photo the chip re-ran
+                  // the to_edit cycle instead of clearing the edit).
+                  flagged || view.listMode || !view.browseControls || currentState === 'culled'
+                    ? toggleNeedsEdit(current.id)
+                    : decideCurrent('to_edit'),
                 )
               }
             />
@@ -3180,13 +3183,8 @@ const styles = StyleSheet.create({
   middleText: { color: colors.textDim, fontSize: 12, fontWeight: '700' },
   actionTextDisabled: { color: colors.textDim },
   secondaryRow: { flexDirection: 'row', gap: 10 },
-  thumbBadges: {
-    position: 'absolute',
-    right: 3,
-    bottom: 3,
-    // Bounded by the thumbnail so the cluster wraps inside it.
-    maxWidth: THUMB - 6,
-  },
+  // Bounded by the thumbnail so the dots wrap inside it.
+  thumbBadges: { position: 'absolute', left: 3, right: 3, bottom: 3 },
   // Bottom sheet, matching every other modal (the Organize screen's
   // album picker, the share label prompt) — the deck's pickers were the
   // app's only centered modal cards (m0.8.1 consistency sweep).

@@ -186,8 +186,9 @@ The tester judges it at phase 7's pass.
 
 **Reported (2026-09-25):** "View only" on a video never lists Samsung Gallery.
 **Read (measured on the S23, 2026-09-25, `cmd package query-activities`):** for `VIEW video/mp4` Android lists Google Photos, MiXplorer and Samsung Video Player; for `EDIT video/mp4` Google Photos alone. Samsung Gallery registers for neither — it registers `VIEW image/*` only, which is the routing the plan's device-pass item 4 records.
-**Probed (S23, 2026-09-25):** an explicit launch of Gallery by component with a video's content URI only brings Gallery's own task forward, on whatever screen it last showed — it takes no video from another app.
-**Fix (landed 2026-09-25, phase 7):** the edit queue's subtitle says so whenever a video is queued ("Gallery opens no video from another app, so a video's View only lists the video players"); the buttons are unchanged, since "Edit here" reaches Google Photos' video editor and "View only" the video players.
+**Probed (S23 2026-09-25, S10e 2026-09-28):** Gallery's main activity only brings its task forward; its EXTERNAL viewer (`com.samsung.android.gallery.app.activity.external.GalleryExternalActivity`) declares a VIEW filter for `content` video without the DEFAULT category — invisible to every chooser, reachable by name — and opens the clip in Gallery's own player with its edit and favourite controls.
+**Fix (landed 2026-09-28, phase 7):** a video's "View only" launches that viewer by name first and falls back to the ordinary chooser where Gallery is absent; the subtitle is short again (the explanatory sentence tried on 2026-09-25 was too long, Tristan).
+Verified on the S10e: the queue's "View only" on the seeded clip resumed Gallery's external viewer.
 
 ### F38 · The seek track lifts and narrows when the chrome shows
 
@@ -206,6 +207,23 @@ The tester judges it at phase 7's pass.
 **Reported (2026-09-25, recording `Screen_Recording_20260925_214553_Afterglow.mp4`):** tapping Cull as fast as possible through a group of ten "breaks things"; three tries to reproduce.
 **Read (the recording, frame by frame; reproduced on the S10e with a scripted tap every 250 ms on a seeded 24-shot group):** two faults. Within the unit, a cull's jump to the next pending photo is commanded while the previous jump still animates, and the superseded jump's momentum end then snapped the cursor BACK onto the photo just culled — whose next tap read as the undo of the same verdict, leaving it unreviewed and the deck jumping about (the recording's 1 → 4 → 5 → 9 → 2). At the unit's end, the tap already in flight when the finished group advanced landed on the next group's first photo. The sink holds no fault for the minute: every write was correct, two addressed the wrong photo.
 **Fix (landed 2026-09-25/27):** while a commanded jump is in flight only its own arrival moves the cursor, so a superseded jump's momentum end is ignored; and the verdict controls (and Not related, Keep remaining) are inert for 600 ms after a new unit goes LIVE — the pager's own 400 ms swipe settle, made longer for taps — with a decision arriving inside it dropped (codex: a settle timed from the swap would elapse during a slow load). A tap that arrives while a write is in flight is still dropped: at a tap every 250 ms about half land, each on the photo the deck is moving to.
+
+### F41 · The edit chip cannot un-flag a kept photo
+
+**Reported (2026-09-28):** on a kept photo the Edit chip would not deselect; un-keeping first was the only way. On a staged cull it deselected fine.
+**Read:** the chip's press took the decided-photo path (`decideCurrent('to_edit')`, which re-runs the to-edit cycle) for every verdict but a staged cull; only the cull branch used the flag toggle.
+**Fix (landed 2026-09-28):** a flagged photo un-flags whatever its verdict; an unflagged one keeps the decided-photo path.
+
+### F42 · The stage's badge pill overflows
+
+**Reported (2026-09-28, screenshot):** a kept video with edit and favourite queued drew its three badges below the pill, outside its backdrop, with only the Video chip inside.
+**Read (reproduced on the S10e):** the cluster wrapped with `wrap-reverse`, and the second line rendered outside the pill's box.
+**Fix (landed 2026-09-28):** the cluster is two rows by construction — the glyph badges, then the kind chip — and never a wrapped line (plain wrap sized the pill to one line as well); the pill, anchored at its bottom, grows upward.
+
+### F43 · Inspection dots run past a row thumbnail
+
+**Reported (2026-09-28, screenshot):** in the favourites queue a photo carrying every action drew its dots past the 52 dp thumbnail's edge.
+**Fix (landed 2026-09-28):** the dots row wraps inside its host, and the favourites and edit rows bound it to the thumbnail's width; the details overlay's duration line says "Duration", not "Runs" (the same round).
 
 ---
 

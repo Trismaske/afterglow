@@ -87,7 +87,7 @@ function buildFileLines(facts: PhotoFacts): FactLine[] {
       icon: 'timer-outline',
       text:
         read && facts.duration_ms !== null && facts.duration_ms > 0
-          ? `${kind === 'motion' ? 'Clip runs' : 'Runs'} ${formatDuration(facts.duration_ms)}`
+          ? `${kind === 'motion' ? 'Clip duration' : 'Duration'} ${formatDuration(facts.duration_ms)}`
           : read
             ? 'Duration unknown'
             : 'Duration not read yet',

@@ -170,10 +170,9 @@ export function useBadgesHidden(): boolean {
 const MIN_PILL_SIZE = 18;
 
 /**
- * Every badge a photo carries, wrapped inside its anchor so none is
- * hidden: rows fill right-to-left from the anchor corner and stack
- * upward when the width runs out (a 52 px deck thumbnail fits three per
- * row at size 14). Renders nothing when `badges` is empty or the user
+ * Every badge a photo carries, inside its anchor so none is hidden: the
+ * glyph badges on one row and the kind chip on a row beneath, the pill
+ * growing upward from its bottom anchor. Renders nothing when `badges` is empty or the user
  * hid badges (the one durable toggle, F19/L6).
  */
 export function BadgeCluster({
@@ -187,16 +186,30 @@ export function BadgeCluster({
 }) {
   const hidden = useBadgesHidden();
   if (hidden || badges.length === 0) return null;
+  // Two rows by construction — the glyph badges, then the kind chip
+  // beneath — never a wrapped line: Yoga sized the pill to one line and
+  // drew a wrapped second outside its backdrop (the tester, 2026-09-28;
+  // reproduced on the S10e with three badges and a chip).
+  const marks = badges.filter((badge) => !isKindChip(badge.kind));
+  const chips = size >= MIN_PILL_SIZE ? badges.filter((badge) => isKindChip(badge.kind)) : [];
+  if (marks.length === 0 && chips.length === 0) return null;
   return (
     <View style={[styles.cluster, style]} pointerEvents="none">
-      {badges.map((badge) =>
-        isKindChip(badge.kind) ? (
-          size >= MIN_PILL_SIZE ? (
-            <KindChip key={badge.kind} kind={badge.kind} size={size} />
-          ) : null
-        ) : (
-          <DecisionBadge key={badge.kind} kind={badge.kind} size={size} weight={badge.weight} />
-        ),
+      {marks.length > 0 && (
+        <View style={styles.clusterRow}>
+          {marks.map((badge) => (
+            <DecisionBadge key={badge.kind} kind={badge.kind} size={size} weight={badge.weight} />
+          ))}
+        </View>
+      )}
+      {chips.length > 0 && (
+        <View style={styles.clusterRow}>
+          {chips.map((badge) =>
+            isKindChip(badge.kind) ? (
+              <KindChip key={badge.kind} kind={badge.kind} size={size} />
+            ) : null,
+          )}
+        </View>
       )}
     </View>
   );
@@ -251,7 +264,16 @@ export function StateDots({
 }
 
 const styles = StyleSheet.create({
-  dotsRow: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  // Wraps inside a bounded host (every host bounds it left and right):
+  // the BOTTOM row fills first and the overflow goes to a row above it
+  // (the tester, 2026-09-28), never past the thumbnail's edge.
+  dotsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap-reverse',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    gap: 3,
+  },
   stateDot: {
     width: 11,
     height: 11,
@@ -267,11 +289,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceRaised,
   },
   pillText: { color: colors.text, fontWeight: '600' },
-  cluster: {
-    flexDirection: 'row',
-    flexWrap: 'wrap-reverse',
-    justifyContent: 'flex-end',
-    alignItems: 'flex-end',
-    gap: 3,
-  },
+  // A column of rows (BadgeCluster): the pill is anchored at its
+  // bottom, so a second row grows it upward. The glyph row never wraps:
+  // a full set is five glyphs, 132 dp at the stage's size, and the
+  // narrowest supported window (360 dp, portrait-locked) leaves the pill
+  // 152 dp after the gutters, the buttons' row and its padding (codex).
+  cluster: { alignItems: 'flex-end', gap: 3 },
+  clusterRow: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 3 },
 });

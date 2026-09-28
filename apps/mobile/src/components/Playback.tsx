@@ -705,10 +705,11 @@ const SEEK_THUMB_R = (SEEK_LINE * 9) / 2;
  * diameter high. Its lower part is where the hairline lives — the
  * touch form is the hairline's own place (the tester, 2026-09-14: the
  * earlier float read as a jump away from it). */
-// The band is the dome's height: the buttons' row sits just above it
-// (the tester, 2026-09-27), and a touch that starts on the band still
-// seeks, never pages or presses.
-const SEEK_BAND_HEIGHT = SEEK_THUMB_R * 2 + SEEK_LINE * 3;
+// The band is exactly the line and the dome standing on it: the
+// buttons' row sits a few dp above it (the tester, 2026-09-27/28), and
+// a touch that starts on the band still seeks, never pages or presses —
+// so the band and the buttons never overlap (codex).
+const SEEK_BAND_HEIGHT = SEEK_LINE * 3 + SEEK_THUMB_R;
 /** The chrome's buttons (speaker, expand) sit ABOVE the band, never on
  * it: a later sibling wins any shared strip, and a band whose edge ran
  * into the buttons' row put a thumb-aimed touch that landed low near
@@ -717,9 +718,11 @@ const SEEK_BAND_HEIGHT = SEEK_THUMB_R * 2 + SEEK_LINE * 3;
 const BUTTON_SIZE = 40;
 /** The bottom edge of EVERYTHING at the stage's foot: the buttons, the
  * deck's badge pill and the stage's zoom notice all rest on this line,
- * above the seek band, so nothing overlaps the track and the foot reads
- * as one row (the tester's call, 2026-09-14). */
-export const STAGE_BOTTOM_ROW = SEEK_BAND_HEIGHT + 6;
+ * a few dp above the dome's top, so nothing overlaps the track and the
+ * foot reads as one row close to the bar (the tester's calls,
+ * 2026-09-14 and 2026-09-28). The band beneath still owns any touch
+ * that starts on it. */
+export const STAGE_BOTTOM_ROW = SEEK_BAND_HEIGHT + 4;
 /** The row's right end the buttons take (speaker at 10, expand at 58,
  * each BUTTON_SIZE wide, plus a gap): what the deck's badge pill must
  * leave free so a full badge set wraps upward instead of running under

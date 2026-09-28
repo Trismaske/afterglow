@@ -288,11 +288,7 @@ export function EditQueueScreen({ navigation }: Props) {
             : 'Loading…'
           : rows.length === 0
             ? 'Nothing queued to edit.'
-            : // A video's View only lists the video players: Samsung Gallery
-              // accepts no video from another app (F37, measured on the
-              // S23 2026-09-25 — it registers VIEW image/* only, and an
-              // explicit launch only brings its own task forward).
-              `${rows.length} queued · “Edit here” opens an editor that can save over the original; “View only” opens the photo read-only (use its own edit button to pick an editor)${rows.some((r) => r.kind === 'video') ? ' · Gallery opens no video from another app, so a video’s “View only” lists the video players' : ''}`}
+            : `${rows.length} queued · “Edit here” opens an editor that can save over the original; “View only” opens the item read-only, with its own edit button`}
       </Text>
       {rows !== null && rows.length > 0 ? (
         <View style={styles.chips}>
@@ -346,7 +342,7 @@ const styles = StyleSheet.create({
     padding: 10,
     gap: 12,
   },
-  dots: { position: 'absolute', right: 5, bottom: 5 },
+  dots: { position: 'absolute', left: 5, right: 5, bottom: 5 },
   thumb: {
     width: 84,
     height: 84,

@@ -464,7 +464,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: colors.surfaceRaised,
   },
-  dots: { position: 'absolute', right: 7, bottom: 7 },
+  dots: { position: 'absolute', left: 7, right: 7, bottom: 7 },
   empty: { color: colors.textDim, fontSize: 14, textAlign: 'center', marginVertical: 24 },
   footer: { marginVertical: 16 },
 });

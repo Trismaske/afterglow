@@ -125,7 +125,7 @@ const styles = StyleSheet.create({
   },
   selectBadge: { position: 'absolute', bottom: 4, right: 4 },
   // Bottom-left: the select check owns the bottom-right corner.
-  dots: { position: 'absolute', left: 6, bottom: 6 },
+  dots: { position: 'absolute', left: 6, right: 6, bottom: 6 },
   dotsLifted: { bottom: 28 },
   chip: {
     paddingHorizontal: 12,

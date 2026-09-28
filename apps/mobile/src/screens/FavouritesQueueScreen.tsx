@@ -423,7 +423,9 @@ export function FavouritesQueueScreen() {
 }
 
 const styles = StyleSheet.create({
-  dots: { position: 'absolute', right: 4, bottom: 4 },
+  // Two dp in: the 52 dp thumbnail then holds the verdict dot and three
+  // marks on one row.
+  dots: { position: 'absolute', left: 2, right: 2, bottom: 2 },
   heading: { color: colors.text, fontSize: 24, fontWeight: '800', marginBottom: 2 },
   root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 16 },
   intro: { color: colors.textDim, fontSize: 14, lineHeight: 20, marginBottom: 10 },

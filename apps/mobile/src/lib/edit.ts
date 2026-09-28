@@ -108,14 +108,41 @@ export async function launchViewer(
       uri: contentUri,
     };
   }
+  const params = {
+    data: contentUri,
+    type: launchMimeType(kind),
+    flags: FLAG_GRANT_READ_URI_PERMISSION,
+  };
+  // A VIDEO reaches Samsung Gallery only by name (F37, measured on the
+  // S10e and S23 2026-09-28): Gallery's external viewer declares a VIEW
+  // filter for content video/* WITHOUT the DEFAULT category, so no
+  // implicit chooser lists it, yet the explicit component opens the
+  // clip in Gallery's own player with its edit and favourite controls.
+  // Absent Gallery (any other phone) the launch throws and the implicit
+  // chooser takes over, exactly as for a photo. A Gallery that opens and
+  // then declines the item returns like a closed viewer — the same
+  // result the chooser's own viewers give, which no caller can tell from
+  // a viewing, so the "Done editing?" question follows either way.
+  if (kind === 'video') {
+    try {
+      await IntentLauncher.startActivityAsync(ACTION_VIEW, {
+        ...params,
+        packageName: SAMSUNG_GALLERY_PACKAGE,
+        className: SAMSUNG_GALLERY_EXTERNAL_VIEWER,
+      });
+      return { outcome: 'returned' };
+    } catch (error) {
+      console.log(`[edit] Samsung Gallery viewer unavailable, chooser instead: ${message(error)}`);
+    }
+  }
   try {
-    await IntentLauncher.startActivityAsync(ACTION_VIEW, {
-      data: contentUri,
-      type: launchMimeType(kind),
-      flags: FLAG_GRANT_READ_URI_PERMISSION,
-    });
+    await IntentLauncher.startActivityAsync(ACTION_VIEW, params);
     return { outcome: 'returned' };
   } catch (error) {
     return { outcome: 'failed', stage: 'dispatch', error: message(error), uri: contentUri };
   }
 }
+
+const SAMSUNG_GALLERY_PACKAGE = 'com.sec.android.gallery3d';
+const SAMSUNG_GALLERY_EXTERNAL_VIEWER =
+  'com.samsung.android.gallery.app.activity.external.GalleryExternalActivity';

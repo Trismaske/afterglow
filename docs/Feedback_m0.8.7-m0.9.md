@@ -173,7 +173,7 @@ Implementing it rewrites that header.
 **Reported (2026-09-25, the phase-6 build on the S23):** the edit queue's rows say nothing about a photo's decisions.
 **Read:** every queue renders a bare thumbnail — the edit and favourites rows (`EditQueueScreen`, `FavouritesQueueScreen`) and the share and organize grid cells (`QueueGrid`) — while the grids, History and the Timeline cards wear StateDots.
 **Fix (landed 2026-09-25, phase 7):** the four queues wear the same dots a grid cell wears, in `photoBadges` order; a row's own verb (Edit here, Add to favourites) stays its text.
-Widened from the edit queue to all four queues by the one-shape rule (STATE_MODEL.md) — flagged in the plan as autonomous.
+Widened from the edit queue to all four queues by the one-shape rule (STATE_MODEL.md); accepted at the phase 7 close.
 
 ### F36 · To-edit and edited look alike
 

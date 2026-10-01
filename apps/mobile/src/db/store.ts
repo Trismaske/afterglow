@@ -16,6 +16,7 @@
 import type { MediaRef, StoredMediaKind } from '../lib/mediaIdentity';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { withReadTransaction, withWriteTransaction } from './database';
+import { publishMembershipChange } from './membershipSignal';
 import type { DuelRecord, PhotoState } from '@afterglow/core';
 import { lifetimeReclaimedBytes } from './trashStore';
 import {
@@ -157,6 +158,29 @@ function reachClause(
     sql: ` AND ${column} IN (${mounted.map(() => '?').join(',')})`,
     params: [...mounted],
   };
+}
+
+/**
+ * Collapse the reach filter when it would exclude nothing (phase 8):
+ * a mounted set that covers every PRESENT photo's volume is the same
+ * read as no filter, and only the unfiltered read can walk the group
+ * anchors by index — the filtered reads aggregate the newest REACHABLE
+ * member per group, exactly as before, for the minutes a card is out.
+ * `null` (mount state unknowable) and the empty set (nothing mounted)
+ * pass through untouched.
+ */
+export async function collapseReach(
+  db: SQLiteDatabase,
+  mounted: readonly string[] | null | undefined,
+): Promise<readonly string[] | null> {
+  if (mounted === null || mounted === undefined || mounted.length === 0) return mounted ?? null;
+  const outside = await db.getFirstAsync<{ n: number }>(
+    `SELECT 1 AS n FROM photos
+      WHERE is_present = 1 AND volume_name NOT IN (${mounted.map(() => '?').join(',')})
+      LIMIT 1`,
+    ...mounted,
+  );
+  return outside === null ? null : mounted;
 }
 
 /** Read one settings value (null when unset). Settings are plain
@@ -397,7 +421,7 @@ export async function applyReviewDecisions(
       if (assetIds.length > 0) {
         const rows = await txn.getAllAsync<{ photo_id: string }>(
           `SELECT a.photo_id FROM photo_group_assignments a
-           JOIN photos p ON p.asset_id = a.photo_id
+           CROSS JOIN photos p ON p.asset_id = a.photo_id
            WHERE a.group_id = ? AND a.photo_id IN (${assetIds.map(() => '?').join(',')})
              AND p.is_present = 1`,
           groupId,
@@ -415,7 +439,7 @@ export async function applyReviewDecisions(
     if (extras.duel) {
       const members = await txn.getAllAsync<{ photo_id: string; state: string }>(
         `SELECT a.photo_id, p.state FROM photo_group_assignments a
-         JOIN photos p ON p.asset_id = a.photo_id
+         CROSS JOIN photos p ON p.asset_id = a.photo_id
          WHERE a.group_id = ? AND a.photo_id IN (?, ?)
            AND p.is_present = 1`,
         Number(extras.duel.groupId),
@@ -665,8 +689,9 @@ async function applyNotRelatedEjection(
    * group that still holds an unreachable member (plan §5 byte-for-byte
    * — unchanged by the freeze retirement). Null = unknowable. */
   mounted: readonly string[] | null = null,
-): Promise<void> {
+): Promise<boolean> {
   const touchedGroups = new Set<number>();
+  let changed = false;
   for (const assetId of assetIds) {
     const row = await txn.getFirstAsync<{ group_id: number | null }>(
       'SELECT group_id FROM photo_group_assignments WHERE photo_id = ?',
@@ -678,10 +703,11 @@ async function applyNotRelatedEjection(
     await txn.runAsync('DELETE FROM not_related WHERE partner_id = ?', assetId);
     if (groupId === null) continue;
     touchedGroups.add(Number(groupId));
+    changed = true;
     await txn.runAsync(
       `INSERT OR REPLACE INTO not_related (ejected_id, partner_id, at)
        SELECT ?, a.photo_id, ? FROM photo_group_assignments a
-       JOIN photos p ON p.asset_id = a.photo_id
+       CROSS JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id = ? AND a.photo_id <> ? AND p.is_present = 1`,
       assetId,
       at,
@@ -694,7 +720,8 @@ async function applyNotRelatedEjection(
       assetId,
     );
   }
-  await repairGroupMembership(txn, [...touchedGroups], mounted);
+  const repaired = await repairGroupMembership(txn, [...touchedGroups], mounted);
+  return changed || repaired > 0;
 }
 
 /**
@@ -735,6 +762,19 @@ export async function setNeedsEdit(
   });
 }
 
+/**
+ * The shared membership repair every writer ends in: dissolve groups
+ * left with fewer than two present members, delete emptied groups, and
+ * WRITE THROUGH the surviving groups' anchors (v25, m0.9 phase 8) — the
+ * ordering key every group read walks by index. The scope is the set
+ * of groups whose membership, presence or timestamps the caller's
+ * transaction touched (the audited writers: the scan window, the
+ * "not related" eject, the trash confirmation, external-removal
+ * reconciliation and "Forget this card"); omitted = the whole table.
+ * Returns the number of rows the repair changed (dissolved assignments,
+ * deleted groups, moved anchors) — the caller's half of "did this
+ * transaction change the browse structure" (db/membershipSignal.ts).
+ */
 export async function repairGroupMembership(
   txn: SQLiteDatabase,
   groupIds?: readonly number[],
@@ -747,8 +787,9 @@ export async function repairGroupMembership(
    * Scan AND user-driven removal paths pass it (final cycle O1/O2);
    * omitted/null = pre-m0.8.3 semantics (mount state unknowable). */
   mountedVolumes?: readonly string[] | null,
-): Promise<void> {
-  if (groupIds !== undefined && groupIds.length === 0) return;
+): Promise<number> {
+  if (groupIds !== undefined && groupIds.length === 0) return 0;
+  let changed = 0;
   const scopes: (readonly number[] | null)[] =
     groupIds === undefined ? [null] : chunk([...new Set(groupIds)], IN_CHUNK);
   // The deferral predicate: no member on an unmounted volume. With no
@@ -774,27 +815,88 @@ export async function repairGroupMembership(
   for (const scope of scopes) {
     const inList = scope === null ? '' : `(${scope.map(() => '?').join(',')})`;
     const params = scope === null ? [] : scope;
-    await txn.runAsync(
+    const dissolved = await txn.runAsync(
       `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0
        WHERE group_id IN (
          SELECT g.id FROM photo_groups g
          WHERE ${scope === null ? '' : `g.id IN ${inList} AND `}
            ${reachableGuard} AND
            (SELECT COUNT(*) FROM photo_group_assignments a
-                JOIN photos p ON p.asset_id = a.photo_id
+                CROSS JOIN photos p ON p.asset_id = a.photo_id
                 WHERE a.group_id = g.id AND p.is_present = 1) < 2
        )`,
       ...params,
       ...guardParams,
     );
-    await txn.runAsync(
+    const deleted = await txn.runAsync(
       `DELETE FROM photo_groups
        WHERE ${scope === null ? '' : `id IN ${inList} AND `}
          (SELECT COUNT(*) FROM photo_group_assignments a
           WHERE a.group_id = photo_groups.id) = 0`,
       ...params,
     );
+    // The write-through: only anchors that MOVED count as a change (a
+    // re-scan window that landed identical groups moves none).
+    const moved = await txn.runAsync(
+      `UPDATE photo_groups SET anchor = (${ANCHOR_OF_GROUP})
+       WHERE ${scope === null ? '' : `id IN ${inList} AND `}
+         anchor IS NOT (${ANCHOR_OF_GROUP})`,
+      ...params,
+    );
+    changed += Number(dissolved.changes) + Number(deleted.changes) + Number(moved.changes);
   }
+  return changed;
+}
+
+/** SQL: a group's anchor from its rows — MAX(taken_at) over PRESENT
+ * members, correlated on `photo_groups`. (A trashed row is never
+ * present: applyRemovalCleanup flips both together, and both restore
+ * transitions flip them back together.) */
+const ANCHOR_OF_GROUP = `SELECT MAX(p.taken_at) FROM photo_group_assignments a
+   CROSS JOIN photos p ON p.asset_id = a.photo_id
+   WHERE a.group_id = photo_groups.id AND p.is_present = 1`;
+
+/** One anchor the write-through missed: what the row holds against what
+ * its members say. */
+export interface AnchorDrift {
+  groupId: number;
+  stored: number | null;
+  expected: number | null;
+}
+
+/**
+ * The anchor tripwire (phase 8): every stored anchor against the
+ * aggregate it caches, plus the presence invariant the anchor rests on
+ * (no present row is trashed). Empty = consistent. The real-DB suites
+ * run it after every membership writer; the app runs it on the touched
+ * scope in development builds (repairGroupMembership's callers), where
+ * a drift is a bug in a writer's scope, never something to self-heal.
+ */
+export async function auditGroupAnchors(
+  db: SQLiteDatabase,
+  groupIds?: readonly number[],
+): Promise<AnchorDrift[]> {
+  const scope = groupIds === undefined ? '' : ` AND id IN (${groupIds.map(() => '?').join(',')})`;
+  const rows = await db.getAllAsync<{ id: number; stored: number | null; expected: number | null }>(
+    `SELECT id, anchor AS stored, (${ANCHOR_OF_GROUP}) AS expected
+       FROM photo_groups
+      WHERE anchor IS NOT (${ANCHOR_OF_GROUP})${scope}`,
+    ...(groupIds ?? []),
+  );
+  const out: AnchorDrift[] = rows.map((r) => ({
+    groupId: Number(r.id),
+    stored: r.stored === null ? null : Number(r.stored),
+    expected: r.expected === null ? null : Number(r.expected),
+  }));
+  const trashedPresent = await db.getFirstAsync<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM photos WHERE state = 'trashed' AND is_present = 1",
+  );
+  if (Number(trashedPresent?.n ?? 0) > 0) {
+    throw new Error(
+      `anchor audit: ${trashedPresent?.n} trashed rows are marked present — the anchor's presence invariant is broken`,
+    );
+  }
+  return out;
 }
 
 /** What the eject/un-eject flows hand the targeted rescan (Regroup_design
@@ -820,11 +922,12 @@ export async function ejectNotRelated(
 ): Promise<RescanTargetRow[]> {
   if (assetIds.length === 0) return [];
   const targets: RescanTargetRow[] = [];
+  let changed = false;
   await withWriteTransaction(db, async (txn) => {
     if (expectedGroupId !== undefined) {
       const rows = await txn.getAllAsync<{ photo_id: string }>(
         `SELECT a.photo_id FROM photo_group_assignments a
-         JOIN photos p ON p.asset_id = a.photo_id
+         CROSS JOIN photos p ON p.asset_id = a.photo_id
          WHERE a.group_id = ? AND a.photo_id IN (${assetIds.map(() => '?').join(',')})
            -- An absent member must not record pairs: the judgment was
            -- about photos the user could actually see.
@@ -836,7 +939,7 @@ export async function ejectNotRelated(
         throw new Error('This group changed while reviewing — reopen it and try again.');
       }
     }
-    await applyNotRelatedEjection(txn, assetIds, at, mounted);
+    changed = await applyNotRelatedEjection(txn, assetIds, at, mounted);
     // The targeted-rescan anchors, read in the same transaction.
     for (const ids of chunk(assetIds, IN_CHUNK)) {
       const rows = await txn.getAllAsync<{
@@ -853,6 +956,7 @@ export async function ejectNotRelated(
       }
     }
   });
+  if (changed) publishMembershipChange();
   return targets;
 }
 
@@ -967,27 +1071,41 @@ async function listReviewGroupsIn(
     // every group re-scanning every unreviewed photo, ~200M probes and a
     // 14 s read on a 27k corpus (measured; queuePlan.real.test.ts pins
     // the plan).
-    const groups = await txn.getAllAsync<{
-      id: number;
-      newest: number;
-    }>(
-      `SELECT g.id,
-            (SELECT MAX(p.taken_at) FROM photo_group_assignments a
-              JOIN photos p ON p.asset_id = a.photo_id
-              WHERE a.group_id = g.id AND p.is_present = 1${reach.sql}) AS newest
-     FROM photo_groups g
-     WHERE EXISTS (
+    const queued = `EXISTS (
        SELECT 1 FROM photo_group_assignments a CROSS JOIN photos p
        WHERE a.group_id = g.id AND p.asset_id = a.photo_id
          AND p.state = 'unreviewed' AND p.is_present = 1${src.sql}${reach.sql}
-     )
-     ORDER BY newest DESC
-     LIMIT ?`,
-      ...reach.params,
-      ...src.params,
-      ...reach.params,
-      limit,
-    );
+     )`;
+    // Unfiltered, the newest present member IS the stored anchor (v25):
+    // the walk runs down idx_groups_anchor and stops at the page —
+    // never an aggregate per group. With a card out, the newest
+    // REACHABLE member orders instead (codex phase-3: a hidden newer
+    // SD member must not pull a group ahead of what the page shows).
+    const groups =
+      reach.sql === ''
+        ? await txn.getAllAsync<{ id: number; newest: number }>(
+            `SELECT g.id, g.anchor AS newest
+               FROM photo_groups g
+              WHERE g.anchor IS NOT NULL AND ${queued}
+              ORDER BY g.anchor DESC, g.id DESC
+              LIMIT ?`,
+            ...src.params,
+            limit,
+          )
+        : await txn.getAllAsync<{ id: number; newest: number }>(
+            `SELECT g.id,
+                    (SELECT MAX(p.taken_at) FROM photo_group_assignments a
+                      CROSS JOIN photos p ON p.asset_id = a.photo_id
+                      WHERE a.group_id = g.id AND p.is_present = 1${reach.sql}) AS newest
+               FROM photo_groups g
+              WHERE ${queued}
+              ORDER BY newest DESC
+              LIMIT ?`,
+            ...reach.params,
+            ...src.params,
+            ...reach.params,
+            limit,
+          );
     if (groups.length === 0) return [];
     // Ordered by the newest REACHABLE member (codex phase-3): a hidden
     // newer SD member must not pull a group ahead of what the page
@@ -995,7 +1113,7 @@ async function listReviewGroupsIn(
     const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
       `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
-       JOIN photos p ON p.asset_id = a.photo_id
+       CROSS JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id IN (${groups.map(() => '?').join(',')}) AND p.is_present = 1${reach.sql}
        ORDER BY p.taken_at DESC, p.asset_id DESC`,
       ...groups.map((g) => g.id),
@@ -1009,7 +1127,7 @@ async function listReviewGroupsIn(
       const totals = await txn.getAllAsync<{ group_id: number; n: number }>(
         `SELECT a.group_id, COUNT(*) AS n
            FROM photo_group_assignments a
-           JOIN photos p ON p.asset_id = a.photo_id
+           CROSS JOIN photos p ON p.asset_id = a.photo_id
           WHERE a.group_id IN (${groups.map(() => '?').join(',')}) AND p.is_present = 1
           GROUP BY a.group_id`,
         ...groups.map((g) => g.id),
@@ -1094,7 +1212,6 @@ export async function fetchBrowseGroupsPage(
   const srcExists = sourceClause(roots, 'p2.uri');
   const reachExists = reachClause(mounted, 'p2.volume_name');
   const reach = reachClause(mounted, 'p.volume_name');
-  const keyset = before === undefined ? '' : ' HAVING anchor < ? OR (anchor = ? AND g.id < ?)';
   const keysetParams = before === undefined ? [] : [before.anchor, before.anchor, before.groupId];
   // The source filter gates ELIGIBILITY only; the anchor — the ordering
   // key AND the cursor — spans the WHOLE reachable group (codex r5),
@@ -1107,34 +1224,62 @@ export async function fetchBrowseGroupsPage(
       ? ''
       : ` AND EXISTS (SELECT 1 FROM photo_group_assignments a2
              JOIN photos p2 ON p2.asset_id = a2.photo_id
-            WHERE a2.group_id = g.id AND p2.is_present = 1
-              AND p2.state <> 'trashed'${srcExists.sql}${reachExists.sql})`;
+            WHERE a2.group_id = g.id AND p2.is_present = 1${srcExists.sql}${reachExists.sql})`;
   const eligibilityParams =
     srcExists.sql === '' ? [] : [...srcExists.params, ...reachExists.params];
   let out: ReviewGroupRow[] = [];
   await withReadTransaction(db, async (txn) => {
-    const heads = await txn.getAllAsync<{ id: number; anchor: number }>(
-      `SELECT g.id AS id, MAX(p.taken_at) AS anchor
-         FROM photo_groups g
-         JOIN photo_group_assignments a ON a.group_id = g.id
-         JOIN photos p ON p.asset_id = a.photo_id
-        WHERE p.is_present = 1 AND p.state <> 'trashed'${reach.sql}${eligibility}
-        GROUP BY g.id${keyset}
-        ORDER BY anchor DESC, g.id DESC
-        LIMIT ?`,
-      ...reach.params,
-      ...eligibilityParams,
-      ...keysetParams,
-      limit,
-    );
+    // Unfiltered by reach (the common case — collapseReach folds a
+    // fully-mounted set into it), the page is a walk down
+    // idx_groups_anchor from the cursor (v25, phase 8): the stored
+    // anchor IS MAX(taken_at) over present members. The keyset is the
+    // expanded form the index serves as one range (the OR form is
+    // planned as a scan — queuePlan.real.test.ts pins the plan).
+    // With a card out, the aggregate over REACHABLE members orders and
+    // cursors exactly as before, for the minutes it takes.
+    const heads =
+      reach.sql === ''
+        ? await txn.getAllAsync<{ id: number; anchor: number }>(
+            `SELECT g.id AS id, g.anchor AS anchor
+               FROM photo_groups g
+              WHERE g.anchor IS NOT NULL${eligibility}${
+                before === undefined ? '' : ' AND g.anchor <= ? AND (g.anchor < ? OR g.id < ?)'
+              }
+              ORDER BY g.anchor DESC, g.id DESC
+              LIMIT ?`,
+            ...eligibilityParams,
+            ...keysetParams,
+            limit,
+          )
+        : await txn.getAllAsync<{ id: number; anchor: number }>(
+            `SELECT g.id AS id, MAX(p.taken_at) AS anchor
+               FROM photo_groups g
+               JOIN photo_group_assignments a ON a.group_id = g.id
+               JOIN photos p ON p.asset_id = a.photo_id
+              WHERE p.is_present = 1${reach.sql}${eligibility}
+              GROUP BY g.id${
+                // The aggregate spelled out: an alias here resolves to the
+                // stored g.anchor column since v25 (the whole-group MAX,
+                // the wrong key for a card-out page — groupAnchors.real.test.ts).
+                before === undefined
+                  ? ''
+                  : ' HAVING MAX(p.taken_at) < ? OR (MAX(p.taken_at) = ? AND g.id < ?)'
+              }
+              ORDER BY MAX(p.taken_at) DESC, g.id DESC
+              LIMIT ?`,
+            ...reach.params,
+            ...eligibilityParams,
+            ...keysetParams,
+            limit,
+          );
     if (heads.length === 0) return;
     const ids = heads.map((h) => Number(h.id));
     const placeholders = ids.map(() => '?').join(',');
     const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
       `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
          FROM photo_group_assignments a
-         JOIN photos p ON p.asset_id = a.photo_id
-        WHERE a.group_id IN (${placeholders}) AND p.is_present = 1 AND p.state <> 'trashed'${reach.sql}
+         CROSS JOIN photos p ON p.asset_id = a.photo_id
+        WHERE a.group_id IN (${placeholders}) AND p.is_present = 1${reach.sql}
         ORDER BY p.taken_at DESC, p.asset_id DESC`,
       ...ids,
       ...reach.params,
@@ -1143,13 +1288,11 @@ export async function fetchBrowseGroupsPage(
     if (reach.sql !== '') {
       const totals = await txn.getAllAsync<{ group_id: number; n: number }>(
         // The SAME visibility rules as the members query beside it
-        // (self-review finding 3): without the trashed exclusion, a
-        // present-but-trashed member counted as "on unmounted SD card".
+        // (self-review finding 3).
         `SELECT a.group_id, COUNT(*) AS n
            FROM photo_group_assignments a
-           JOIN photos p ON p.asset_id = a.photo_id
+           CROSS JOIN photos p ON p.asset_id = a.photo_id
           WHERE a.group_id IN (${placeholders}) AND p.is_present = 1
-            AND p.state <> 'trashed'
           GROUP BY a.group_id`,
         ...ids,
       );
@@ -1207,14 +1350,16 @@ export async function fetchBrowseSinglesPage(
 ): Promise<ReviewMemberRow[]> {
   const src = sourceClause(roots, 'p.uri');
   const reach = reachClause(mounted, 'p.volume_name');
+  // The expanded keyset form idx_photos_present_taken serves as a range
+  // (the OR form is planned as a scan — queuePlan.real.test.ts pins it).
   const keyset =
-    before === undefined ? '' : ' AND (p.taken_at < ? OR (p.taken_at = ? AND p.asset_id < ?))';
+    before === undefined ? '' : ' AND p.taken_at <= ? AND (p.taken_at < ? OR p.asset_id < ?)';
   const keysetParams = before === undefined ? [] : [before.takenAt, before.takenAt, before.assetId];
   return db.getAllAsync<ReviewMemberRow>(
     `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
-      WHERE a.group_id IS NULL AND p.is_present = 1 AND p.state <> 'trashed'${src.sql}${reach.sql}${keyset}
+      WHERE a.group_id IS NULL AND p.is_present = 1${src.sql}${reach.sql}${keyset}
       ORDER BY p.taken_at DESC, p.asset_id DESC
       LIMIT ?`,
     ...src.params,
@@ -1246,7 +1391,7 @@ export async function getReviewGroup(
     const members = await txn.getAllAsync<ReviewMemberRow>(
       `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
        FROM photo_group_assignments a
-       JOIN photos p ON p.asset_id = a.photo_id
+       CROSS JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id = ? AND p.is_present = 1${reach.sql}
        ORDER BY p.taken_at DESC, p.asset_id DESC`,
       groupId,
@@ -1262,7 +1407,7 @@ export async function getReviewGroup(
             (
               await txn.getFirstAsync<{ n: number }>(
                 `SELECT COUNT(*) AS n FROM photo_group_assignments a
-                  JOIN photos p ON p.asset_id = a.photo_id
+                  CROSS JOIN photos p ON p.asset_id = a.photo_id
                   WHERE a.group_id = ? AND p.is_present = 1`,
                 groupId,
               )
@@ -1317,7 +1462,7 @@ async function listSinglesFeedIn(
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id IS NULL AND p.state = 'unreviewed' AND p.is_present = 1${src.sql}${reach.sql}
-         AND (p.taken_at < ? OR (p.taken_at = ? AND p.asset_id < ?))
+         AND p.taken_at <= ? AND (p.taken_at < ? OR p.asset_id < ?)
        ORDER BY p.taken_at DESC, p.asset_id DESC
        LIMIT ?`,
       ...src.params,
@@ -1447,7 +1592,7 @@ export async function listGroupsForDay(
       const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
         `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, ${memberInSource.sql} AS in_source
          FROM photo_group_assignments a
-         JOIN photos p ON p.asset_id = a.photo_id
+         CROSS JOIN photos p ON p.asset_id = a.photo_id
          WHERE a.group_id IN (${placeholders}) AND p.is_present = 1${reach.sql}
          ORDER BY p.taken_at DESC, p.asset_id DESC`,
         ...memberInSource.params,
@@ -1810,10 +1955,13 @@ export async function readReviewQueue(
     counts: QueueCounts;
   } = { groups: [], singles: [], counts: { grouped: 0, singles: 0, groups: 0 } };
   await withReadTransaction(db, async (txn) => {
+    // A fully-mounted set is no filter (collapseReach): the group read
+    // then walks the stored anchors instead of aggregating per group.
+    const reach = await collapseReach(txn, mounted);
     out = {
-      groups: await listReviewGroupsIn(txn, groupLimit, roots, mounted),
-      singles: await listSinglesFeedIn(txn, singlesLimit, roots, mounted),
-      counts: await countReviewQueueIn(txn, roots, mounted),
+      groups: await listReviewGroupsIn(txn, groupLimit, roots, reach),
+      singles: await listSinglesFeedIn(txn, singlesLimit, roots, reach),
+      counts: await countReviewQueueIn(txn, roots, reach),
     };
   });
   return out;
@@ -2028,7 +2176,15 @@ export async function updatePhotoUri(
   assetId: string,
   uri: string,
 ): Promise<void> {
-  await db.runAsync('UPDATE photos SET uri = ? WHERE asset_id = ?', uri, assetId);
+  // The uri is browse structure under a source filter (and the rendered
+  // thumbnail's key): a CHANGED one publishes (phase 8, codex r2).
+  const result = await db.runAsync(
+    'UPDATE photos SET uri = ? WHERE asset_id = ? AND uri <> ?',
+    uri,
+    assetId,
+    uri,
+  );
+  if (Number(result.changes) > 0) publishMembershipChange();
 }
 
 /** Present tracked asset ids inside the source scope — the scan's
@@ -2149,7 +2305,12 @@ async function ensureContinuousRun(txn: SQLiteDatabase, at: number): Promise<num
  * engine's output IS the membership truth — groups re-form freely,
  * decided members included; the in-transaction decision-write guards
  * protect verdicts, not membership), project the pass's IS_FAVORITE
- * observations (F20), then run the shared membership repairs.
+ * observations (F20), then run the shared membership repairs — which
+ * write the touched groups' anchors through (v25). Resolves to whether
+ * the window changed the browse STRUCTURE (a new or revived row, a
+ * moved timestamp, an assignment, a repair) and publishes that on the
+ * membership signal; an identical re-scan window resolves false and
+ * publishes nothing.
  */
 /** SQL: the upsert leaves the row's image version unchanged — the
  * generation the row will carry equals the stored one (a known
@@ -2171,15 +2332,101 @@ export async function writeContinuousGroups(
      * dissolving groups that still hold an unreachable member. */
     mountedVolumes?: readonly string[] | null;
   } = {},
-): Promise<void> {
-  if (write.photos.length === 0) return;
+): Promise<boolean> {
+  if (write.photos.length === 0) return false;
+  let changed = false;
   await withWriteTransaction(db, async (txn) => {
     if (options.abortIf?.()) return;
+    // What the browse rows looked like before this window: a row the
+    // upsert adds, revives (present again), moves in time, moves to
+    // another path (the source filter reads the uri), re-dates (the day
+    // splits singles runs), re-versions (an in-place edit: the cards'
+    // image key), re-kinds or gains a clip (the thumbnail's kind mark
+    // and animation) changes what a browse surface renders; a row it
+    // merely refreshes does not (codex r3).
+    const known = new Map<
+      string,
+      {
+        takenAt: number;
+        present: number;
+        uri: string;
+        day: string | null;
+        generation: number | null;
+        mtime: number | null;
+        kind: string;
+        mime: string | null;
+        offset: number | null;
+        length: number | null;
+      }
+    >();
+    for (const ids of chunk(
+      write.photos.map((p) => p.assetId),
+      IN_CHUNK,
+    )) {
+      if (ids.length === 0) continue;
+      const rows = await txn.getAllAsync<{
+        asset_id: string;
+        taken_at: number;
+        is_present: number;
+        uri: string;
+        day: string | null;
+        file_generation: number | null;
+        file_mtime: number | null;
+        kind: string;
+        mime_type: string | null;
+        motion_video_offset: number | null;
+        motion_video_length: number | null;
+      }>(
+        `SELECT asset_id, taken_at, is_present, uri, day, file_generation, file_mtime,
+                kind, mime_type, motion_video_offset, motion_video_length
+           FROM photos WHERE asset_id IN (${ids.map(() => '?').join(',')})`,
+        ...ids,
+      );
+      for (const row of rows) {
+        known.set(row.asset_id, {
+          takenAt: Number(row.taken_at),
+          present: Number(row.is_present),
+          uri: row.uri,
+          day: row.day,
+          generation: row.file_generation === null ? null : Number(row.file_generation),
+          mtime: row.file_mtime === null ? null : Number(row.file_mtime),
+          kind: row.kind,
+          mime: row.mime_type,
+          offset: row.motion_video_offset === null ? null : Number(row.motion_video_offset),
+          length: row.motion_video_length === null ? null : Number(row.motion_video_length),
+        });
+      }
+    }
+    for (const photo of write.photos) {
+      const was = known.get(photo.assetId);
+      if (was === undefined || was.present === 0) {
+        changed = true;
+        continue;
+      }
+      // The image version the upsert leaves (its own COALESCE rules).
+      const versionAfter = photo.fileGeneration ?? was.generation ?? photo.fileMtime;
+      const versionBefore = was.generation ?? was.mtime;
+      const clipMoved =
+        photo.factsCheckedVersion != null &&
+        ((photo.motionVideoOffset ?? null) !== was.offset ||
+          (photo.motionVideoLength ?? null) !== was.length);
+      if (
+        was.takenAt !== photo.takenAt ||
+        was.uri !== photo.uri ||
+        was.day !== photo.day ||
+        versionBefore !== versionAfter ||
+        was.kind !== photo.kind ||
+        (photo.mimeType ?? was.mime) !== was.mime ||
+        clipMoved
+      )
+        changed = true;
+    }
     // A scanned photo EXISTS in MediaStore — authoritative presence. A row
     // still marked trashed was restored outside Afterglow (Gallery
-    // "Restore"); apply the standard restore transition (same semantics as
-    // trashStore.markPhotoRestored: back to review, generation bump so a
-    // later verified re-trash counts again, fresh edit-cycle baseline).
+    // "Restore"); apply the standard restore transition: back to review,
+    // generation bump so a later verified re-trash counts again, fresh
+    // edit-cycle baseline. (A trashed row is never present, so the
+    // presence check above already counted it as a change.)
     for (const ids of chunk(
       write.photos.map((p) => p.assetId),
       IN_CHUNK,
@@ -2361,6 +2608,7 @@ export async function writeContinuousGroups(
         continue;
       }
       if (identicalGroup(group)) continue;
+      changed = true;
       const groupResult = await txn.runAsync('INSERT INTO photo_groups (run_id) VALUES (?)', runId);
       const groupId = Number(groupResult.lastInsertRowId);
       touchedGroups.add(groupId);
@@ -2379,6 +2627,7 @@ export async function writeContinuousGroups(
     for (const assetId of write.singles) {
       const live = liveAssignments.get(assetId);
       if (live && live.groupId === null && !live.timeAttached) continue; // already this single
+      changed = true;
       await txn.runAsync(
         `INSERT OR REPLACE INTO photo_group_assignments (photo_id, run_id, group_id, time_attached)
          VALUES (?, ?, NULL, 0)`,
@@ -2429,8 +2678,11 @@ export async function writeContinuousGroups(
         ...ids,
       );
     }
-    await repairGroupMembership(txn, [...touchedGroups], options.mountedVolumes);
+    const repaired = await repairGroupMembership(txn, [...touchedGroups], options.mountedVolumes);
+    if (repaired > 0) changed = true;
   });
+  if (changed) publishMembershipChange();
+  return changed;
 }
 
 /** One photo's current durable group assignment. */

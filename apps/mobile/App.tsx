@@ -15,6 +15,7 @@ import { mountedVolumeSet, onVolumesChanged } from './src/lib/mountedVolumes';
 import { resolveSources } from './src/lib/sourceCatalog';
 import { DATABASE_NAME, migrateDatabase } from './src/db/database';
 import { logFootprint } from './src/lib/footprint';
+import { startJsLagProbe } from './src/lib/jsLag';
 import { installShareResolution } from './src/lib/shareResolution';
 import { ReviewProvider, useReview } from './src/review/ReviewContext';
 import { HomeScreen } from './src/screens/HomeScreen';
@@ -249,6 +250,8 @@ function ThemedNavigator() {
 }
 
 export default function App() {
+  // The JS-thread lag probe (phase 8): one timer for the process life.
+  useEffect(() => startJsLagProbe(), []);
   return (
     // The boundary wraps the WHOLE provider stack: a render crash
     // anywhere below logs (with its component stack) before dying —

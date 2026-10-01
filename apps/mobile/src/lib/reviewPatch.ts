@@ -156,6 +156,49 @@ function applyVerdict(
   return patchMember(next, assetId, { state: verdict, needs_edit: flag });
 }
 
+/** One photo's verdict after a committed write (needs_edit when the
+ * same write moved the flag) — what a browse row patches in place. */
+export interface VerdictChange {
+  assetId: string;
+  state: ReviewMemberRow['state'];
+  needsEdit?: boolean;
+}
+
+/**
+ * The verdict rows a committed local action lands on (m0.9 phase 8):
+ * the Timeline's Everything filter patches its browse rows with these
+ * instead of re-reading its structure — a decision never changes the
+ * set or order of units. Mirrors applyLocalAction's transitions for the
+ * verdict-bearing actions, unconditionally: the write's own guards
+ * already threw on a stale verdict (a redecide from a state the SQL
+ * rejects never reaches the patch). Flag, favourite and makeSingle
+ * carry no verdict (the eject is a membership change and publishes on
+ * db/membershipSignal.ts).
+ */
+export function verdictChangesOf(action: LocalAction): VerdictChange[] {
+  switch (action.kind) {
+    case 'verdict':
+      return [
+        action.queueEdit === undefined
+          ? { assetId: action.assetId, state: action.verdict }
+          : { assetId: action.assetId, state: action.verdict, needsEdit: action.queueEdit },
+      ];
+    case 'redecide':
+    case 'unstage':
+      return [{ assetId: action.assetId, state: 'kept' }];
+    case 'restore':
+      return [{ assetId: action.assetId, state: 'unreviewed' }];
+    case 'duel':
+      return [{ assetId: action.winnerId, state: 'kept' }];
+    case 'keepMany':
+      return action.assetIds.map((assetId) => ({ assetId, state: 'kept' as const }));
+    case 'flag':
+    case 'favourite':
+    case 'makeSingle':
+      return [];
+  }
+}
+
 export function applyLocalAction(s: ReviewSnapshot, action: LocalAction): ReviewSnapshot {
   switch (action.kind) {
     case 'verdict':

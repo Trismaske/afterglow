@@ -9,13 +9,21 @@
  *   provider's timeline, optimistic patches, horizon truncation and
  *   all. This filter touches none of that machinery (D1).
  * - EVERYTHING — a separate DB-paged keyset read over ALL units,
- *   reviewed included (D1): two keyset streams (browse groups anchored
- *   on their newest visible member, ungrouped singles) merged by
- *   progressPager into one descending item stream, assembled into units
- *   incrementally (lib/timeline.ts appendBrowseItems — the tail run
- *   stays open across pages). No optimistic patches: the page resets
- *   when the review version bumps. Units render exactly as when pending
- *   (D2) — one card per unit, no collapse.
+ *   reviewed included (D1): two keyset streams (browse groups walked
+ *   by their stored anchor, ungrouped singles) merged by progressPager
+ *   into one descending item stream, assembled into units incrementally
+ *   (lib/timeline.ts appendBrowseItems — the tail run stays open across
+ *   pages). Units render exactly as when pending (D2) — one card per
+ *   unit, no collapse. Two signals keep it current (m0.9 phase 8):
+ *   VERDICTS patch the rendered rows in place (the provider's
+ *   verdictPatch — a decision never changes the set or order of units),
+ *   and only a MEMBERSHIP change (db/membershipSignal.ts: a scan window
+ *   that landed something, an eject, a trash confirmation, a removal, a
+ *   forgotten card) re-walks the stream — to the depth on screen, with
+ *   the old stream rendered until the fresh one reaches it, and a
+ *   refresh asked for while a page is in flight waits for that page
+ *   (coalesced: one refresh however many asked). A finished read is
+ *   never discarded.
  * - UNREVIEWED — a pure display subset of the Unfinished data
  *   (D3): units with undecided work, staged-cull singles hidden.
  *
@@ -27,11 +35,14 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FlatList, Pressable, StyleSheet, Text, View, type ViewToken } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useIsFocused } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { PhotoState } from '@afterglow/core';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { useReview } from '../review/ReviewContext';
+import { useMembershipVersion } from '../components/useMembershipVersion';
+import type { VerdictChange } from '../lib/reviewPatch';
 import { BigButton } from '../components/BigButton';
 import { UNIT_CARD_HEIGHT, UnitCard, cardThumbRows } from '../components/UnitCard';
 import { useAnimatedCells, useAnimatedThumbsMode } from '../components/useAnimatedCells';
@@ -49,6 +60,7 @@ import {
   flushBrowseTail,
   findUnitIndex,
   needsDeeperPages,
+  patchBrowseVerdicts,
   unitDestination,
   unitRefOf,
   unreviewedOnly,
@@ -65,6 +77,7 @@ import {
   type PageFetcher,
 } from '../lib/progressPager';
 import {
+  collapseReach,
   fetchBrowseGroupsPage,
   fetchBrowseSinglesPage,
   getSetting,
@@ -126,11 +139,11 @@ interface BrowseState {
   /** A page read failed — the footer says so instead of claiming the
    * history simply ends here (fail-closed). */
   failed: boolean;
-  /** The generation that published this state. A reset bumps genRef
-   * SYNCHRONOUSLY but publishes its fresh pages async — in between, the
-   * rendered state is a leftover of the OLD stream, and the jump effect
-   * must wait rather than consume an anchor against it (codex r7 P1:
-   * the landing would be wiped by the empty publish one render later). */
+  /** The generation that published this state. A refresh bumps genRef
+   * SYNCHRONOUSLY and publishes its fresh stream once it reaches the
+   * rendered depth — in between, the rendered state is the OLD stream
+   * (kept on screen on purpose), and the jump effect waits for the
+   * fresh one rather than land on rows about to be replaced. */
   gen: number;
 }
 
@@ -138,7 +151,8 @@ export function TimelineScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const db = useSQLiteContext();
-  const { timeline, queueCounts, version, actionWeights, hydrateBadges } = useReview();
+  const { timeline, queueCounts, version, actionWeights, hydrateBadges, verdictPatch } =
+    useReview();
 
   // ---------------------------------------------------------- filter
   // null until the remembered choice loads — rendering a default first
@@ -228,221 +242,317 @@ export function TimelineScreen({ navigation }: Props) {
     assembly: EMPTY_BROWSE_ASSEMBLY,
     exhausted: false,
     failed: false,
-    // gen 0 predates every reset (the first reset mints gen 1), so the
+    // gen 0 predates every refresh (the first mints gen 1), so the
     // initial state can never masquerade as a live stream's.
     gen: 0,
   });
   const pagerRef = useRef<MergedPager<BrowseItem> | null>(null);
   const genRef = useRef(0);
-  /** The generation pagerRef belongs to — a reset swaps the pager only
-   * AFTER its async scope resolution, so the ref alone cannot say
-   * whether it is current. */
-  const pagerGenRef = useRef(0);
+  /** ONE flight at a time over the browse — a page load or a refresh
+   * walk. A refresh asked for while the flag is held queues behind the
+   * flight instead of discarding it (prong 3). */
   const loadingRef = useRef(false);
+  const refreshQueuedRef = useRef(false);
+  /** onEndReached asked for a page while a flight held the flag: React
+   * Native fires it once per content length, and a refresh republishes
+   * the same length, so the request is kept and served after (codex r1). */
+  const loadQueuedRef = useRef(false);
   const failedRef = useRef(false);
-  /** The loop's working copy — state is only a render mirror of this. */
+  /** Mirrors of the published stream — the refresh depth counts the
+   * flushed tail an exhausted stream renders as one more card. */
   const assemblyRef = useRef<BrowseAssembly>(EMPTY_BROWSE_ASSEMBLY);
+  const exhaustedRef = useRef(false);
+  /** Every verdict landed since the current pager was built, latest per
+   * photo — applied at every publish: the pager BUFFERS rows beyond what
+   * it hands out (120 singles, 40 groups per fetch against 40 merged
+   * items), so a row decided before it is assembled would otherwise
+   * render its pre-decision state for good (codex r1). A refresh reads
+   * everything afresh and starts an empty overlay. */
+  const verdictOverlayRef = useRef<Map<string, VerdictChange>>(new Map());
+  const withVerdicts = (assembly: BrowseAssembly): BrowseAssembly =>
+    patchBrowseVerdicts(assembly, [...verdictOverlayRef.current.values()]);
+  const refreshRef = useRef<() => Promise<void>>(async () => {});
 
-  const loadMoreBrowse = useCallback(
-    async (gen: number) => {
-      const pager = pagerRef.current;
-      let continueRounds = false;
-      if (!pager || loadingRef.current) return;
-      // codex r2: during a reset's async scope resolution the ref still
-      // holds the OLD generation's pager — driving it under the new
-      // generation would publish previous-scope pages as fresh data.
-      if (pagerGenRef.current !== gen) return;
-      // A failed pager is never reused: its buffers lost items with the
-      // rejection, so only a reset ("leave and reopen") may continue.
-      if (failedRef.current) return;
-      loadingRef.current = true;
+  const loadMoreBrowse = useCallback(async () => {
+    const pager = pagerRef.current;
+    let continueRounds = false;
+    if (!pager) return;
+    if (loadingRef.current) {
+      loadQueuedRef.current = true;
+      return;
+    }
+    // A failed pager is never reused: its buffers lost items with the
+    // rejection, so only a refresh ("leave and reopen") may continue.
+    if (failedRef.current) return;
+    loadingRef.current = true;
+    loadQueuedRef.current = false;
+    const gen = genRef.current;
+    try {
+      // Progress is measured in RENDERED UNITS, not fetched items
+      // (self-review finding 1): the list shows closed units only, so a
+      // batch that closes none — a long same-day singles stretch —
+      // changes nothing on screen, and VirtualizedList then never
+      // re-fires onEndReached (its content length is unchanged). Loop
+      // until at least one unit closes or the stream exhausts; each
+      // round is one bounded fetch, so exhaustion bounds the loop.
+      let assembly = assemblyRef.current;
+      const before = assembly.units.length;
+      const freshIds: string[] = [];
+      // Bounded per call (codex r4): a huge same-day singles stretch
+      // extends the open tail without closing a unit, and an unbounded
+      // close-a-unit loop would drain every one of its pages — and
+      // hold the JS thread — before publishing anything. The finally
+      // block schedules a continuation instead, so the drain proceeds
+      // in slices that yield between fetch rounds.
+      let rounds = 0;
+      do {
+        const started = Date.now();
+        let items: readonly BrowseItem[];
+        try {
+          items = await pager.next(BROWSE_BATCH);
+        } catch (error) {
+          // codex r2: the fetchers used to convert a rejected page into
+          // a fake EMPTY page — the merged pager then drained that
+          // stream for good and assembled units across unknown rows
+          // (same-day singles joined across an unfetched group). The
+          // failure now stops this pager outright: publish the safe
+          // prefix already assembled, say the read failed, and leave
+          // the retry to a refresh.
+          console.warn('[timeline] browse page failed:', String(error));
+          failedRef.current = true;
+          assemblyRef.current = withVerdicts(assembly);
+          exhaustedRef.current = false;
+          setBrowse({ assembly: assemblyRef.current, exhausted: false, failed: true, gen });
+          return;
+        }
+        // Aggregated (m0.8.7): one line per scroll page flooded the
+        // diagnostics sink — the session summary carries the same data.
+        perfAggregate('timeline browse pages', Date.now() - started, items.length);
+        for (const item of items) {
+          if (item.kind === 'group') for (const m of item.group.members) freshIds.push(m.asset_id);
+          else freshIds.push(item.member.asset_id);
+        }
+        assembly = appendBrowseItems(assembly, items);
+      } while (assembly.units.length === before && !pager.exhausted() && ++rounds < 8);
+      continueRounds = assembly.units.length === before && !pager.exhausted();
+      // Deep browse rows sit outside the bounded pending snapshot, so
+      // their ACTION badges rendered empty until hydrated (codex r1) —
+      // the same pre-publication hydration DayProgress runs. Fail-soft:
+      // a failed hydration degrades badges, never the list.
+      if (freshIds.length > 0)
+        await hydrateBadges(freshIds).catch((error: unknown) =>
+          console.warn('[timeline] browse badge hydration failed:', String(error)),
+        );
+      assemblyRef.current = withVerdicts(assembly);
+      exhaustedRef.current = pager.exhausted();
+      setBrowse({
+        assembly: assemblyRef.current,
+        exhausted: pager.exhausted(),
+        failed: failedRef.current,
+        gen,
+      });
+    } finally {
+      loadingRef.current = false;
+      // A refresh that arrived mid-flight runs now, once — after this
+      // page rendered (prong 3). Otherwise the capped drain continues
+      // in a fresh slice (or a page asked for meanwhile is served):
+      // VirtualizedList will not re-fire onEndReached while the unit
+      // count is unchanged, so nothing else would.
+      if (refreshQueuedRef.current) void refreshRef.current();
+      else if ((continueRounds || loadQueuedRef.current) && !failedRef.current)
+        void loadMoreBrowse();
+    }
+  }, [hydrateBadges]);
+
+  /**
+   * (Re)walk the browse stream from the top (the first load, a
+   * membership change, a foreground return or a volume mount): a new
+   * pager under a new generation, driven to the depth currently on
+   * screen — or until exhaustion — and published WHOLE. Until then the
+   * old stream stays rendered: rows are uniform, so replacing the data
+   * keeps the reader's offset, and a stream that grew or shrank above
+   * the viewport shifts the cards by that much and no more.
+   */
+  const refreshBrowse = useCallback(async () => {
+    if (loadingRef.current) {
+      refreshQueuedRef.current = true;
+      return;
+    }
+    refreshQueuedRef.current = false;
+    loadingRef.current = true;
+    const gen = ++genRef.current;
+    failedRef.current = false;
+    // Everything the walk reads is at least as fresh as this moment;
+    // only verdicts landing from here on need the overlay.
+    verdictOverlayRef.current = new Map();
+    try {
+      // The browse read scopes like every review read: the selected
+      // sources and the mounted-volume set, resolved now. FAIL CLOSED:
+      // an unresolved source filter must not broaden to "all".
+      let roots: Awaited<ReturnType<typeof resolveSources>>['roots'] | null;
+      let mounted: readonly string[] | null;
       try {
-        // Progress is measured in RENDERED UNITS, not fetched items
-        // (self-review finding 1): the list shows closed units only, so a
-        // batch that closes none — a long same-day singles stretch —
-        // changes nothing on screen, and VirtualizedList then never
-        // re-fires onEndReached (its content length is unchanged). Loop
-        // until at least one unit closes or the stream exhausts; each
-        // round is one bounded fetch, so exhaustion bounds the loop.
-        let assembly = assemblyRef.current;
-        const before = assembly.units.length;
+        roots = (await resolveSources(db)).roots ?? null;
+        // A fully-mounted set is no filter: the group stream then walks
+        // the stored anchors instead of aggregating per group.
+        mounted = await collapseReach(db, await mountedVolumeSet());
+      } catch (error) {
+        // The last-good stream stays rendered under the new generation
+        // (codex r3): a transient failure must not collapse a deep read;
+        // the footer says the read failed, and the next refresh retries.
+        // A first load has nothing to keep and shows the failure copy.
+        console.warn('[timeline] browse scope resolution failed:', String(error));
+        failedRef.current = true;
+        setBrowse({
+          assembly: assemblyRef.current,
+          exhausted: exhaustedRef.current,
+          failed: true,
+          gen,
+        });
+        return;
+      }
+      const singlesFetcher: PageFetcher<BrowseItem, BrowseCursor> = async (cursor, count) => {
+        const rows = await fetchBrowseSinglesPage(
+          db,
+          roots,
+          mounted,
+          cursor as { takenAt: number; assetId: string } | undefined,
+          Math.max(count, BROWSE_SINGLES_PAGE),
+        );
+        const last = rows.length > 0 ? rows[rows.length - 1] : undefined;
+        return {
+          items: rows.map((member) => ({ kind: 'single' as const, member })),
+          nextCursor:
+            rows.length < Math.max(count, BROWSE_SINGLES_PAGE) || last === undefined
+              ? null
+              : { takenAt: last.taken_at, assetId: last.asset_id },
+        };
+      };
+      const groupsFetcher: PageFetcher<BrowseItem, BrowseCursor> = async (cursor, count) => {
+        const rows = await fetchBrowseGroupsPage(
+          db,
+          roots,
+          mounted,
+          cursor as BrowseGroupCursor | undefined,
+          Math.max(count, BROWSE_GROUPS_PAGE),
+        );
+        const last = rows.length > 0 ? rows[rows.length - 1] : undefined;
+        return {
+          items: rows.map((group) => ({ kind: 'group' as const, group })),
+          // The cursor's anchor is MINTED BY THE QUERY that owns the
+          // ordering key (self-review finding 2; codex r5 made the two
+          // coincide — the anchor now spans the whole reachable group,
+          // exactly what the projection renders).
+          nextCursor:
+            rows.length < Math.max(count, BROWSE_GROUPS_PAGE) || last === undefined
+              ? null
+              : { anchor: last.anchor ?? last.members[0]?.taken_at ?? 0, groupId: last.groupId },
+        };
+      };
+      // Singles at bucket 0: merged-pager ties go to the LOWER index,
+      // matching buildTimeline's "ties break toward the single".
+      const pager = createMergedDescendingPager<BrowseItem, BrowseCursor>(
+        [singlesFetcher, groupsFetcher],
+        browseItemTime,
+      );
+      // Installed only once the walk succeeds: a failed walk leaves the
+      // last-good pager and stream in place.
+      // The depth to re-walk to: what is on screen — an exhausted
+      // stream renders its open tail as one more card (flushBrowseTail)
+      // — and at least one unit on a first load, so an empty list shows
+      // something as soon as a unit closes. Each round is one native
+      // round trip, so the walk yields between pages by construction.
+      const rendered =
+        assemblyRef.current.units.length +
+        (exhaustedRef.current && assemblyRef.current.openRun.length > 0 ? 1 : 0);
+      const target = Math.max(1, rendered);
+      let assembly: BrowseAssembly = EMPTY_BROWSE_ASSEMBLY;
+      do {
+        const started = Date.now();
+        let items: readonly BrowseItem[];
+        try {
+          items = await pager.next(BROWSE_BATCH);
+        } catch (error) {
+          console.warn('[timeline] browse page failed:', String(error));
+          failedRef.current = true;
+          setBrowse({
+            assembly: assemblyRef.current,
+            exhausted: exhaustedRef.current,
+            failed: true,
+            gen,
+          });
+          return;
+        }
+        perfAggregate('timeline browse pages', Date.now() - started, items.length);
         const freshIds: string[] = [];
-        // Bounded per call (codex r4): a huge same-day singles stretch
-        // extends the open tail without closing a unit, and an unbounded
-        // close-a-unit loop would drain every one of its pages — and
-        // hold the JS thread — before publishing anything. The finally
-        // block schedules a continuation instead, so the drain proceeds
-        // in slices that yield between fetch rounds.
-        let rounds = 0;
-        do {
-          // Field tripwire (the plan's named perf gate): the browse group
-          // anchors are a per-page aggregate with no stored column — this
-          // line is what proves or refutes that trade on real corpora.
-          const started = Date.now();
-          let items: readonly BrowseItem[];
-          try {
-            items = await pager.next(BROWSE_BATCH);
-          } catch (error) {
-            // codex r2: the fetchers used to convert a rejected page into
-            // a fake EMPTY page — the merged pager then drained that
-            // stream for good and assembled units across unknown rows
-            // (same-day singles joined across an unfetched group). The
-            // failure now stops this pager outright: publish the safe
-            // prefix already assembled, say the read failed, and leave
-            // the retry to a reset. Gen-scoped (the round-1 race shape):
-            // a stale pager's failure must not poison the replacement.
-            console.warn('[timeline] browse page failed:', String(error));
-            if (gen === genRef.current) {
-              failedRef.current = true;
-              assemblyRef.current = assembly;
-              setBrowse({ assembly, exhausted: false, failed: true, gen });
-            }
-            return;
-          }
-          // Aggregated (m0.8.7): one line per scroll page flooded the
-          // diagnostics sink — the session summary carries the same data.
-          perfAggregate('timeline browse pages', Date.now() - started, items.length);
-          if (gen !== genRef.current) return;
-          for (const item of items) {
-            if (item.kind === 'group')
-              for (const m of item.group.members) freshIds.push(m.asset_id);
-            else freshIds.push(item.member.asset_id);
-          }
-          assembly = appendBrowseItems(assembly, items);
-        } while (assembly.units.length === before && !pager.exhausted() && ++rounds < 8);
-        continueRounds = assembly.units.length === before && !pager.exhausted();
-        // Deep browse rows sit outside the bounded pending snapshot, so
-        // their ACTION badges rendered empty until hydrated (codex r1) —
-        // the same pre-publication hydration DayProgress runs. Fail-soft:
-        // a failed hydration degrades badges, never the list.
+        for (const item of items) {
+          if (item.kind === 'group') for (const m of item.group.members) freshIds.push(m.asset_id);
+          else freshIds.push(item.member.asset_id);
+        }
         if (freshIds.length > 0)
           await hydrateBadges(freshIds).catch((error: unknown) =>
             console.warn('[timeline] browse badge hydration failed:', String(error)),
           );
-        if (gen !== genRef.current) return;
-        assemblyRef.current = assembly;
-        setBrowse({
-          assembly,
-          exhausted: pager.exhausted(),
-          failed: failedRef.current,
-          gen,
-        });
-      } finally {
-        loadingRef.current = false;
-        // codex r1: a reset racing this load found the flag held, bounced
-        // its own first load, and nothing ever started the new pager —
-        // Everything sat on "Loading…" until an incidental event. A stale
-        // completion kicks the current generation itself, but only once
-        // the reset has actually installed the current pager (mid-reset
-        // the ref still holds the OLD pager, which must not be driven
-        // under the new generation).
-        if (gen !== genRef.current && pagerGenRef.current === genRef.current)
-          void loadMoreBrowse(genRef.current);
-        // The capped drain continues in a fresh slice (same generation,
-        // flag released) — VirtualizedList will not re-fire onEndReached
-        // while the unit count is unchanged, so nothing else would.
-        else if (continueRounds && gen === genRef.current && !failedRef.current)
-          void loadMoreBrowse(gen);
-      }
-    },
-    [hydrateBadges],
-  );
-
-  const resetBrowse = useCallback(async () => {
-    const gen = ++genRef.current;
-    failedRef.current = false;
-    // An armed jump survives a reset: its ANCHOR is still meaningful,
-    // and the page-toward loop re-finds it in the fresh stream. (With
-    // exact getItemLayout there are no deferred scrolls left to disown.)
-    assemblyRef.current = EMPTY_BROWSE_ASSEMBLY;
-    setBrowse({ assembly: EMPTY_BROWSE_ASSEMBLY, exhausted: false, failed: false, gen });
-    // The browse read scopes like every review read: the selected
-    // sources and the mounted-volume set, resolved at reset. FAIL
-    // CLOSED: an unresolved source filter must not broaden to "all".
-    let roots: Awaited<ReturnType<typeof resolveSources>>['roots'] | null;
-    let mounted: readonly string[] | null;
-    try {
-      roots = (await resolveSources(db)).roots ?? null;
-      mounted = await mountedVolumeSet();
-    } catch (error) {
-      console.warn('[timeline] browse scope resolution failed:', String(error));
-      if (gen === genRef.current) {
-        failedRef.current = true;
-        setBrowse({ assembly: EMPTY_BROWSE_ASSEMBLY, exhausted: true, failed: true, gen });
-      }
-      return;
+        assembly = appendBrowseItems(assembly, items);
+      } while (assembly.units.length < target && !pager.exhausted());
+      pagerRef.current = pager;
+      assemblyRef.current = withVerdicts(assembly);
+      exhaustedRef.current = pager.exhausted();
+      setBrowse({
+        assembly: assemblyRef.current,
+        exhausted: pager.exhausted(),
+        failed: false,
+        gen,
+      });
+    } finally {
+      loadingRef.current = false;
+      // Refresh requests that arrived during this walk fold into one
+      // more; otherwise a page the reader asked for meanwhile loads.
+      if (refreshQueuedRef.current) void refreshRef.current();
+      else if (loadQueuedRef.current && !failedRef.current) void loadMoreBrowse();
     }
-    if (gen !== genRef.current) return;
-    const singlesFetcher: PageFetcher<BrowseItem, BrowseCursor> = async (cursor, count) => {
-      const rows = await fetchBrowseSinglesPage(
-        db,
-        roots,
-        mounted,
-        cursor as { takenAt: number; assetId: string } | undefined,
-        Math.max(count, BROWSE_SINGLES_PAGE),
-      );
-      const last = rows.length > 0 ? rows[rows.length - 1] : undefined;
-      return {
-        items: rows.map((member) => ({ kind: 'single' as const, member })),
-        nextCursor:
-          rows.length < Math.max(count, BROWSE_SINGLES_PAGE) || last === undefined
-            ? null
-            : { takenAt: last.taken_at, assetId: last.asset_id },
-      };
-    };
-    const groupsFetcher: PageFetcher<BrowseItem, BrowseCursor> = async (cursor, count) => {
-      const rows = await fetchBrowseGroupsPage(
-        db,
-        roots,
-        mounted,
-        cursor as BrowseGroupCursor | undefined,
-        Math.max(count, BROWSE_GROUPS_PAGE),
-      );
-      const last = rows.length > 0 ? rows[rows.length - 1] : undefined;
-      return {
-        items: rows.map((group) => ({ kind: 'group' as const, group })),
-        // The cursor's anchor is MINTED BY THE QUERY that owns the
-        // ordering key (self-review finding 2; codex r5 made the two
-        // coincide — the anchor now spans the whole reachable group,
-        // exactly what the projection renders).
-        nextCursor:
-          rows.length < Math.max(count, BROWSE_GROUPS_PAGE) || last === undefined
-            ? null
-            : { anchor: last.anchor ?? last.members[0]?.taken_at ?? 0, groupId: last.groupId },
-      };
-    };
-    // Singles at bucket 0: merged-pager ties go to the LOWER index,
-    // matching buildTimeline's "ties break toward the single".
-    pagerRef.current = createMergedDescendingPager<BrowseItem, BrowseCursor>(
-      [singlesFetcher, groupsFetcher],
-      browseItemTime,
-    );
-    pagerGenRef.current = gen;
-    void loadMoreBrowse(gen);
-  }, [db, loadMoreBrowse]);
+  }, [db, hydrateBadges, loadMoreBrowse]);
+  refreshRef.current = refreshBrowse;
 
-  // The Everything data resets whenever it is (re)selected after an
-  // invalidation or the review version bumps — a browse surface
-  // refetches instead of patching (D1). The version signal covers
-  // decisions made in decks opened from this very list; foreground
-  // returns and volume mounts (codex r1: reviewed-only changes never
-  // bump the version) invalidate through the external-refresh hook, so
-  // the reset fires now if Everything is showing, else on reselection.
-  // Focus alone deliberately does NOT reset: a version-silent focus
-  // means nothing changed, and resetting would discard the reading
-  // position the filter memory exists to keep.
-  const browseVersionRef = useRef<number | null>(null);
-  const [externalTick, setExternalTick] = useState(0);
-  useExternalRefresh(() => {
-    browseVersionRef.current = null;
-    setExternalTick((t) => t + 1);
-  });
+  // Verdicts land in place (prong 2): the rendered rows take the new
+  // state now; a flight in progress applies them at its publish.
   useEffect(() => {
-    if (filter !== 'everything') return;
-    if (browseVersionRef.current === version) return;
-    browseVersionRef.current = version;
-    void resetBrowse();
-  }, [filter, version, resetBrowse, externalTick]);
+    if (verdictPatch.seq === 0) return;
+    for (const change of verdictPatch.changes)
+      verdictOverlayRef.current.set(change.assetId, change);
+    if (loadingRef.current) return;
+    const patched = withVerdicts(assemblyRef.current);
+    if (patched === assemblyRef.current) return;
+    assemblyRef.current = patched;
+    setBrowse((prev) => ({ ...prev, assembly: patched }));
+  }, [verdictPatch]);
+
+  // The Everything stream refreshes when the browse STRUCTURE changed
+  // since it was loaded — a membership writer published (throttled to a
+  // few refreshes a second under a landing scan), a foreground return
+  // or a volume mount (the external-refresh hook: reviewed-only changes
+  // and reach never bump any version) — now if Everything is showing,
+  // else on reselection. Decisions never refresh it (they patch rows).
+  // Focus alone deliberately does NOT refresh: nothing changed, and a
+  // refresh would move the reading position the filter memory keeps.
+  // Focus-gated and throttled to one refresh per two seconds (the S10e
+  // profile under a full pass: an unfocused Timeline re-walked 1 700
+  // pages behind a deck at the 750 ms cadence, JS-thread time the scan
+  // and the reader were paying for); a change while unfocused refreshes
+  // on the return.
+  const membershipVer = useMembershipVersion(2000);
+  const focused = useIsFocused();
+  const [externalTick, setExternalTick] = useState(0);
+  useExternalRefresh(() => setExternalTick((t) => t + 1));
+  const loadedStructureRef = useRef<{ membership: number; external: number } | null>(null);
+  useEffect(() => {
+    if (filter !== 'everything' || !focused) return;
+    const loaded = loadedStructureRef.current;
+    if (loaded !== null && loaded.membership === membershipVer && loaded.external === externalTick)
+      return;
+    loadedStructureRef.current = { membership: membershipVer, external: externalTick };
+    void refreshBrowse();
+  }, [filter, focused, membershipVer, externalTick, refreshBrowse]);
 
   // ------------------------------------------------------------ data
   const data: readonly TimelineUnit[] = useMemo(() => {
@@ -579,16 +689,16 @@ export function TimelineScreen({ navigation }: Props) {
       return;
     }
     const anchor = jump.target.anchor;
-    // A reset in this SAME flush already invalidated the assembly this
-    // effect closed over (the reset effect is declared first, and it
-    // bumps genRef synchronously): consuming the anchor against the
-    // leftover data would land, then be wiped by the reset's empty
-    // publish one render later (codex r7 P1). This wait IS a hold —
-    // same first-hold treatment (show the top, arm the drag baseline,
-    // a drag during it abandons), minus the pager kick: the reset owns
-    // starting its own stream, and the fresh generation's first page
-    // re-enters through jumpNudge.
-    if (filter === 'everything' && browse.gen !== genRef.current) {
+    // A refresh in this SAME flush already superseded the assembly this
+    // effect closed over (the refresh effect is declared first, and it
+    // bumps genRef synchronously) — or one is queued behind a page in
+    // flight and will: consuming the anchor against the old stream
+    // would land on rows the fresh stream replaces one render later
+    // (codex r7 P1). This wait IS a hold — same first-hold
+    // treatment (show the top, arm the drag baseline, a drag during it
+    // abandons), minus the pager kick: the refresh owns its own walk,
+    // and its publish re-enters through jumpNudge.
+    if (filter === 'everything' && (browse.gen !== genRef.current || refreshQueuedRef.current)) {
       if (jump.held !== true) {
         landAt(0);
         listRef.current?.scrollToOffset({ offset: 0, animated: false });
@@ -617,7 +727,7 @@ export function TimelineScreen({ navigation }: Props) {
         listRef.current?.scrollToOffset({ offset: 0, animated: false });
       }
       jumpRef.current = { ...jump, held: true };
-      void loadMoreBrowse(genRef.current);
+      void loadMoreBrowse();
       return;
     }
     if (data.length === 0) {
@@ -645,9 +755,18 @@ export function TimelineScreen({ navigation }: Props) {
     // one exception, the held jump, re-enters through jumpNudge).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter, jumpNudge]);
+  // A held jump re-enters on every COMPLETED publish — new data, and
+  // ALSO a new generation or a failure that republished the last-good
+  // stream under the same array (codex r5: a refresh queued behind a
+  // page that then failed changes no data), and a refresh that proved
+  // the scope EMPTY (codex r6: an exhausted or failed empty stream must
+  // land the hold at the top and consume it, not keep an old-scope
+  // anchor for whatever populates later). Only an empty stream still
+  // loading its first page waits for the next publish.
   useEffect(() => {
-    if (jumpRef.current !== null && data.length > 0) setJumpNudge((n) => n + 1);
-  }, [data]);
+    if (jumpRef.current === null) return;
+    if (data.length > 0 || browse.exhausted || browse.failed) setJumpNudge((n) => n + 1);
+  }, [data, browse.gen, browse.failed, browse.exhausted]);
 
   dataLenRef.current = data.length;
   const stateOf = useMemo(() => {
@@ -854,8 +973,7 @@ export function TimelineScreen({ navigation }: Props) {
         extraData={version}
         onEndReachedThreshold={0.6}
         onEndReached={() => {
-          if (filter === 'everything' && !browse.exhausted && !browse.failed)
-            void loadMoreBrowse(genRef.current);
+          if (filter === 'everything' && !browse.exhausted && !browse.failed) void loadMoreBrowse();
         }}
         ListEmptyComponent={
           <Text style={styles.emptyText}>

@@ -91,6 +91,8 @@ import {
   queueEquals,
   sameIdsWithin,
   type LocalAction,
+  type VerdictChange,
+  verdictChangesOf,
 } from '../lib/reviewPatch';
 import {
   buildTimeline,
@@ -108,6 +110,7 @@ import {
   type CelebratedGoal,
 } from '../lib/dailyGoal';
 import { dayKey, rangeOfDayKey } from '../lib/dates';
+import { perfAggregate } from '../lib/perfLog';
 import {
   applyReviewDecisions,
   type ReviewDecisionResult,
@@ -221,6 +224,11 @@ interface ReviewContextValue {
    * listing off-page members (DayProgress's completed groups) awaits
    * this before rendering so actionWeights can answer for them. */
   hydrateBadges: (ids: readonly string[]) => Promise<void>;
+  /** The verdict rows the latest committed decision landed on (phase
+   * 8): a browse surface patches its own rows from these instead of
+   * re-reading — decisions never change structure. `seq` is the event
+   * counter (0 = none yet); consumers key an effect on it. */
+  verdictPatch: { seq: number; changes: readonly VerdictChange[] };
   /** A decision write failed — the row is unchanged; retry the action. */
   writeError: string | null;
   clearWriteError: () => void;
@@ -363,6 +371,10 @@ const ReviewContext = createContext<ReviewContextValue | null>(null);
 export function ReviewProvider({ children }: { children: React.ReactNode }) {
   const db = useSQLiteContext();
   const [version, setVersion] = useState(0);
+  const [verdictPatch, setVerdictPatch] = useState<{
+    seq: number;
+    changes: readonly VerdictChange[];
+  }>({ seq: 0, changes: [] });
   const [loaded, setLoaded] = useState(false);
   const loadedRef = useRef(false);
   const [groups, setGroups] = useState<ReviewGroupRow[]>([]);
@@ -640,7 +652,13 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
             const mine = nextPassRef.current ?? makePassBarrier();
             nextPassRef.current = makePassBarrier();
             try {
+              // Field timing (phase 8): the queue re-read runs after
+              // every decision and every 25th scan window — its cost
+              // under a landing scan is a named suspect beside the
+              // `js thread lag` line.
+              const started = Date.now();
               await refreshOnce();
+              perfAggregate('queue refresh', Date.now() - started);
               mine.resolve();
             } catch (error) {
               mine.reject(error);
@@ -743,7 +761,13 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
             const mine = nextPassRef.current ?? makePassBarrier();
             nextPassRef.current = makePassBarrier();
             try {
+              // Field timing (phase 8): the queue re-read runs after
+              // every decision and every 25th scan window — its cost
+              // under a landing scan is a named suspect beside the
+              // `js thread lag` line.
+              const started = Date.now();
               await refreshOnce();
+              perfAggregate('queue refresh', Date.now() - started);
               mine.resolve();
             } catch (error) {
               mine.reject(error);
@@ -1074,6 +1098,8 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     setSingles(snapshotRef.current.singles);
     setQueueCounts(next.counts);
     setVersion((v) => v + 1);
+    const changes = verdictChangesOf(action);
+    if (changes.length > 0) setVerdictPatch((prev) => ({ seq: prev.seq + 1, changes }));
   }, []);
 
   // -------------------------------------- goal celebration (F14, amended)
@@ -1745,6 +1771,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       loadDeckSingles,
       releaseBrowseIds,
       hydrateBadges: hydrateBadgeRefs,
+      verdictPatch,
       writeError,
       clearWriteError,
       decide,
@@ -1786,6 +1813,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
       loadDeckSingles,
       releaseBrowseIds,
       hydrateBadgeRefs,
+      verdictPatch,
       writeError,
       clearWriteError,
       decide,

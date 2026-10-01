@@ -32,7 +32,7 @@ export const DATABASE_NAME = 'afterglow.db';
  * When one release's destructive DDL lands across multiple phases, bump
  * once PER destructive phase (not once per release), so a mid-release
  * install self-heals by rebuild instead of by a manual data wipe. */
-export const SCHEMA_VERSION = 24;
+export const SCHEMA_VERSION = 25;
 
 export const BASELINE_DDL = `
   CREATE TABLE photos (
@@ -161,6 +161,10 @@ export const BASELINE_DDL = `
   CREATE INDEX idx_photos_day ON photos(day);
   CREATE INDEX idx_photos_activity ON photos(activity_at DESC, asset_id DESC);
   CREATE INDEX idx_photos_present_state ON photos(is_present, state);
+  -- The newest-first walks over present rows (the singles streams, v25):
+  -- presence as the equality prefix, then the keyset order — a page is a
+  -- range on this index instead of a sort over every present photo.
+  CREATE INDEX idx_photos_present_taken ON photos(is_present, taken_at DESC, asset_id DESC);
   -- The daily goal's per-day counts and the Stats/Summary day summary both
   -- range-scan decided_at; measured 42.9 ms (SCAN photos) -> 28.4 ms
   -- (covering index). Partial: only decided rows are ever queried.
@@ -237,8 +241,22 @@ export const BASELINE_DDL = `
   CREATE TABLE photo_groups (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id        INTEGER NOT NULL REFERENCES grouping_runs(id) ON DELETE CASCADE,
+    -- The group's ANCHOR (v25, m0.9 phase 8): MAX(taken_at) over its
+    -- PRESENT members, written through by every membership writer in
+    -- the transaction that changes it (store.ts repairGroupMembership —
+    -- the one choke point every writer ends in; auditGroupAnchors is
+    -- the tripwire). NULL = no present member (a rump the repair is
+    -- deferring for an ejected card). It is the newest-first ordering
+    -- key of every group read, so a page is an index walk instead of a
+    -- per-page aggregate over every group in the library (measured:
+    -- ~160 ms per page at 5.6k groups, and a JS-thread multiplier on
+    -- top of it on device).
+    anchor        INTEGER,
     UNIQUE (run_id, id)
   );
+  -- The keyset walk: newest anchor first, id-tiebroken, NULLs (no
+  -- present member) excluded by every reader.
+  CREATE INDEX idx_groups_anchor ON photo_groups(anchor DESC, id DESC);
 
   CREATE TABLE photo_group_assignments (
     photo_id TEXT PRIMARY KEY REFERENCES photos(asset_id) ON DELETE CASCADE,

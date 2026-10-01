@@ -8,6 +8,7 @@ import {
   buildTimeline,
   EMPTY_BROWSE_ASSEMBLY,
   flushBrowseTail,
+  patchBrowseVerdicts,
   unreviewedOnly,
   type BrowseItem,
   completedDuringVisit,
@@ -384,6 +385,57 @@ describe('the browse assembler (m0.8.6 F2: the Everything filter)', () => {
     expect(flushed.map(ids)).toEqual([['s1']]);
     // Flushing does not mutate: the assembly can flush again.
     expect(flushBrowseTail(a).map(ids)).toEqual([['s1']]);
+  });
+});
+
+describe('the browse assembler under a moving stream (phase 8)', () => {
+  const day = '2026-07-12';
+
+  it('drops an item the keyset re-emits (a moved group or single), keeping list keys unique', () => {
+    const g = group(7, [member('a2', 50, day), member('a1', 40, day)]);
+    const first = appendBrowseItems(EMPTY_BROWSE_ASSEMBLY, [
+      { kind: 'single', member: member('s6', 60, day) },
+      { kind: 'group', group: g },
+    ]);
+    // The next page carries the same group again (its anchor moved
+    // below the cursor) and the same single: neither lands twice.
+    const second = appendBrowseItems(first, [
+      { kind: 'group', group: { ...g, members: [member('a1', 40, day)] } },
+      { kind: 'single', member: member('s6', 60, day) },
+      { kind: 'single', member: member('s3', 30, day) },
+    ]);
+    expect(flushBrowseTail(second).map(ids)).toEqual([['s6'], ['a2', 'a1'], ['s3']]);
+    expect(second.seen).toEqual(new Set(['s:s6', 'g:7', 's:s3']));
+    // Inputs untouched.
+    expect(first.seen).toEqual(new Set(['s:s6', 'g:7']));
+  });
+
+  it('patchBrowseVerdicts lands verdicts on rows in closed units and the open tail, and returns the same assembly when nothing matched', () => {
+    const g = group(7, [member('a2', 50, day), member('a1', 40, day)]);
+    const assembly = appendBrowseItems(EMPTY_BROWSE_ASSEMBLY, [
+      { kind: 'single', member: member('s6', 60, day) },
+      { kind: 'group', group: g },
+      { kind: 'single', member: member('s3', 30, day) },
+    ]);
+    const patched = patchBrowseVerdicts(assembly, [
+      { assetId: 'a1', state: 'culled' },
+      { assetId: 's3', state: 'kept', needsEdit: true },
+      { assetId: 'elsewhere', state: 'kept' },
+    ]);
+    expect(patched).not.toBe(assembly);
+    const closed = patched.units[1];
+    expect(closed.kind === 'group' && closed.group.members.map((m) => m.state)).toEqual([
+      'unreviewed',
+      'culled',
+    ]);
+    expect(patched.openRun.map((m) => [m.state, m.needs_edit])).toEqual([['kept', 1]]);
+    // Untouched units keep their identity (no re-render for them).
+    expect(patched.units[0]).toBe(assembly.units[0]);
+    expect(patched.seen).toBe(assembly.seen);
+    // The inputs are untouched, and a no-op patch is the same object.
+    expect(assembly.openRun[0].state).toBe('unreviewed');
+    expect(patchBrowseVerdicts(assembly, [{ assetId: 'nobody', state: 'kept' }])).toBe(assembly);
+    expect(patchBrowseVerdicts(patched, [{ assetId: 'a1', state: 'culled' }])).toBe(patched);
   });
 });
 

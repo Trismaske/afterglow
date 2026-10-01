@@ -1441,6 +1441,12 @@ async function processWindow(
   // scale); only bursts with company can contain near-dup pairs, so
   // singles-only windows skip the hash work entirely.
   const withHashes = hasMultiPhotoBurst(photos);
+  // Field timings per window (phase 8): the three stages that hold the
+  // JS thread or the database — the embed pass (native decode, per-
+  // photo persists), the SYNCHRONOUS engine pass (pure JS over the
+  // window's vectors: nothing else runs while it does), and the write
+  // transaction. Named beside the `js thread lag` line they explain.
+  const embedStarted = Date.now();
   const { vectors, hashes } = await ensureEmbeddings(
     db,
     photos,
@@ -1466,14 +1472,17 @@ async function processWindow(
   // to the engine as constraints (docs/Regroup_design.md §4.2). The
   // write transaction re-reads them — an eject landing between this read
   // and the write must still win.
+  perfAggregate('scan window embed', Date.now() - embedStarted, photos.length);
   const cannotLink = await getNotRelatedPairsAmong(db, ids);
 
+  const groupStarted = Date.now();
   const groups = groupByEmbedding(
     photos.map((p) => p.item),
     (id) => vectors.get(id) ?? null,
     withHashes ? (id) => hashes.get(id) ?? null : undefined,
     { baseThreshold, cannotLink },
   );
+  perfAggregate('scan window group', Date.now() - groupStarted, photos.length);
   const multi = groups.filter((g) => g.items.length >= 2);
   const singles = [
     ...groups.filter((g) => g.items.length === 1).map((g) => g.items[0].id),
@@ -1488,6 +1497,7 @@ async function processWindow(
   // any write can act on that stale picture.
   await waitForUserWrites();
   if (mountedVolumes) await assertMountedUnchanged(mountedVolumes);
+  const writeStarted = Date.now();
   await writeContinuousGroups(
     db,
     {
@@ -1537,6 +1547,7 @@ async function processWindow(
     // queue (the entry fence alone leaves that race open).
     { abortIf: stale, mountedVolumes: mountedVolumes ? [...mountedVolumes] : null },
   );
+  perfAggregate('scan window write', Date.now() - writeStarted, window.length);
   update({ windowsGrouped: status.windowsGrouped + 1 });
   return factsFailed;
 }

@@ -9,7 +9,6 @@ import { migrateDatabase } from './database';
 import {
   lifetimeReclaimedBytes,
   markBatchLaunching,
-  markPhotoRestored,
   prepareTrashBatch,
   reconcileExternallyRemoved,
   recoverTrashBatches,
@@ -561,8 +560,37 @@ describe('restore → re-trash generations (P8#4)', () => {
       at: AT + 2,
     });
     expect(await lifetimeReclaimedBytes(asExpo(d))).toBe(100);
-    // Gallery restore: generation increments once, photo re-enters review.
-    await markPhotoRestored(asExpo(d), 'p1', AT + 10);
+    // Gallery restore: the next scan window sees the row in MediaStore —
+    // the upsert's restore transition increments the generation once and
+    // the photo re-enters review.
+    await writeContinuousGroups(
+      asExpo(d),
+      {
+        photos: [
+          {
+            assetId: 'p1',
+            uri: 'content://x',
+            takenAt: AT,
+            modTime: AT,
+            fileGeneration: null,
+            kind: 'photo' as const,
+            mimeType: 'image/jpeg',
+            displayName: null,
+            width: null,
+            height: null,
+            durationMs: null,
+            fileMtime: AT,
+            day: '2026-07-20',
+            volumeName: 'external_primary',
+            rawId: 'p1',
+            sizeBytes: 100,
+          },
+        ],
+        groups: [],
+        singles: ['p1'],
+      },
+      AT + 10,
+    );
     const gen = d.raw
       .prepare('SELECT trash_generation, state FROM photos WHERE asset_id = ?')
       .get('p1') as Record<string, unknown>;

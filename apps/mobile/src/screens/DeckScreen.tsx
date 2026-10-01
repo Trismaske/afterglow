@@ -356,8 +356,19 @@ export function DeckScreen({ navigation, route }: DeckProps) {
 
   const advanceTo = useCallback(
     (next: DeckUnit) => {
+      // An advance to the unit the deck is already on is no advance (S10e
+      // crash, 2026-10-01): the empty-scope exit asks the timeline where
+      // to go, and the pending snapshot can still list THIS run with its
+      // regrouped photo while the deck's own rows already say the run is
+      // empty — the resolver then names the run itself. Replacing the
+      // unit object with an equal one re-made `range` and `unitRef`, the
+      // exit effect re-ran on them, and the deck advanced into itself
+      // until React's nested-update limit killed the process. The deck
+      // waits instead; the provider's next refresh moves the timeline and
+      // the effect routes for real.
+      setUnit((current) => (deckUnitKey(current) === deckUnitKey(next) ? current : next));
+      if (deckUnitKey(next) === consumedParamsRef.current) return;
       consumedParamsRef.current = deckUnitKey(next);
-      setUnit(next);
       // Keep the route honest. Without this the params would still name
       // the unit the deck opened on, and re-entering from Home or the
       // Timeline on that same unit would be a no-op param change —
@@ -585,12 +596,18 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       ? `r:${day ?? ''}:${range?.from ?? ''}:${range?.to ?? ''}`
       : `g:${groupId ?? ''}`;
   /** How THIS deck names itself against the timeline (advance flow). */
+  const rangeFrom = range?.from;
+  const rangeTo = range?.to;
   const unitRef = useMemo<UnitRef | null>(() => {
     if (listMode) return null;
     if (singlesMode)
-      return day && range ? { kind: 'run', day, from: range.from, to: range.to } : null;
+      return day && rangeFrom !== undefined && rangeTo !== undefined
+        ? { kind: 'run', day, from: rangeFrom, to: rangeTo }
+        : null;
     return groupId ? { kind: 'group', groupId } : null;
-  }, [singlesMode, day, range, groupId, listMode]);
+    // Keyed on the range's VALUES: the ref must not change identity with
+    // the unit object when the unit is the same unit.
+  }, [singlesMode, day, rangeFrom, rangeTo, groupId, listMode]);
   /**
    * Send the deck where the advance flow points (m0.8.5, L4).
    *

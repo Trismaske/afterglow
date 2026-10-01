@@ -27,6 +27,7 @@
  * them last would break the merge order the feed already renders.
  */
 import type { ReviewGroupRow, ReviewMemberRow } from '../db/store';
+import type { VerdictChange } from './reviewPatch';
 import { UNDATED_DAY_KEY } from './dates';
 
 export interface TimelineGroupUnit {
@@ -250,9 +251,15 @@ export interface BrowseAssembly {
   units: TimelineUnit[];
   /** The still-open tail run (newest-first) — NOT yet a unit. */
   openRun: ReviewMemberRow[];
+  /** Every item already assembled (`g:<groupId>` / `s:<assetId>`): a
+   * keyset stream re-emits an item whose key MOVED below the cursor (a
+   * group's newest member trashed under an open stream, a rescued
+   * single's timestamp), and the list's keys must stay unique until the
+   * structural refresh replaces the stream (phase 8). */
+  seen: ReadonlySet<string>;
 }
 
-export const EMPTY_BROWSE_ASSEMBLY: BrowseAssembly = { units: [], openRun: [] };
+export const EMPTY_BROWSE_ASSEMBLY: BrowseAssembly = { units: [], openRun: [], seen: new Set() };
 
 function closeRunInto(units: TimelineUnit[], run: readonly ReviewMemberRow[]): void {
   if (run.length === 0) return;
@@ -275,7 +282,11 @@ export function appendBrowseItems(
 ): BrowseAssembly {
   const units = [...assembly.units];
   let run = [...assembly.openRun];
+  const seen = new Set(assembly.seen);
   for (const item of items) {
+    const key = item.kind === 'group' ? `g:${item.group.groupId}` : `s:${item.member.asset_id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     if (item.kind === 'group') {
       if (item.group.members.length === 0) continue;
       closeRunInto(units, run);
@@ -291,7 +302,53 @@ export function appendBrowseItems(
     }
     run.push(item.member);
   }
-  return { units, openRun: run };
+  return { units, openRun: run, seen };
+}
+
+/**
+ * Verdicts landed in place (phase 8): every row the changes name takes
+ * its new state (and flag) wherever it sits — a closed unit or the open
+ * tail — and nothing else moves. Returns the SAME assembly when no row
+ * matched, so a publish can be skipped.
+ */
+export function patchBrowseVerdicts(
+  assembly: BrowseAssembly,
+  changes: readonly VerdictChange[],
+): BrowseAssembly {
+  if (changes.length === 0) return assembly;
+  const byId = new Map(changes.map((c) => [c.assetId, c]));
+  const patch = (m: ReviewMemberRow): ReviewMemberRow => {
+    const change = byId.get(m.asset_id);
+    if (change === undefined) return m;
+    const needs_edit = change.needsEdit === undefined ? m.needs_edit : change.needsEdit ? 1 : 0;
+    if (m.state === change.state && m.needs_edit === needs_edit) return m;
+    return { ...m, state: change.state, needs_edit };
+  };
+  let touched = false;
+  const members = (rows: ReviewMemberRow[]): ReviewMemberRow[] => {
+    let out: ReviewMemberRow[] | null = null;
+    rows.forEach((m, i) => {
+      const next = patch(m);
+      if (next === m) return;
+      if (out === null) out = [...rows];
+      out[i] = next;
+    });
+    if (out === null) return rows;
+    touched = true;
+    return out;
+  };
+  const units = assembly.units.map((unit) => {
+    if (unit.kind === 'group') {
+      const rows = members(unit.group.members);
+      return rows === unit.group.members
+        ? unit
+        : { ...unit, group: { ...unit.group, members: rows } };
+    }
+    const rows = members(unit.members);
+    return rows === unit.members ? unit : { ...unit, members: rows };
+  });
+  const openRun = members(assembly.openRun);
+  return touched ? { units, openRun, seen: assembly.seen } : assembly;
 }
 
 /** The stream is exhausted — the tail run can no longer grow. */

@@ -362,13 +362,16 @@ class MediaStoreActionsModule : Module() {
      * the change discovery a DELTA scan is built on (m0.8.2 phase 1).
      *
      * TRASHED ROWS ARE INCLUDED (`QUERY_ARG_MATCH_TRASHED` /
-     * `MATCH_INCLUDE`), and that is the point. A user "deleting" a photo
-     * in their gallery is `createTrashRequest`: the
-     * row SURVIVES with `IS_TRASHED = 1` for 30 days, and MediaStore
-     * filters such rows out of every query by default. So the deletion
-     * that a full pass can only infer from an absence shows up here as
-     * an ordinary MODIFIED row — provided trashing bumps the generation,
-     * which is exactly what phase 1 exists to measure.
+     * `MATCH_INCLUDE`), and that is the point. A `createTrashRequest`
+     * delete — Afterglow's own — leaves the row with `IS_TRASHED = 1`
+     * for 30 days, filtered out of every default query, and it shows up
+     * here as an ordinary MODIFIED row. Samsung Gallery's own Recycle
+     * bin does NOT go through it (measured on the S23, 2026-09-30): the
+     * file moves into `Android/.Trash/com.sec.android.gallery3d/…` under
+     * a `.nomedia`, and the MediaStore row is deleted outright — such a
+     * delete is visible only as a volume count that fell "with no
+     * trace" (the delta's loss verdict; docs/Plan_m0.9.md phase 9 names
+     * the ids-only reconciliation it should route to).
      *
      * Fails the whole call on any error, for the same reason
      * `mediaGenerations` does: a partial change set is indistinguishable

@@ -57,6 +57,12 @@ async function seedLarge(): Promise<TestDb> {
     }
   }
   d.raw.exec('COMMIT');
+  // The raw seed bypasses the writers, so the anchors (v25) are written
+  // through once over the whole table — the scope every writer's repair
+  // otherwise bounds to the groups it touched.
+  await withWriteTransaction(d as unknown as SQLiteDatabase, async (txn) => {
+    await repairGroupMembership(txn);
+  });
   return d;
 }
 
@@ -78,6 +84,67 @@ describe('review-queue group query plan', () => {
     // idx_photos_present_state first) is the quadratic one.
     expect(subquery).toMatch(/SEARCH a USING/);
     expect(subquery).not.toMatch(/SEARCH p USING INDEX idx_photos_present_state/);
+  });
+
+  it('the member reads start from the group (CROSS JOIN), the anchor aggregate too, and the singles walk ranges the presence-taken index (phase 8)', async () => {
+    const d = await seedLarge();
+    const plan = (sql: string, ...params: unknown[]) =>
+      (
+        d.raw.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(params as never[])) as {
+          detail: string;
+        }[]
+      )
+        .map((r) => r.detail)
+        .join(' | ');
+    // The browse/pending members projection: 40 group ids in, the
+    // planner used to start from every present photo (idx_photos_
+    // present_state) and probe the 40 groups per row — a MEASURED
+    // 148 ms per page at 27k, the cost the anchor was blamed for.
+    const ids = Array.from({ length: 40 }, (_, i) => i + 1);
+    const members = plan(
+      `SELECT a.group_id, p.asset_id FROM photo_group_assignments a
+        CROSS JOIN photos p ON p.asset_id = a.photo_id
+        WHERE a.group_id IN (${ids.map(() => '?').join(',')}) AND p.is_present = 1
+        ORDER BY p.taken_at DESC, p.asset_id DESC`,
+      ...ids,
+    );
+    // Either group-keyed index is the sane plan (the UNIQUE(group_id,
+    // photo_id) autoindex covers this projection).
+    const byGroup = /^SEARCH a USING (COVERING )?INDEX \S+ \(group_id=\?/;
+    expect(members).toMatch(byGroup);
+    expect(members).not.toMatch(/idx_photos_present_state/);
+    // The anchor write-through's correlated aggregate, per touched group.
+    const anchor = plan(
+      `SELECT id, (SELECT MAX(p.taken_at) FROM photo_group_assignments a
+         CROSS JOIN photos p ON p.asset_id = a.photo_id
+         WHERE a.group_id = photo_groups.id AND p.is_present = 1) FROM photo_groups WHERE id IN (1, 2)`,
+    );
+    expect(anchor).toMatch(/SEARCH a USING (COVERING )?INDEX \S+ \(group_id=\?/);
+    expect(anchor).not.toMatch(/idx_photos_present_state/);
+    // The singles keyset page: a range on idx_photos_present_taken, no sort.
+    const singles = plan(
+      `SELECT p.asset_id FROM photo_group_assignments a
+        JOIN photos p ON p.asset_id = a.photo_id
+        WHERE a.group_id IS NULL AND p.is_present = 1
+          AND p.taken_at <= ? AND (p.taken_at < ? OR p.asset_id < ?)
+        ORDER BY p.taken_at DESC, p.asset_id DESC LIMIT 120`,
+      AT,
+      AT,
+      'x',
+    );
+    expect(singles).toMatch(/idx_photos_present_taken \(is_present=\? AND taken_at</);
+    expect(singles).not.toMatch(/TEMP B-TREE/);
+    // The stored anchors walk their own index, newest first, no sort.
+    const heads = plan(
+      `SELECT g.id, g.anchor FROM photo_groups g WHERE g.anchor IS NOT NULL
+        AND g.anchor <= ? AND (g.anchor < ? OR g.id < ?)
+        ORDER BY g.anchor DESC, g.id DESC LIMIT 40`,
+      AT,
+      AT,
+      1,
+    );
+    expect(heads).toMatch(/idx_groups_anchor/);
+    expect(heads).not.toMatch(/TEMP B-TREE/);
   });
 
   it('readReviewQueue completes at 27k scale (quadratic-regression tripwire)', async () => {
@@ -190,7 +257,7 @@ describe('scoped repairGroupMembership (m0.8.1)', () => {
     const before = groupCount();
 
     // Empty scope: the caller touched nothing, so nothing may change.
-    await withWriteTransaction(db, (txn) => repairGroupMembership(txn, []));
+    await withWriteTransaction(db, async (txn) => void (await repairGroupMembership(txn, [])));
     expect(groupCount()).toBe(before);
 
     // Break ONE group by marking a member absent, leaving 1 present member.
@@ -211,11 +278,17 @@ describe('scoped repairGroupMembership (m0.8.1)', () => {
     const other = d.raw
       .prepare('SELECT id FROM photo_groups WHERE id <> ? LIMIT 1')
       .get(victim.gid) as { id: number };
-    await withWriteTransaction(db, (txn) => repairGroupMembership(txn, [other.id]));
+    await withWriteTransaction(
+      db,
+      async (txn) => void (await repairGroupMembership(txn, [other.id])),
+    );
     expect(groupCount()).toBe(before);
 
     // ...and the correct scope dissolves exactly it, same as a full sweep.
-    await withWriteTransaction(db, (txn) => repairGroupMembership(txn, [victim.gid]));
+    await withWriteTransaction(
+      db,
+      async (txn) => void (await repairGroupMembership(txn, [victim.gid])),
+    );
     expect(groupCount()).toBe(before - 1);
     expect(
       d.raw
@@ -223,7 +296,7 @@ describe('scoped repairGroupMembership (m0.8.1)', () => {
         .get(victim.pid),
     ).toEqual({ group_id: null });
     // A full sweep afterwards finds nothing left to do (idempotent).
-    await withWriteTransaction(db, (txn) => repairGroupMembership(txn));
+    await withWriteTransaction(db, async (txn) => void (await repairGroupMembership(txn)));
     expect(groupCount()).toBe(before - 1);
     expect(foreignKeyCheck(d)).toEqual([]);
   }, 60_000);

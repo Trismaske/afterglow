@@ -30,6 +30,7 @@ import { withWriteTransaction } from './database';
 import { encodeOrganizeTarget, leaveQueue, livePhotoClause, sourceExists } from './actions';
 import type { SourceRoot } from '../lib/sources';
 import { chunk, IN_CHUNK } from './store';
+import { publishMembershipChange } from './membershipSignal';
 import { PRIMARY_VOLUME } from '../lib/mediaIdentity';
 
 export const ORGANIZE_BATCH_LIMIT = 500;
@@ -332,6 +333,7 @@ export async function commitOrganizeOutcomes(
   outcomes: readonly OrganizeMoveOutcome[],
   at: number,
 ): Promise<void> {
+  let movedRows = 0;
   await withWriteTransaction(db, async (txn) => {
     for (const outcome of outcomes) {
       if (outcome.status === 'moved' || outcome.status === 'already') {
@@ -360,14 +362,18 @@ export async function commitOrganizeOutcomes(
         }
         // The uri truth refreshes REGARDLESS of intent bookkeeping — the
         // file physically moved, and a stale uri would break thumbnails
-        // and source filtering.
-        await txn.runAsync(
-          `UPDATE photos SET uri = CASE WHEN ? <> '' THEN ? ELSE uri END, mod_time = NULL
-           WHERE asset_id = ?`,
-          outcome.newData ?? '',
-          outcome.newData ? `file://${outcome.newData}` : '',
-          outcome.photoId,
-        );
+        // and source filtering. A row whose uri actually moved is a
+        // browse-structure change under a source filter (phase 8).
+        await txn.runAsync('UPDATE photos SET mod_time = NULL WHERE asset_id = ?', outcome.photoId);
+        if (outcome.newData) {
+          const moved = await txn.runAsync(
+            'UPDATE photos SET uri = ? WHERE asset_id = ? AND uri <> ?',
+            `file://${outcome.newData}`,
+            outcome.photoId,
+            `file://${outcome.newData}`,
+          );
+          movedRows += Number(moved.changes);
+        }
       } else {
         await txn.runAsync(
           `UPDATE photo_actions SET state = 'error'
@@ -378,4 +384,5 @@ export async function commitOrganizeOutcomes(
       }
     }
   });
+  if (movedRows > 0) publishMembershipChange();
 }

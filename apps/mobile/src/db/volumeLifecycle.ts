@@ -34,6 +34,7 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 import { withWriteTransaction } from './database';
 import { closeShareCycleIfQueueEmpty } from './shareStore';
 import { repairGroupMembership } from './store';
+import { publishMembershipChange } from './membershipSignal';
 import { SCAN_FINGERPRINT_KEY, SCAN_GENERATIONS_KEY } from '../lib/scanSkip';
 
 export type ForgetLevel = 'keep' | 'erase';
@@ -84,6 +85,7 @@ export async function forgetVolume(
 ): Promise<ForgetVolumeResult> {
   let photos = 0;
   let rows = 0;
+  let repaired = 0;
   await withWriteTransaction(db, async (txn) => {
     const ids = await txn.getAllAsync<{ asset_id: string }>(
       'SELECT asset_id FROM photos WHERE volume_name = ?',
@@ -195,7 +197,7 @@ export async function forgetVolume(
     // itself needs no deferral (its rows are tombstoned/deleted above —
     // the user just asserted the card is never coming back), but the
     // mounted set still defers for members on OTHER unmounted cards.
-    await repairGroupMembership(
+    repaired = await repairGroupMembership(
       txn,
       groups.map((g) => Number(g.group_id)),
       mounted,
@@ -205,5 +207,9 @@ export async function forgetVolume(
     // (final cycle N8).
     await closeShareCycleIfQueueEmpty(txn, at);
   });
+  // Tombstoned or erased rows leave the browse streams either way — and
+  // erasing already-absent rows can still let a deferred repair dissolve
+  // a group (codex r2), so the repair's own changes publish too.
+  if (photos > 0 || repaired > 0) publishMembershipChange();
   return { photos, rows };
 }

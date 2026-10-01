@@ -44,6 +44,7 @@ import {
 } from '../lib/sources';
 import { mountedVolumeSet } from '../lib/mountedVolumes';
 import { countTrackedPhotos } from '../db/store';
+import { publishMembershipChange } from '../db/membershipSignal';
 import { applyGroupingSettingChange } from '../db/store';
 import { requestRescan, supersedeScan } from '../scan/scanRunner';
 import { useReview } from '../review/ReviewContext';
@@ -247,6 +248,10 @@ export function SourcePickerScreen({ navigation }: Props) {
         return;
       }
       invalidateSourceCatalog();
+      // The browse population changed with the scope (phase 8): the
+      // Everything stream re-walks under the new roots now, not when
+      // the forced rescan's first window happens to publish.
+      publishMembershipChange();
       // FAIL CLOSED before leaving: the queue reads are source-scoped and
       // must drop excluded photos NOW (the queued rescan lands later). If
       // applying the new scope fails, ROLL BACK the committed setting —
@@ -276,6 +281,7 @@ export function SourcePickerScreen({ navigation }: Props) {
             () => false,
           );
           invalidateSourceCatalog();
+          publishMembershipChange();
         }
         // Rebuild under whatever setting is durable now — the superseded
         // scan was stopped above either way.

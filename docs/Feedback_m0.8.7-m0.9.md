@@ -225,6 +225,18 @@ Verified on the S10e: the queue's "View only" on the seeded clip resumed Gallery
 **Reported (2026-09-28, screenshot):** in the favourites queue a photo carrying every action drew its dots past the 52 dp thumbnail's edge.
 **Fix (landed 2026-09-28):** the dots row wraps inside its host, and the favourites and edit rows bound it to the thumbnail's width; the details overlay's duration line says "Duration", not "Runs" (the same round).
 
+### F44 · Photos deleted in Gallery linger in Everything as empty thumbnails
+
+**Reported (2026-09-30, S23, phase-8 pass):** four photos deleted in Gallery stayed in their Everything cards as empty thumbnails, and the group still opened.
+**Read (sink + filesystem, measured):** Samsung Gallery's Recycle bin is NOT MediaStore's trash. The four files were MOVED to `/sdcard/Android/.Trash/com.sec.android.gallery3d/uuid/<stamp>/storage/emulated/0/DCIM/Camera/.!%#@$/<name>.jpg` under a `.nomedia` marker, and their MediaStore rows were deleted outright (a `MATCH_TRASHED` query finds no `is_trashed = 1` row) — so the delta saw `0 trashed` and only the volume count falling by four "with no trace", which by design sends the scan to a FULL PASS to reconcile: 4 min 35 s on the 33k library (`21:41:20` → `21:45:58 reconciled 4 externally removed items`), during which the rows stayed present and the cards rendered them. The reconciliation then published on the membership signal and Everything dropped them without a hand (screenshot at 23:47, the group opening normally). A restore from Gallery's bin re-inserts the file as a new MediaStore row; the next delta lands it as a new item — phase 9 makes such a return ADOPT its tombstone (re-keyed to the new id, the verdict back; decided 2026-10-01).
+**The gap is the pass's length, not the publish:** a loss with no trace needs only an ids-only enumeration to name the missing rows (seconds), not the full pass with its windows and facts. Scheduled for phase 9's scan work (docs/Plan_m0.9.md, phase 9: the loss reconciliation).
+
+### F45 · The deck dies after an eject lands it on the ejected photo
+
+**Reported (2026-10-01, S10e, phase-8 pass; three crashes, the last on a screen recording):** eject a group's pending photo; the deck advances to that photo's own singles unit; un-mark "not related" there (or wait for the next refresh) and the process dies with React's "Maximum update depth exceeded".
+**Read (dev build with a per-render trace):** a passive-effect loop in the deck. The un-mark's targeted rescan regroups the photo, so the deck's own singles read returns no rows; the empty-scope exit asks the timeline where to go, and the pending snapshot — not yet refreshed — still lists that run with the photo as pending, so the resolver names the run itself (a matching unit with pending work is a destination by design, codex r4 of m0.8.5). The advance replaced the unit object with an equal one, which re-made `range` and `unitRef`, the exit effect re-ran on them, and the deck advanced into itself until the limit.
+**Fix (landed 2026-10-01):** an advance to the unit the deck is already on is no advance — the unit state keeps its object, the params stay, and the exit effect waits for the provider's refresh to move the timeline; `unitRef` is keyed on the range's values. The recipe passed three times on the dev build after the fix. The "advanced onto the ejected photo" itself is the designed advance after a dissolved pair and stands.
+
 ---
 
 ## What this round adds to PLAN.md's trigger backlog

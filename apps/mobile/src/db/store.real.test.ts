@@ -2626,9 +2626,10 @@ describe('the browse timeline reads (m0.8.6 F2/D1: Everything)', () => {
       ],
       AT + 10,
     );
-    // A trashed row leaves the browse streams entirely.
+    // A trashed row leaves the browse streams entirely (the transition
+    // flips presence with the verdict — applyRemovalCleanup's shape).
     await asExpo(d).runAsync(
-      "UPDATE photos SET state = 'trashed' WHERE asset_id = ?",
+      "UPDATE photos SET state = 'trashed', is_present = 0 WHERE asset_id = ?",
       id('s-trashed'),
     );
   }

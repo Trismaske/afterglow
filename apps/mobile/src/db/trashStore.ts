@@ -33,6 +33,7 @@ import { closeShareCycleIfQueueEmpty } from './shareStore';
 // Runtime-only circular edge (store also imports a trashStore helper):
 // both are plain function refs resolved at call time — safe under ESM.
 import { chunk, IN_CHUNK, repairGroupMembership } from './store';
+import { publishMembershipChange } from './membershipSignal';
 
 /** Conservative app cap per MediaStore consent request (P5#4; platform
  * limit is 2000 — autonomous: 500, matching the SQL chunk size). */
@@ -343,10 +344,13 @@ export async function reconcileExternallyRemoved(
 ): Promise<Set<string>> {
   const carriedFavourites = new Set<string>();
   if (photoIds.length === 0) return carriedFavourites;
+  let removed = 0;
+  let repaired = 0;
   await withWriteTransaction(db, async (txn) => {
     // The groups these photos sit in, read BEFORE cleanup (m0.8.1 scope:
     // the whole-table repair costs ~12 ms even as a no-op).
     const affected = await groupsOfPhotos(txn, photoIds);
+    removed = (await presentAmong(txn, photoIds)).size;
     for (const id of photoIds) {
       await applyRemovalCleanup(txn, id, at, false);
     }
@@ -371,10 +375,32 @@ export async function reconcileExternallyRemoved(
     }
     // A removal can leave a group with one present member — dissolve it
     // in the same transaction so the deck never receives a 1-photo group.
-    await repairGroupMembership(txn, affected, mountedVolumes);
+    repaired = await repairGroupMembership(txn, affected, mountedVolumes);
     await closeShareCycleIfQueueEmpty(txn, at);
   });
+  // A row that was already absent changes no structure (the History
+  // reconciliation re-reports known tombstones) — unless the repair
+  // dissolved a group deferred earlier (codex r2).
+  if (removed > 0 || repaired > 0) publishMembershipChange();
   return carriedFavourites;
+}
+
+/** Which of the given rows are present — the ones a removal flips. */
+async function presentAmong(
+  txn: SQLiteDatabase,
+  photoIds: readonly string[],
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (const ids of chunk(photoIds, IN_CHUNK)) {
+    if (ids.length === 0) continue;
+    const rows = await txn.getAllAsync<{ asset_id: string }>(
+      `SELECT asset_id FROM photos
+        WHERE is_present = 1 AND asset_id IN (${ids.map(() => '?').join(',')})`,
+      ...ids,
+    );
+    for (const row of rows) out.add(row.asset_id);
+  }
+  return out;
 }
 
 export type PresenceCheck = 'present' | 'absent' | 'unknown';
@@ -439,7 +465,16 @@ export async function resolveTrashBatch(
 
   const outcomes: Record<string, TrashOutcome> = {};
   let creditedBytes = 0;
+  let removed = 0;
+  let repaired = 0;
   await withWriteTransaction(db, async (txn) => {
+    // Only a PRESENT member's removal changes the browse structure: a
+    // member reconciled absent before this batch resolved flips nothing
+    // (codex r3).
+    const presentBefore = await presentAmong(
+      txn,
+      members.map((m) => m.photo_id),
+    );
     for (const member of members) {
       const check = checks.get(member.photo_id);
       let outcome: TrashOutcome;
@@ -467,6 +502,7 @@ export async function resolveTrashBatch(
       if (outcome === 'trashed' || outcome === 'absent_after_interrupted_launch') {
         // C#7 transition contract, one transaction with the outcome.
         await applyRemovalCleanup(txn, member.photo_id, input.at, true);
+        if (presentBefore.has(member.photo_id)) removed += 1;
         if (outcome === 'trashed') creditedBytes += member.measured_bytes;
       }
       // 'still_present' / 'unknown': the reservation releases below; a
@@ -477,7 +513,7 @@ export async function resolveTrashBatch(
     // Verified removals can leave 1-present-member groups — dissolve them
     // with the outcomes (same transaction), scoped to their groups; a
     // group still holding an unreachable member defers (O2).
-    await repairGroupMembership(
+    repaired = await repairGroupMembership(
       txn,
       await groupsOfPhotos(
         txn,
@@ -505,6 +541,7 @@ export async function resolveTrashBatch(
       input.batchId,
     );
   });
+  if (removed > 0 || repaired > 0) publishMembershipChange();
 
   const values = Object.values(outcomes);
   const batchState: ResolveResult['batchState'] =
@@ -578,27 +615,4 @@ export async function lifetimeReclaimedBytes(db: SQLiteDatabase): Promise<number
     "SELECT SUM(measured_bytes) AS total FROM trash_batch_members WHERE outcome = 'trashed'",
   );
   return verified?.total ?? 0;
-}
-
-/** Restore support (P8#4): when a scan/loader sees a 'trashed'-state
- * photo in a MediaStore page (proof of a Gallery restore), this increments
- * the generation exactly once so a later verified re-trash counts again.
- * The edit-detection baseline resets too: a restored photo starts over,
- * and a re-queued edit must not compare against a pre-trash baseline/hash.
- * (Its pending actions left when it was trashed — applyRemovalCleanup —
- * so there is no queue membership to undo here.) */
-export async function markPhotoRestored(
-  db: SQLiteDatabase,
-  photoId: string,
-  at: number,
-): Promise<void> {
-  await db.runAsync(
-    `UPDATE photos SET state = 'unreviewed', is_present = 1,
-       trash_generation = trash_generation + 1,
-       mod_time = NULL, content_hash = NULL,
-       activity_at = ?
-     WHERE asset_id = ? AND state = 'trashed'`,
-    at,
-    photoId,
-  );
 }

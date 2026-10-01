@@ -3,9 +3,48 @@ import {
   badgeStateEqualsWithin,
   queueEquals,
   sameIdsWithin,
+  verdictChangesOf,
   type ReviewSnapshot,
 } from './reviewPatch';
 import type { ReviewMemberRow } from '../db/store';
+
+describe('verdictChangesOf (phase 8: the rows a decision patches in place)', () => {
+  it('maps every verdict-bearing action to the state applyLocalAction lands on', () => {
+    expect(verdictChangesOf({ kind: 'verdict', assetId: 'a', verdict: 'culled' })).toEqual([
+      { assetId: 'a', state: 'culled' },
+    ]);
+    expect(
+      verdictChangesOf({ kind: 'verdict', assetId: 'a', verdict: 'kept', queueEdit: true }),
+    ).toEqual([{ assetId: 'a', state: 'kept', needsEdit: true }]);
+    expect(verdictChangesOf({ kind: 'redecide', assetId: 'a', target: 'to_edit' })).toEqual([
+      { assetId: 'a', state: 'kept' },
+    ]);
+    expect(verdictChangesOf({ kind: 'unstage', assetId: 'a' })).toEqual([
+      { assetId: 'a', state: 'kept' },
+    ]);
+    expect(verdictChangesOf({ kind: 'restore', assetId: 'a' })).toEqual([
+      { assetId: 'a', state: 'unreviewed' },
+    ]);
+    expect(verdictChangesOf({ kind: 'duel', groupId: 1, winnerId: 'w', loserId: 'l' })).toEqual([
+      { assetId: 'w', state: 'kept' },
+    ]);
+    expect(verdictChangesOf({ kind: 'keepMany', assetIds: ['a', 'b'] })).toEqual([
+      { assetId: 'a', state: 'kept' },
+      { assetId: 'b', state: 'kept' },
+    ]);
+  });
+
+  it('carries no verdict for the flag, favourite and eject actions', () => {
+    expect(verdictChangesOf({ kind: 'flag', assetId: 'a', needsEdit: true })).toEqual([]);
+    expect(
+      verdictChangesOf({
+        kind: 'favourite',
+        intent: { assetId: 'a', state: 'queued_apply', target: true },
+      }),
+    ).toEqual([]);
+    expect(verdictChangesOf({ kind: 'makeSingle', assetId: 'a', groupId: 1 })).toEqual([]);
+  });
+});
 
 describe('scoped badge equality (m0.8.6 codex closing: hydrated extras are not drift)', () => {
   it('an entry OUTSIDE the read universe never breaks equality; inside it does', () => {

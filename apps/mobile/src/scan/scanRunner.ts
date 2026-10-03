@@ -14,6 +14,18 @@
  * grouping run. One flight per process at a time; a finished run may be
  * started again (next app open / after a source change).
  *
+ * THE SCAN NOTICES (m0.9 phase 9): a check is requested by the
+ * MediaStore observer (scan/scanNotices.ts — debounced, foreground
+ * only), by every foreground return (the review provider), by a
+ * pull-to-refresh on Home, Everything and Progress (requestLibraryCheck)
+ * and by a surface that finds items MediaStore has and the DB lacks. A
+ * notice during a flight queues ONE check for after it. No timer polls.
+ * THE SCAN EXPLAINS ITSELF: the status carries the pass's kind, a full
+ * pass's reason and a delta's size (lib/scanProgress.ts renders the one
+ * line both Home and Settings show); nothing renders during the skip
+ * check. An interrupted full pass resumes at its enumeration checkpoint
+ * (lib/scanCheckpoint.ts) and names the durable work left.
+ *
  * GROUPS LAND AS TRUTH (v22, docs/Regroup_design.md): grouping is pure
  * presentation — photos own their review state, and every pass rewrites
  * membership freely, decided members included. The one durable user
@@ -34,6 +46,7 @@ import { dayKey, exifDateTimeToMs } from '../lib/dates';
 import { ensureEmbeddings, newEngineHealth, type EngineHealth } from '../lib/embeddings';
 import {
   checkMediaPresence,
+  checkMediaPresenceDetailed,
   countPhotosInRange,
   fetchPhotoPageDesc,
   getAssetDetails,
@@ -56,18 +69,29 @@ import {
   scanFingerprint,
 } from '../lib/scanSkip';
 import {
+  SCAN_CHECKPOINT_KEY,
+  advance as advanceCheckpoint,
+  canResume,
+  changesAboveBoundary,
+  checkpointScope,
+  parseCheckpoint,
+  type ScanCheckpoint,
+} from '../lib/scanCheckpoint';
+import type { FullPassReason } from '../lib/scanProgress';
+import {
   getFavouriteMediaIds,
   getMediaCountsByVolume,
   getMediaChangedSince,
   getMediaGenerations,
   getMountedVolumes,
+  listMediaIds,
   mediaStoreActionsAvailable,
   readExifDateTimeOriginal,
   readMediaFacts,
   type ChangedMediaRow,
   type MediaFactsRequest,
 } from '../../modules/media-store-actions';
-import { canonicalPhotoId, volumeOf } from '../lib/mediaIdentity';
+import { canonicalPhotoId, rawIdOf, volumeOf } from '../lib/mediaIdentity';
 import {
   filterGenerationsToVolumes,
   mergeGenerationBaselines,
@@ -89,13 +113,20 @@ import {
 } from '../lib/deltaScan';
 import { mapWithConcurrency } from '../lib/concurrency';
 import { waitForUserWrites } from '../lib/writePriority';
-import { fileSize } from '../lib/hash';
+import { fileSize, fileSizeOrNull } from '../lib/hash';
 import { ensureEmbeddingModel } from '../db/embeddingStore';
+import { withWriteTransaction } from '../db/database';
 import {
+  adoptReturningFiles,
+  countAnalyzedPresent,
   countPresentPhotos,
   countTrackedByVolume,
+  deleteSetting,
   getNotRelatedPairsAmong,
   getPhotoTimestamps,
+  getPresentLossCandidates,
+  getPresentPhotosSince,
+  hasPresentTwinAtPath,
   getRescueBaselines,
   getTakenAtForAssets,
   getPresentAssetRefs,
@@ -104,6 +135,7 @@ import {
   setSetting,
   updatePhotoUri,
   writeContinuousGroups,
+  type ContinuousPhotoUpsert,
 } from '../db/store';
 
 const SCAN_PAGE_SIZE = 200;
@@ -130,8 +162,27 @@ const SCAN_FULL_AT_KEY = 'scan_full_at';
 const FULL_PASS_MAX_AGE_MS = 7 * 86_400_000;
 
 export interface ScanStatus {
-  phase: 'idle' | 'scanning' | 'done' | 'error';
-  /** Photos paged past so far this run. */
+  /** 'checking' (m0.9 phase 9) covers the skip check and the delta
+   * planning — a few native reads before anything is known. The
+   * surfaces render nothing for it: a "Scanning…" on every foreground
+   * return was F27's complaint. */
+  phase: 'idle' | 'checking' | 'scanning' | 'done' | 'error';
+  /** Which pass runs (m0.9 phase 9) — the line names each differently. */
+  kind: 'full' | 'delta' | 'targeted' | null;
+  /** Why a full pass is full, decided where the pass is decided (F27's
+   * invariant: no silent full pass — and now none unnamed). */
+  reason: FullPassReason | null;
+  /** A delta's size: the changed items it lands, trashed ones excluded. */
+  changed: number | null;
+  /** A resumed full pass: items still to analyze at pass start, from
+   * DURABLE state (the library snapshot minus present rows that are
+   * videos or hold an embedding) — never the enumeration counter. */
+  remaining: number | null;
+  /** This full pass resumed an interrupted one at its checkpoint (the
+   * reason shown is the interrupted pass's own, carried by it). */
+  resumed: boolean;
+  /** Photos paged past so far this run (a resumed pass continues the
+   * interrupted pass's count). */
   scanned: number;
   /** Embeddings computed fresh this run (cache hits not counted). */
   embedded: number;
@@ -156,6 +207,11 @@ export interface ScanStatus {
 
 const IDLE: ScanStatus = {
   phase: 'idle',
+  kind: null,
+  reason: null,
+  changed: null,
+  remaining: null,
+  resumed: false,
   scanned: 0,
   embedded: 0,
   windowsGrouped: 0,
@@ -176,9 +232,32 @@ export function subscribeScanStatus(listener: (status: ScanStatus) => void): () 
   return () => listeners.delete(listener);
 }
 
+/** The publish cadence (G13, m0.9 phase 9): counters reach subscribers
+ * at most once a second — per photo on the embed path, per page on the
+ * walk — and a phase change publishes at once. ONE throttle, here, for
+ * every subscriber (Home used to own a second one, coupled to the page
+ * size): smooth on slow phases, one state update a second on fast ones,
+ * and the accessibility idle the UI gate needs stays reachable. */
+const PUBLISH_INTERVAL_MS = 1000;
+let publishTimer: ReturnType<typeof setTimeout> | null = null;
+let publishedAt = 0;
+let publishedPhase: ScanStatus['phase'] = 'idle';
+
+function publish(): void {
+  if (publishTimer) {
+    clearTimeout(publishTimer);
+    publishTimer = null;
+  }
+  publishedAt = Date.now();
+  publishedPhase = status.phase;
+  for (const listener of listeners) listener(status);
+}
+
 function update(patch: Partial<ScanStatus>): void {
   status = { ...status, ...patch };
-  for (const listener of listeners) listener(status);
+  const elapsed = Date.now() - publishedAt;
+  if (status.phase !== publishedPhase || elapsed >= PUBLISH_INTERVAL_MS) publish();
+  else if (!publishTimer) publishTimer = setTimeout(publish, PUBLISH_INTERVAL_MS - elapsed);
   // Phase-3 spike (b): the WAL curve DURING a scan — the embedding-heavy
   // initial pass is the suspected checkpoint-starvation window, and the
   // end-of-scan line alone cannot show a mid-scan balloon. logFootprint
@@ -189,6 +268,10 @@ function update(patch: Partial<ScanStatus>): void {
 
 let flight: Promise<void> | null = null;
 let rescanQueued = false;
+/** A library change NOTICED during a flight (m0.9 phase 9): the pass's
+ * generations were read at its start, so a change landing mid-pass was
+ * invisible until the next trigger. One check runs after the flight. */
+let noticeQueued = false;
 /** Eject/un-eject re-placement requests (m0.8.7, Regroup_design §5):
  * each is one photo whose window should re-page NOW rather than on the
  * next natural pass. Drained by the next flight, which runs a TARGETED
@@ -248,9 +331,52 @@ export function startContinuousScan(
       } else if (pendingTargets.length > 0) {
         // Targets that arrived mid-flight drain in their own pass.
         void startContinuousScan(db);
+      } else if (noticeQueued) {
+        noticeQueued = false;
+        void startContinuousScan(db);
       }
     });
   return flight;
+}
+
+/**
+ * A library change was NOTICED (m0.9 phase 9): the MediaStore observer,
+ * a foreground return, a pull-to-refresh, or a surface that found items
+ * MediaStore has and the DB lacks. Starts the check now, or queues ONE
+ * for after the running flight. Never forced — the unchanged-library
+ * skip makes a false notice cost one generation read.
+ */
+export function noticeMediaChange(db: SQLiteDatabase): Promise<void> {
+  if (flight) {
+    noticeQueued = true;
+    return flight;
+  }
+  return startContinuousScan(db);
+}
+
+/**
+ * Pull-to-refresh's trigger (m0.9 phase 9): a notice whose promise
+ * settles when the check has CONCLUDED — skipped as unchanged, or a
+ * pass under way (the status line is the feedback from there) — so the
+ * spinner never spins for a whole pass.
+ */
+export function requestLibraryCheck(db: SQLiteDatabase): Promise<void> {
+  console.log('[scan] notice: pull-to-refresh — checking');
+  const flightDone = noticeMediaChange(db);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      unsubscribe();
+      resolve();
+    };
+    const unsubscribe = subscribeScanStatus((s) => {
+      if (s.phase !== 'checking') finish();
+    });
+    if (status.phase !== 'checking') finish();
+    void flightDone.finally(finish);
+  });
 }
 
 /**
@@ -338,9 +464,72 @@ async function pageAndGroupWalk(
      * the same rescue/window path a full pass gives them. Omit/empty for
      * full passes (the unbounded walk already returns them). */
     undatedIds?: readonly string[];
+    /** A FULL pass's enumeration checkpoint (m0.9 phase 9): after each
+     * closed dated window commits, the boundary it proves is persisted
+     * (lib/scanCheckpoint.ts); `current` carries the resumed pass's
+     * starting point so the boundary only ever moves down. Omitted for
+     * deltas and targeted passes. */
+    checkpoint?: {
+      scope: string;
+      generations: Readonly<Record<string, number>>;
+      current: ScanCheckpoint | null;
+      /** The pass's reason, carried so a resume can show it. */
+      reason: FullPassReason;
+    };
   },
 ): Promise<{ seenIds: Set<string>; skipped: number; exifFailed: number } | null> {
   const { ranges, albumIds, baseThreshold, engine, superseded, mountedVolumes, favourites } = args;
+  const checkpoint = args.checkpoint ?? null;
+  // Rows covered by CLOSED dated windows so far (codex r6): the status
+  // counter runs a page ahead, and a checkpoint carrying it would
+  // resume past rows the crash never committed. Starts at the resumed
+  // pass's own base.
+  let covered = checkpoint?.current?.scanned ?? 0;
+  // Persist the boundary AFTER the window's transaction committed and
+  // only while this pass is still the current one: a superseded write
+  // was aborted inside its transaction, and a checkpoint past it would
+  // claim coverage the queued rescan then skips. Through a SESSION
+  // write transaction like every store write under a pass (measured on
+  // the S10e, r2): a write on the shared main connection while a screen
+  // read on it is mid-iteration fails at once with a stale-snapshot
+  // BUSY that no busy timeout covers.
+  // FROZEN once the pass owes a retry (codex r2): a fail-closed skip, a
+  // read that did not complete or an engine error withholds the stamp
+  // at the end, and the boundary must not move past the material those
+  // conditions promise to revisit — the next resume then re-walks from
+  // the last clean window, exactly as the retry contract says.
+  const noteCheckpoint = async (window: readonly LoadedPhoto[]): Promise<void> => {
+    if (checkpoint === null || superseded()) return;
+    if (skipped > 0 || exifFailed > 0 || engine.engineErrors > 0) return;
+    // Counted only when the window LOWERS the boundary, and only its
+    // members BELOW the previous boundary (codex r9/r10): a resume's
+    // above-boundary windows, and the above-boundary half of a window
+    // straddling the saved boundary, are already inside the prior
+    // checkpoint's coverage and must not inflate the resumed percent.
+    const previous = checkpoint.current;
+    const fresh =
+      previous === null
+        ? window.length
+        : window.filter((p) => p.item.timestamp < previous.boundary).length;
+    const next = advanceCheckpoint(previous, {
+      scope: checkpoint.scope,
+      generations: { ...checkpoint.generations },
+      windowTimesMs: window.map((p) => p.item.timestamp),
+      scanned: covered + fresh,
+      reason: checkpoint.reason,
+    });
+    if (next === null) return;
+    covered += fresh;
+    checkpoint.current = next;
+    // Re-checked INSIDE the transaction (codex r2): Forget supersedes
+    // and deletes the checkpoint in its own transaction, and a write
+    // queued behind it would otherwise recreate the boundary Forget's
+    // walk from the top must not resume below.
+    await withWriteTransaction(db, async (txn) => {
+      if (superseded()) return;
+      await setSetting(txn, SCAN_CHECKPOINT_KEY, JSON.stringify(next));
+    });
+  };
   resetFactsPassStats();
   // Fail-closed drops this pass: unparseable volumes (counted by the
   // adapter per page) plus parsed volumes outside the mounted set. Any
@@ -474,6 +663,7 @@ async function pageAndGroupWalk(
           mountedVolumes,
           favourites,
         );
+        await noteCheckpoint(window);
       }
     }
   }
@@ -489,6 +679,7 @@ async function pageAndGroupWalk(
       mountedVolumes,
       favourites,
     );
+    await noteCheckpoint(window);
   }
   // F27's direct landing: fetch each changed undated photo by id and
   // feed it into the undated batch below. A fetch failure is a
@@ -545,6 +736,9 @@ async function fullPassDue(db: SQLiteDatabase): Promise<boolean> {
 
 interface DeltaDecision {
   ranges: TimeRange[];
+  /** The changed items the delta lands (trashed rows excluded) — the
+   * size the status line names (M9: items). */
+  changed: number;
   /** Rows MediaStore reports as trashed — deletions, made visible. Only
    * mounted volumes contribute (their change queries are the source), so
    * a deletion is never concluded for an absent volume (invariant 6). */
@@ -558,6 +752,18 @@ interface DeltaDecision {
    * TTL — photos captured mid-pass belong to the next open, not to a
    * spurious full pass. */
   mediaByVolumeAtStart: Record<string, number>;
+  /** Tracked rows the loss walk's probe named PENDING (codex r7/r8):
+   * still tracked, absent from the pass-start count while they are
+   * being rewritten, so the post-delta agreement nets them out as the
+   * tripwire did. Only positively pending rows — a present or
+   * undecidable candidate stays unexplained and fails closed. */
+  pendingByVolume: Record<string, number>;
+  /** The returned rows the loss walk kept (the bytes back on disk under
+   * a new id): each is adopted by the window that lands the new id — and
+   * when that row is still PENDING no window lands it this pass (codex
+   * r10), so an old id still present after the walk is netted out of
+   * the post-delta agreement, exactly like a pending row. */
+  returnedIdsByVolume: Record<string, string[]>;
 }
 
 /**
@@ -587,21 +793,161 @@ async function mediaCountsByVolume(
 }
 
 /**
+ * Canonical ids of every in-scope row on the given volumes — the
+ * ids-only enumeration (m0.9 phase 9): one projected column per volume,
+ * seconds on a 33k library. A dirs scope restricts to its buckets (a
+ * volume with none in scope contributes nothing, exactly as the paging
+ * does). `undatedOnly` returns the rows without DATE_TAKEN. Throws on
+ * any failure: a partial set would read as deletions.
+ */
+async function enumerateMediaIds(
+  volumes: readonly string[],
+  albumIdsByVolume: Readonly<Record<string, string[]>> | null,
+  undatedOnly = false,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  // A dirs scope's bucket list is user-sized (a recursive root over
+  // hundreds of albums): chunked under the provider's SQL variable
+  // floor, the chunks unioned — one bucket belongs to one chunk.
+  const BUCKET_CHUNK = 400;
+  for (const volume of volumes) {
+    const buckets = albumIdsByVolume === null ? [] : (albumIdsByVolume[volume] ?? []);
+    if (albumIdsByVolume !== null && buckets.length === 0) continue;
+    const chunks = albumIdsByVolume === null ? [[]] : chunkList(buckets, BUCKET_CHUNK);
+    for (const part of chunks) {
+      for (const rawId of await listMediaIds(volume, part, undatedOnly)) {
+        out.add(canonicalPhotoId(volume, rawId));
+      }
+    }
+  }
+  return out;
+}
+
+function chunkList<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+/**
+ * The ids-only loss reconciliation (F44, m0.9 phase 9). A volume holding
+ * fewer in-scope rows than the DB tracks, net of the trashed rows the
+ * change query reported, is the one trace a trash-bypassing delete
+ * leaves — Samsung Gallery's Recycle bin moves the file under
+ * Android/.Trash and deletes the MediaStore row outright (measured on
+ * the S23), so the rows stayed present, as empty thumbnails, until a
+ * 4.5-minute full pass found them. They are nameable without the walk:
+ * enumerate the volume's in-scope ids, diff against the tracked present
+ * set, and converge the difference exactly as the full pass's unseen
+ * reconciliation would — through the SAME tri-state presence probe per
+ * candidate (codex r1): the enumeration's default view omits a tracked
+ * row an app is rewriting in place (IS_PENDING), and the uri-shaped
+ * source clause can be looser than the bucket-shaped enumeration, so a
+ * row the diff names is only gone when the probe says so; a row the
+ * probe finds present or cannot decide stays, and the count it leaves
+ * unexplained goes to the full pass as before. Mutates `counts` with
+ * the post-reconciliation tracked numbers and returns the volumes whose
+ * loss the walk could NOT explain. Throws propagate to the planner's
+ * catch: an enumeration that failed proves nothing.
+ */
+async function reconcileUntracedLoss(
+  db: SQLiteDatabase,
+  losses: readonly string[],
+  sources: {
+    roots: readonly SourceRoot[] | null;
+    albumIdsByVolume: Readonly<Record<string, string[]>> | null;
+  },
+  trashedIds: ReadonlySet<string>,
+  counts: Record<string, VolumeCountRow>,
+  mountedVolumes: ReadonlySet<string>,
+  /** Out: the kept (pending or undecidable) count per volume. */
+  pendingByVolume: Record<string, number>,
+  /** Out: the returned candidates' old ids per volume. */
+  returnedIdsByVolume: Record<string, string[]>,
+): Promise<string[]> {
+  for (const volume of losses) {
+    const started = Date.now();
+    const enumerated = await enumerateMediaIds([volume], sources.albumIdsByVolume);
+    const tracked = await getPresentLossCandidates(db, sources.roots, volume);
+    const candidates = tracked.filter((row) => !enumerated.has(row.id) && !trashedIds.has(row.id));
+    const gone: string[] = [];
+    let pending = 0;
+    let returned = 0;
+    const returnedIds: string[] = [];
+    let unexplained = 0;
+    for (const row of candidates) {
+      // The probe FIRST (codex r8): only a row the provider itself names
+      // PENDING is netted out of the count checks — an in-place rewrite
+      // keeps its size, and the size shortcut below would have called it
+      // a return. A row the probe finds plainly present yet absent from
+      // the enumeration (the uri-shaped source clause is looser than the
+      // bucket enumeration), or one it cannot decide, stays unexplained
+      // and the full pass remains the answer — never a netted-out
+      // "explanation" that advances the baseline over a stale row.
+      const presence = await checkMediaPresenceDetailed({ id: row.id, kind: row.kind });
+      if (presence === 'pending') {
+        pending += 1;
+        continue;
+      }
+      if (presence === 'trashed') {
+        gone.push(row.id);
+        continue;
+      }
+      if (presence === 'absent') {
+        // The bytes still at the stored path at the stored size (codex
+        // r6): the old id is gone from the provider but the file came
+        // back under a NEW id in the same change set (a Gallery delete
+        // and restore beside another delete). Not a loss — the window
+        // that lands the new id adopts this row with its verdict intact,
+        // and a tombstone written here would reset it to review.
+        if (row.sizeBytes !== null && fileSizeOrNull(row.uri) === row.sizeBytes) {
+          returned += 1;
+          returnedIds.push(row.id);
+        } else gone.push(row.id);
+        continue;
+      }
+      unexplained += 1;
+    }
+    if (gone.length > 0) {
+      await assertMountedUnchanged(mountedVolumes);
+      await reconcileExternallyRemoved(db, gone, Date.now(), [...mountedVolumes]);
+    }
+    // Pending rows and returns are absent from the provider's default
+    // view while still tracked: in flight for the tripwire, like a
+    // reported trash (codex r6). Only the PENDING ones ride the decision
+    // into the post-delta agreement (a return is adopted when landed,
+    // so tracked and MediaStore agree on it by then).
+    counts[volume].trashedInFlight += pending + returned;
+    pendingByVolume[volume] = pending;
+    returnedIdsByVolume[volume] = returnedIds;
+    console.log(
+      `[scan] delta: ${gone.length} tracked item(s) gone from ${volume} with no trace — ` +
+        `reconciled by an id walk over ${enumerated.size} rows in ${Date.now() - started} ms` +
+        (pending > 0 ? ` (${pending} still being written — deferred)` : '') +
+        (returned > 0 ? ` (${returned} back on disk under a new id — adopted when landed)` : '') +
+        (unexplained > 0 ? ` (${unexplained} present or undecidable — unexplained)` : ''),
+    );
+  }
+  const trackedAfter = await countTrackedByVolume(db, sources.roots);
+  for (const volume of losses) counts[volume].tracked = trackedAfter[volume] ?? 0;
+  return volumesWithUntracedLoss(counts);
+}
+
+/**
  * Decide whether this pass can be a delta, and over which ranges.
  *
- * Returns null for "run a full pass" — every uncertainty resolves that
- * way, because a full pass is exactly what shipped before the delta
- * existed. A forced rescan, a model swap, a missing baseline, an
- * unreadable change set or a cost model that says the delta is not a
- * decisive win all land here.
+ * Returns a FullPassReason for "run a full pass" — every uncertainty
+ * resolves that way, because a full pass is exactly what shipped before
+ * the delta existed. A missing baseline, an unreadable change set or a
+ * cost model that says the delta is not a decisive win all land here.
  *
  * INVARIANT (F27, m0.8.7): every fallback to a full pass logs its
- * reason before returning; none returns silently. The one unlogged
- * fallback (the undated bail, which ran AFTER the "DELTA wins" line
- * printed) is exactly how every WhatsApp arrival silently cost a
- * 5-minute corpus walk. The force-shaped reasons (forced rescan, model
- * swap, weekly due, generation gap) are logged by scan() where they are
- * decided.
+ * reason before returning, and (m0.9 phase 9) RETURNS it, so the status
+ * line names it; none returns silently. The one unlogged fallback (the
+ * undated bail, which ran AFTER the "DELTA wins" line printed) is
+ * exactly how every WhatsApp arrival silently cost a 5-minute corpus
+ * walk. The force-shaped reasons (forced rescan, model swap, a resume,
+ * weekly due, generation gap) are decided by scan() before this runs.
  */
 async function planPass(
   db: SQLiteDatabase,
@@ -614,15 +960,16 @@ async function planPass(
     roots: readonly SourceRoot[] | null;
     albumIdsByVolume: Readonly<Record<string, string[]>> | null;
   },
-  force: boolean,
-): Promise<DeltaDecision | null> {
-  if (force) return null; // reason logged by scan()
+  /** All mounted volumes at pass start — the loss reconciliation's fence
+   * and its repair's reachability. */
+  mountedVolumes: ReadonlySet<string>,
+): Promise<DeltaDecision | FullPassReason> {
   const roots = sources.roots;
   try {
     const raw = await getSetting(db, SCAN_GENERATIONS_KEY);
     if (raw === null) {
       console.log('[scan] delta: no stored baseline — the first pass must be full');
-      return null;
+      return 'first';
     }
     const previous = JSON.parse(raw) as Record<string, number>;
     const keys = Object.keys(filteredGenerations);
@@ -631,7 +978,7 @@ async function planPass(
     // there is nothing to prove a delta against.
     if (keys.length === 0) {
       console.log('[scan] delta: no generation evidence for any in-scope volume — full pass');
-      return null;
+      return 'storage';
     }
     // A scope-relevant volume the baseline never saw (a card inserted or
     // a folder on it newly selected) has no "since" to query from — only
@@ -642,7 +989,7 @@ async function planPass(
       console.log(
         `[scan] delta: never-seen in-scope volume(s) ${unseenVolumes.join(', ')} — full pass`,
       );
-      return null;
+      return 'storage';
     }
     const allChanged: ChangedMediaRow[] = [];
     for (const key of keys) {
@@ -660,12 +1007,27 @@ async function planPass(
     // measured WhatsApp case) must plan nothing, exactly as it is
     // invisible to every other read. Keyed on each row's CURRENT bucket;
     // trashed rows always pass (see filterChangedToSources).
-    const changed = filterChangedToSources(allChanged, sources.albumIdsByVolume);
-    if (changed.length < allChanged.length) {
+    const inSource = filterChangedToSources(allChanged, sources.albumIdsByVolume);
+    if (inSource.length < allChanged.length) {
       console.log(
-        `[scan] delta: ${allChanged.length - changed.length} out-of-source change(s) ignored`,
+        `[scan] delta: ${allChanged.length - inSource.length} out-of-source change(s) ignored`,
       );
     }
+    // PENDING rows (m0.9 phase 9, the pending-row race): Samsung's camera
+    // holds a fresh capture in MediaStore's PENDING state for seconds; a
+    // delta racing that window used to lump the row with the out-of-
+    // source changes and then NOTHING re-checked. Named for what it is
+    // and left out of the plan — the row cannot be paged yet, and the
+    // observer re-fires when it finalizes (its GENERATION_MODIFIED moves
+    // again, so the next change query reports it).
+    const pending = inSource.filter((row) => row.isPending);
+    if (pending.length > 0) {
+      console.log(
+        `[scan] delta: ${pending.length} change(s) still being written (MediaStore pending) — ` +
+          `re-checked when they finalize`,
+      );
+    }
+    const changed = inSource.filter((row) => !row.isPending);
     const timestamps = await getPhotoTimestamps(db, roots);
     // Canonical ids carry each row's REAL volume (m0.8.3 phase 2): the
     // old aliasing hazard died with volume-qualified identity, so
@@ -712,7 +1074,7 @@ async function planPass(
           `[scan] delta: ${moved.length} changed items moved their DATE_TAKEN — ` +
             `full pass to rewindow both sides`,
         );
-        return null;
+        return 'dates';
       }
     }
     // COUNT TRIPWIRES, PER VOLUME (invariant 1). MediaStore has NO
@@ -746,13 +1108,30 @@ async function planPass(
           )
           .join(' · '),
     );
+    // A loss with no trace routes to the ids-only reconciliation first
+    // (F44, m0.9 phase 9); only a loss the id walk cannot explain still
+    // costs the full pass.
     const losses = volumesWithUntracedLoss(counts);
+    const pendingByVolume: Record<string, number> = {};
+    const returnedIdsByVolume: Record<string, string[]> = {};
     if (losses.length > 0) {
-      console.log(
-        `[scan] delta: tracked items gone from MediaStore with no trace on ` +
-          `${losses.join(', ')} — full pass to reconcile`,
+      const unexplained = await reconcileUntracedLoss(
+        db,
+        losses,
+        sources,
+        new Set(trashedIds),
+        counts,
+        mountedVolumes,
+        pendingByVolume,
+        returnedIdsByVolume,
       );
-      return null;
+      if (unexplained.length > 0) {
+        console.log(
+          `[scan] delta: tracked items gone from MediaStore with no trace on ` +
+            `${unexplained.join(', ')} — the id walk could not explain it; full pass to reconcile`,
+        );
+        return 'loss';
+      }
     }
     const plan = planDeltaRanges(changed, timestamps, ADJACENT_MERGE_MAX_GAP_MS);
     const verdict = deltaVerdict({
@@ -762,7 +1141,7 @@ async function planPass(
       corpus: timestamps.length,
     });
     console.log(`[scan] ${describeDeltaPlan(plan, verdict)}`);
-    if (!verdict.worthIt) return null; // reason printed on the line above
+    if (!verdict.worthIt) return 'cost'; // reason printed on the line above
     // UNDATED changes (no DATE_TAKEN) cannot be placed in any range —
     // they land by direct per-id fetch instead (F27; each one used to
     // silently discard the whole delta AFTER "DELTA wins" printed,
@@ -771,11 +1150,124 @@ async function planPass(
     const undatedIds = changed
       .filter((row) => !row.isTrashed && row.dateTakenMs === null)
       .map((row) => canonicalPhotoId(row.volumeName, row.rawId));
-    return { ranges: plan.ranges, trashedIds, undatedIds, mediaByVolumeAtStart: mediaByVolume };
+    return {
+      ranges: plan.ranges,
+      changed: plan.changed - plan.trashed,
+      trashedIds,
+      undatedIds,
+      mediaByVolumeAtStart: mediaByVolume,
+      pendingByVolume,
+      returnedIdsByVolume,
+    };
   } catch (error) {
     console.log(`[scan] delta unavailable, running a full pass: ${String(error)}`);
-    return null;
+    return 'unavailable';
   }
+}
+
+/**
+ * A RESUMED full pass's coverage (lib/scanCheckpoint.ts, m0.9 phase 9):
+ * the dated walk BELOW the checkpoint's boundary; the rows changed
+ * ABOVE it since the checkpoint's generations, re-paged as delta ranges
+ * clipped to the boundary (the camera did not stop between sessions);
+ * the undated tail by ids (no bounded range reaches it); and the
+ * trashed rows since, by id. A capture-time move above the boundary is
+ * the one change a resume cannot repair — it throws, like any read
+ * failure here, and the caller walks from the top instead: a resume
+ * that cannot see what changed above its boundary would stamp a lie.
+ */
+async function planResume(
+  db: SQLiteDatabase,
+  checkpoint: ScanCheckpoint,
+  generations: Readonly<Record<string, number>>,
+  sources: {
+    roots: readonly SourceRoot[] | null;
+    albumIdsByVolume: Readonly<Record<string, string[]>> | null;
+  },
+  mountedVolumes: ReadonlySet<string>,
+): Promise<{ ranges: TimeRange[]; undatedIds: string[]; trashedIds: string[] }> {
+  const allChanged: ChangedMediaRow[] = [];
+  const keys = Object.keys(generations);
+  for (const key of keys) {
+    const since = checkpoint.generations[key];
+    if (since === undefined) throw new Error(`no checkpoint generation for ${key}`);
+    if (since === generations[key]) continue;
+    allChanged.push(...(await getMediaChangedSince(rawVolumeOfKey(key), since)));
+  }
+  const inSource = filterChangedToSources(allChanged, sources.albumIdsByVolume).filter(
+    (row) => !row.isPending,
+  );
+  // A capture-time move anywhere in the change set is the one change a
+  // resume cannot repair (both windows re-form, and one may be above
+  // the boundary): the delta planner refuses it the same way.
+  const stored = await getTakenAtForAssets(
+    db,
+    inSource.map((row) => canonicalPhotoId(row.volumeName, row.rawId)),
+  );
+  const moved = inSource.filter((row) => {
+    if (row.isTrashed) return false;
+    const oldAt = stored.get(canonicalPhotoId(row.volumeName, row.rawId));
+    return oldAt !== undefined && oldAt !== row.dateTakenMs;
+  });
+  if (moved.length > 0) {
+    throw new Error(`${moved.length} changed item(s) moved their DATE_TAKEN since the checkpoint`);
+  }
+  // "Above" reaches one merge gap BELOW the boundary too: the closed
+  // window's members sit at or above it, and a row that landed since
+  // within a gap of them (a backdated arrival) belongs in THEIR window
+  // — the planner's expansion over the stored timestamps then re-pages
+  // the window whole, and the clip below keeps the main range from
+  // paging the same rows twice.
+  const reach = checkpoint.boundary - ADJACENT_MERGE_MAX_GAP_MS;
+  const above = changesAboveBoundary(inSource, reach);
+  // Rows that LEFT the prefix between sessions (codex r2) — trashed,
+  // deleted with no trace, moved out of scope: their old windows were
+  // grouped WITH them and must re-form without them, as a clean pass
+  // would have them. The ids-only enumeration names the departed rows;
+  // the end-of-pass reconciliation converges them.
+  const enumerated = await enumerateMediaIds([...mountedVolumes], sources.albumIdsByVolume);
+  const departed = (
+    await getPresentPhotosSince(db, sources.roots, [...mountedVolumes], reach)
+  ).filter((row) => !enumerated.has(row.id));
+  const points: ChangedMediaRow[] = [
+    ...above,
+    ...departed.map((row) => ({
+      volumeName: volumeOf(row.id),
+      rawId: rawIdOf(row.id),
+      mediaType: 'photo' as const,
+      dateTakenMs: row.takenAt,
+      dateModifiedSec: null,
+      isTrashed: false,
+      isPending: false,
+      generationAdded: 0,
+      generationModified: 0,
+      bucketId: null,
+    })),
+  ];
+  const timestamps = await getPhotoTimestamps(db, sources.roots);
+  const plan = planDeltaRanges(points, timestamps, ADJACENT_MERGE_MAX_GAP_MS);
+  // Clipped to the boundary: the main range covers everything below it,
+  // and the merged pager hands a window straddling the two to the
+  // accumulator in order — contiguous, never overlapping.
+  const ranges: TimeRange[] = [
+    { startMs: 0, endMs: checkpoint.boundary - 1 },
+    ...plan.ranges
+      .filter((range) => range.endMs >= checkpoint.boundary)
+      .map((range) => ({
+        startMs: Math.max(range.startMs, checkpoint.boundary),
+        endMs: range.endMs,
+      })),
+  ];
+  const undated = await enumerateMediaIds(keys.map(rawVolumeOfKey), sources.albumIdsByVolume, true);
+  const trashedIds = inSource
+    .filter((row) => row.isTrashed)
+    .map((row) => canonicalPhotoId(row.volumeName, row.rawId));
+  console.log(
+    `[scan] resuming the interrupted full pass below ${new Date(checkpoint.boundary).toISOString()} ` +
+      `(${checkpoint.scanned} already walked; ${above.length} changed and ${departed.length} departed above it → ` +
+      `${plan.ranges.length} range(s); ${undated.size} undated by id; ${trashedIds.length} trashed since)`,
+  );
+  return { ranges, undatedIds: [...undated], trashedIds };
 }
 
 /**
@@ -846,7 +1338,14 @@ async function finishPass(
   await setSetting(db, SCAN_VERIFIED_AT_KEY, String(Date.now()));
   // Only a FULL pass may restart the weekly clock — a delta never
   // enumerated everything, so it cannot stand in for the reconciliation.
-  if (args.wasFullPass) await setSetting(db, SCAN_FULL_AT_KEY, String(Date.now()));
+  // A completed resumed pass IS the full pass; its checkpoint is spent
+  // (m0.9 phase 9). Kept while the stamp is withheld above: the next
+  // open then resumes at the last boundary and retries the withheld
+  // reads instead of re-walking the whole library.
+  if (args.wasFullPass) {
+    await setSetting(db, SCAN_FULL_AT_KEY, String(Date.now()));
+    await deleteSetting(db, SCAN_CHECKPOINT_KEY);
+  }
 }
 
 async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
@@ -866,7 +1365,9 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   // A forced run DROPS drained targets: the full pass below re-windows
   // the whole library, targets included.
 
-  status = { ...IDLE, phase: 'scanning' };
+  // CHECKING, not scanning (m0.9 phase 9): nothing is known yet, and
+  // the surfaces render nothing for this phase.
+  status = { ...IDLE, phase: 'checking' };
   update({});
 
   const model = await ensureEmbeddingModel(db, MODEL_SHA256);
@@ -924,8 +1425,39 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   // forever with the stale row still in the queue. This is the guarantee
   // that such a row is eventually reconciled.
   const fullDue = await fullPassDue(db);
-  if (fullDue) console.log('[scan] full pass due — weekly reconciliation');
-  if (!force && !model.cleared && !fullDue && !generationGap) {
+  // A library with no baseline yet has nothing to be "weekly" about: the
+  // first pass is named as such (codex r1 — the weekly clock is unset on
+  // a fresh database too, and used to outrank the missing baseline).
+  const firstPass = (await getSetting(db, SCAN_GENERATIONS_KEY)) === null;
+  // THE CHECKPOINT (m0.9 phase 9): an interrupted full pass over this
+  // scope owes the rest of its walk, and owes it BEFORE the skip or a
+  // delta can claim the library current (the interrupted pass stored no
+  // fingerprint, but an older complete pass's may still match, and a
+  // delta over "no changes" would stamp a half-regrouped library). A
+  // forced pass or a model swap discards it — their full walk is the
+  // point; so does a scope or storage change it cannot cover.
+  const scope = checkpointScope({
+    roots: sources.roots ?? null,
+    strictness: rawStrictness,
+    modelSha: MODEL_SHA256,
+  });
+  let checkpoint = parseCheckpoint(await getSetting(db, SCAN_CHECKPOINT_KEY));
+  if (checkpoint !== null) {
+    const resumable =
+      !force &&
+      !model.cleared &&
+      canResume(checkpoint, { scope, generationKeys: Object.keys(relevantGenerations) });
+    if (!resumable) {
+      console.log(
+        `[scan] checkpoint discarded (${
+          force ? 'forced rescan' : model.cleared ? 'model changed' : 'scope or storage changed'
+        })`,
+      );
+      await deleteSetting(db, SCAN_CHECKPOINT_KEY);
+      checkpoint = null;
+    }
+  }
+  if (!force && !model.cleared && !fullDue && !generationGap && checkpoint === null) {
     const stored = await getSetting(db, SCAN_FINGERPRINT_KEY);
     if (scanCanSkip({ generations: relevantGenerations, stored, current: fingerprint })) {
       // The skip CLAIMS verification, so it takes the same fence a
@@ -988,32 +1520,77 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     new Set(scopeRelevantVolumes(mounted, passSources.roots ?? null)),
   );
 
-  // The remaining force reason gets its log line too (F27's invariant:
-  // no silent full pass) — the other three printed theirs above.
-  if (force && !model.cleared && !fullDue && !generationGap) {
-    console.log('[scan] full pass: forced rescan (settings change or reset)');
+  // The pass's checkpoint scope comes from the FRESH resolution; a stale
+  // cached scope at the check above cannot resume a pass over another.
+  const passScope = checkpointScope({
+    roots: passSources.roots ?? null,
+    strictness: rawStrictness,
+    modelSha: MODEL_SHA256,
+  });
+  if (checkpoint !== null && passScope !== scope) {
+    console.log('[scan] checkpoint discarded (source scope changed since the last pass)');
+    await deleteSetting(db, SCAN_CHECKPOINT_KEY);
+    checkpoint = null;
   }
-
-  // DELTA vs FULL (m0.8.2 phase 2). Both run the SAME grouping code
-  // below, differing only in which time ranges they page — which is what
-  // makes "a delta produces the groups a full pass would" a structural
-  // property rather than a hope.
-  const decision = await planPass(
-    db,
-    passRelevantGenerations,
-    { roots: passSources.roots ?? null, albumIdsByVolume: passSources.albumIdsByVolume ?? null },
-    // generationGap forces FULL (final cycle R2): a volume that mounted
-    // between the generation and mounted reads has no entry, so a delta
-    // planned from the older keys could complete "verified" without
-    // ever enumerating the card.
-    force || model.cleared || fullDue || generationGap,
-  );
+  // The pass-shaped reasons, in precedence: a forced walk and a model
+  // swap discard everything; a resumable checkpoint outranks the weekly
+  // clock (the resumed pass IS the weekly pass when due); a generation
+  // gap forces FULL (final cycle R2): a volume that mounted between the
+  // generation and mounted reads has no entry, so a delta planned from
+  // the older keys could complete "verified" without ever enumerating
+  // the card.
+  const forcedReason: FullPassReason | null = force
+    ? 'forced'
+    : model.cleared
+      ? 'model'
+      : checkpoint !== null
+        ? 'resume'
+        : firstPass
+          ? 'first'
+          : fullDue
+            ? 'weekly'
+            : generationGap
+              ? 'storage'
+              : null;
+  // ONE line for the reason the precedence selected (codex r3): the
+  // sink and the status name the same reason, never a lower-priority
+  // condition that was also true (F27's invariant: no silent full pass).
+  if (forcedReason !== null) {
+    const detail: Record<
+      Exclude<FullPassReason, 'cost' | 'dates' | 'loss' | 'inconsistent' | 'unavailable'>,
+      string
+    > = {
+      forced: 'forced rescan (settings change or reset)',
+      model: 'embedding model changed — every vector is recomputed',
+      resume: 'an interrupted full pass resumes at its checkpoint',
+      first: 'no stored baseline — the first pass must be full',
+      weekly: 'full pass due — weekly reconciliation',
+      storage: 'a mounted volume has no generation evidence',
+    };
+    console.log(`[scan] full pass: ${detail[forcedReason]}`);
+  }
 
   // The mounted-volume set at pass start (m0.8.3, D7): ALL mounted
   // volumes (scope filtering is the query's job — a photo on any mounted
   // volume is validly stamped). Never null: acquisition failure aborted
   // the pass above.
   const mountedVolumes: ReadonlySet<string> = new Set(mounted);
+
+  // DELTA vs FULL (m0.8.2 phase 2). Both run the SAME grouping code
+  // below, differing only in which time ranges they page — which is what
+  // makes "a delta produces the groups a full pass would" a structural
+  // property rather than a hope.
+  const decision: DeltaDecision | FullPassReason =
+    forcedReason ??
+    (await planPass(
+      db,
+      passRelevantGenerations,
+      {
+        roots: passSources.roots ?? null,
+        albumIdsByVolume: passSources.albumIdsByVolume ?? null,
+      },
+      mountedVolumes,
+    ));
 
   // F20: the pass-start favourite snapshot — one indexed query per
   // mounted volume, projected onto exactly the rows this pass walks. A
@@ -1038,7 +1615,11 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     }
   }
 
-  if (decision) {
+  let fullReason: FullPassReason;
+  if (typeof decision === 'string') {
+    fullReason = decision;
+  } else {
+    update({ phase: 'scanning', kind: 'delta', reason: null, changed: decision.changed });
     const deltaResult = await pageAndGroup(db, {
       ranges: decision.ranges,
       albumIds: passSources.albumIds ?? undefined,
@@ -1083,6 +1664,28 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
     // is invisible to it and would otherwise sit until the weekly
     // reconciliation. Checked here instead, and repaired immediately.
     const trackedAfter = await countTrackedByVolume(db, passSources.roots ?? null);
+    // Net of the rows the loss walk kept as in flight (codex r7): a
+    // pending in-place rewrite is tracked and absent from the pass-start
+    // count, and must not read as a missed removal here.
+    for (const [volume, pending] of Object.entries(decision.pendingByVolume)) {
+      if (pending > 0) trackedAfter[volume] = (trackedAfter[volume] ?? 0) - pending;
+    }
+    // A returned row still under its OLD id after the walk was not
+    // adopted — its new row is still pending and no window landed it
+    // (codex r10): netted out like a pending row, so the agreement
+    // does not send it to a full pass that would tombstone it.
+    for (const [volume, ids] of Object.entries(decision.returnedIdsByVolume)) {
+      let deferred = 0;
+      for (const id of ids) {
+        // Still present under the old id AND no landed twin at its path:
+        // the replacement is pending (codex r11 — a twin landed beside
+        // it means the adoption declined, a ghost that must fail closed).
+        if ((await countPresentPhotos(db, [id])) === 0) continue;
+        if (await hasPresentTwinAtPath(db, id)) continue;
+        deferred += 1;
+      }
+      if (deferred > 0) trackedAfter[volume] = (trackedAfter[volume] ?? 0) - deferred;
+    }
     const disagreeing = volumesDisagreeingAfterDelta(decision.mediaByVolumeAtStart, trackedAfter);
     if (disagreeing.length === 0) {
       // Final fence: baselines must describe the world they were read in.
@@ -1126,26 +1729,113 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
       0,
     );
     update({ scanned: 0, total: mediaAtStartTotal, corpusTotal: mediaAtStartTotal });
+    fullReason = 'inconsistent';
   }
 
   // A FULL pass's denominator is the library snapshot (F3 — the percent
   // branch); a delta keeps total null and the line shows plain counts.
   if (status.total === null) update({ total: status.corpusTotal });
 
+  // The work actually LEFT, from durable state (m0.9 phase 9): the
+  // snapshot minus present rows that need no analysis. Named on a
+  // resumed pass, where the enumeration counter cannot be trusted.
+  const analyzed = await countAnalyzedPresent(db, passSources.roots ?? null, mounted).catch(
+    (error): null => {
+      console.warn('[scan] analyzed count failed — no remaining count this pass:', String(error));
+      return null;
+    },
+  );
+  const remaining =
+    status.corpusTotal !== null && analyzed !== null
+      ? Math.max(0, status.corpusTotal - analyzed)
+      : null;
+
+  // The resumed pass's coverage, or the whole library.
+  let ranges: TimeRange[] = [FULL_RANGE];
+  let resumeUndatedIds: string[] | undefined;
+  let resumeTrashedIds: string[] = [];
+  let resumed: ScanCheckpoint | null = null;
+  if (fullReason === 'resume' && checkpoint !== null) {
+    try {
+      const plan = await planResume(
+        db,
+        checkpoint,
+        passRelevantGenerations,
+        {
+          roots: passSources.roots ?? null,
+          albumIdsByVolume: passSources.albumIdsByVolume ?? null,
+        },
+        mountedVolumes,
+      );
+      ranges = plan.ranges;
+      resumeUndatedIds = plan.undatedIds;
+      resumeTrashedIds = plan.trashedIds;
+      resumed = checkpoint;
+      // The interrupted pass's own reason, resumed (Tristan, 2026-10-03):
+      // the user may never have seen it before the interruption.
+      if (checkpoint.reason !== undefined && checkpoint.reason !== 'resume') {
+        fullReason = checkpoint.reason;
+      }
+    } catch (error) {
+      // The reason stays 'resume' — the line's "still to analyze" is
+      // durable truth whichever row the walk starts from; only the
+      // boundary is given up.
+      console.log(`[scan] resume unavailable, walking from the top: ${String(error)}`);
+      await deleteSetting(db, SCAN_CHECKPOINT_KEY);
+      checkpoint = null;
+    }
+  }
+  // OUTSIDE the planner's catch (self-review, REVIEW_CLASSES 25): the
+  // mount fence's throw must abort the pass as it does everywhere else,
+  // never read as "resume unavailable" and walk on under a changed
+  // mounted set.
+  if (resumeTrashedIds.length > 0) {
+    await assertMountedUnchanged(mountedVolumes);
+    await reconcileExternallyRemoved(db, resumeTrashedIds, Date.now(), [...mountedVolumes]);
+    console.log(`[scan] resume: ${resumeTrashedIds.length} trashed items left the queue`);
+  }
+  update({
+    phase: 'scanning',
+    kind: 'full',
+    reason: fullReason,
+    remaining,
+    resumed: resumed !== null,
+    scanned: resumed !== null ? resumed.scanned : status.scanned,
+  });
+
   const fullResult = await pageAndGroup(db, {
-    ranges: [FULL_RANGE],
+    ranges,
     albumIds: passSources.albumIds ?? undefined,
     baseThreshold: strictness.baseThreshold,
     engine,
     superseded,
     mountedVolumes,
     favourites,
+    undatedIds: resumeUndatedIds,
+    // Checkpoints need a generation to re-page from on resume: without
+    // one (the native read failed) the pass still runs, unresumable.
+    checkpoint:
+      Object.keys(passRelevantGenerations).length > 0
+        ? {
+            scope: passScope,
+            generations: passRelevantGenerations,
+            current: resumed,
+            reason: fullReason,
+          }
+        : undefined,
   });
   if (fullResult === null) {
     console.log('[scan] superseded by a settings change — stopping for the queued rescan');
     return;
   }
-  const seenIds = fullResult.seenIds;
+  // A RESUMED pass's own walk covered only the part below its boundary:
+  // its "seen" set is the ids-only enumeration (seconds), which is the
+  // same evidence a complete walk's would be. Throws → the pass errors
+  // and the next open resumes at the final boundary and retries.
+  const seenIds =
+    resumed !== null
+      ? await enumerateMediaIds([...mountedVolumes], passSources.albumIdsByVolume ?? null)
+      : fullResult.seenIds;
 
   // Backstop for tiny corpora that never reached the consecutive-error
   // threshold: a scan with engine errors and literally zero successes must
@@ -1260,7 +1950,7 @@ async function targetedPass(
   targets: readonly RescanTarget[],
   superseded: () => boolean,
 ): Promise<void> {
-  status = { ...IDLE, phase: 'scanning' };
+  status = { ...IDLE, phase: 'scanning', kind: 'targeted' };
   update({});
   const sources = await resolveSources(db);
   const rawStrictness = await getSetting(db, GROUPING_STRICTNESS_KEY);
@@ -1398,6 +2088,43 @@ async function applyExifDateRescue(db: SQLiteDatabase, batch: LoadedPhoto[]): Pr
   return failed;
 }
 
+/** The upsert row for one paged item — the window's write and the
+ * returning-file adoption build the same row (favourite added by the
+ * write, from its pass-start snapshot). */
+function upsertRowOf(p: LoadedPhoto): ContinuousPhotoUpsert {
+  return {
+    assetId: p.item.id,
+    uri: p.item.uri,
+    takenAt: p.item.timestamp,
+    modTime: p.modTime,
+    fileGeneration: p.generation,
+    fileMtime: p.modTime,
+    // v24 media kinds: MediaStore's facts (the page join / the direct
+    // fetch) plus the per-file read's results when it completed.
+    kind: p.item.kind,
+    mimeType: p.mimeType,
+    displayName: p.displayName ?? p.filename,
+    width: p.width > 0 ? p.width : null,
+    height: p.height > 0 ? p.height : null,
+    durationMs: p.durationMs,
+    motionVideoOffset: p.facts?.motionVideoOffset ?? null,
+    motionVideoLength: p.facts?.motionVideoLength ?? null,
+    motionPresentationUs: p.facts?.motionPresentationUs ?? null,
+    factsCheckedVersion: p.facts?.factsCheckedVersion ?? null,
+    // Undated photos carry NO day: their timestamp is only the mtime
+    // fallback, and the day surfaces exclude them on both sides.
+    day: p.undated ? null : dayKey(p.item.timestamp),
+    volumeName: p.volumeName,
+    rawId: p.rawId,
+    // v14: recorded so reclaimable bytes is an exact SUM (0 = the
+    // stat failed → NULL keeps the row in the transient stat-fallback).
+    sizeBytes: p.sizeBytes ?? (fileSize(p.item.uri) || null),
+    // NULL unless the D15 rescue completed a read this pass — the
+    // upsert's COALESCE then retains any stored marker.
+    exifCheckedModTime: p.exifCheckedModTime ?? null,
+  };
+}
+
 /** Embed, group, and persist one closed merge window. Returns the
  * number of per-file facts reads that did NOT complete (the pass adds
  * them to its withheld-baseline count). */
@@ -1473,6 +2200,16 @@ async function processWindow(
   // write transaction re-reads them — an eject landing between this read
   // and the write must still win.
   perfAggregate('scan window embed', Date.now() - embedStarted, photos.length);
+  // A returning file adopts its tombstone BEFORE the constraints read
+  // (phase 9, F44; codex r2): its not-related judgments live under the
+  // old id until then, and a plan made without them would be skipped at
+  // the write's revalidation. The window's write then revives the row
+  // under its new id.
+  if (mountedVolumes) await assertMountedUnchanged(mountedVolumes);
+  await adoptReturningFiles(db, window.map(upsertRowOf), async (ref) => {
+    const presence = await checkMediaPresence(ref);
+    return presence === 'absent' || presence === 'trashed';
+  });
   const cannotLink = await getNotRelatedPairsAmong(db, ids);
 
   const groupStarted = Date.now();
@@ -1501,40 +2238,7 @@ async function processWindow(
   await writeContinuousGroups(
     db,
     {
-      photos: window.map((p) => ({
-        assetId: p.item.id,
-        uri: p.item.uri,
-        takenAt: p.item.timestamp,
-        modTime: p.modTime,
-        fileGeneration: p.generation,
-        fileMtime: p.modTime,
-        // v24 media kinds: MediaStore's facts (the page join / the direct
-        // fetch) plus the per-file read's results when it completed.
-        kind: p.item.kind,
-        mimeType: p.mimeType,
-        displayName: p.displayName ?? p.filename,
-        width: p.width > 0 ? p.width : null,
-        height: p.height > 0 ? p.height : null,
-        durationMs: p.durationMs,
-        motionVideoOffset: p.facts?.motionVideoOffset ?? null,
-        motionVideoLength: p.facts?.motionVideoLength ?? null,
-        motionPresentationUs: p.facts?.motionPresentationUs ?? null,
-        factsCheckedVersion: p.facts?.factsCheckedVersion ?? null,
-        // Undated photos carry NO day: their timestamp is only the mtime
-        // fallback, and the day surfaces exclude them on both sides.
-        day: p.undated ? null : dayKey(p.item.timestamp),
-        volumeName: p.volumeName,
-        rawId: p.rawId,
-        // v14: recorded so reclaimable bytes is an exact SUM (0 = the
-        // stat failed → NULL keeps the row in the transient stat-fallback).
-        sizeBytes: p.sizeBytes ?? (fileSize(p.item.uri) || null),
-        // NULL unless the D15 rescue completed a read this pass — the
-        // upsert's COALESCE then retains any stored marker.
-        exifCheckedModTime: p.exifCheckedModTime ?? null,
-        // F20: the pass-start favourite snapshot, projected as the
-        // carried favourite action; null = the read failed this pass.
-        favourite: favouriteOf(p.item.id),
-      })),
+      photos: window.map((p) => ({ ...upsertRowOf(p), favourite: favouriteOf(p.item.id) })),
       groups: multi.map((g) => ({
         members: g.items.map((item) => item.id),
         timeAttached: g.timeAttached,

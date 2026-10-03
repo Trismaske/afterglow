@@ -18,7 +18,15 @@
  */
 import type { StoredMediaKind } from '../../lib/mediaIdentity';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type RefreshControlProps,
+} from 'react-native';
 import { AnimatedThumb } from '../AnimatedThumb';
 import { HostListContext, useAnimatedList, type HostList } from '../useAnimatedCells';
 import { animatedKindOf, type AnimatedKind } from '../../lib/animatedCells';
@@ -138,6 +146,7 @@ export function PhotoStateGrid({
   header,
   bottomInset,
   onPhotoPress,
+  refreshControl,
 }: {
   /** DB-side scope (day column or taken_at range). */
   scope: PhotoScope;
@@ -160,6 +169,9 @@ export function PhotoStateGrid({
   header: React.ReactElement;
   bottomInset: number;
   onPhotoPress: (photo: GridPhoto, siblings: GridPhoto[], index: number) => void;
+  /** The host's pull-to-refresh control (phase 9) — this list IS the
+   * screen's scroll view, so the gesture belongs here. */
+  refreshControl?: React.ReactElement<RefreshControlProps>;
 }) {
   const { width: windowWidth } = useWindowDimensions();
   const tilePx = thumbBucketPx(windowWidth / 3, PixelRatio.get());
@@ -422,6 +434,7 @@ export function PhotoStateGrid({
         onMomentumScrollEnd={momentumEnded}
         onTouchEnd={released}
         ListHeaderComponent={header}
+        refreshControl={refreshControl}
         onEndReachedThreshold={0.6}
         onEndReached={() => {
           if (!exhausted && loadingGenRef.current === null) void loadMore(genRef.current, false);

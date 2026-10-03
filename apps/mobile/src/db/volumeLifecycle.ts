@@ -36,6 +36,7 @@ import { closeShareCycleIfQueueEmpty } from './shareStore';
 import { repairGroupMembership } from './store';
 import { publishMembershipChange } from './membershipSignal';
 import { SCAN_FINGERPRINT_KEY, SCAN_GENERATIONS_KEY } from '../lib/scanSkip';
+import { SCAN_CHECKPOINT_KEY } from '../lib/scanCheckpoint';
 
 export type ForgetLevel = 'keep' | 'erase';
 
@@ -188,9 +189,12 @@ export async function forgetVolume(
     // never skip; no baselines = the next open runs the full pass the
     // forced rescan intended anyway.
     await txn.runAsync(
-      'DELETE FROM settings WHERE key IN (?, ?)',
+      'DELETE FROM settings WHERE key IN (?, ?, ?)',
       SCAN_FINGERPRINT_KEY,
       SCAN_GENERATIONS_KEY,
+      // An interrupted pass's checkpoint too (m0.9 phase 9): the forced
+      // full walk Forget intends must start from the top.
+      SCAN_CHECKPOINT_KEY,
     );
 
     // Membership repair over the touched groups. The forgotten volume

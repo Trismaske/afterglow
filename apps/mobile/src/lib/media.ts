@@ -29,6 +29,7 @@ import {
   queryMediaDetailsByUri,
   queryMediaFactsByIds,
   trashMedia,
+  type MediaPresence,
   type MediaStoreActionStatus,
 } from '../../modules/media-store-actions';
 
@@ -610,6 +611,16 @@ export async function verifyTrashedTriState(
 export async function checkMediaPresence(
   ref: MediaRef,
 ): Promise<'present' | 'trashed' | 'absent' | 'unknown'> {
+  const detailed = await checkMediaPresenceDetailed(ref);
+  return detailed === 'pending' ? 'present' : detailed;
+}
+
+/**
+ * The same probe with a PENDING row named (m0.9 phase 9): the scan's loss
+ * walk nets a pending row out of its count checks, where a merely
+ * "present" row absent from the enumeration must stay unexplained.
+ */
+export async function checkMediaPresenceDetailed(ref: MediaRef): Promise<MediaPresence> {
   if (!mediaStoreActionsAvailable()) return 'unknown';
   try {
     const presence = await getMediaPresence(await getEditableContentUri(ref));

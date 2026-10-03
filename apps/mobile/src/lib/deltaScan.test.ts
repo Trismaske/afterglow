@@ -21,6 +21,7 @@ function row(over: Partial<ChangedMediaRow> = {}): ChangedMediaRow {
     dateTakenMs: T,
     dateModifiedSec: T / 1000,
     isTrashed: false,
+    isPending: false,
     generationAdded: 10,
     generationModified: 10,
     bucketId: '100',

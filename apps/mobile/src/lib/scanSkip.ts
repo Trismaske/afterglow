@@ -18,6 +18,7 @@
  */
 
 import { plural } from './format';
+import { scanProgressLine, type ScanProgress } from './scanProgress';
 
 /** Settings key: fingerprint of the last COMPLETE clean pass. Exported
  * (m0.8.3 final cycle P4) because "Forget this card" must durably defeat
@@ -92,6 +93,10 @@ export function scanCanSkip(args: {
  * generation is OS-level proof the library did not change, so a skip
  * answers the user's question exactly as well. Reporting only passes
  * would make a phone that checks daily read "6 days ago".
+ *
+ * A RUNNING scan renders the one progress line Home renders too
+ * (lib/scanProgress.ts, m0.9 phase 9): the pass's kind and reason, the
+ * same numbers, the same words.
  */
 export function scanStatusLine(args: {
   /** Epoch ms the library was last VERIFIED current — by a full pass or
@@ -99,20 +104,12 @@ export function scanStatusLine(args: {
   verifiedAt: number | null;
   /** Tracked photos in scope. */
   corpus: number;
-  /** Live scan progress, when one is running. */
-  running?: { scanned: number; total: number | null } | null;
+  /** The live scan status; the line speaks for it only while scanning. */
+  running?: ScanProgress | null;
   now?: number;
 }): string {
-  if (args.running) {
-    const { scanned, total } = args.running;
-    // A full pass carries its denominator (m0.8.2, F3) — show the same
-    // percent Home shows; a delta shows the plain count.
-    if (total !== null && total > 0) {
-      const pct = Math.min(100, Math.round((scanned / total) * 100));
-      return `Scanning ${pct}% · ${Math.min(scanned, total).toLocaleString()} of ${plural(total, 'item')}`;
-    }
-    return `Scanning now · ${plural(scanned, 'item')}`;
-  }
+  const progress = args.running ? scanProgressLine(args.running) : null;
+  if (progress !== null) return progress;
   if (args.verifiedAt === null) return 'Not checked yet';
   const ageMs = Math.max(0, (args.now ?? Date.now()) - args.verifiedAt);
   return `Checked ${relativeAge(ageMs)} · ${plural(args.corpus, 'item')}`;

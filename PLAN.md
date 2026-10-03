@@ -362,8 +362,10 @@ Auto-update (electron-updater) lands here too.
   Also: the day page's "Continue reviewing" is day-scoped on both legs, so it can no longer open a different day's photos.
   **And the scan stops re-walking the library:** a DELTA pass asks MediaStore which rows changed since the last per-volume generation, walks the real merge-window bounds around each one, and re-pages only those.
   262 s → 0.25 s on a 27k corpus, with byte-identical grouping (a full pass is the same code over one unbounded range).
-  Deletions arrive as trashed rows, since an Android 11+ gallery delete keeps the row with `IS_TRASHED` set.
-  Counts are checked before AND after each pass, and every uncertainty falls back to a full pass.
+  Deletions arrive as trashed rows, since an Android 11+ gallery delete keeps the row with `IS_TRASHED` set; a delete that bypasses the system trash (Samsung Gallery's Recycle bin deletes the row outright) shows only as a volume count that fell, and an ids-only MediaStore enumeration names the missing rows in seconds (m0.9).
+  Counts are checked before AND after each pass, and every uncertainty falls back to a full pass, which names its reason on Home and in Settings (m0.9: Initial scan, Weekly full scan, Rescanning · settings changed, Rescanning · model changed, Scanning new storage, Reconciling deletions, Rescanning · dates changed, Rescanning · many changes, Rescanning · counts disagreed, Rescanning · delta check failed; a resumed pass shows the interrupted pass's own reason with a "resumed" marker, or "Resuming last scan" without one; the table lives in `lib/scanProgress.ts`).
+  A full pass checkpoints each closed window's boundary and resumes below it on the next open (m0.9); the screen stays awake while a pass runs in the foreground.
+  The scan notices changes through MediaStore's observer, every foreground return, and pull-to-refresh on Home, Everything and Progress; no timer polls (m0.9).
   Schema v18 (destructive reset, pre-v1 policy), which discards the embedding cache.
   The upgrade costs one ~25-minute re-analysis on a 27k library.
   Also: the vestigial range scope is deleted (sessions took the feature that set it), and the coverage goal stops disagreeing with itself between Home and Stats.
@@ -478,7 +480,7 @@ Schema v25, one destructive reset: v24's media kinds, then the group anchor colu
 - **The standalone viewer retires** (M24, decided at the phase-1 close): the deck becomes the one review-and-browse surface — list mode over host-supplied items, a fullscreen expand control that hosts the video transport tier, and the facts panel's content migrated to the shared overlay corner and the state-editor sheet; `PhotoViewer` deletes.
 - **The URI/cache pass**: grids/strips/at-rest pages move to `content://` OS thumbnails (fixes the measured 5 s hi-res black stage; video thumbnails fall out free), cache keys carry `mod_time` (kills stale-after-edit pixels), and the measured ~1.5 GB image-cache growth is bounded — spikes assign the gigabyte first, mechanisms land in leverage order to a measured steady-state bound.
 - **Everything usable at scale**: write-through group anchors (audited membership writers), verdicts never invalidate browse structure, coalesced no-discard resets, and the JS-thread starvation fixed at source — measured against the seeded benchmark and on the S23.
-- **The scan explains itself** (F27 presentation + F32): no "Scanning…" before the skip check survives, full passes name their reason, deltas name their size, per-photo publishing throttled to ~1 s.
+- **The scan explains itself** (F27 presentation + F32): nothing renders during the skip check, full passes name their reason, deltas name their size in items, a resumed pass names the work actually left, publishing throttled to one a second; the scan notices changes (MediaStore observer, foreground return, pull-to-refresh), interrupted full passes resume at their checkpoint under a wake lock, a trash-bypassing delete reconciles by an ids-only walk, and a file returning at its old path adopts its tombstone.
 - **"Items", not "photos"**, wherever a count can include videos — a deliberate copy inventory sweep.
 - **Visual vet of live groups** (deferred since m0.8): a contact sheet from a device DB's actual continuous groups, to eyeball the fitted curve's real-world behavior.
 

@@ -2,6 +2,20 @@
  * break the match; no proof (empty generations) must never skip. */
 import { describe, expect, it } from 'vitest';
 import { scanCanSkip, scanFingerprint, scanStatusLine } from './scanSkip';
+import type { ScanProgress } from './scanProgress';
+
+const running = (over: Partial<ScanProgress>): ScanProgress => ({
+  phase: 'scanning',
+  kind: 'full',
+  reason: 'first',
+  scanned: 0,
+  embedded: 0,
+  total: null,
+  changed: null,
+  remaining: null,
+  resumed: false,
+  ...over,
+});
 
 const PRIMARY = 'external_primary';
 const root = (dir: string, volume = PRIMARY) => ({ volume, dir });
@@ -142,23 +156,38 @@ describe('scanStatusLine', () => {
       scanStatusLine({
         verifiedAt: NOW - 3_600_000,
         corpus: 5795,
-        running: { scanned: 1200, total: 5795 },
+        running: running({ scanned: 1200, total: 5795 }),
         now: NOW,
       }),
-    ).toBe(`Scanning 21% · ${(1200).toLocaleString()} of ${(5795).toLocaleString()} items`);
+    ).toBe(`Initial scan 21% · ${(1200).toLocaleString()} of ${(5795).toLocaleString()} items`);
     // Mid-scan arrivals can push `scanned` past the snapshot — clamp.
     expect(
       scanStatusLine({
         verifiedAt: null,
         corpus: 5795,
-        running: { scanned: 6000, total: 5795 },
+        running: running({ scanned: 6000, total: 5795 }),
       }),
-    ).toBe(`Scanning 100% · ${(5795).toLocaleString()} of ${(5795).toLocaleString()} items`);
+    ).toBe(`Initial scan 100% · ${(5795).toLocaleString()} of ${(5795).toLocaleString()} items`);
   });
 
   it('omits the total while the up-front count is unavailable', () => {
     expect(
-      scanStatusLine({ verifiedAt: null, corpus: 0, running: { scanned: 40, total: null } }),
-    ).toBe('Scanning now · 40 items');
+      scanStatusLine({
+        verifiedAt: null,
+        corpus: 0,
+        running: running({ scanned: 40, embedded: 3, total: null }),
+      }),
+    ).toBe('Initial scan… 40 seen · 3 analyzed');
+  });
+
+  it('says nothing about a check in progress — the facts stand until a pass runs (phase 9)', () => {
+    expect(
+      scanStatusLine({
+        verifiedAt: NOW - 60_000,
+        corpus: 10,
+        running: running({ phase: 'checking' }),
+        now: NOW,
+      }),
+    ).toBe(`Checked 1 minute ago · ${(10).toLocaleString()} items`);
   });
 });

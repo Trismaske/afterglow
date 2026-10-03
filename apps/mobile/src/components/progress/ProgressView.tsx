@@ -16,7 +16,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -57,7 +57,12 @@ import { labelForDayKey, rangeOfDayKey, UNDATED_DAY_KEY } from '../../lib/dates'
 import { countPhotosInRange } from '../../lib/media';
 import { resolveSources } from '../../lib/sourceCatalog';
 import { mountedVolumeSet, sameVolumeSet } from '../../lib/mountedVolumes';
-import { subscribeScanStatus } from '../../scan/scanRunner';
+import {
+  getScanStatus,
+  noticeMediaChange,
+  requestLibraryCheck,
+  subscribeScanStatus,
+} from '../../scan/scanRunner';
 import type { SourceRoot } from '../../lib/sources';
 import { StateProgressBar } from '../StateProgressBar';
 import { colors, touch, useTheme } from '../../theme';
@@ -390,6 +395,27 @@ export function ProgressView({
   // P2-2: DB-scope grid taps navigate to the deck's list mode.
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [refreshTick, setRefreshTick] = useState(0);
+  /** Pull-to-refresh (phase 9): the explicit library check, then the
+   * same reload a foreground return does. */
+  const [refreshing, setRefreshing] = useState(false);
+  const onPullRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await requestLibraryCheck(db);
+    } finally {
+      setRefreshing(false);
+      setRefreshTick((t) => t + 1);
+    }
+  }, [db]);
+  /** The self-healing pull (phase 9, the pending-row race): a scope that
+   * computes items MediaStore has and the DB lacks while the scan is
+   * idle asks for a check — a stale page used to promise "when the scan
+   * finishes" with nothing scheduled to finish. Once per scope per
+   * minute, remembered PER scope (codex r1: one slot let a month toggle
+   * re-ask every switch): the check it triggers may find the rows still
+   * pending, and the observer's re-fire is the signal that ends that
+   * wait. */
+  const healAskedRef = useRef<Map<string, number>>(new Map());
   /** The counts loader's mounted snapshot, handed to the grid so the
    * chips and the population they label page ONE world (final cycle
    * O5). `undefined` until the first load; identity kept stable across
@@ -422,7 +448,9 @@ export function ProgressView({
   useEffect(
     () =>
       subscribeScanStatus((status) => {
-        if (status.phase === 'done') setRefreshTick((t) => t + 1);
+        // And on error (codex r8): the self-heal below accepts the error
+        // phase, so the view must re-evaluate when a flight fails too.
+        if (status.phase === 'done' || status.phase === 'error') setRefreshTick((t) => t + 1);
       }),
     [],
   );
@@ -536,6 +564,19 @@ export function ProgressView({
           trashed: counts.trashed,
           analyzing,
         });
+        const phase = getScanStatus().phase;
+        const askedAt = healAskedRef.current.get(scopeKey);
+        if (
+          analyzing > 0 &&
+          (phase === 'idle' || phase === 'done' || phase === 'error') &&
+          (askedAt === undefined || Date.now() - askedAt > 60_000)
+        ) {
+          healAskedRef.current.set(scopeKey, Date.now());
+          console.log(
+            `[scan] notice: ${analyzing} item(s) MediaStore has and the DB lacks with the scan idle — checking`,
+          );
+          void noticeMediaChange(db);
+        }
       })();
       return () => {
         cancelled = true;
@@ -761,6 +802,15 @@ export function ProgressView({
         mounted={gridMounted}
         header={header}
         bottomInset={insets.bottom}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => void onPullRefresh()}
+            tintColor={colors.textDim}
+            colors={[accent]}
+            progressBackgroundColor={colors.surface}
+          />
+        }
         onPhotoPress={(photo) => {
           // P2-2: every grid tap browses in the deck's list mode — the
           // library scope pages the SAME engine the grid itself uses

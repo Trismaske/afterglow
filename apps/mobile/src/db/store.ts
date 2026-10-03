@@ -2216,6 +2216,203 @@ export async function getPresentAssetRefs(
   return rows.map((r) => ({ id: r.asset_id, kind: r.kind }));
 }
 
+/**
+ * A RETURNING FILE ADOPTS ITS TOMBSTONE (m0.9 phase 9, F44's second
+ * half). Samsung Gallery's Recycle-bin restore — and a cloud client
+ * re-downloading a file it removed — re-inserts the file at its original
+ * path as a NEW MediaStore row; without this, the tombstone and the
+ * returned photo were two photos: the decision stamps and the History
+ * line stranded on the old id, the lifetime counts one high. A window
+ * row the DB does not know, matching a stored row on volume + path +
+ * size in bytes + capture time under another id, is the same photo
+ * returned: that row is re-keyed to the new id — the parent row first,
+ * then every satellite that names a photo id (`PRAGMA
+ * defer_foreign_keys` holds the references until commit) — and carries
+ * on as one photo. An ABSENT match is the tombstone the removal
+ * reconciliation wrote; the caller's restore transition then puts it
+ * back to review exactly as a same-id restore from the system trash
+ * does (the standing transition: a photo the user removed and brought
+ * back is reconsidered, one swipe). A PRESENT match (codex r3) is a
+ * removal and return that both landed between two checks — the count
+ * never moved and the deletion left no changed row — and a MediaStore
+ * path holds one row, so the old id's row is gone from the provider;
+ * the caller's `oldRowGone` probe confirms that before the re-key (a
+ * copy of the same bytes beside a still-present original is a second
+ * photo), and the row keeps its verdict: the app never saw a gap. A
+ * file with a different size at the old path is a new photo; a row
+ * with no recorded size never matches (fail closed). The probe keys on
+ * `idx_photos_present_taken` through `is_present IN (0, 1)` (two index
+ * probes), one indexed miss per fresh row; the plan is pinned in
+ * returningFile.real.test.ts.
+ */
+const PHOTO_ID_COLUMNS: ReadonlyArray<readonly [table: string, column: string]> = [
+  ['photo_actions', 'photo_id'],
+  ['photo_group_assignments', 'photo_id'],
+  ['share_batch_members', 'photo_id'],
+  ['trash_batch_members', 'photo_id'],
+  ['trash_reservations', 'photo_id'],
+  ['edit_copy_matches', 'original_id'],
+  ['edit_copy_matches', 'copy_id'],
+  ['duels', 'winner_id'],
+  ['duels', 'loser_id'],
+  ['not_related', 'ejected_id'],
+  ['not_related', 'partner_id'],
+];
+/** The per-content caches are NOT re-keyed (codex r4): the window's
+ * embed pass has already persisted the new id's rows — the fresh
+ * analysis of the same bytes — before the adoption runs, so an UPDATE
+ * from a PRESENT candidate's surviving rows would collide on the
+ * primary key. The old id's rows are dropped instead. */
+const PHOTO_CACHE_TABLES = ['photo_hashes', 'photo_embeddings'] as const;
+
+/**
+ * The runner calls this per window BEFORE it reads the window's
+ * cannot-link constraints (codex r2): a returning file's `not_related`
+ * judgments live under the old id until the re-key, and a grouping
+ * planned without them would be skipped at the write's revalidation —
+ * leaving the photo ungrouped until an unrelated later pass. Its own
+ * short transaction; the window's write then finds the row known under
+ * its new id, absent, and revives it. Returns the number adopted.
+ */
+export async function adoptReturningFiles(
+  db: SQLiteDatabase,
+  photos: readonly ContinuousPhotoUpsert[],
+  /** For a PRESENT candidate: is the old id's MediaStore row gone?
+   * Decided outside the transaction (a native probe); false keeps the
+   * two rows apart. */
+  oldRowGone: (ref: MediaRef) => Promise<boolean>,
+): Promise<number> {
+  // The candidates are read and probed BEFORE the transaction: the
+  // probe is native and slow against an exclusive lock, and a present
+  // candidate is rare (the between-checks case).
+  const matches: { photo: ContinuousPhotoUpsert; oldId: string }[] = [];
+  for (const photo of photos) {
+    if (photo.sizeBytes === null || photo.sizeBytes === undefined) continue;
+    const found = await db.getAllAsync<{ asset_id: string; is_present: number; kind: string }>(
+      `SELECT t.asset_id, t.is_present, t.kind FROM photos t
+        WHERE t.is_present IN (0, 1) AND t.taken_at = ?
+          AND t.volume_name = ? AND t.uri = ? AND t.size_bytes = ?
+          AND t.asset_id <> ?
+        LIMIT 2`,
+      photo.takenAt,
+      photo.volumeName,
+      photo.uri,
+      photo.sizeBytes,
+      photo.assetId,
+    );
+    if (found.length === 0) continue;
+    // Two histories with one identity tuple (an earlier return kept as
+    // its own photo, both since gone): no row to pick without guessing
+    // whose stamps carry on — decline, and the file lands as new (codex
+    // r8).
+    if (found.length > 1) {
+      console.warn(
+        `[scan] ${found.length} stored rows match the returning file ${photo.assetId} — none adopted`,
+      );
+      continue;
+    }
+    const match = found[0];
+    // A row ALREADY under the new id (codex r5): an earlier pass could
+    // not decide (the probe answered unknown) and inserted it; while it
+    // is still FRESH — undecided, unstamped, named by no satellite — the
+    // match stays eligible and the re-key replaces it. A new-id row the
+    // user has since touched is a second photo and stays one.
+    if (
+      (await db.getFirstAsync('SELECT 1 FROM photos WHERE asset_id = ?', photo.assetId)) !== null
+    ) {
+      if (!(await isFreshRow(db, photo.assetId))) continue;
+    }
+    if (
+      match.is_present === 1 &&
+      !(await oldRowGone({ id: match.asset_id, kind: match.kind as StoredMediaKind }))
+    ) {
+      continue;
+    }
+    matches.push({ photo, oldId: match.asset_id });
+  }
+  if (matches.length === 0) return 0;
+  let adopted = 0;
+  await withWriteTransaction(db, async (txn) => {
+    adopted = await adoptTombstones(txn, matches);
+  });
+  // A fresh duplicate given way had an assignment (its group repaired
+  // inside the transaction, codex r9): the browse structure moved.
+  if (adopted > 0) publishMembershipChange();
+  return adopted;
+}
+
+/** Undecided, unstamped, and named by no satellite row: a row the app
+ * has only ingested. The returning-file adoption may replace such a row
+ * under the new id; anything more is the user's and stays. */
+async function isFreshRow(db: SQLiteDatabase, id: string): Promise<boolean> {
+  const row = await db.getFirstAsync<{ fresh: number }>(
+    `SELECT (state = 'unreviewed' AND reviewed_at IS NULL AND decided_first_at IS NULL
+             AND activity_at IS NULL) AS fresh
+       FROM photos WHERE asset_id = ?`,
+    id,
+  );
+  if (!row || Number(row.fresh) !== 1) return false;
+  for (const [table, column] of PHOTO_ID_COLUMNS) {
+    if (table === 'photo_group_assignments') continue;
+    const named = await db.getFirstAsync(`SELECT 1 FROM ${table} WHERE ${column} = ?`, id);
+    if (named !== null) return false;
+  }
+  return true;
+}
+
+async function adoptTombstones(
+  txn: SQLiteDatabase,
+  matches: readonly { photo: ContinuousPhotoUpsert; oldId: string }[],
+): Promise<number> {
+  let adopted = 0;
+  let deferred = false;
+  const affectedGroups: number[] = [];
+  for (const { photo, oldId } of matches) {
+    // Re-verified inside the transaction: the match was read outside it.
+    const still = await txn.getFirstAsync('SELECT 1 FROM photos WHERE asset_id = ?', oldId);
+    if (still === null) continue;
+    if (
+      (await txn.getFirstAsync('SELECT 1 FROM photos WHERE asset_id = ?', photo.assetId)) !== null
+    ) {
+      if (!(await isFreshRow(txn, photo.assetId))) continue;
+      // The fresh new-id row gives way (its assignment cascades; the
+      // window's write regroups the window under the adopted row). Its
+      // former group is repaired below (codex r9): the cascade alone
+      // could leave a one-member group with a stale anchor.
+      const assigned = await txn.getFirstAsync<{ group_id: number | null }>(
+        'SELECT group_id FROM photo_group_assignments WHERE photo_id = ?',
+        photo.assetId,
+      );
+      if (assigned?.group_id != null) affectedGroups.push(Number(assigned.group_id));
+      await txn.runAsync('DELETE FROM photos WHERE asset_id = ?', photo.assetId);
+    }
+    if (!deferred) {
+      await txn.execAsync('PRAGMA defer_foreign_keys = ON');
+      deferred = true;
+    }
+    await txn.runAsync(
+      'UPDATE photos SET asset_id = ?, raw_id = ? WHERE asset_id = ?',
+      photo.assetId,
+      photo.rawId,
+      oldId,
+    );
+    for (const [table, column] of PHOTO_ID_COLUMNS) {
+      await txn.runAsync(
+        `UPDATE ${table} SET ${column} = ? WHERE ${column} = ?`,
+        photo.assetId,
+        oldId,
+      );
+    }
+    for (const table of PHOTO_CACHE_TABLES) {
+      await txn.runAsync(`DELETE FROM ${table} WHERE asset_id = ?`, oldId);
+    }
+    adopted += 1;
+    console.log(`[scan] a returned file adopted its tombstone: ${oldId} → ${photo.assetId}`);
+  }
+  if (affectedGroups.length > 0) await repairGroupMembership(txn, affectedGroups);
+  return adopted;
+}
+
 /** One photo row the continuous scan upserts (m0.8 gate 2). */
 export interface ContinuousPhotoUpsert {
   assetId: string;
@@ -4368,6 +4565,108 @@ export async function countTrackedByVolume(
   const out: Record<string, number> = {};
   for (const row of rows) out[row.volume_name] = Number(row.n);
   return out;
+}
+
+/**
+ * Does another PRESENT row share this row's stored path (m0.9 phase 9)?
+ * After a delta, a returned old id still present beside a landed twin
+ * at the same path means the adoption DECLINED (a touched new-id row,
+ * an ambiguous tuple, an undecidable probe) — a ghost, not a pending
+ * replacement — and the post-delta agreement must not net it out.
+ */
+export async function hasPresentTwinAtPath(db: SQLiteDatabase, id: string): Promise<boolean> {
+  const row = await db.getFirstAsync(
+    `SELECT 1 FROM photos n JOIN photos o ON o.asset_id = ?
+      WHERE n.uri = o.uri AND n.asset_id <> o.asset_id AND n.is_present = 1
+      LIMIT 1`,
+    id,
+  );
+  return row !== null;
+}
+
+/**
+ * Present in-scope rows on one volume with the facts the loss
+ * reconciliation needs (m0.9 phase 9): the id walk diffs the ids, and a
+ * candidate whose file is still on disk at its stored size is a return
+ * under a new MediaStore id, not a loss.
+ */
+export async function getPresentLossCandidates(
+  db: SQLiteDatabase,
+  roots: readonly SourceRoot[] | null,
+  volume: string,
+): Promise<{ id: string; kind: StoredMediaKind; uri: string; sizeBytes: number | null }[]> {
+  const src = sourceClause(roots);
+  const rows = await db.getAllAsync<{
+    asset_id: string;
+    kind: StoredMediaKind;
+    uri: string;
+    size_bytes: number | null;
+  }>(
+    `SELECT asset_id, kind, uri, size_bytes FROM photos
+      WHERE is_present = 1 AND volume_name = ?${src.sql}`,
+    volume,
+    ...src.params,
+  );
+  return rows.map((r) => ({
+    id: r.asset_id,
+    kind: r.kind,
+    uri: r.uri,
+    sizeBytes: r.size_bytes === null ? null : Number(r.size_bytes),
+  }));
+}
+
+/**
+ * Present in-scope rows on the given volumes captured at or after
+ * `sinceMs` (m0.9 phase 9): the resumed pass's above-boundary prefix,
+ * diffed against the ids-only enumeration to find the rows that LEFT it
+ * between sessions, whose old windows the resume re-pages.
+ */
+export async function getPresentPhotosSince(
+  db: SQLiteDatabase,
+  roots: readonly SourceRoot[] | null,
+  volumes: readonly string[],
+  sinceMs: number,
+): Promise<{ id: string; takenAt: number }[]> {
+  if (volumes.length === 0) return [];
+  const src = sourceClause(roots);
+  const rows = await db.getAllAsync<{ asset_id: string; taken_at: number }>(
+    `SELECT asset_id, taken_at FROM photos
+      WHERE is_present = 1 AND taken_at >= ?${src.sql}
+        AND volume_name IN (${volumes.map(() => '?').join(',')})`,
+    sinceMs,
+    ...src.params,
+    ...volumes,
+  );
+  return rows.map((r) => ({ id: r.asset_id, takenAt: Number(r.taken_at) }));
+}
+
+/**
+ * Present in-scope items that need NO further analysis (m0.9 phase 9):
+ * videos (never embedded, G5) and photos holding an embedding. The
+ * scan's "still to analyze" count on a resumed pass is the library
+ * snapshot minus this — DURABLE evidence of the work actually left,
+ * where the enumeration counter restarts with every session.
+ */
+export async function countAnalyzedPresent(
+  db: SQLiteDatabase,
+  roots: readonly SourceRoot[] | null,
+  /** The MOUNTED volumes (codex r6): the snapshot this count is
+   * subtracted from is MediaStore's, which sees mounted volumes only;
+   * an ejected card's analyzed rows must not shrink the mounted work. */
+  volumes: readonly string[],
+): Promise<number> {
+  if (volumes.length === 0) return 0;
+  const src = sourceClause(roots, 'p.uri');
+  const row = await db.getFirstAsync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM photos p
+      WHERE p.is_present = 1${src.sql}
+        AND p.volume_name IN (${volumes.map(() => '?').join(',')})
+        AND (p.kind = 'video'
+             OR EXISTS (SELECT 1 FROM photo_embeddings e WHERE e.asset_id = p.asset_id))`,
+    ...src.params,
+    ...volumes,
+  );
+  return Number(row?.n ?? 0);
 }
 
 export interface OutcomeChunkRow {

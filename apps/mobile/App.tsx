@@ -16,7 +16,9 @@ import { resolveSources } from './src/lib/sourceCatalog';
 import { DATABASE_NAME, migrateDatabase } from './src/db/database';
 import { logFootprint } from './src/lib/footprint';
 import { startJsLagProbe } from './src/lib/jsLag';
+import { startScanKeepAwake } from './src/lib/scanKeepAwake';
 import { installShareResolution } from './src/lib/shareResolution';
+import { installScanNotices } from './src/scan/scanNotices';
 import { ReviewProvider, useReview } from './src/review/ReviewContext';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { TimelineScreen } from './src/screens/TimelineScreen';
@@ -172,6 +174,10 @@ function ThemedNavigator() {
   // Share screen — a choice can land after it unmounted, and
   // abandonment is only visible on foreground return.
   useEffect(() => installShareResolution(db), [db]);
+  // The scan's notices (m0.9 phase 9): MediaStore's observer → a
+  // debounced check, for the process life — a change must register
+  // whichever screen is up.
+  useEffect(() => installScanNotices(db), [db]);
   // The durable badge-visibility preference (m0.8.7, F19/L6) loads once —
   // BadgeCluster subscribes to the observable it fills.
   useEffect(() => {
@@ -252,6 +258,8 @@ function ThemedNavigator() {
 export default function App() {
   // The JS-thread lag probe (phase 8): one timer for the process life.
   useEffect(() => startJsLagProbe(), []);
+  // The pass's wake lock (phase 9): held only while scanning in the foreground.
+  useEffect(() => startScanKeepAwake(), []);
   return (
     // The boundary wraps the WHOLE provider stack: a render crash
     // anywhere below logs (with its component stack) before dying —

@@ -9,7 +9,16 @@
  *   action queues live on the tab bar instead of Home rows.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  Alert,
+  Platform,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -68,10 +77,11 @@ import { fileSize, fileSizeOrNull } from '../lib/hash';
 import { runEditDetection, type DetectedCopy } from '../lib/detect';
 import {
   getScanStatus,
+  requestLibraryCheck,
   startContinuousScan,
   subscribeScanStatus,
-  type ScanStatus,
 } from '../scan/scanRunner';
+import { scanProgressLine } from '../lib/scanProgress';
 import { Ghost } from '../components/Ghost';
 import { GoalRing } from '../components/GoalRing';
 import { firstPendingUnit, unitDestination } from '../lib/timeline';
@@ -120,6 +130,18 @@ export function HomeScreen({ navigation }: Props) {
   });
 
   const [scan, setScan] = useState(getScanStatus());
+  /** Pull-to-refresh (phase 9): the explicit library check, spinning
+   * until the check has concluded; the scan line is the feedback after. */
+  const [refreshing, setRefreshing] = useState(false);
+  const onPullRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await requestLibraryCheck(db);
+    } finally {
+      setRefreshing(false);
+      setRefreshTick((t) => t + 1);
+    }
+  }, [db]);
   const [goal, setGoal] = useState(50);
   /** The goal/streak/corpus loader has committed once — before that the
    * ring shows a placeholder, not a hardcoded "0 of 50" (F2). */
@@ -180,42 +202,12 @@ export function HomeScreen({ navigation }: Props) {
     return () => clearTimeout(fallback);
   }, [db, permission?.granted, queueLoaded]);
 
-  // THROTTLED scan status (m0.8.1): the scan patches its status many
-  // times per second; re-rendering the card per event burns work on a
-  // counter nobody reads at that rate and starves accessibility idle
-  // (uiautomator dumps — the UI gate — never complete on a never-idle
-  // screen; its idle detector needs ≥500 ms of quiet). Phase changes
-  // apply immediately; counters trail ≤ 1.5 s.
-  useEffect(() => {
-    let lastApplied = 0;
-    let lastPhase = getScanStatus().phase;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let pending: ScanStatus | null = null;
-    const apply = (status: ScanStatus) => {
-      lastApplied = Date.now();
-      lastPhase = status.phase;
-      pending = null;
-      setScan(status);
-    };
-    const unsubscribe = subscribeScanStatus((status) => {
-      const elapsed = Date.now() - lastApplied;
-      if (status.phase !== lastPhase || elapsed >= 1500) {
-        apply(status);
-        return;
-      }
-      pending = status;
-      if (!timer) {
-        timer = setTimeout(() => {
-          timer = null;
-          if (pending) apply(pending);
-        }, 1500 - elapsed);
-      }
-    });
-    return () => {
-      unsubscribe();
-      if (timer) clearTimeout(timer);
-    };
-  }, []);
+  // The scan status, as published: the runner throttles its counters to
+  // one publish a second (G13, phase 9) and publishes phase changes at
+  // once — the cadence the card renders at, and the accessibility idle
+  // the UI gate needs (uiautomator's idle detector wants ≥500 ms of
+  // quiet) stays reachable.
+  useEffect(() => subscribeScanStatus(setScan), []);
 
   // Scan-driven refresh key, COARSENED: every 250 grouped windows and on
   // phase changes. Per-window refreshes (4,913 windows on a 27k corpus)
@@ -827,6 +819,15 @@ export function HomeScreen({ navigation }: Props) {
     <ScrollView
       style={styles.root}
       contentContainerStyle={[styles.content, { paddingTop: insets.top + 24, paddingBottom: 24 }]}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => void onPullRefresh()}
+          tintColor={colors.textDim}
+          colors={[theme.accent]}
+          progressBackgroundColor={colors.surface}
+        />
+      }
     >
       <View style={styles.titleRow}>
         <Text style={styles.title}>Afterglow</Text>
@@ -1054,20 +1055,18 @@ export function HomeScreen({ navigation }: Props) {
           />
           {/* Only a RUNNING scan (or a failed one) talks below the CTA
               (tester ask, round 4): an idle line repeated numbers the
-              card above already states. The line speaks ONLY about the
+              card above already states — and the skip check says
+              nothing at all (phase 9). The line speaks ONLY about the
               scan (m0.8.2, F4): "groups found" is gone — the card above
               carries the one truthful group count, and a second,
               differently-scoped number on the same screen could never
-              agree with it. A full pass shows the percent (F3); a delta
-              has no meaningful denominator and shows plain counts. */}
+              agree with it. The line itself is lib/scanProgress.ts — the
+              pass's kind and reason, shared with Settings' row. */}
           {(scan.phase === 'scanning' || scan.phase === 'error') && (
             <Text style={styles.scanStatus}>
               {scan.phase === 'error'
                 ? 'Photo scan hit a problem — it will retry on next launch.'
-                : scan.total !== null && scan.total > 0
-                  ? `Scanning ${Math.min(100, Math.round((scan.scanned / scan.total) * 100))}% · ` +
-                    `${Math.min(scan.scanned, scan.total).toLocaleString()} of ${scan.total.toLocaleString()} items`
-                  : `Scanning… ${scan.scanned.toLocaleString()} seen · ${scan.embedded.toLocaleString()} analyzed`}
+                : scanProgressLine(scan)}
             </Text>
           )}
         </View>

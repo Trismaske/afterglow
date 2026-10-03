@@ -73,6 +73,7 @@ import type { SourceRoot } from '../lib/sources';
 import { withUserWritePriority } from '../lib/writePriority';
 import {
   requestTargetedRescan,
+  noticeMediaChange,
   startContinuousScan,
   subscribeScanStatus,
 } from '../scan/scanRunner';
@@ -1027,13 +1028,16 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
   // FOREGROUND RETURN re-checks the library (m0.8.1, tester decision).
   // The generation fingerprint is read at pass START, so a photo that
   // arrived while Afterglow was open would otherwise wait for the next
-  // launch. Starting a scan IS the check: an unchanged library costs one
-  // native generation call and returns, and the runner is single-flight,
-  // so this is safe to fire on every return to the foreground.
+  // launch. A NOTICE, not a bare start (phase 9, codex r1): a change
+  // made while backgrounded during a long pass is absent from that
+  // pass's starting generations, and the observer drops background
+  // events by design — so the return queues one check behind the
+  // flight instead of being swallowed by it. An unchanged library
+  // costs one native generation call.
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (next) => {
       if (next !== 'active') return;
-      void startContinuousScan(db);
+      void noticeMediaChange(db);
       // Photos added/removed while we were away also change the counts
       // the queue renders — the refresh is coalesced and commits nothing
       // when nothing changed.
@@ -1044,7 +1048,7 @@ export function ReviewProvider({ children }: { children: React.ReactNode }) {
     // picks up card-side changes) and refresh the reach-scoped queue —
     // without waiting for a navigation or background/foreground cycle.
     const unsubscribeVolumes = onVolumesChanged(() => {
-      void startContinuousScan(db);
+      void noticeMediaChange(db);
       void refresh().catch(() => {});
     });
     return () => {

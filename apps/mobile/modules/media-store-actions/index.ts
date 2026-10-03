@@ -37,7 +37,7 @@ interface NativeApi {
   trash(uris: string[]): Promise<{ status: MediaStoreActionStatus }>;
   setFavourite(uris: string[], value: boolean): Promise<{ status: MediaStoreActionStatus }>;
   isFavourite(uri: string): Promise<boolean | null>;
-  mediaPresence(uri: string): Promise<'present' | 'trashed' | 'absent' | 'unknown'>;
+  mediaPresence(uri: string): Promise<MediaPresence>;
   loadThumbnail(uri: string, size: number): Promise<RegionBitmap>;
   editDiagnostics(uri: string, mimeType: string): Promise<EditDiagnosticsReport>;
   probeLaunch(
@@ -55,6 +55,7 @@ interface NativeApi {
   listMediaAlbums(): Promise<VolumeAlbum[]>;
   mediaGenerations(): Promise<Record<string, number>>;
   mediaChangedSince(volume: string, since: number): Promise<NativeChangedRow[]>;
+  listMediaIds(volume: string, bucketIds: string[], undatedOnly: boolean): Promise<string[]>;
   queryRelativePaths(uris: string[]): Promise<RelativePathInfo[]>;
   queryMediaDetails(uris: string[]): Promise<MediaDetailsRow[]>;
   moveToRelativePath(uris: string[], relativePath: string): Promise<MoveResult[]>;
@@ -79,6 +80,10 @@ interface NativeApi {
   closeRegionDecoder(handle: number): Promise<void>;
   decodeScaled(uri: string, sampleSize: number, rotation: number): Promise<RegionBitmap>;
   addListener(event: 'volumesChanged', listener: () => void): { remove(): void };
+  addListener(
+    event: 'mediaChanged',
+    listener: (payload: { uri: string }) => void,
+  ): { remove(): void };
   addListener(
     event: 'shareTargetChosen',
     listener: (payload: { token: number; component: string }) => void,
@@ -105,6 +110,11 @@ export interface ChangedMediaRow {
   /** DATE_MODIFIED in SECONDS (MediaStore's unit), or null. */
   dateModifiedSec: number | null;
   isTrashed: boolean;
+  /** MediaStore's IS_PENDING (m0.9 phase 9): the file is still being
+   * written (Samsung's camera holds a capture here for seconds). Not
+   * ingestible yet — the scan names it and waits for the observer's
+   * re-fire when it finalizes. */
+  isPending: boolean;
   generationAdded: number;
   generationModified: number;
   /** The row's CURRENT BUCKET_ID (m0.8.7, F27) — the delta planner's
@@ -228,9 +238,13 @@ export async function isMediaFavourite(uri: string): Promise<boolean | null> {
 /** Quad-state presence: 'absent' ONLY from a successful empty query with
  * MATCH_INCLUDE (authoritative — the id is gone from MediaStore); every
  * failure path is 'unknown'. */
-export async function getMediaPresence(
-  uri: string,
-): Promise<'present' | 'trashed' | 'absent' | 'unknown'> {
+/** The probe's answer. 'pending' (m0.9 phase 9): the row exists but
+ * is still being written (IS_PENDING) — present for every consumer that
+ * asks "do the bytes exist", and named for the one that must not treat
+ * it as a row it cannot explain (the scan's loss walk). */
+export type MediaPresence = 'present' | 'pending' | 'trashed' | 'absent' | 'unknown';
+
+export async function getMediaPresence(uri: string): Promise<MediaPresence> {
   if (!available()) return 'unknown';
   return native!.mediaPresence(contentUris([uri])[0]);
 }
@@ -313,6 +327,23 @@ export async function getMediaChangedSince(
 ): Promise<ChangedMediaRow[]> {
   if (!available()) return [];
   return native!.mediaChangedSince(volume, since);
+}
+
+/**
+ * Every in-kind row's raw id on one volume (m0.9 phase 9) — the ids-only
+ * enumeration (seconds on a 33k library). `bucketIds` restricts to a dirs
+ * scope's buckets (empty = all folders); `undatedOnly` returns the rows
+ * without DATE_TAKEN. Default MediaStore view: no trashed, no pending
+ * rows. Throws rather than returning a partial set: a missing id would
+ * read as a deletion.
+ */
+export async function listMediaIds(
+  volume: string,
+  bucketIds: readonly string[],
+  undatedOnly = false,
+): Promise<string[]> {
+  if (!available()) throw new Error('media-store-actions module unavailable');
+  return native!.listMediaIds(volume, [...bucketIds], undatedOnly);
 }
 
 /** Raw ids of the volume's IS_FAVORITE=1 items — images and videos (F20) — one indexed
@@ -455,6 +486,16 @@ export async function queryMediaRelativePaths(uris: string[]): Promise<RelativeP
 export function subscribeVolumesChanged(listener: () => void): () => void {
   if (Platform.OS !== 'android' || native == null) return () => {};
   const subscription = native.addListener('volumesChanged', listener);
+  return () => subscription.remove();
+}
+
+/** The MediaStore ContentObserver's relay (m0.9 phase 9): fires on any
+ * change the provider notifies — a capture, an edit, a delete, a pending
+ * row finalizing. Delivered on the main looper, possibly in bursts; the
+ * scan's notice layer debounces. No-op without the module. */
+export function subscribeMediaChanged(listener: (payload: { uri: string }) => void): () => void {
+  if (Platform.OS !== 'android' || native == null) return () => {};
+  const subscription = native.addListener('mediaChanged', listener);
   return () => subscription.remove();
 }
 

@@ -32,7 +32,15 @@
  * counts on every filter — they describe work, not the view.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, View, type ViewToken } from 'react-native';
+import {
+  FlatList,
+  Pressable,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  View,
+  type ViewToken,
+} from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useIsFocused } from '@react-navigation/native';
@@ -94,6 +102,7 @@ import {
   type TimelineFilter,
 } from '../lib/timelinePrefs';
 import { perfAggregate } from '../lib/perfLog';
+import { requestLibraryCheck } from '../scan/scanRunner';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Timeline'>;
 
@@ -153,6 +162,18 @@ export function TimelineScreen({ navigation }: Props) {
   const db = useSQLiteContext();
   const { timeline, queueCounts, version, actionWeights, hydrateBadges, verdictPatch } =
     useReview();
+  /** Pull-to-refresh (phase 9): the explicit library check. What it
+   * lands reaches this list through the membership signal, as any
+   * scan's windows do; the spinner covers only the check itself. */
+  const [refreshing, setRefreshing] = useState(false);
+  const onPullRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await requestLibraryCheck(db);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [db]);
 
   // ---------------------------------------------------------- filter
   // null until the remembered choice loads — rendering a default first
@@ -970,6 +991,15 @@ export function TimelineScreen({ navigation }: Props) {
         keyExtractor={(unit) => unitKeyOf(unit, filter)}
         renderItem={renderUnit}
         contentContainerStyle={styles.list}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => void onPullRefresh()}
+            tintColor={colors.textDim}
+            colors={[theme.accent]}
+            progressBackgroundColor={colors.surface}
+          />
+        }
         extraData={version}
         onEndReachedThreshold={0.6}
         onEndReached={() => {

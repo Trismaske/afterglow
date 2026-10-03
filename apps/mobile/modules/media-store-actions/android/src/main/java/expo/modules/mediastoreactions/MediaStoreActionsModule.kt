@@ -9,9 +9,12 @@ import android.content.res.Configuration
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.database.ContentObserver
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.Process
 import android.util.Size
 import android.provider.MediaStore
@@ -29,6 +32,7 @@ class MediaStoreActionsModule : Module() {
   private var volumeReceiver: BroadcastReceiver? = null
   private var shareChosenReceiver: BroadcastReceiver? = null
   private var trimCallbacks: ComponentCallbacks2? = null
+  private var mediaObserver: ContentObserver? = null
 
   companion object {
     /** Same-app broadcast carrying the chooser's chosen-component
@@ -51,7 +55,12 @@ class MediaStoreActionsModule : Module() {
     // m0.8.8 D9: memoryTrim relays onTrimMemory so the region-zoom
     // retention cache can flush under REAL pressure (never a guess by
     // device class); the JS side decides which levels act.
-    Events("volumesChanged", "shareTargetChosen", "memoryTrim")
+    // m0.9 phase 9: mediaChanged relays MediaStore's ContentObserver —
+    // the OS push for a photo taken, edited, deleted or finalized (a
+    // Samsung camera row leaving PENDING is an update, so it fires
+    // too) while the app stays foregrounded. The JS side debounces and
+    // asks the scan for a delta; no timer polling anywhere.
+    Events("volumesChanged", "shareTargetChosen", "memoryTrim", "mediaChanged")
 
     // The F22 SharedRef class MUST be registered, or the JS-side object
     // arrives without its SharedObject prototype — `.release()` was
@@ -121,9 +130,30 @@ class MediaStoreActionsModule : Module() {
       }
       trimCallbacks = callbacks
       appContext.reactContext?.registerComponentCallbacks(callbacks)
+
+      // The MediaStore observer (m0.9 phase 9): the provider's root
+      // authority with descendants, so every volume and both
+      // collections notify through one registration (the provider
+      // notifies per-volume and merged-"external" URIs; a collection
+      // URI alone would miss the other spelling). The main looper
+      // handler is only the delivery thread; the payload is the URI
+      // the provider named, for the sink.
+      val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean, uri: Uri?) {
+          sendEvent("mediaChanged", mapOf("uri" to (uri?.toString() ?: "")))
+        }
+      }
+      mediaObserver = observer
+      appContext.reactContext?.contentResolver?.registerContentObserver(
+        Uri.parse("content://${MediaStore.AUTHORITY}/"),
+        true,
+        observer,
+      )
     }
 
     OnDestroy {
+      mediaObserver?.let { appContext.reactContext?.contentResolver?.unregisterContentObserver(it) }
+      mediaObserver = null
       volumeReceiver?.let { appContext.reactContext?.unregisterReceiver(it) }
       volumeReceiver = null
       shareChosenReceiver?.let { appContext.reactContext?.unregisterReceiver(it) }
@@ -373,6 +403,13 @@ class MediaStoreActionsModule : Module() {
      * trace" (the delta's loss verdict; docs/Plan_m0.9.md phase 9 names
      * the ids-only reconciliation it should route to).
      *
+     * PENDING ROWS ARE INCLUDED TOO (`QUERY_ARG_MATCH_PENDING`, m0.9
+     * phase 9) and reported with `isPending`: Samsung's camera holds a
+     * fresh capture in MediaStore's PENDING state for seconds, and a
+     * delta racing that window used to see nothing where a change had
+     * happened — the scan now names such rows ("still being written")
+     * and leaves them for the observer's re-fire when they finalize.
+     *
      * Fails the whole call on any error, for the same reason
      * `mediaGenerations` does: a partial change set is indistinguishable
      * from a complete one, and acting on it would silently skip photos.
@@ -391,6 +428,7 @@ class MediaStoreActionsModule : Module() {
       val bound = since.toLong().toString()
       val queryArgs = android.os.Bundle().apply {
         putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_INCLUDE)
+        putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
         putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
         putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, arrayOf(bound, bound))
       }
@@ -402,6 +440,7 @@ class MediaStoreActionsModule : Module() {
             MediaStore.MediaColumns.DATE_TAKEN,
             MediaStore.MediaColumns.DATE_MODIFIED,
             MediaStore.MediaColumns.IS_TRASHED,
+            MediaStore.MediaColumns.IS_PENDING,
             MediaStore.MediaColumns.GENERATION_ADDED,
             MediaStore.MediaColumns.GENERATION_MODIFIED,
             // The row's CURRENT bucket (m0.8.7, F27): the delta planner
@@ -418,6 +457,7 @@ class MediaStoreActionsModule : Module() {
           val takenCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_TAKEN)
           val modifiedCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
           val trashedCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_TRASHED)
+          val pendingCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_PENDING)
           val addedGenCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.GENERATION_ADDED)
           val modGenCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.GENERATION_MODIFIED)
           val bucketCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_ID)
@@ -435,6 +475,7 @@ class MediaStoreActionsModule : Module() {
                 "dateModifiedSec" to
                   if (cursor.isNull(modifiedCol)) null else cursor.getLong(modifiedCol),
                 "isTrashed" to (cursor.getInt(trashedCol) != 0),
+                "isPending" to (cursor.getInt(pendingCol) != 0),
                 "generationAdded" to cursor.getLong(addedGenCol).toDouble(),
                 "generationModified" to cursor.getLong(modGenCol).toDouble(),
                 "bucketId" to
@@ -670,6 +711,52 @@ class MediaStoreActionsModule : Module() {
         } catch (error: Exception) {
           throw IllegalStateException("count failed for volume $volume", error)
         }
+      }
+      out
+    }
+
+    /**
+     * Every in-kind row's raw id on one volume (m0.9 phase 9) — the
+     * ids-only enumeration: no facts join, no windows, no embeddings,
+     * one projected column over an indexed selection, so a 33k library
+     * answers in well under a second where the full walk takes minutes.
+     * Two callers: the delta's loss reconciliation (a volume holding
+     * fewer rows than the DB tracks "with no trace" — Samsung Gallery's
+     * Recycle bin deletes the row outright — diffs this set against the
+     * tracked present set and reconciles the difference, F44), and a
+     * resumed full pass's unseen reconciliation (its own walk covered
+     * only the part below the checkpoint). `bucketIds` restricts to a
+     * dirs scope's buckets; empty = all folders. `undatedOnly` returns
+     * only rows without DATE_TAKEN (the resumed pass's undated tail,
+     * which no bounded range query can reach). Default query args: no
+     * trashed, no pending rows — exactly the paging the scan does.
+     * Throws on any error: a partial id set would read as deletions.
+     */
+    AsyncFunction("listMediaIds") { volume: String, bucketIds: List<String>, undatedOnly: Boolean ->
+      val context = appContext.reactContext
+        ?: throw IllegalStateException("Android context unavailable")
+      val uri = MediaStore.Files.getContentUri(volume)
+      val clauses = mutableListOf("($MEDIA_KIND_SELECTION)")
+      val args = mutableListOf<String>()
+      if (bucketIds.isNotEmpty()) {
+        clauses.add("${MediaStore.MediaColumns.BUCKET_ID} IN (${bucketIds.joinToString(",") { "?" }})")
+        args.addAll(bucketIds)
+      }
+      if (undatedOnly) clauses.add("${MediaStore.MediaColumns.DATE_TAKEN} IS NULL")
+      val out = mutableListOf<String>()
+      try {
+        context.contentResolver.query(
+          uri,
+          arrayOf(MediaStore.MediaColumns._ID),
+          clauses.joinToString(" AND "),
+          args.toTypedArray(),
+          null,
+        )?.use { cursor ->
+          val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+          while (cursor.moveToNext()) out.add(cursor.getLong(idCol).toString())
+        } ?: throw IllegalStateException("null cursor for volume $volume")
+      } catch (error: Exception) {
+        throw IllegalStateException("id enumeration failed for volume $volume", error)
       }
       out
     }
@@ -1013,15 +1100,22 @@ class MediaStoreActionsModule : Module() {
     return permissions.all { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
   }
 
+  /** The presence probe. PENDING rows are NAMED (m0.9 phase 9, codex
+   * r8): a tracked file an app is rewriting in place sits in IS_PENDING
+   * for the write's duration — a probe blind to it would let the
+   * id-walk reconciliation tombstone a photo that is merely being
+   * written, and a probe that only said "present" would let the scan
+   * net it out of a count check beside rows it cannot explain. */
   private fun mediaPresenceOf(uri: Uri): String {
     val resolver = appContext.reactContext?.contentResolver ?: return "unknown"
     val queryArgs = android.os.Bundle().apply {
       putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_INCLUDE)
+      putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
     }
     return try {
       val cursor = resolver.query(
         uri,
-        arrayOf(MediaStore.MediaColumns.IS_TRASHED),
+        arrayOf(MediaStore.MediaColumns.IS_TRASHED, MediaStore.MediaColumns.IS_PENDING),
         queryArgs,
         null,
       ) ?: return "unknown"
@@ -1030,9 +1124,11 @@ class MediaStoreActionsModule : Module() {
           if (hasFullMediaAccess()) "absent" else "unknown"
         } else {
           val index = c.getColumnIndex(MediaStore.MediaColumns.IS_TRASHED)
+          val pendingIndex = c.getColumnIndex(MediaStore.MediaColumns.IS_PENDING)
           when {
             index < 0 -> "unknown"
             c.getInt(index) != 0 -> "trashed"
+            pendingIndex >= 0 && c.getInt(pendingIndex) != 0 -> "pending"
             else -> "present"
           }
         }

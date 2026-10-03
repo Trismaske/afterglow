@@ -346,6 +346,14 @@ adb -s SERIAL shell "content call --uri content://media/none/ --method scan_volu
 Landing a file under another app's storage (`/sdcard/Android/media/com.whatsapp/...`) makes an **out-of-source** change for scan tests; a REAL row owned by that app (check `owner_package_name`) is what forces the organize boundary's ownership refusal — a shell-pushed file may scan with no owner and behave differently.
 Prefix generated files (`AG_...`) so cleanup is a name match.
 
+**Removing test media — the destructive-command rules (2026-10-02).**
+A MediaStore row delete on a collection URI with no row filter deletes EVERY row of that collection and the files behind them; one such command with an empty id, inside a loop, erased the S10e's photo library.
+The global guard (`~/.claude/AGENTS.md`, enforced by a PreToolUse hook) applies here in full:
+1. Simulate a trash-bypassing delete by removing the FILE and rescanning (`adb shell rm /sdcard/DCIM/Camera/AG_X.jpg`, then `scan_volume`); MediaStore drops the row itself.
+   Only when the test needs a NEW MediaStore id for the same path does a row delete come into it.
+2. A row delete is one direct command with a literal id, after a read-only `content query --where "_display_name='AG_X.jpg'"` has shown exactly the row it targets; never a path id built from a variable, never inside a loop or a chain.
+3. The S23 is a personal, unbacked-up camera library: read-only commands only (`adb pull`, `ls`, `content query`); it is a seed SOURCE for the disposable S10e, never a target.
+
 ### 6.4 Volume (SD card) control
 
 A physically present card can be mounted and unmounted in software — reach-axis tests without touching the phone:

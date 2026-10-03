@@ -1043,10 +1043,7 @@ export function SettingsScreen({ navigation }: Props) {
                 : scanStatusLine({
                     verifiedAt: scanFacts?.verifiedAt ?? null,
                     corpus: scanFacts?.corpus ?? 0,
-                    running:
-                      scanStatus.phase === 'scanning'
-                        ? { scanned: scanStatus.scanned, total: scanStatus.total }
-                        : null,
+                    running: scanStatus,
                   })}
             </Text>
             <Text style={styles.rowHint}>
@@ -1056,8 +1053,14 @@ export function SettingsScreen({ navigation }: Props) {
           </View>
         </View>
         <Pressable
-          style={[styles.row, scanStatus.phase === 'scanning' && styles.rowDisabled]}
-          disabled={scanStatus.phase === 'scanning'}
+          // Disabled while a flight runs — the check too (phase 9): a
+          // forced rescan pressed during one would supersede it.
+          style={[
+            styles.row,
+            (scanStatus.phase === 'scanning' || scanStatus.phase === 'checking') &&
+              styles.rowDisabled,
+          ]}
+          disabled={scanStatus.phase === 'scanning' || scanStatus.phase === 'checking'}
           onPress={() => {
             void requestRescan(db);
             showToast('Rescanning your library…');
@@ -1065,7 +1068,11 @@ export function SettingsScreen({ navigation }: Props) {
         >
           <View style={styles.rowBody}>
             <Text style={[styles.rowTitle, { color: theme.accent }]}>
-              {scanStatus.phase === 'scanning' ? 'Scan in progress' : 'Rescan library'}
+              {scanStatus.phase === 'scanning'
+                ? 'Scan in progress'
+                : scanStatus.phase === 'checking'
+                  ? 'Checking the library…'
+                  : 'Rescan library'}
             </Text>
           </View>
         </Pressable>

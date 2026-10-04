@@ -32,7 +32,7 @@ export const DATABASE_NAME = 'afterglow.db';
  * When one release's destructive DDL lands across multiple phases, bump
  * once PER destructive phase (not once per release), so a mid-release
  * install self-heals by rebuild instead of by a manual data wipe. */
-export const SCHEMA_VERSION = 25;
+export const SCHEMA_VERSION = 26;
 
 export const BASELINE_DDL = `
   CREATE TABLE photos (
@@ -123,7 +123,15 @@ export const BASELINE_DDL = `
     -- Presence + feed ordering + trash generation (C#1, N#3, C#7, P8#4)
     is_present           INTEGER NOT NULL DEFAULT 1 CHECK (is_present IN (0, 1)),
     activity_at          INTEGER,
-    trash_generation     INTEGER NOT NULL DEFAULT 0
+    trash_generation     INTEGER NOT NULL DEFAULT 0,
+    -- v26 (m0.9 phase 9, Tristan 2026-10-04): the verdict an EXTERNAL
+    -- removal found — a Gallery delete, a cloud client's removal — so
+    -- the photo's return (the same id restored from the system trash,
+    -- or a new id adopting the tombstone) comes back kept, culled or
+    -- unreviewed exactly as it left, its queued actions with it. NULL
+    -- for a row that is present, or that Afterglow's own cull trashed
+    -- (a restore of THAT is a change of mind and re-enters review).
+    state_before_removal TEXT CHECK (state_before_removal IN ('unreviewed', 'kept', 'culled'))
   );
 
   -- PENDING ACTIONS (v18) — layer 2 of docs/STATE_MODEL.md, one shape for

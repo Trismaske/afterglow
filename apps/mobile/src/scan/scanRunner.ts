@@ -267,7 +267,9 @@ function update(patch: Partial<ScanStatus>): void {
 }
 
 let flight: Promise<void> | null = null;
-let rescanQueued = false;
+/** A rescan asked for during a flight, with its origin (phase 9): the
+ * Settings row's own request names itself as such on the line. */
+let rescanQueued: RescanOrigin | null = null;
 /** A library change NOTICED during a flight (m0.9 phase 9): the pass's
  * generations were read at its start, so a change landing mid-pass was
  * invisible until the next trigger. One check runs after the flight. */
@@ -311,10 +313,10 @@ export function requestTargetedRescan(db: SQLiteDatabase, target: RescanTarget):
  */
 export function startContinuousScan(
   db: SQLiteDatabase,
-  options: { force?: boolean } = {},
+  options: { force?: RescanOrigin } = {},
 ): Promise<void> {
   if (flight) return flight;
-  const force = options.force ?? false;
+  const force = options.force ?? null;
   flight = scan(db, force)
     .catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -323,11 +325,12 @@ export function startContinuousScan(
     })
     .finally(() => {
       flight = null;
-      if (rescanQueued) {
-        rescanQueued = false;
+      if (rescanQueued !== null) {
+        const origin = rescanQueued;
+        rescanQueued = null;
         // A queued rescan came from a settings apply/reset — forced (it
         // may rewrite scan OUTPUT without changing scan INPUT).
-        void startContinuousScan(db, { force: true });
+        void startContinuousScan(db, { force: origin });
       } else if (pendingTargets.length > 0) {
         // Targets that arrived mid-flight drain in their own pass.
         void startContinuousScan(db);
@@ -386,17 +389,25 @@ export function requestLibraryCheck(db: SQLiteDatabase): Promise<void> {
  * persisted progress for nothing — the queued rescan re-reads every
  * setting when it starts).
  */
-export function requestRescan(db: SQLiteDatabase): Promise<void> {
+export function requestRescan(
+  db: SQLiteDatabase,
+  /** 'settings' (an apply or reset asked for it) or 'manual' (the
+   * Settings row's own "Rescan library"): the line names which. */
+  origin: RescanOrigin = 'settings',
+): Promise<void> {
   if (flight) {
-    rescanQueued = true;
+    rescanQueued = origin;
     supersedeScan();
     return flight;
   }
   // FORCED: setting applies and resets rewrite scan output (groups,
   // scopes) without necessarily changing the fingerprint's inputs —
   // the unchanged-library skip must not swallow them.
-  return startContinuousScan(db, { force: true });
+  return startContinuousScan(db, { force: origin });
 }
+
+/** Why a forced pass was asked for — the status line names each. */
+export type RescanOrigin = 'settings' | 'manual';
 
 /**
  * Stop any in-flight scan from persisting further windows (it exits at
@@ -1348,7 +1359,7 @@ async function finishPass(
   }
 }
 
-async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
+async function scan(db: SQLiteDatabase, force: RescanOrigin | null): Promise<void> {
   const generation = scanGeneration;
   const superseded = (): boolean => generation !== scanGeneration;
 
@@ -1358,7 +1369,7 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   // and must not claim verification). A forced rescan outranks it: the
   // full pass covers every target anyway.
   const targets = pendingTargets.splice(0);
-  if (targets.length > 0 && !force) {
+  if (targets.length > 0 && force === null) {
     await targetedPass(db, targets, superseded);
     return;
   }
@@ -1540,7 +1551,9 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
   // the older keys could complete "verified" without ever enumerating
   // the card.
   const forcedReason: FullPassReason | null = force
-    ? 'forced'
+    ? force === 'manual'
+      ? 'manual'
+      : 'forced'
     : model.cleared
       ? 'model'
       : checkpoint !== null
@@ -1561,6 +1574,7 @@ async function scan(db: SQLiteDatabase, force: boolean): Promise<void> {
       string
     > = {
       forced: 'forced rescan (settings change or reset)',
+      manual: 'forced rescan (the Settings row)',
       model: 'embedding model changed — every vector is recomputed',
       resume: 'an interrupted full pass resumes at its checkpoint',
       first: 'no stored baseline — the first pass must be full',

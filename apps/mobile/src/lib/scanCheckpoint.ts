@@ -39,6 +39,7 @@ const REASONS: readonly FullPassReason[] = [
   'resume',
   'weekly',
   'forced',
+  'manual',
   'model',
   'storage',
   'loss',

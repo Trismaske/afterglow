@@ -2629,8 +2629,12 @@ export async function writeContinuousGroups(
       IN_CHUNK,
     )) {
       if (ids.length === 0) continue;
+      // The verdict an external removal found comes back with the photo
+      // (v26); a row Afterglow's own cull trashed has none and re-enters
+      // review.
       await txn.runAsync(
-        `UPDATE photos SET state = 'unreviewed', is_present = 1,
+        `UPDATE photos SET state = COALESCE(state_before_removal, 'unreviewed'),
+           state_before_removal = NULL, is_present = 1,
            trash_generation = trash_generation + 1,
            mod_time = NULL, content_hash = NULL,
            activity_at = ?
@@ -3545,18 +3549,19 @@ const ORGANIZE_APPLIED = `EXISTS (SELECT 1 FROM photo_actions pv_organize
 
 /** "An edit is waiting on this photo." Badge semantics on purpose: the
  * History feed reports what a photo carries, not what a queue serves. */
-const EDIT_QUEUED = `EXISTS (SELECT 1 FROM photo_actions pa_edit
+/** LIVE-ONLY (v26): a tombstone's sleeping edit flag is not "to edit". */
+const EDIT_QUEUED = `(photos.is_present = 1 AND EXISTS (SELECT 1 FROM photo_actions pa_edit
   WHERE pa_edit.photo_id = photos.asset_id AND pa_edit.kind = 'edit'
-    AND pa_edit.state IN ('queued', 'error'))`;
+    AND pa_edit.state IN ('queued', 'error')))`;
 
 /** "This photo holds (or is gaining) a favourite" — DIRECTIONAL, the SQL
  * mirror of `favouriteBadgeWeight` (lib/favouriteState.ts): favourite is
  * the only action that can point backwards, so a queued or verified
  * REMOVAL must not read as a favourite (STATE_MODEL.md). Same predicate
  * family as getForecastBaseRates. */
-const FAVOURITE_HELD = `(EXISTS (SELECT 1 FROM photo_actions pa_favourite
+const FAVOURITE_HELD = `((photos.is_present = 1 AND EXISTS (SELECT 1 FROM photo_actions pa_favourite
   WHERE pa_favourite.photo_id = photos.asset_id AND pa_favourite.kind = 'favourite'
-    AND pa_favourite.state IN ('queued', 'error') AND pa_favourite.target = '1')
+    AND pa_favourite.state IN ('queued', 'error') AND pa_favourite.target = '1'))
   OR EXISTS (SELECT 1 FROM photo_actions pv_favourite
   WHERE pv_favourite.photo_id = photos.asset_id AND pv_favourite.kind = 'favourite'
     AND pv_favourite.resolved_at IS NOT NULL
@@ -3626,17 +3631,21 @@ export async function getHistoryPage(
       ? []
       : await db.getAllAsync<Omit<HistoryPhotoRow, 'kind'>>(
           `SELECT asset_id, uri, COALESCE(file_generation, file_mtime) AS image_version, kind AS media_kind, mime_type, motion_video_offset AS motion_offset, motion_video_length AS motion_length, motion_presentation_us AS motion_presentation_us, taken_at, state, day, activity_at, is_present,
-                  EXISTS (SELECT 1 FROM photo_actions pa_edit WHERE pa_edit.photo_id = photos.asset_id AND pa_edit.kind = 'edit' AND pa_edit.state IN ('queued', 'error')) AS needs_edit,
+                  (photos.is_present = 1 AND EXISTS (SELECT 1 FROM photo_actions pa_edit WHERE pa_edit.photo_id = photos.asset_id AND pa_edit.kind = 'edit' AND pa_edit.state IN ('queued', 'error'))) AS needs_edit,
                   EXISTS (SELECT 1 FROM photo_actions pc_edit WHERE pc_edit.photo_id = photos.asset_id AND pc_edit.kind = 'edit' AND pc_edit.resolved_at IS NOT NULL) AS edit_applied,
-                  EXISTS (SELECT 1 FROM photo_actions pl_fav WHERE pl_fav.photo_id = photos.asset_id AND pl_fav.kind = 'favourite' AND pl_fav.state IN ('queued', 'error') AND pl_fav.target = '1') AS favourite_live,
-                  EXISTS (SELECT 1 FROM photo_actions pr_fav WHERE pr_fav.photo_id = photos.asset_id AND pr_fav.kind = 'favourite' AND pr_fav.state IN ('queued', 'error') AND pr_fav.target = '0') AS favourite_removing,
+                  (photos.is_present = 1 AND EXISTS (SELECT 1 FROM photo_actions pl_fav WHERE pl_fav.photo_id = photos.asset_id AND pl_fav.kind = 'favourite' AND pl_fav.state IN ('queued', 'error') AND pl_fav.target = '1')) AS favourite_live,
+                  (photos.is_present = 1 AND EXISTS (SELECT 1 FROM photo_actions pr_fav WHERE pr_fav.photo_id = photos.asset_id AND pr_fav.kind = 'favourite' AND pr_fav.state IN ('queued', 'error') AND pr_fav.target = '0')) AS favourite_removing,
                   EXISTS (SELECT 1 FROM photo_actions pc_fav WHERE pc_fav.photo_id = photos.asset_id AND pc_fav.kind = 'favourite' AND pc_fav.resolved_at IS NOT NULL AND COALESCE(pc_fav.target, pc_fav.applied_target) = '1') AS favourite_carried,
-                  EXISTS (SELECT 1 FROM photo_actions pa_organize WHERE pa_organize.photo_id = photos.asset_id AND pa_organize.kind = 'organize' AND pa_organize.state IN ('queued', 'error')) AS organize_pending,
+                  (photos.is_present = 1 AND EXISTS (SELECT 1 FROM photo_actions pa_organize WHERE pa_organize.photo_id = photos.asset_id AND pa_organize.kind = 'organize' AND pa_organize.state IN ('queued', 'error'))) AS organize_pending,
                   (SELECT MAX(o.resolved_at) FROM photo_actions o WHERE o.photo_id = photos.asset_id
                     AND o.kind = 'organize') AS organize_applied_at,
-                  EXISTS (SELECT 1 FROM photo_actions pl_share WHERE pl_share.photo_id = photos.asset_id AND pl_share.kind = 'share' AND pl_share.state IN ('queued', 'error')) AS share_live,
+                  (photos.is_present = 1 AND EXISTS (SELECT 1 FROM photo_actions pl_share WHERE pl_share.photo_id = photos.asset_id AND pl_share.kind = 'share' AND pl_share.state IN ('queued', 'error'))) AS share_live,
                   EXISTS (SELECT 1 FROM photo_actions pc_share WHERE pc_share.photo_id = photos.asset_id AND pc_share.kind = 'share' AND pc_share.resolved_at IS NOT NULL) AS share_applied
            FROM photos
+           -- The queued badges are LIVE-ONLY (v26): an external removal
+           -- keeps the photo's never-resolved queued work asleep for its
+           -- return, and a tombstone must not wear it meanwhile — the
+           -- same rule every queue read applies through livePhotoClause.
            -- TOMBSTONES stay on the record (m0.8.6 D9): a DECIDED row
            -- whose bytes left (forget-keep, executed culls) renders as
            -- a placeholder tile — History's charter is completed work

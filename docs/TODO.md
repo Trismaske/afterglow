@@ -145,9 +145,6 @@ Same hygiene as above: promote on trigger, delete when answered.
   If finger 1's drag crosses the touch slop before finger 2 lands, the deck pager's native scroll captures the stream and RNGH cancels the stage pinch — the forced two-finger activation (MediaStage.tsx) cannot reclaim a cancelled handler, the pager freezes at a partial offset under the two-pointer confusion, and lifting recovers; a clean retry works.
   Fix shape: wrap the pager FlatList in an RNGH native handler (`useNativeGesture`) so activation can interrupt a captured scroll — an arbitration change to the canonical stage, so it needs its own device rounds.
   Trigger: the residual keeps irritating in daily use.
-- **A returned file keeps its pre-removal verdict** (m0.9 phase 9, decision 38; trigger: a tester asks for it).
-  Today a file the app saw leave and come back re-enters review, like a same-id restore from the system trash; identity, stamps, History and lifetime counts carry over.
-  Keeping the verdict needs a column that remembers it before the removal convergence writes 'trashed', which is a destructive schema reset; a between-checks return already keeps its verdict (decision 47).
 - **A floor note in the GitHub Release body?** (m0.8.4; trigger: the tester group grows.)
   The Android 11 floor is documented in the README only.
   Revisit stating it in the release body itself when more testers join, so a refused install is explained where the download happened.

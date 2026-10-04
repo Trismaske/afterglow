@@ -165,7 +165,10 @@ export async function isInShareQueue(db: SQLiteDatabase, photoId: string): Promi
 }
 
 /** The queue with per-photo pass counts, chronological. Missing-media rows
- * (is_present = 0) are dropped from the live queue (C#7). */
+ * (is_present = 0) are hidden from the live queue (C#7) — and since v26
+ * their never-resolved share rows SLEEP for the photo's return instead
+ * of being swept (an external removal keeps its queued work); only a
+ * re-queued reversal of a share that went out settles here. */
 export async function getShareQueue(
   db: SQLiteDatabase,
   at: number = Date.now(),
@@ -177,14 +180,9 @@ export async function getShareQueue(
   // the emptied cycle must land together, or a crash in between would
   // leave the old cycle open for a later requeue to inherit its badges.
   await withWriteTransaction(db, async (txn) => {
-    // Missing media leaves the queue on the SAME two terms as every
-    // other exit: forget what never went out, keep the record of what
-    // did. Demoting matters here too — a row left at 'queued' on an
-    // absent photo would hold its cycle open forever.
-    await txn.runAsync(
-      `DELETE FROM photo_actions WHERE kind = 'share' AND resolved_at IS NULL
-         AND photo_id IN (SELECT asset_id FROM photos WHERE is_present = 0)`,
-    );
+    // A re-queued share of a photo that already went out settles to its
+    // record while the photo is absent; a never-resolved share sleeps
+    // (v26) and the live clause hides it, so the cycle still closes.
     await txn.runAsync(
       `UPDATE photo_actions SET state = 'applied', target = NULL
         WHERE kind = 'share' AND state IN ('queued', 'error') AND resolved_at IS NOT NULL

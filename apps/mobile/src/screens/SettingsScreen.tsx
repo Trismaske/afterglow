@@ -1062,7 +1062,7 @@ export function SettingsScreen({ navigation }: Props) {
           ]}
           disabled={scanStatus.phase === 'scanning' || scanStatus.phase === 'checking'}
           onPress={() => {
-            void requestRescan(db);
+            void requestRescan(db, 'manual');
             showToast('Rescanning your library…');
           }}
         >

@@ -33,6 +33,8 @@ export type FullPassReason =
   | 'weekly'
   /** A settings apply or reset asked for it. */
   | 'forced'
+  /** The Settings row's own "Rescan library". */
+  | 'manual'
   /** The embedding model changed; every vector is recomputed. */
   | 'model'
   /** A storage volume the baseline never saw, or one without generation evidence. */
@@ -76,6 +78,7 @@ export interface ScanProgress {
  * | resume         | Resuming last scan (no carried reason) |
  * | weekly         | Weekly full scan                   |
  * | forced         | Rescanning · settings changed      |
+ * | manual         | Rescanning · manually triggered    |
  * | model          | Rescanning · model changed         |
  * | storage        | Scanning new storage               |
  * | loss           | Reconciling deletions              |
@@ -97,6 +100,8 @@ export function fullPassLabel(reason: FullPassReason | null): string {
       return 'Weekly full scan';
     case 'forced':
       return 'Rescanning · settings changed';
+    case 'manual':
+      return 'Rescanning · manually triggered';
     case 'model':
       return 'Rescanning · model changed';
     case 'storage':
@@ -131,10 +136,16 @@ export function scanProgressLine(status: ScanProgress): string | null {
     return embedded > 0 ? `${head} · ${embedded.toLocaleString()} analyzed` : head;
   }
   const label = fullPassLabel(status.reason);
-  if (status.resumed && status.remaining !== null && total !== null && total > 0) {
+  if (status.resumed && total !== null && total > 0) {
     const pct = Math.min(100, Math.round((scanned / total) * 100));
     const head = status.reason === 'resume' ? label : `${label} · resumed`;
-    return `${head} ${pct}% · ${status.remaining.toLocaleString()} of ${plural(total, 'item')} to analyze`;
+    // The work left is named only while there is some (Tristan's S23
+    // pass: "0 of 33 188 items to analyze" read as nothing done); an
+    // already-analyzed library shows the walk instead.
+    if (status.remaining !== null && status.remaining > 0) {
+      return `${head} ${pct}% · ${status.remaining.toLocaleString()} of ${plural(total, 'item')} to analyze`;
+    }
+    return `${head} ${pct}% · ${Math.min(scanned, total).toLocaleString()} of ${plural(total, 'item')}`;
   }
   if (total !== null && total > 0) {
     const pct = Math.min(100, Math.round((scanned / total) * 100));

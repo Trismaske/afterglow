@@ -18,6 +18,7 @@ import {
   type ContinuousPhotoUpsert,
 } from './store';
 import { reconcileExternallyRemoved } from './trashStore';
+import { addToShareQueue, getShareQueue } from './shareStore';
 import { foreignKeyCheck, openTestDb, type TestDb } from './testDb';
 
 const open: TestDb[] = [];
@@ -106,6 +107,12 @@ async function keptWithSatellites(d: TestDb): Promise<{ old: string; partner: st
     )
     .run(old, AT + 2, AT + 3);
   d.raw
+    .prepare(
+      `INSERT INTO photo_actions (photo_id, kind, state, target, applied_target, queued_at, resolved_at)
+       VALUES (?, 'edit', 'queued', NULL, NULL, ?, NULL)`,
+    )
+    .run(old, AT + 2);
+  d.raw
     .prepare('INSERT INTO duels (winner_id, loser_id, kept_both, at) VALUES (?, ?, 0, ?)')
     .run(old, partner, AT + 4);
   d.raw
@@ -125,6 +132,10 @@ describe('a returning file adopts its tombstone (phase 9, F44)', () => {
     const statsBefore = await getLifetimeStats(db);
     expect(statsBefore.reviewed).toBe(1);
 
+    // A share queued too: it must sleep through the absence — and
+    // through a Share-queue refresh meanwhile (codex v26 r1) — and wake
+    // with the photo.
+    expect(await addToShareQueue(db, old, AT + 5)).toBe(true);
     // Gallery's Recycle bin: the row is deleted outright, the delta's
     // id walk finds it gone — the external-removal tombstone.
     await reconcileExternallyRemoved(db, [old], AT + 10, [VOL]);
@@ -132,6 +143,12 @@ describe('a returning file adopts its tombstone (phase 9, F44)', () => {
     expect(tomb.is_present).toBe(0);
     expect(tomb.state).toBe('trashed');
     expect((await getLifetimeStats(db)).reviewed).toBe(1);
+    expect(await getShareQueue(db, AT + 11)).toEqual([]);
+    // History shows the tombstone without its sleeping badges.
+    const tombPage = await getHistoryPage(db, 'all', null);
+    const tombLine = tombPage.rows.find((r) => r.kind === 'photo' && r.asset_id === old);
+    expect(tombLine && tombLine.kind === 'photo' ? tombLine.needs_edit : -1).toBe(0);
+    expect(tombLine && tombLine.kind === 'photo' ? tombLine.share_live : -1).toBe(0);
 
     // Gallery's Restore: the same bytes at the same path, a NEW id.
     const returned = `${VOL}/1000187900`;
@@ -141,10 +158,19 @@ describe('a returning file adopts its tombstone (phase 9, F44)', () => {
     const after = row(d, returned)!;
     expect(after.is_present).toBe(1);
     expect(after.raw_id).toBe('1000187900');
-    // The standing restore transition: back to review, the generation
-    // bumped — not silently kept.
-    expect(after.state).toBe('unreviewed');
+    // The restore transition brings back the verdict the external
+    // removal found (v26) and bumps the generation; the queued edit
+    // flag wakes with it.
+    expect(after.state).toBe('kept');
+    expect(after.state_before_removal).toBeNull();
     expect(after.trash_generation).toBe(1);
+    expect(
+      (
+        d.raw
+          .prepare("SELECT state FROM photo_actions WHERE photo_id = ? AND kind = 'edit'")
+          .get(returned) as { state: string }
+      ).state,
+    ).toBe('queued');
     // The decision stamps rode along: this photo was decided once, on
     // the old id, and the lifetime counts do not move.
     expect(after.decided_first_at).toBe(AT + 1);
@@ -155,7 +181,8 @@ describe('a returning file adopts its tombstone (phase 9, F44)', () => {
     // Every satellite names the new id and nothing names the old one.
     const count = (sql: string, id: string): number =>
       Number((d.raw.prepare(sql).get(id) as { n: number }).n);
-    expect(count('SELECT COUNT(*) AS n FROM photo_actions WHERE photo_id = ?', returned)).toBe(1);
+    expect(count('SELECT COUNT(*) AS n FROM photo_actions WHERE photo_id = ?', returned)).toBe(3);
+    expect((await getShareQueue(db, AT + 21)).map((r) => r.photo_id)).toEqual([returned]);
     expect(count('SELECT COUNT(*) AS n FROM photo_actions WHERE photo_id = ?', old)).toBe(0);
     expect(count('SELECT COUNT(*) AS n FROM duels WHERE winner_id = ?', returned)).toBe(1);
     expect(count('SELECT COUNT(*) AS n FROM duels WHERE loser_id = ?', partner)).toBe(1);

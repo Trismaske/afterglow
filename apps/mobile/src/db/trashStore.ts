@@ -243,6 +243,18 @@ export async function markBatchLaunching(
  * `markCulled` stamps the culled_at lifetime-event marker — true only
  * for verified Afterglow cull outcomes; an external removal was never an
  * Afterglow cull decision and must not inflate the lifetime count.
+ *
+ * An EXTERNAL removal (v26, Tristan 2026-10-04) remembers the verdict
+ * it found in `state_before_removal` and KEEPS the photo's never-resolved
+ * queued work (an edit flag, a share, a first favourite): the queues
+ * read only live photos, so the rows are invisible while the photo is
+ * away and wake with it — a Gallery delete and restore brings back a
+ * kept, culled or edit-flagged photo exactly as it left. A re-queued
+ * REVERSAL of work that did happen still settles to the applied fact
+ * (the carried-favourite read must report the gallery's actual heart on
+ * the tombstone, not a pending intent). Afterglow's own cull clears the
+ * memory and drops the queued work as before: restoring that from the
+ * system trash is a change of mind, and re-enters review.
  */
 async function applyRemovalCleanup(
   txn: SQLiteDatabase,
@@ -259,22 +271,30 @@ async function applyRemovalCleanup(
   // rejected). COALESCE only fills a missing stamp: History requires
   // activity_at non-null.
   await txn.runAsync(
-    `UPDATE photos SET state = 'trashed', is_present = 0,
+    `UPDATE photos SET
+       state_before_removal = CASE
+         WHEN ? = 1 THEN NULL
+         WHEN state = 'trashed' THEN state_before_removal
+         ELSE state END,
+       state = 'trashed', is_present = 0,
        culled_at = CASE WHEN ? = 1 THEN COALESCE(culled_at, ?) ELSE culled_at END,
        activity_at = CASE WHEN ? = 1 THEN ? ELSE COALESCE(activity_at, ?) END
      WHERE asset_id = ?`,
     markCulled ? 1 : 0,
+    markCulled ? 1 : 0,
     at,
     markCulled ? 1 : 0,
     at,
     at,
     photoId,
   );
-  await txn.runAsync(
-    `DELETE FROM photo_actions
-      WHERE photo_id = ? AND state IN ('queued', 'error') AND resolved_at IS NULL`,
-    photoId,
-  );
+  if (markCulled) {
+    await txn.runAsync(
+      `DELETE FROM photo_actions
+        WHERE photo_id = ? AND state IN ('queued', 'error') AND resolved_at IS NULL`,
+      photoId,
+    );
+  }
   await txn.runAsync(
     `UPDATE photo_actions SET state = 'applied', target = NULL
       WHERE photo_id = ? AND state IN ('queued', 'error') AND resolved_at IS NOT NULL`,

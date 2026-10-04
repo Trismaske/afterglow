@@ -179,15 +179,15 @@ export function HistoryScreen({ navigation }: Props) {
               ...row,
               is_present: 0,
               state: 'trashed' as const,
-              // The cleanup just DELETED every unresolved action row
-              // (queued and error) — mirror that here, or the tombstone
-              // wears carried badges for work that never happened (codex
-              // r7). Applied/carried columns are resolved_at proof and
-              // survive — except the favourite, whose carried bit is
-              // DERIVED (COALESCE of pending over applied direction) and
-              // can flip when cleanup drops a re-queued opposite
-              // direction: the reconcile hands back the post-cleanup
-              // truth (codex r8).
+              // The queued badges are LIVE-ONLY (v26): the cleanup keeps
+              // the photo's never-resolved queued work asleep for its
+              // return, and the History read shows none of it on a
+              // tombstone — mirror that here (codex r7/v26). Applied/
+              // carried columns are resolved_at proof and survive —
+              // except the favourite, whose carried bit is DERIVED
+              // (COALESCE of pending over applied direction) and can flip
+              // when cleanup settles a re-queued opposite direction: the
+              // reconcile hands back the post-cleanup truth (codex r8).
               needs_edit: 0,
               favourite_live: 0,
               favourite_removing: 0,

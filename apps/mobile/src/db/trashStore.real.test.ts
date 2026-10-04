@@ -336,8 +336,24 @@ describe('reconcileExternallyRemoved', () => {
     // (culled_at markers) must not inflate.
     expect(row.culled_at).toBeNull();
     expect(row.is_present).toBe(0);
-    expect(actionsOf(d, 'p1')).toEqual({});
-    // The share queue emptied, so its cycle ends; and no credit accrues.
+    // v26: an external removal remembers the verdict it found and keeps
+    // the queued work — invisible while the photo is away (the queues
+    // read live photos only), back with it when it returns.
+    expect(
+      (
+        d.raw.prepare('SELECT state_before_removal FROM photos WHERE asset_id = ?').get('p1') as {
+          state_before_removal: string;
+        }
+      ).state_before_removal,
+    ).toBe('kept');
+    expect(actionsOf(d, 'p1')).toEqual({
+      edit: 'queued',
+      favourite: 'queued',
+      organize: 'error',
+      share: 'queued',
+    });
+    // The share queue reads live photos only, so its cycle ends; and no
+    // credit accrues.
     const openCycles = d.raw
       .prepare('SELECT COUNT(*) AS n FROM share_cycles WHERE ended_at IS NULL')
       .get() as { n: number };

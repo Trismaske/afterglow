@@ -38,6 +38,7 @@ describe('scanProgressLine', () => {
     expect(at('weekly')).toBe(`Weekly full scan 10% · 100 of ${n(1000)} items`);
     expect(at('unavailable')).toBe(`Rescanning · delta check failed 10% · 100 of ${n(1000)} items`);
     expect(at('forced')).toBe(`Rescanning · settings changed 10% · 100 of ${n(1000)} items`);
+    expect(at('manual')).toBe(`Rescanning · manually triggered 10% · 100 of ${n(1000)} items`);
     expect(at('model')).toBe(`Rescanning · model changed 10% · 100 of ${n(1000)} items`);
     expect(at('loss')).toBe(`Reconciling deletions 10% · 100 of ${n(1000)} items`);
     expect(at('dates')).toBe(`Rescanning · dates changed 10% · 100 of ${n(1000)} items`);
@@ -70,6 +71,18 @@ describe('scanProgressLine', () => {
         embedded: 2000,
       }),
     ).toBe(`Weekly full scan · resumed 70% · ${n(9441)} of ${n(28535)} items to analyze`);
+    // Nothing left to analyze (every item embedded): the walk count,
+    // never "0 of N to analyze".
+    expect(
+      scanProgressLine({
+        ...base,
+        reason: 'manual',
+        resumed: true,
+        scanned: 21000,
+        total: 33188,
+        remaining: 0,
+      }),
+    ).toBe(`Rescanning · manually triggered · resumed 63% · ${n(21000)} of ${n(33188)} items`);
     // A checkpoint written without a reason: the fallback words.
     expect(
       scanProgressLine({

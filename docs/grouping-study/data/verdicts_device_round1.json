@@ -1,0 +1,314 @@
+{
+ "0": {
+  "v": "split",
+  "note": "20220513_183212.jpg not in"
+ },
+ "1": {
+  "v": "ambiguous",
+  "note": "20210308_083056.jpg, 20210308_083100.jpg and 20210308_083111.jpg are very simila to eachother and could be in thier own group, but you can see why all of these would join, not opposed to it"
+ },
+ "2": {
+  "v": "ok",
+  "note": "Could also be split into sub-groups, but all together could be fine. Having to deal with this as one group could be a bit overwhelming to a use though, so when a group like this is found in terms of number of items in the group, we might want to take this set and look for sub groups? Then we just treat those sub groups as normal groups? Not sure if that is making it too complex?"
+ },
+ "4": {
+  "v": "ok",
+  "note": "Could have sub groups, but works as a group"
+ },
+ "5": {
+  "v": "ok",
+  "note": "Could have sub groups, but works as a group"
+ },
+ "6": {
+  "v": "ok",
+  "note": ""
+ },
+ "7": {
+  "v": "split",
+  "note": "20210822_103954.jpg and 20210822_104004.jpg should be in thier own group, the other 3 in their own group"
+ },
+ "8": {
+  "v": "ok",
+  "note": ""
+ },
+ "9": {
+  "v": "split",
+  "note": "20210306_191518.jpg and 20210306_191523.jpg in group 1, 20210306_191537.jpg and 20210306_191540.jpg in group 2, the rest in group 3"
+ },
+ "10": {
+  "v": "split",
+  "note": "20221230_203315.jpg out of this group, the rest in the group"
+ },
+ "11": {
+  "v": "ok",
+  "note": ""
+ },
+ "12": {
+  "v": "ok",
+  "note": ""
+ },
+ "13": {
+  "v": "split",
+  "note": "20210822_105312.jpg and 20210822_105342.jpg should be in thier own group, the rest group well together"
+ },
+ "14": {
+  "v": "split",
+  "note": "20220322_190757.jpg and 20220322_190747.jpg should be in thier own group, the rest group well together and 20210822_105342.jpg should be in thier own group, the rest group well together"
+ },
+ "15": {
+  "v": "ok",
+  "note": ""
+ },
+ "17": {
+  "v": "ok",
+  "note": ""
+ },
+ "18": {
+  "v": "ambiguous",
+  "note": "okay as a group, 20210308_100247.jpg might be okay out of the group"
+ },
+ "19": {
+  "v": "ok",
+  "note": ""
+ },
+ "20": {
+  "v": "ok",
+  "note": ""
+ },
+ "21": {
+  "v": "ok",
+  "note": ""
+ },
+ "22": {
+  "v": "split",
+  "note": "20210311_191322.jpg on its own"
+ },
+ "23": {
+  "v": "split",
+  "note": "20220423_162356.jpg and 20220423_162357.jpg in their own group, 20220423_162443.jpg as a single, and the other 3 in their own group"
+ },
+ "24": {
+  "v": "ok",
+  "note": ""
+ },
+ "25": {
+  "v": "ok",
+  "note": ""
+ },
+ "26": {
+  "v": "ok",
+  "note": ""
+ },
+ "27": {
+  "v": "split",
+  "note": "20210821_075625.jpg and 20210821_075708.jpg should be singles or in thier own group, the other 3 in thier own group together"
+ },
+ "28": {
+  "v": "ok",
+  "note": "could have subgroups, but okay together"
+ },
+ "29": {
+  "v": "ok",
+  "note": ""
+ },
+ "30": {
+  "v": "ok",
+  "note": ""
+ },
+ "31": {
+  "v": "split",
+  "note": "20210319_184756.jpg should not be in the group, the rest are correct"
+ },
+ "32": {
+  "v": "split",
+  "note": "20220720_122903.jpg should be single, 20220720_122654.jpg and 20220720_122656.jpg in their own group, and the other 2 in thier own group"
+ },
+ "33": {
+  "v": "ok",
+  "note": ""
+ },
+ "34": {
+  "v": "split",
+  "note": "20211119_192200.jpg and 20211119_192146.jpg should be in their own group"
+ },
+ "35": {
+  "v": "ok",
+  "note": ""
+ },
+ "36": {
+  "v": "ok",
+  "note": "can have subgroups, but okay together"
+ },
+ "37": {
+  "v": "split",
+  "note": "20220716_162434.jpg and 20220716_144632.jpg together, and the other 2 in their own group"
+ },
+ "38": {
+  "v": "ok",
+  "note": ""
+ },
+ "39": {
+  "v": "ok",
+  "note": ""
+ },
+ "40": {
+  "v": "ok",
+  "note": ""
+ },
+ "41": {
+  "v": "ok",
+  "note": ""
+ },
+ "42": {
+  "v": "ok",
+  "note": ""
+ },
+ "43": {
+  "v": "split",
+  "note": "20210322_170100.jpg on its own"
+ },
+ "44": {
+  "v": "ok",
+  "note": ""
+ },
+ "45": {
+  "v": "ok",
+  "note": ""
+ },
+ "46": {
+  "v": "ok",
+  "note": ""
+ },
+ "47": {
+  "v": "ok",
+  "note": ""
+ },
+ "48": {
+  "v": "ok",
+  "note": ""
+ },
+ "49": {
+  "v": "ok",
+  "note": ""
+ },
+ "50": {
+  "v": "ok",
+  "note": ""
+ },
+ "51": {
+  "v": "ok",
+  "note": ""
+ },
+ "52": {
+  "v": "ok",
+  "note": ""
+ },
+ "53": {
+  "v": "ok",
+  "note": ""
+ },
+ "54": {
+  "v": "ok",
+  "note": ""
+ },
+ "55": {
+  "v": "split",
+  "note": "20220716_162426.jpg and 20220716_162434.jpg can be in thier own group, othe others are good together"
+ },
+ "56": {
+  "v": "ok",
+  "note": ""
+ },
+ "57": {
+  "v": "ok",
+  "note": ""
+ },
+ "58": {
+  "v": "ok",
+  "note": "both are just black?"
+ },
+ "59": {
+  "v": "ok",
+  "note": ""
+ },
+ "60": {
+  "v": "ok",
+  "note": ""
+ },
+ "61": {
+  "v": "split",
+  "note": "2 join, 20220717_123846.jpg shoudl be on its own"
+ },
+ "62": {
+  "v": "ok",
+  "note": ""
+ },
+ "63": {
+  "v": "ok",
+  "note": ""
+ },
+ "64": {
+  "v": "split",
+  "note": "20211211_194309.jpg and 20211211_194325.jpg in thier own group, the other 2 in thier own group"
+ },
+ "65": {
+  "v": "join",
+  "note": ""
+ },
+ "66": {
+  "v": "join",
+  "note": ""
+ },
+ "67": {
+  "v": "join",
+  "note": ""
+ },
+ "68": {
+  "v": "join",
+  "note": ""
+ },
+ "69": {
+  "v": "join",
+  "note": ""
+ },
+ "70": {
+  "v": "join",
+  "note": ""
+ },
+ "71": {
+  "v": "join",
+  "note": ""
+ },
+ "72": {
+  "v": "ok",
+  "note": ""
+ },
+ "73": {
+  "v": "split",
+  "note": "20220720_122415.jpg and 20220720_122418.jpg together, 20220720_122654.jpg and 20220720_122656.jpg together, the other 2 do not join with the other groups or eacgi"
+ },
+ "74": {
+  "v": "join",
+  "note": ""
+ },
+ "75": {
+  "v": "ok",
+  "note": ""
+ },
+ "76": {
+  "v": "split",
+  "note": "20220717_131436.jpg and 20220717_131445.jpg should join, the other 2 are singles"
+ },
+ "77": {
+  "v": "ambiguous",
+  "note": ""
+ },
+ "78": {
+  "v": "ambiguous",
+  "note": ""
+ },
+ "79": {
+  "v": "split",
+  "note": ""
+ }
+}

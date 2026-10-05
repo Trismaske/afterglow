@@ -43,6 +43,7 @@ const member = (
   state,
   needs_edit: 0,
   time_attached: 0,
+  part: 0,
 });
 
 /** Members NEWEST-first, like the store returns them (m0.8.2). */

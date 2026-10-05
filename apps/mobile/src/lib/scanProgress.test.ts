@@ -40,6 +40,7 @@ describe('scanProgressLine', () => {
     expect(at('forced')).toBe(`Rescanning · settings changed 10% · 100 of ${n(1000)} items`);
     expect(at('manual')).toBe(`Rescanning · manually triggered 10% · 100 of ${n(1000)} items`);
     expect(at('model')).toBe(`Rescanning · model changed 10% · 100 of ${n(1000)} items`);
+    expect(at('rules')).toBe(`Rescanning · grouping changed 10% · 100 of ${n(1000)} items`);
     expect(at('loss')).toBe(`Reconciling deletions 10% · 100 of ${n(1000)} items`);
     expect(at('dates')).toBe(`Rescanning · dates changed 10% · 100 of ${n(1000)} items`);
     expect(at('inconsistent')).toBe(`Rescanning · counts disagreed 10% · 100 of ${n(1000)} items`);

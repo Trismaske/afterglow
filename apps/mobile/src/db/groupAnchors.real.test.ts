@@ -106,8 +106,12 @@ async function seed(d: TestDb): Promise<{ a: number; b: number }> {
         upsert('s2', T + 300),
       ],
       groups: [
-        { members: [id('a1'), id('a2'), id('a3')], timeAttached: [] },
-        { members: [id('b1'), id('b2')], timeAttached: [] },
+        {
+          members: [id('a1'), id('a2'), id('a3')],
+          timeAttached: [],
+          parts: [[id('a1'), id('a2'), id('a3')]],
+        },
+        { members: [id('b1'), id('b2')], timeAttached: [], parts: [[id('b1'), id('b2')]] },
       ],
       singles: [id('s1'), id('s2')],
     },
@@ -148,7 +152,13 @@ describe('the anchor write-through across the audited membership writers', () =>
       asExpo(d),
       {
         photos: [upsert('a1', T + 900), upsert('a2', T + 800), upsert('a3', T + 700)],
-        groups: [{ members: [id('a1'), id('a2'), id('a3')], timeAttached: [] }],
+        groups: [
+          {
+            members: [id('a1'), id('a2'), id('a3')],
+            timeAttached: [],
+            parts: [[id('a1'), id('a2'), id('a3')]],
+          },
+        ],
         singles: [],
       },
       AT + 1,
@@ -166,7 +176,13 @@ describe('the anchor write-through across the audited membership writers', () =>
       asExpo(d),
       {
         photos: [upsert('a1', T + 950), upsert('a2', T + 800), upsert('a3', T + 700)],
-        groups: [{ members: [id('a1'), id('a2'), id('a3')], timeAttached: [] }],
+        groups: [
+          {
+            members: [id('a1'), id('a2'), id('a3')],
+            timeAttached: [],
+            parts: [[id('a1'), id('a2'), id('a3')]],
+          },
+        ],
         singles: [],
       },
       AT + 1,
@@ -366,7 +382,13 @@ describe('the anchor write-through across the audited membership writers', () =>
       asExpo(d),
       {
         photos: [upsert('a1', T + 900), upsert('a2', T + 800), upsert('a3', T + 700)],
-        groups: [{ members: [id('a1'), id('a2'), id('a3')], timeAttached: [] }],
+        groups: [
+          {
+            members: [id('a1'), id('a2'), id('a3')],
+            timeAttached: [],
+            parts: [[id('a1'), id('a2'), id('a3')]],
+          },
+        ],
         singles: [],
       },
       AT + 20,
@@ -391,8 +413,16 @@ describe('the anchor write-through across the audited membership writers', () =>
           upsert('n3', T + 400),
         ],
         groups: [
-          { members: [id('m1', SD), id('m2'), id('m3')], timeAttached: [] },
-          { members: [id('n1', SD), id('n2'), id('n3')], timeAttached: [] },
+          {
+            members: [id('m1', SD), id('m2'), id('m3')],
+            timeAttached: [],
+            parts: [[id('m1', SD), id('m2'), id('m3')]],
+          },
+          {
+            members: [id('n1', SD), id('n2'), id('n3')],
+            timeAttached: [],
+            parts: [[id('n1', SD), id('n2'), id('n3')]],
+          },
         ],
         singles: [],
       },
@@ -497,8 +527,12 @@ describe('the group reads over the anchor', () => {
           upsert('n2', T + 400),
         ],
         groups: [
-          { members: [id('m1', SD), id('m2'), id('m3')], timeAttached: [] },
-          { members: [id('n1'), id('n2')], timeAttached: [] },
+          {
+            members: [id('m1', SD), id('m2'), id('m3')],
+            timeAttached: [],
+            parts: [[id('m1', SD), id('m2'), id('m3')]],
+          },
+          { members: [id('n1'), id('n2')], timeAttached: [], parts: [[id('n1'), id('n2')]] },
         ],
         singles: [],
       },

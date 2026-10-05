@@ -241,7 +241,7 @@ describe('writeContinuousGroups', () => {
       db,
       {
         photos: [upsert('1'), upsert('2'), upsert('3')],
-        groups: [{ members: [id('1'), id('2')], timeAttached: [] }],
+        groups: [{ members: [id('1'), id('2')], timeAttached: [], parts: [[id('1'), id('2')]] }],
         singles: [id('3')],
       },
       AT,
@@ -259,6 +259,7 @@ describe('writeContinuousGroups', () => {
     expect(assignments.get(id('3'))).toEqual({
       groupId: null,
       timeAttached: false,
+      part: 0,
     });
     expect(foreignKeyCheck(d)).toEqual([]);
   });
@@ -270,7 +271,7 @@ describe('writeContinuousGroups', () => {
       db,
       {
         photos: [upsert('1'), upsert('2')],
-        groups: [{ members: [id('1'), id('2')], timeAttached: [] }],
+        groups: [{ members: [id('1'), id('2')], timeAttached: [], parts: [[id('1'), id('2')]] }],
         singles: [],
       },
       AT,
@@ -279,7 +280,7 @@ describe('writeContinuousGroups', () => {
       db,
       {
         photos: [upsert('3'), upsert('4')],
-        groups: [{ members: [id('3'), id('4')], timeAttached: [] }],
+        groups: [{ members: [id('3'), id('4')], timeAttached: [], parts: [[id('3'), id('4')]] }],
         singles: [],
       },
       AT + 1,
@@ -297,7 +298,7 @@ describe('writeContinuousGroups', () => {
       db,
       {
         photos: [upsert('1'), upsert('2')],
-        groups: [{ members: [id('1'), id('2')], timeAttached: [] }],
+        groups: [{ members: [id('1'), id('2')], timeAttached: [], parts: [[id('1'), id('2')]] }],
         singles: [],
       },
       AT,
@@ -355,7 +356,13 @@ describe('writeContinuousGroups', () => {
       db,
       {
         photos: [upsert('1'), upsert('2'), upsert('3')],
-        groups: [{ members: [id('1'), id('2'), id('3')], timeAttached: [] }],
+        groups: [
+          {
+            members: [id('1'), id('2'), id('3')],
+            timeAttached: [],
+            parts: [[id('1'), id('2'), id('3')]],
+          },
+        ],
         singles: [],
       },
       AT,
@@ -368,7 +375,7 @@ describe('writeContinuousGroups', () => {
       db,
       {
         photos: [upsert('1'), upsert('2'), upsert('3')],
-        groups: [{ members: [id('1'), id('2')], timeAttached: [] }],
+        groups: [{ members: [id('1'), id('2')], timeAttached: [], parts: [[id('1'), id('2')]] }],
         singles: [id('3')],
       },
       AT + 10,
@@ -394,7 +401,9 @@ describe('writeContinuousGroups', () => {
       db,
       {
         photos: [upsert('1'), upsert('2')],
-        groups: [{ members: [id('1'), id('2')], timeAttached: [id('2')] }],
+        groups: [
+          { members: [id('1'), id('2')], timeAttached: [id('2')], parts: [[id('1'), id('2')]] },
+        ],
         singles: [],
       },
       AT,
@@ -412,7 +421,7 @@ describe('writeContinuousGroups', () => {
       db,
       {
         photos: [upsert('1'), upsert('2')],
-        groups: [{ members: [id('1'), id('2')], timeAttached: [] }],
+        groups: [{ members: [id('1'), id('2')], timeAttached: [], parts: [[id('1'), id('2')]] }],
         singles: [],
       },
       AT + 10,
@@ -431,7 +440,13 @@ describe('writeContinuousGroups', () => {
       db,
       {
         photos: [upsert('1'), upsert('2')],
-        groups: [{ members: [id('1'), id('2')], timeAttached: [id('1'), id('2')] }],
+        groups: [
+          {
+            members: [id('1'), id('2')],
+            timeAttached: [id('1'), id('2')],
+            parts: [[id('1'), id('2')]],
+          },
+        ],
         singles: [],
       },
       AT,
@@ -566,7 +581,13 @@ describe('writeContinuousGroups', () => {
       db,
       {
         photos: [upsert('1'), upsert('2'), upsert('3')],
-        groups: [{ members: [id('1'), id('2'), id('3')], timeAttached: [] }],
+        groups: [
+          {
+            members: [id('1'), id('2'), id('3')],
+            timeAttached: [],
+            parts: [[id('1'), id('2'), id('3')]],
+          },
+        ],
         singles: [],
       },
       AT,
@@ -581,7 +602,13 @@ describe('writeContinuousGroups', () => {
       db,
       {
         photos: [upsert('1'), upsert('2'), upsert('3')],
-        groups: [{ members: [id('1'), id('2'), id('3')], timeAttached: [] }],
+        groups: [
+          {
+            members: [id('1'), id('2'), id('3')],
+            timeAttached: [],
+            parts: [[id('1'), id('2'), id('3')]],
+          },
+        ],
         singles: [],
       },
       AT + 10,
@@ -600,7 +627,7 @@ describe('writeContinuousGroups', () => {
       db,
       {
         photos: [upsert('1'), upsert('2')],
-        groups: [{ members: [id('1'), id('2')], timeAttached: [] }],
+        groups: [{ members: [id('1'), id('2')], timeAttached: [], parts: [[id('1'), id('2')]] }],
         singles: [],
       },
       AT + 20,
@@ -663,7 +690,7 @@ describe('writeContinuousGroups', () => {
       db,
       {
         photos: [upsert('1'), upsert('2')],
-        groups: [{ members: [id('1'), id('2')], timeAttached: [] }],
+        groups: [{ members: [id('1'), id('2')], timeAttached: [], parts: [[id('1'), id('2')]] }],
         singles: [],
       },
       AT,
@@ -688,7 +715,7 @@ describe('identical re-writes are no-ops (m0.8.1 stable group ids)', () => {
     const db = asExpo(d);
     const window = {
       photos: [upsert('1'), upsert('2'), upsert('3')],
-      groups: [{ members: [id('1'), id('2')], timeAttached: [] }],
+      groups: [{ members: [id('1'), id('2')], timeAttached: [], parts: [[id('1'), id('2')]] }],
       singles: [id('3')],
     };
     await writeContinuousGroups(db, window, AT);
@@ -709,7 +736,9 @@ describe('identical re-writes are no-ops (m0.8.1 stable group ids)', () => {
       db,
       {
         photos: [upsert('1'), upsert('2')],
-        groups: [{ members: [id('1'), id('2')], timeAttached: [id('2')] }],
+        groups: [
+          { members: [id('1'), id('2')], timeAttached: [id('2')], parts: [[id('1'), id('2')]] },
+        ],
         singles: [],
       },
       AT,
@@ -719,7 +748,7 @@ describe('identical re-writes are no-ops (m0.8.1 stable group ids)', () => {
       db,
       {
         photos: [upsert('1'), upsert('2')],
-        groups: [{ members: [id('1'), id('2')], timeAttached: [] }],
+        groups: [{ members: [id('1'), id('2')], timeAttached: [], parts: [[id('1'), id('2')]] }],
         singles: [],
       },
       AT + 1000,
@@ -734,7 +763,7 @@ describe('identical re-writes are no-ops (m0.8.1 stable group ids)', () => {
       db,
       {
         photos: [upsert('1'), upsert('2'), upsert('3')],
-        groups: [{ members: [id('1'), id('2')], timeAttached: [] }],
+        groups: [{ members: [id('1'), id('2')], timeAttached: [], parts: [[id('1'), id('2')]] }],
         singles: [id('3')],
       },
       AT,
@@ -744,7 +773,13 @@ describe('identical re-writes are no-ops (m0.8.1 stable group ids)', () => {
       db,
       {
         photos: [upsert('1'), upsert('2'), upsert('3')],
-        groups: [{ members: [id('1'), id('2'), id('3')], timeAttached: [] }],
+        groups: [
+          {
+            members: [id('1'), id('2'), id('3')],
+            timeAttached: [],
+            parts: [[id('1'), id('2'), id('3')]],
+          },
+        ],
         singles: [],
       },
       AT + 1000,
@@ -920,5 +955,121 @@ describe('IS_FAVORITE projection (F20, m0.8.7)', () => {
       activity_at: number | null;
     };
     expect(row.activity_at).toBeNull();
+  });
+});
+
+describe('parts (v27, m0.9 phase 10)', () => {
+  it('stores the engine parts per member and reads them back on the queue', async () => {
+    const d = await fresh();
+    const db = asExpo(d);
+    const { readReviewQueue } = await import('./store');
+    await writeContinuousGroups(
+      db,
+      {
+        photos: [upsert('1', AT - 30_000), upsert('2', AT - 20_000), upsert('3', AT - 10_000)],
+        groups: [
+          {
+            members: [id('1'), id('2'), id('3')],
+            timeAttached: [],
+            parts: [[id('1'), id('3')], [id('2')]],
+          },
+        ],
+        singles: [],
+      },
+      AT,
+    );
+    const assignments = await getGroupAssignments(db, [id('1'), id('2'), id('3')]);
+    expect(assignments.get(id('1'))!.part).toBe(0);
+    expect(assignments.get(id('2'))!.part).toBe(1);
+    expect(assignments.get(id('3'))!.part).toBe(0);
+    const queue = await readReviewQueue(db, 10, 10, null, null);
+    expect(queue.groups).toHaveLength(1);
+    // Newest-first as every reader orders; the part rides each row.
+    expect(queue.groups[0].members.map((m) => [m.asset_id, m.part])).toEqual([
+      [id('3'), 0],
+      [id('2'), 1],
+      [id('1'), 0],
+    ]);
+  });
+
+  it('a parts-only change keeps the group id and rewrites the indexes in place', async () => {
+    const d = await fresh();
+    const db = asExpo(d);
+    const window = (parts: string[][]) => ({
+      photos: [upsert('1'), upsert('2'), upsert('3')],
+      groups: [{ members: [id('1'), id('2'), id('3')], timeAttached: [], parts }],
+      singles: [],
+    });
+    expect(await writeContinuousGroups(db, window([[id('1'), id('2'), id('3')]]), AT)).toBe(true);
+    const before = await getGroupAssignments(db, [id('1'), id('2'), id('3')]);
+    // Identical membership and parts: a no-op.
+    expect(await writeContinuousGroups(db, window([[id('1'), id('2'), id('3')]]), AT + 1)).toBe(
+      false,
+    );
+    // Parts moved: changed, same group id, new indexes.
+    expect(await writeContinuousGroups(db, window([[id('1')], [id('2'), id('3')]]), AT + 2)).toBe(
+      true,
+    );
+    const after = await getGroupAssignments(db, [id('1'), id('2'), id('3')]);
+    expect(after.get(id('2'))!.groupId).toBe(before.get(id('2'))!.groupId);
+    expect([after.get(id('1'))!.part, after.get(id('2'))!.part, after.get(id('3'))!.part]).toEqual([
+      0, 1, 1,
+    ]);
+    expect(await db.getAllAsync('SELECT id FROM photo_groups')).toHaveLength(1);
+    expect(foreignKeyCheck(d)).toEqual([]);
+  });
+
+  it('refuses parts that do not cover every member exactly once', async () => {
+    const d = await fresh();
+    const db = asExpo(d);
+    await expect(
+      writeContinuousGroups(
+        db,
+        {
+          photos: [upsert('1'), upsert('2')],
+          groups: [{ members: [id('1'), id('2')], timeAttached: [], parts: [[id('1')]] }],
+          singles: [],
+        },
+        AT,
+      ),
+    ).rejects.toThrow(/parts must cover every member/);
+    await expect(
+      writeContinuousGroups(
+        db,
+        {
+          photos: [upsert('1'), upsert('2')],
+          groups: [
+            { members: [id('1'), id('2')], timeAttached: [], parts: [[id('1'), id('1'), id('2')]] },
+          ],
+          singles: [],
+        },
+        AT,
+      ),
+    ).rejects.toThrow(/parts must cover every member/);
+  });
+
+  it('an ejected member leaves its part behind', async () => {
+    const d = await fresh();
+    const db = asExpo(d);
+    const { ejectNotRelated } = await import('./store');
+    await writeContinuousGroups(
+      db,
+      {
+        photos: [upsert('1'), upsert('2'), upsert('3')],
+        groups: [
+          {
+            members: [id('1'), id('2'), id('3')],
+            timeAttached: [],
+            parts: [[id('1')], [id('2'), id('3')]],
+          },
+        ],
+        singles: [],
+      },
+      AT,
+    );
+    await ejectNotRelated(db, [id('3')], AT + 5);
+    const after = await getGroupAssignments(db, [id('2'), id('3')]);
+    expect(after.get(id('3'))).toEqual({ groupId: null, timeAttached: false, part: 0 });
+    expect(after.get(id('2'))!.part).toBe(1);
   });
 });

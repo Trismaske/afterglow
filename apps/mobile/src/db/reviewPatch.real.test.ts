@@ -72,12 +72,22 @@ function upsert(rawId: string, takenAt: number): ContinuousPhotoUpsert {
 
 /** Seed via the scan's window write; distinct taken_at per raw id keeps
  * feed ordering meaningful (later position in `rawIds` = newer photo). */
-async function seed(d: TestDb, rawIds: string[], groups: string[][] = []): Promise<void> {
+async function seed(
+  d: TestDb,
+  rawIds: string[],
+  groups: string[][] = [],
+  /** Per group, its parts (raw ids); default one part. */
+  parts: string[][][] = [],
+): Promise<void> {
   await writeContinuousGroups(
     asExpo(d),
     {
       photos: rawIds.map((r, i) => upsert(r, AT - 3_600_000 + i * 60_000)),
-      groups: groups.map((g) => ({ members: g.map(id), timeAttached: [] })),
+      groups: groups.map((g, gi) => ({
+        members: g.map(id),
+        timeAttached: [],
+        parts: (parts[gi] ?? [g]).map((part) => part.map(id)),
+      })),
       singles: rawIds.map(id).filter((a) => !groups.some((g) => g.map(id).includes(a))),
     },
     AT,
@@ -379,12 +389,18 @@ describe('reviewPatch parity with db/store.ts', () => {
 
   it('make-single ejects into feed order; a 2-member group dissolves whole', async () => {
     const d = await fresh();
+    // Real parts (v27): the ejected photo and the dissolved pair's
+    // survivor leave their part behind, in the patch as in the SQL.
     await seed(
       d,
       ['1', '2', '3', '4', '5', '6'],
       [
         ['1', '2', '3'],
         ['4', '5'],
+      ],
+      [
+        [['1'], ['2', '3']],
+        [['4'], ['5']],
       ],
     );
     let before = await snapshot(d);

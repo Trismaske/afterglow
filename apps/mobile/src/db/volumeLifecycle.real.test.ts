@@ -59,7 +59,13 @@ async function seed(d: TestDb): Promise<void> {
     asExpo(d),
     {
       photos: [photo(PRIMARY, 'p1'), photo(SD, 'sd1'), photo(SD, 'sd2')],
-      groups: [{ members: [`${PRIMARY}/p1`, `${SD}/sd1`], timeAttached: [] }],
+      groups: [
+        {
+          members: [`${PRIMARY}/p1`, `${SD}/sd1`],
+          timeAttached: [],
+          parts: [[`${PRIMARY}/p1`, `${SD}/sd1`]],
+        },
+      ],
       singles: [`${SD}/sd2`],
     },
     AT,
@@ -204,7 +210,13 @@ describe('mechanism 2 — Forget this card', () => {
             uri: 'file:///storage/AAAA-1111/DCIM/o1.jpg',
           },
         ],
-        groups: [{ members: [`${SD}/sd1`, `${OTHER}/o1`], timeAttached: [] }],
+        groups: [
+          {
+            members: [`${SD}/sd1`, `${OTHER}/o1`],
+            timeAttached: [],
+            parts: [[`${SD}/sd1`, `${OTHER}/o1`]],
+          },
+        ],
         singles: [],
       },
       AT,

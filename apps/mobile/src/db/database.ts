@@ -32,7 +32,7 @@ export const DATABASE_NAME = 'afterglow.db';
  * When one release's destructive DDL lands across multiple phases, bump
  * once PER destructive phase (not once per release), so a mid-release
  * install self-heals by rebuild instead of by a manual data wipe. */
-export const SCHEMA_VERSION = 26;
+export const SCHEMA_VERSION = 27;
 
 export const BASELINE_DDL = `
   CREATE TABLE photos (
@@ -275,6 +275,14 @@ export const BASELINE_DDL = `
     -- (v22: user_single is gone — "not related" is the pair table below,
     -- docs/Regroup_design.md §4; assignments are pure scan output.)
     time_attached INTEGER NOT NULL DEFAULT 0 CHECK (time_attached IN (0, 1)),
+    -- The member's PART within its group (v27, m0.9 phase 10): the
+    -- engine's cut of a group into looks (core grouping.ts step 5), a
+    -- presentation fact — membership is the group; the deck orders a
+    -- group part by part with a divider between them (lib/groupParts.ts
+    -- ranks parts by their newest present member at read time, so the
+    -- stored index is an identity, not an order). 0 for a single and for
+    -- every member of a group the engine left whole.
+    part          INTEGER NOT NULL DEFAULT 0 CHECK (part >= 0),
     UNIQUE (group_id, photo_id),
     FOREIGN KEY (run_id, group_id) REFERENCES photo_groups(run_id, id)
   );

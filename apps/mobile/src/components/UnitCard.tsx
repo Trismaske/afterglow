@@ -46,6 +46,9 @@ export const UNIT_CARD_HEIGHT = CARD_PAD * 2 + HEADER_H + CARD_GAP + THUMB_H + 2
  * (phase 6; every member projection carries them). */
 export interface UnitCardMember extends ThumbFacts {
   asset_id: string;
+  /** The member's part (phase 10, lib/groupParts.ts): a card whose
+   * members arrive part by part draws a divider where it changes. */
+  part?: number;
 }
 
 /** The members a card SHOWS (the rest wear the "+N" chip), as thumbnail
@@ -81,6 +84,10 @@ export function UnitCard({
 }) {
   const thumbs = useMemo(() => cardThumbRows(members), [members]);
   const rest = members.length - thumbs.length;
+  // A part boundary between two shown thumbnails (phase 10): the same
+  // bar the deck's strip draws, in the gap, consuming no width.
+  const boundary = (sub: number): boolean =>
+    sub > 0 && (members[sub - 1].part ?? 0) !== (members[sub].part ?? 0);
   return (
     <Pressable style={styles.card} onPress={onPress}>
       <View style={styles.header}>
@@ -94,6 +101,7 @@ export function UnitCard({
       <View style={styles.strip}>
         {thumbs.map((thumb, sub) => (
           <View key={thumb.id} style={styles.thumbWrap} pointerEvents="none">
+            {boundary(sub) && <View style={styles.partDivider} />}
             <AnimatedThumb
               row={thumb}
               px={CARD_THUMB_PX}
@@ -154,4 +162,14 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceRaised,
   },
   thumbMoreText: { color: colors.textDim, fontWeight: '700' },
+  partDivider: {
+    position: 'absolute',
+    left: -4,
+    top: 6,
+    bottom: 6,
+    width: 2,
+    borderRadius: 1,
+    backgroundColor: colors.textDim,
+    zIndex: 1,
+  },
 });

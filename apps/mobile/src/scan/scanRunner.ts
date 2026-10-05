@@ -40,7 +40,13 @@
  */
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { logFootprint } from '../lib/footprint';
-import { ADJACENT_MERGE_MAX_GAP_MS, groupByEmbedding, MOMENTS_GAP_MS } from '@afterglow/core';
+import {
+  ADJACENT_MERGE_MAX_GAP_MS,
+  GROUPING_RULES_VERSION,
+  groupByEmbedding,
+  MOMENTS_GAP_MS,
+  SUBGROUP_MAX_SIZE,
+} from '@afterglow/core';
 import { MODEL_SHA256 } from '../../modules/image-embedder';
 import { dayKey, exifDateTimeToMs } from '../lib/dates';
 import { ensureEmbeddings, newEngineHealth, type EngineHealth } from '../lib/embeddings';
@@ -61,7 +67,7 @@ import { createMergedDescendingPager, type PageFetcher } from '../lib/progressPa
 import { createWindowAccumulator } from '../lib/scanWindows';
 import { resolveSources } from '../lib/sourceCatalog';
 import type { SourceRoot } from '../lib/sources';
-import { GROUPING_STRICTNESS_KEY, parseStrictness } from '../lib/groupingPrefs';
+import { GROUPING_RULES_KEY, GROUPING_STRICTNESS_KEY, parseStrictness } from '../lib/groupingPrefs';
 import {
   SCAN_FINGERPRINT_KEY,
   SCAN_GENERATIONS_KEY,
@@ -469,12 +475,22 @@ async function pageAndGroupWalk(
     mountedVolumes: ReadonlySet<string>;
     /** Pass-start IS_FAVORITE snapshot (F20); null = read failed. */
     favourites: ReadonlySet<string> | null;
-    /** Changed UNDATED photos to land by DIRECT per-id fetch (F27): no
-     * DATE_TAKEN range can cover them, and the old fallback walked the
-     * whole corpus for each one. They join the undated batch and take
-     * the same rescue/window path a full pass gives them. Omit/empty for
-     * full passes (the unbounded walk already returns them). */
-    undatedIds?: readonly string[];
+    /** Photos MediaStore cannot range (no DATE_TAKEN), landed by DIRECT
+     * per-id fetch: a delta's changed undated rows (F27), a full or
+     * resumed pass's whole undated enumeration, a targeted pass's
+     * targets. PREFETCHED AND RESCUED FIRST (phase 10, the device round):
+     * a photo whose date the EXIF rescue recovers rides the merged pager
+     * at its real timestamp and windows with its dated burst-mates — the
+     * undated batch used to window rescued photos only among themselves,
+     * and 58 % of them sat as singles against 22 % of the rest. A photo
+     * still undated after the rescue takes the batch as before; the
+     * stream's own undated tail skips every prefetched id. */
+    undated?: {
+      /** Ids to fetch and rescue here (a full pass, a targeted pass). */
+      ids?: readonly string[];
+      /** Already fetched and rescued by the planner (a delta, a resume). */
+      prefetched?: PrefetchedUndated;
+    };
     /** A FULL pass's enumeration checkpoint (m0.9 phase 9): after each
      * closed dated window commits, the boundary it proves is persisted
      * (lib/scanCheckpoint.ts); `current` carries the resumed pass's
@@ -553,6 +569,52 @@ async function pageAndGroupWalk(
   let exifFailed = 0;
   const unmountedWarned = new Set<string>();
   const buckets: (string | undefined)[] = albumIds ? [...albumIds] : [undefined];
+  // The prefetch (phase 10): every id MediaStore cannot range, fetched
+  // and rescued now, so a rescued photo can join the merged stream at
+  // its real time below. `rescuedFeed` holds the object identities the
+  // in-memory fetcher serves; the stream's copies of every prefetched id
+  // are skipped (an undated row also arrives at the unbounded walk's
+  // tail; a targeted pass ranges a dated target's window, which returns
+  // the target itself).
+  const prefetchedIds = new Set<string>();
+  const rescuedFeed: LoadedPhoto[] = [];
+  const rescuedObjects = new Set<LoadedPhoto>();
+  const prefetchedObjects = new Set<LoadedPhoto>();
+  const undatedPrefetched: LoadedPhoto[] = [];
+  const batch: LoadedPhoto[] = [];
+  if (args.undated?.prefetched) {
+    batch.push(...args.undated.prefetched.loaded);
+    // Fail-closed, counted here: the pass keeps its results but withholds
+    // its baselines, so the next open retries the photo.
+    skipped += args.undated.prefetched.failed;
+    exifFailed += args.undated.prefetched.exifFailed;
+  }
+  if (args.undated?.ids && args.undated.ids.length > 0) {
+    if (superseded()) return null;
+    const fetched = await prefetchUndated(db, args.undated.ids, superseded);
+    if (fetched === null) return null;
+    batch.push(...fetched.loaded);
+    skipped += fetched.failed;
+    exifFailed += fetched.exifFailed;
+  }
+  if (batch.length > 0) {
+    for (const photo of batch) {
+      prefetchedIds.add(photo.item.id);
+      prefetchedObjects.add(photo);
+    }
+    for (const photo of batch) {
+      if (photo.undated) undatedPrefetched.push(photo);
+      else {
+        rescuedFeed.push(photo);
+        rescuedObjects.add(photo);
+      }
+    }
+    rescuedFeed.sort((a, b) => b.item.timestamp - a.item.timestamp);
+    console.log(
+      `[scan] ${batch.length} photo(s) MediaStore cannot range landed by direct fetch — ` +
+        `${rescuedFeed.length} dated by the rescue join the stream, ${undatedPrefetched.length} stay undated`,
+    );
+  }
   // One fetcher per (range × bucket), merged into ONE descending stream —
   // so a window straddling two ranges still reaches the accumulator in
   // order, exactly as it would in a single unbounded walk.
@@ -577,6 +639,14 @@ async function pageAndGroupWalk(
       });
     }
   }
+  if (rescuedFeed.length > 0) {
+    fetchers.push(async (cursor, count) => {
+      const start = cursor === undefined ? 0 : Number(cursor);
+      const items = rescuedFeed.slice(start, start + count);
+      const next = start + items.length;
+      return { items, nextCursor: next < rescuedFeed.length ? String(next) : null };
+    });
+  }
   const pager = createMergedDescendingPager(fetchers, (photo) => photo.item.timestamp);
 
   const accumulator = createWindowAccumulator(ADJACENT_MERGE_MAX_GAP_MS);
@@ -596,7 +666,13 @@ async function pageAndGroupWalk(
     // D15 EXIF date rescue, BEFORE the batch sorts and windows: rescued
     // photos window among the batch under their REAL timestamps, and the
     // write below lands the real day.
-    exifFailed += await applyExifDateRescue(db, batch);
+    // The prefetched tail was rescued already (one result per photo per
+    // pass, codex): a second read could succeed where the first failed
+    // and turn a photo dated AFTER the dated stream has gone by.
+    exifFailed += await applyExifDateRescue(
+      db,
+      batch.filter((photo) => !prefetchedObjects.has(photo)),
+    );
     const tail = createWindowAccumulator(ADJACENT_MERGE_MAX_GAP_MS);
     for (const photo of batch.sort((a, b) => b.item.timestamp - a.item.timestamp)) {
       for (const window of tail.feed(photo)) {
@@ -640,6 +716,7 @@ async function pageAndGroupWalk(
     // for it would contradict the pass-start snapshot, and ingesting
     // them would stamp identity the scan cannot verify.
     const photos = paged.filter((photo) => {
+      if (prefetchedIds.has(photo.item.id) && !rescuedObjects.has(photo)) return false;
       if (mountedVolumes.has(photo.volumeName)) return true;
       skipped += 1;
       if (!unmountedWarned.has(photo.volumeName)) {
@@ -696,22 +773,11 @@ async function pageAndGroupWalk(
   // feed it into the undated batch below. A fetch failure is a
   // fail-closed skip — the pass keeps its results but withholds its
   // baselines, so the next open retries the photo.
-  let fetched = 0;
-  for (const id of args.undatedIds ?? []) {
-    if (superseded()) return null;
-    const photo = await loadPhotoById(id);
-    if (photo === null) {
-      skipped += 1;
-      continue;
-    }
+  for (const photo of undatedPrefetched) {
     seenIds.add(photo.item.id);
     undated.push(photo);
-    fetched += 1;
   }
-  if (fetched > 0) {
-    update({ scanned: status.scanned + fetched });
-    console.log(`[scan] delta: ${fetched} undated changed photo(s) landed by direct fetch`);
-  }
+  if (undatedPrefetched.length > 0) update({ scanned: status.scanned + undatedPrefetched.length });
   await processUndatedBatch(undated.splice(0));
   return stopped ? null : { seenIds, skipped, exifFailed };
 }
@@ -754,9 +820,9 @@ interface DeltaDecision {
    * mounted volumes contribute (their change queries are the source), so
    * a deletion is never concluded for an absent volume (invariant 6). */
   trashedIds: string[];
-  /** Changed UNDATED, non-trashed, in-source rows (F27): landed by
-   * direct per-id fetch — no range can cover them. */
-  undatedIds: string[];
+  /** Changed UNDATED, non-trashed, in-source rows (F27), fetched and
+   * rescued at planning time — the walk lands these very objects. */
+  prefetched: PrefetchedUndated;
   /** MediaStore's pass-START count PER VOLUME (m0.8.3 phase 2). The
    * post-delta agreement compares against THESE, pinned, so its
    * behaviour cannot depend on whether the pass outlived a query cache
@@ -945,6 +1011,63 @@ async function reconcileUntracedLoss(
 }
 
 /**
+ * The photos MediaStore cannot range, fetched by id and dated by the EXIF
+ * rescue ONCE (phase 10; codex): the planner reads them to place a
+ * rescued photo's burst-mates in the ranges, and the walk lands the same
+ * objects — a second read could succeed where the first failed and feed
+ * a rescued photo into the stream with nothing planned around it. A
+ * photo that would not load counts as a fail-closed skip; a rescue read
+ * that did not complete withholds the baseline, both through the walk.
+ */
+interface PrefetchedUndated {
+  loaded: LoadedPhoto[];
+  /** Ids that would not load. */
+  failed: number;
+  /** EXIF reads attempted but never completed. */
+  exifFailed: number;
+}
+
+async function prefetchUndated(
+  db: SQLiteDatabase,
+  undatedIds: readonly string[],
+  /** The pass's supersession: a settings change stops the loads at the
+   * next id instead of finishing thousands of obsolete native reads
+   * (codex); null = superseded. */
+  superseded: () => boolean,
+): Promise<PrefetchedUndated | null> {
+  const loaded: LoadedPhoto[] = [];
+  let failed = 0;
+  for (const id of undatedIds) {
+    if (superseded()) return null;
+    const photo = await loadPhotoById(id);
+    if (photo === null) failed += 1;
+    else loaded.push(photo);
+  }
+  if (superseded()) return null;
+  const exifFailed = loaded.length > 0 ? await applyExifDateRescue(db, loaded) : 0;
+  return { loaded, failed, exifFailed };
+}
+
+/** The recovered timestamps of the rescued photos as change points for
+ * the range planner, so a rescued photo meets its burst-mates. */
+function rescuePoints(loaded: readonly LoadedPhoto[]): ChangedMediaRow[] {
+  return loaded
+    .filter((photo) => !photo.undated)
+    .map((photo) => ({
+      volumeName: photo.volumeName,
+      rawId: photo.rawId,
+      mediaType: 'photo' as const,
+      dateTakenMs: photo.item.timestamp,
+      dateModifiedSec: null,
+      isTrashed: false,
+      isPending: false,
+      generationAdded: 0,
+      generationModified: 0,
+      bucketId: null,
+    }));
+}
+
+/**
  * Decide whether this pass can be a delta, and over which ranges.
  *
  * Returns a FullPassReason for "run a full pass" — every uncertainty
@@ -974,7 +1097,8 @@ async function planPass(
   /** All mounted volumes at pass start — the loss reconciliation's fence
    * and its repair's reachability. */
   mountedVolumes: ReadonlySet<string>,
-): Promise<DeltaDecision | FullPassReason> {
+  superseded: () => boolean,
+): Promise<DeltaDecision | FullPassReason | null> {
   const roots = sources.roots;
   try {
     const raw = await getSetting(db, SCAN_GENERATIONS_KEY);
@@ -1144,28 +1268,58 @@ async function planPass(
         return 'loss';
       }
     }
-    const plan = planDeltaRanges(changed, timestamps, ADJACENT_MERGE_MAX_GAP_MS);
-    const verdict = deltaVerdict({
-      covered: coveredBy(timestamps, plan.ranges),
-      changed: plan.changed,
-      ranges: plan.ranges.length,
-      corpus: timestamps.length,
-    });
-    console.log(`[scan] ${describeDeltaPlan(plan, verdict)}`);
-    if (!verdict.worthIt) return 'cost'; // reason printed on the line above
     // UNDATED changes (no DATE_TAKEN) cannot be placed in any range —
-    // they land by direct per-id fetch instead (F27; each one used to
-    // silently discard the whole delta AFTER "DELTA wins" printed,
-    // turning every WhatsApp arrival into a corpus walk). Trashed
-    // undated rows need no fetch: trashedIds reconciles them by id.
+    // they land by direct per-id fetch instead (F27); the walk rescues
+    // them first (phase 10), and a RESCUED one must find its burst-mates
+    // paged, so its recovered time joins the plan here. Trashed undated
+    // rows need no fetch: trashedIds reconciles them by id.
     const undatedIds = changed
       .filter((row) => !row.isTrashed && row.dateTakenMs === null)
       .map((row) => canonicalPhotoId(row.volumeName, row.rawId));
+    const prefetched = await prefetchUndated(db, undatedIds, superseded);
+    if (prefetched === null) return null;
+    const rescuedPoints = rescuePoints(prefetched.loaded);
+    // A rescue that MOVES a tracked timestamp (an undated file edited
+    // into one with a date, or a different one) strands its old
+    // window's survivors exactly like a MediaStore date move, and the
+    // old undated window cannot be ranged — the full pass is the only
+    // honest answer (codex).
+    const storedRescued = await getTakenAtForAssets(
+      db,
+      rescuedPoints.map((row) => canonicalPhotoId(row.volumeName, row.rawId)),
+    );
+    const rescuedMoved = rescuedPoints.filter((row) => {
+      const oldAt = storedRescued.get(canonicalPhotoId(row.volumeName, row.rawId));
+      return oldAt !== undefined && oldAt !== row.dateTakenMs;
+    });
+    if (rescuedMoved.length > 0) {
+      console.log(
+        `[scan] delta: ${rescuedMoved.length} rescued item(s) moved their recovered date — ` +
+          `full pass to rewindow both sides`,
+      );
+      return 'dates';
+    }
+    // The synthetic points anchor ranges only (codex): the plan's change
+    // count and the cost model see the real change set.
+    const plan = planDeltaRanges(
+      [...changed, ...rescuedPoints],
+      timestamps,
+      ADJACENT_MERGE_MAX_GAP_MS,
+    );
+    const realChanged = plan.changed - rescuedPoints.length;
+    const verdict = deltaVerdict({
+      covered: coveredBy(timestamps, plan.ranges),
+      changed: realChanged,
+      ranges: plan.ranges.length,
+      corpus: timestamps.length,
+    });
+    console.log(`[scan] ${describeDeltaPlan({ ...plan, changed: realChanged }, verdict)}`);
+    if (!verdict.worthIt) return 'cost'; // reason printed on the line above
     return {
       ranges: plan.ranges,
-      changed: plan.changed - plan.trashed,
+      changed: realChanged - plan.trashed,
       trashedIds,
-      undatedIds,
+      prefetched,
       mediaByVolumeAtStart: mediaByVolume,
       pendingByVolume,
       returnedIdsByVolume,
@@ -1196,7 +1350,8 @@ async function planResume(
     albumIdsByVolume: Readonly<Record<string, string[]>> | null;
   },
   mountedVolumes: ReadonlySet<string>,
-): Promise<{ ranges: TimeRange[]; undatedIds: string[]; trashedIds: string[] }> {
+  superseded: () => boolean,
+): Promise<{ ranges: TimeRange[]; prefetched: PrefetchedUndated; trashedIds: string[] } | null> {
   const allChanged: ChangedMediaRow[] = [];
   const keys = Object.keys(generations);
   for (const key of keys) {
@@ -1255,6 +1410,15 @@ async function planResume(
       bucketId: null,
     })),
   ];
+  const undated = await enumerateMediaIds(keys.map(rawVolumeOfKey), sources.albumIdsByVolume, true);
+  // A rescued photo above the boundary needs its burst-mates paged
+  // (phase 10): its recovered time is a change point too.
+  const prefetched = await prefetchUndated(db, [...undated], superseded);
+  if (prefetched === null) return null;
+  const rescuedAbove = rescuePoints(prefetched.loaded).filter(
+    (row) => row.dateTakenMs !== null && row.dateTakenMs >= reach,
+  );
+  points.push(...rescuedAbove);
   const timestamps = await getPhotoTimestamps(db, sources.roots);
   const plan = planDeltaRanges(points, timestamps, ADJACENT_MERGE_MAX_GAP_MS);
   // Clipped to the boundary: the main range covers everything below it,
@@ -1269,7 +1433,6 @@ async function planResume(
         endMs: range.endMs,
       })),
   ];
-  const undated = await enumerateMediaIds(keys.map(rawVolumeOfKey), sources.albumIdsByVolume, true);
   const trashedIds = inSource
     .filter((row) => row.isTrashed)
     .map((row) => canonicalPhotoId(row.volumeName, row.rawId));
@@ -1278,7 +1441,7 @@ async function planResume(
       `(${checkpoint.scanned} already walked; ${above.length} changed and ${departed.length} departed above it → ` +
       `${plan.ranges.length} range(s); ${undated.size} undated by id; ${trashedIds.length} trashed since)`,
   );
-  return { ranges, undatedIds: [...undated], trashedIds };
+  return { ranges, prefetched, trashedIds };
 }
 
 /**
@@ -1355,6 +1518,7 @@ async function finishPass(
   // reads instead of re-walking the whole library.
   if (args.wasFullPass) {
     await setSetting(db, SCAN_FULL_AT_KEY, String(Date.now()));
+    await setSetting(db, GROUPING_RULES_KEY, GROUPING_RULES_VERSION);
     await deleteSetting(db, SCAN_CHECKPOINT_KEY);
   }
 }
@@ -1391,6 +1555,19 @@ async function scan(db: SQLiteDatabase, force: RescanOrigin | null): Promise<voi
 
   const sources = await resolveSources(db);
   const rawStrictness = await getSetting(db, GROUPING_STRICTNESS_KEY);
+  // THE GROUPING RULES (m0.9 phase 10): a library grouped under other
+  // rules (the merge window, the far bar, the parts pass — core's
+  // GROUPING_RULES_VERSION) re-forms every group in a full pass; the
+  // version is recorded by a COMPLETE full pass, so an interrupted one
+  // owes it again. A library with no baseline is 'first', not this.
+  const storedRules = await getSetting(db, GROUPING_RULES_KEY);
+  const rulesChanged =
+    storedRules !== GROUPING_RULES_VERSION && (await getSetting(db, SCAN_GENERATIONS_KEY)) !== null;
+  if (rulesChanged) {
+    console.log(
+      `[scan] grouping rules changed (${storedRules ?? 'none'} → ${GROUPING_RULES_VERSION}) — full pass`,
+    );
+  }
 
   // UNCHANGED-LIBRARY SKIP (m0.8.1): a full pass costs ~6 min of CPU on
   // a 27k corpus and used to run on EVERY app open. MediaStore's
@@ -1428,6 +1605,7 @@ async function scan(db: SQLiteDatabase, force: RescanOrigin | null): Promise<voi
     roots: sources.roots ?? null,
     strictness: rawStrictness,
     modelSha: MODEL_SHA256,
+    rules: GROUPING_RULES_VERSION,
   });
   // PERIODIC FULL PASS, checked BEFORE the skip so it cannot be starved
   // by it. A permanent delete (no system trash) removes the row with no
@@ -1451,9 +1629,16 @@ async function scan(db: SQLiteDatabase, force: RescanOrigin | null): Promise<voi
     roots: sources.roots ?? null,
     strictness: rawStrictness,
     modelSha: MODEL_SHA256,
+    rules: GROUPING_RULES_VERSION,
   });
   let checkpoint = parseCheckpoint(await getSetting(db, SCAN_CHECKPOINT_KEY));
   if (checkpoint !== null) {
+    // A rules change does NOT discard a checkpoint by itself (codex):
+    // the scope binds the rules, so a checkpoint from the old rules
+    // fails canResume on its own, and one the rules pass itself wrote
+    // (the version is recorded only when that pass COMPLETES) resumes
+    // under its carried 'rules' reason instead of restarting from the
+    // top on every interruption.
     const resumable =
       !force &&
       !model.cleared &&
@@ -1461,14 +1646,27 @@ async function scan(db: SQLiteDatabase, force: RescanOrigin | null): Promise<voi
     if (!resumable) {
       console.log(
         `[scan] checkpoint discarded (${
-          force ? 'forced rescan' : model.cleared ? 'model changed' : 'scope or storage changed'
+          force
+            ? 'forced rescan'
+            : model.cleared
+              ? 'model changed'
+              : rulesChanged
+                ? 'grouping rules changed'
+                : 'scope or storage changed'
         })`,
       );
       await deleteSetting(db, SCAN_CHECKPOINT_KEY);
       checkpoint = null;
     }
   }
-  if (!force && !model.cleared && !fullDue && !generationGap && checkpoint === null) {
+  if (
+    !force &&
+    !model.cleared &&
+    !rulesChanged &&
+    !fullDue &&
+    !generationGap &&
+    checkpoint === null
+  ) {
     const stored = await getSetting(db, SCAN_FINGERPRINT_KEY);
     if (scanCanSkip({ generations: relevantGenerations, stored, current: fingerprint })) {
       // The skip CLAIMS verification, so it takes the same fence a
@@ -1537,6 +1735,7 @@ async function scan(db: SQLiteDatabase, force: RescanOrigin | null): Promise<voi
     roots: passSources.roots ?? null,
     strictness: rawStrictness,
     modelSha: MODEL_SHA256,
+    rules: GROUPING_RULES_VERSION,
   });
   if (checkpoint !== null && passScope !== scope) {
     console.log('[scan] checkpoint discarded (source scope changed since the last pass)');
@@ -1544,8 +1743,10 @@ async function scan(db: SQLiteDatabase, force: RescanOrigin | null): Promise<voi
     checkpoint = null;
   }
   // The pass-shaped reasons, in precedence: a forced walk and a model
-  // swap discard everything; a resumable checkpoint outranks the weekly
-  // clock (the resumed pass IS the weekly pass when due); a generation
+  // swap discard everything; a resumable checkpoint outranks a rules
+  // change (the checkpoint's scope carries the current rules, so the
+  // resumed pass IS the rules pass) and the weekly clock (the resumed
+  // pass IS the weekly pass when due); a generation
   // gap forces FULL (final cycle R2): a volume that mounted between the
   // generation and mounted reads has no entry, so a delta planned from
   // the older keys could complete "verified" without ever enumerating
@@ -1558,13 +1759,15 @@ async function scan(db: SQLiteDatabase, force: RescanOrigin | null): Promise<voi
       ? 'model'
       : checkpoint !== null
         ? 'resume'
-        : firstPass
-          ? 'first'
-          : fullDue
-            ? 'weekly'
-            : generationGap
-              ? 'storage'
-              : null;
+        : rulesChanged
+          ? 'rules'
+          : firstPass
+            ? 'first'
+            : fullDue
+              ? 'weekly'
+              : generationGap
+                ? 'storage'
+                : null;
   // ONE line for the reason the precedence selected (codex r3): the
   // sink and the status name the same reason, never a lower-priority
   // condition that was also true (F27's invariant: no silent full pass).
@@ -1576,6 +1779,7 @@ async function scan(db: SQLiteDatabase, force: RescanOrigin | null): Promise<voi
       forced: 'forced rescan (settings change or reset)',
       manual: 'forced rescan (the Settings row)',
       model: 'embedding model changed — every vector is recomputed',
+      rules: 'grouping rules changed — every group re-forms',
       resume: 'an interrupted full pass resumes at its checkpoint',
       first: 'no stored baseline — the first pass must be full',
       weekly: 'full pass due — weekly reconciliation',
@@ -1594,7 +1798,7 @@ async function scan(db: SQLiteDatabase, force: RescanOrigin | null): Promise<voi
   // below, differing only in which time ranges they page — which is what
   // makes "a delta produces the groups a full pass would" a structural
   // property rather than a hope.
-  const decision: DeltaDecision | FullPassReason =
+  const decision: DeltaDecision | FullPassReason | null =
     forcedReason ??
     (await planPass(
       db,
@@ -1604,7 +1808,12 @@ async function scan(db: SQLiteDatabase, force: RescanOrigin | null): Promise<voi
         albumIdsByVolume: passSources.albumIdsByVolume ?? null,
       },
       mountedVolumes,
+      superseded,
     ));
+  if (decision === null) {
+    console.log('[scan] superseded by a settings change — stopping for the queued rescan');
+    return;
+  }
 
   // F20: the pass-start favourite snapshot — one indexed query per
   // mounted volume, projected onto exactly the rows this pass walks. A
@@ -1642,7 +1851,7 @@ async function scan(db: SQLiteDatabase, force: RescanOrigin | null): Promise<voi
       superseded,
       mountedVolumes,
       favourites,
-      undatedIds: decision.undatedIds,
+      undated: { prefetched: decision.prefetched },
     });
     if (deltaResult === null) {
       console.log('[scan] superseded by a settings change — stopping for the queued rescan');
@@ -1766,7 +1975,7 @@ async function scan(db: SQLiteDatabase, force: RescanOrigin | null): Promise<voi
 
   // The resumed pass's coverage, or the whole library.
   let ranges: TimeRange[] = [FULL_RANGE];
-  let resumeUndatedIds: string[] | undefined;
+  let resumePrefetched: PrefetchedUndated | undefined;
   let resumeTrashedIds: string[] = [];
   let resumed: ScanCheckpoint | null = null;
   if (fullReason === 'resume' && checkpoint !== null) {
@@ -1780,9 +1989,14 @@ async function scan(db: SQLiteDatabase, force: RescanOrigin | null): Promise<voi
           albumIdsByVolume: passSources.albumIdsByVolume ?? null,
         },
         mountedVolumes,
+        superseded,
       );
+      if (plan === null) {
+        console.log('[scan] superseded by a settings change — stopping for the queued rescan');
+        return;
+      }
       ranges = plan.ranges;
-      resumeUndatedIds = plan.undatedIds;
+      resumePrefetched = plan.prefetched;
       resumeTrashedIds = plan.trashedIds;
       resumed = checkpoint;
       // The interrupted pass's own reason, resumed (Tristan, 2026-10-03):
@@ -1817,6 +2031,29 @@ async function scan(db: SQLiteDatabase, force: RescanOrigin | null): Promise<voi
     scanned: resumed !== null ? resumed.scanned : status.scanned,
   });
 
+  // The undated enumeration for a fresh full pass (phase 10): rescued
+  // photos join the stream at their real time instead of the tail. A
+  // failed enumeration degrades to the tail, loudly.
+  let fullUndatedIds: string[] | undefined;
+  if (resumePrefetched === undefined) {
+    try {
+      // The scope-relevant MOUNTED volumes (codex): the generation map is
+      // empty exactly when a read failed and incomplete on a gap — the
+      // cases that force this pass.
+      fullUndatedIds = [
+        ...(await enumerateMediaIds(
+          scopeRelevantVolumes(mounted, passSources.roots ?? null),
+          passSources.albumIdsByVolume ?? null,
+          true,
+        )),
+      ];
+    } catch (error) {
+      console.warn(
+        '[scan] undated enumeration failed — undated photos window among themselves this pass:',
+        String(error),
+      );
+    }
+  }
   const fullResult = await pageAndGroup(db, {
     ranges,
     albumIds: passSources.albumIds ?? undefined,
@@ -1825,7 +2062,8 @@ async function scan(db: SQLiteDatabase, force: RescanOrigin | null): Promise<voi
     superseded,
     mountedVolumes,
     favourites,
-    undatedIds: resumeUndatedIds,
+    undated:
+      resumePrefetched !== undefined ? { prefetched: resumePrefetched } : { ids: fullUndatedIds },
     // Checkpoints need a generation to re-page from on resume: without
     // one (the native read failed) the pass still runs, unresumable.
     checkpoint:
@@ -1979,10 +2217,14 @@ async function targetedPass(
     timestamps,
     ADJACENT_MERGE_MAX_GAP_MS,
   );
-  const undatedIds = targets.filter((t) => t.undated).map((t) => t.assetId);
+  // Every target by id (phase 10): a rescued target is dated in the DB
+  // but MediaStore cannot range it, so the ranged page would miss the
+  // very photo being re-placed; a MediaStore-dated target's stream copy
+  // is skipped in favour of the fetched one.
+  const targetIds = targets.map((t) => t.assetId);
   console.log(
     `[scan] targeted rescan: ${targets.length} photo(s) → ${ranges.length} range(s)` +
-      (undatedIds.length > 0 ? `, ${undatedIds.length} by direct fetch` : ''),
+      ', every target by direct fetch',
   );
   const result = await pageAndGroup(db, {
     ranges,
@@ -1994,7 +2236,7 @@ async function targetedPass(
     // No favourite projection on a targeted pass: it re-places
     // membership, nothing more.
     favourites: null,
-    undatedIds,
+    undated: { ids: targetIds },
   });
   if (result === null) {
     console.log('[scan] targeted rescan superseded — the queued rescan covers it');
@@ -2235,6 +2477,16 @@ async function processWindow(
   );
   perfAggregate('scan window group', Date.now() - groupStarted, photos.length);
   const multi = groups.filter((g) => g.items.length >= 2);
+  // The parts pass leaves a group above its size cap as one part (core
+  // grouping.ts step 5) — named here so a timelapse-sized group is a
+  // known fact in the sink, not a silently flat deck.
+  for (const g of multi) {
+    if (g.items.length > SUBGROUP_MAX_SIZE) {
+      console.warn(
+        `[scan] group of ${g.items.length} above the parts cap (${SUBGROUP_MAX_SIZE}): one part`,
+      );
+    }
+  }
   const singles = [
     ...groups.filter((g) => g.items.length === 1).map((g) => g.items[0].id),
     ...videos.map((v) => v.item.id),
@@ -2256,6 +2508,7 @@ async function processWindow(
       groups: multi.map((g) => ({
         members: g.items.map((item) => item.id),
         timeAttached: g.timeAttached,
+        parts: g.parts,
       })),
       singles,
     },

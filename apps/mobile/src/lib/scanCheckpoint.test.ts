@@ -12,6 +12,7 @@ const scope = checkpointScope({
   roots: [{ volume: 'external_primary', dir: 'DCIM/Camera' }],
   strictness: null,
   modelSha: 'abc',
+  rules: 'r1',
 });
 const gens = { 'external_primary|v1': 100 };
 const cp: ScanCheckpoint = {
@@ -23,11 +24,11 @@ const cp: ScanCheckpoint = {
 };
 
 describe('checkpointScope', () => {
-  it('binds sources, strictness and model — never generations', () => {
-    expect(scope).toBe('src:external_primary:DCIM/Camera|strict:default|model:abc');
-    expect(checkpointScope({ roots: null, strictness: 'strict', modelSha: 'abc' })).toBe(
-      'src:*|strict:strict|model:abc',
-    );
+  it('binds sources, strictness, model and rules — never generations', () => {
+    expect(scope).toBe('src:external_primary:DCIM/Camera|strict:default|model:abc|rules:r1');
+    expect(
+      checkpointScope({ roots: null, strictness: 'strict', modelSha: 'abc', rules: 'r2' }),
+    ).toBe('src:*|strict:strict|model:abc|rules:r2');
     expect(scope).not.toContain('gen');
   });
 });

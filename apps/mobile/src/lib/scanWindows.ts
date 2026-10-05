@@ -5,9 +5,9 @@
  * The scan pages MediaStore newest→oldest and groups incrementally. The
  * unit of incremental grouping is the MERGE WINDOW: a maximal run of
  * photos in which every consecutive time gap is ≤ the adjacent-merge
- * window (15 min). Core's engine (groupByEmbedding) never links photos
+ * window (60 min). Core's engine (groupByEmbedding) never links photos
  * across a larger gap — bursts gate at 3 min and adjacent-burst merges
- * stop at 15 min — so grouping window-by-window produces EXACTLY the
+ * stop at 60 min — so grouping window-by-window produces EXACTLY the
  * groups a whole-corpus run would (the plan's "per closed burst",
  * widened to the smallest unit that preserves engine semantics; a
  * literal per-burst unit would re-implement the merge stage app-side).

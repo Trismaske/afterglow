@@ -97,7 +97,7 @@ async function seed(d: TestDb, rawIds: string[], groups: string[][] = []): Promi
     asExpo(d),
     {
       photos: rawIds.map((r) => upsert(r)),
-      groups: groups.map((g) => ({ members: g.map(id), timeAttached: [] })),
+      groups: groups.map((g) => ({ members: g.map(id), timeAttached: [], parts: [g.map(id)] })),
       singles: rawIds.map(id).filter((a) => !groups.some((g) => g.map(id).includes(a))),
     },
     AT,
@@ -558,7 +558,9 @@ describe('ejectNotRelated with an unreachable partner (plan §5)', () => {
             rawId: 's1',
           },
         ],
-        groups: [{ members: [id('v1'), sdId('s1')], timeAttached: [] }],
+        groups: [
+          { members: [id('v1'), sdId('s1')], timeAttached: [], parts: [[id('v1'), sdId('s1')]] },
+        ],
         singles: [],
       },
       AT,
@@ -793,6 +795,7 @@ async function seedDays(
       groups: groups.map((g) => ({
         members: g.map(id),
         timeAttached: timeAttached.filter((t) => g.includes(t)).map(id),
+        parts: [g.map(id)],
       })),
       singles: photos
         .map((p) => id(p.rawId))
@@ -1226,8 +1229,8 @@ describe('source-scoped queue reads', () => {
           photo('w2', 'WhatsApp/Media'),
         ],
         groups: [
-          { members: [id('c1'), id('c2')], timeAttached: [] },
-          { members: [id('w1'), id('w2')], timeAttached: [] },
+          { members: [id('c1'), id('c2')], timeAttached: [], parts: [[id('c1'), id('c2')]] },
+          { members: [id('w1'), id('w2')], timeAttached: [], parts: [[id('w1'), id('w2')]] },
         ],
         singles: [],
       },
@@ -1268,7 +1271,9 @@ describe('source-scoped queue reads', () => {
       asExpo(d),
       {
         photos: [photo('m1', 'DCIM/Camera'), photo('m2', 'WhatsApp/Media')],
-        groups: [{ members: [id('m1'), id('m2')], timeAttached: [] }],
+        groups: [
+          { members: [id('m1'), id('m2')], timeAttached: [], parts: [[id('m1'), id('m2')]] },
+        ],
         singles: [],
       },
       AT,
@@ -1477,8 +1482,8 @@ describe('corpus stats honor the source scope', () => {
           photo('w2', 'WhatsApp/Media'),
         ],
         groups: [
-          { members: [id('c1'), id('c2')], timeAttached: [] },
-          { members: [id('w1'), id('w2')], timeAttached: [] },
+          { members: [id('c1'), id('c2')], timeAttached: [], parts: [[id('c1'), id('c2')]] },
+          { members: [id('w1'), id('w2')], timeAttached: [], parts: [[id('w1'), id('w2')]] },
         ],
         singles: [],
       },
@@ -1522,7 +1527,7 @@ describe('duels never pin membership — groups re-form freely (v22)', () => {
       asExpo(d),
       {
         photos: ['1', '2', '3'].map((r) => upsert(r)),
-        groups: [{ members: [id('1'), id('2')], timeAttached: [] }],
+        groups: [{ members: [id('1'), id('2')], timeAttached: [], parts: [[id('1'), id('2')]] }],
         singles: [id('3')],
       },
       AT + 10,
@@ -2060,7 +2065,9 @@ describe('the Unknown-day pseudo-day', () => {
           { ...upsert('u2'), day: null },
           { ...upsert('u3'), day: null },
         ],
-        groups: [{ members: [id('u1'), id('u2')], timeAttached: [] }],
+        groups: [
+          { members: [id('u1'), id('u2')], timeAttached: [], parts: [[id('u1'), id('u2')]] },
+        ],
         singles: [id('1'), id('u3')],
       },
       AT,
@@ -2519,7 +2526,13 @@ describe('duels are an append-only event log (v22) — no verdict path deletes t
       asExpo(d),
       {
         photos: ['1', '2', '3'].map((r) => upsert(r)),
-        groups: [{ members: [id('1'), id('2'), id('3')], timeAttached: [] }],
+        groups: [
+          {
+            members: [id('1'), id('2'), id('3')],
+            timeAttached: [],
+            parts: [[id('1'), id('2'), id('3')]],
+          },
+        ],
         singles: [],
       },
       AT,
@@ -2573,7 +2586,7 @@ describe('duels are an append-only event log (v22) — no verdict path deletes t
       asExpo(d),
       {
         photos: ['1', '2', '3'].map((r) => upsert(r)),
-        groups: [{ members: [id('2'), id('3')], timeAttached: [] }],
+        groups: [{ members: [id('2'), id('3')], timeAttached: [], parts: [[id('2'), id('3')]] }],
         singles: [id('1')],
       },
       AT + 100,
@@ -2582,7 +2595,13 @@ describe('duels are an append-only event log (v22) — no verdict path deletes t
       asExpo(d),
       {
         photos: ['1', '2', '3'].map((r) => upsert(r)),
-        groups: [{ members: [id('1'), id('2'), id('3')], timeAttached: [] }],
+        groups: [
+          {
+            members: [id('1'), id('2'), id('3')],
+            timeAttached: [],
+            parts: [[id('1'), id('2'), id('3')]],
+          },
+        ],
         singles: [],
       },
       AT + 200,
@@ -2611,7 +2630,9 @@ describe('the browse timeline reads (m0.8.6 F2/D1: Everything)', () => {
       asExpo(d),
       {
         photos,
-        groups: [{ members: [id('g1a'), id('g1b')], timeAttached: [] }],
+        groups: [
+          { members: [id('g1a'), id('g1b')], timeAttached: [], parts: [[id('g1a'), id('g1b')]] },
+        ],
         singles: [id('s-kept'), id('s-culled'), id('s-open'), id('s-trashed')],
       },
       AT,
@@ -2669,9 +2690,21 @@ describe('the browse timeline reads (m0.8.6 F2/D1: Everything)', () => {
           at('foreign-b', 'Elsewhere', T + 790),
         ],
         groups: [
-          { members: [id('mix-in'), id('mix-out')], timeAttached: [] },
-          { members: [id('pure-a'), id('pure-b')], timeAttached: [] },
-          { members: [id('foreign-a'), id('foreign-b')], timeAttached: [] },
+          {
+            members: [id('mix-in'), id('mix-out')],
+            timeAttached: [],
+            parts: [[id('mix-in'), id('mix-out')]],
+          },
+          {
+            members: [id('pure-a'), id('pure-b')],
+            timeAttached: [],
+            parts: [[id('pure-a'), id('pure-b')]],
+          },
+          {
+            members: [id('foreign-a'), id('foreign-b')],
+            timeAttached: [],
+            parts: [[id('foreign-a'), id('foreign-b')]],
+          },
         ],
         singles: [],
       },

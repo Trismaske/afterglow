@@ -56,7 +56,7 @@ describe('browse pages at S23 scale', () => {
       };
     };
     let t = AT;
-    let queueGroups: { members: string[]; timeAttached: string[] }[] = [];
+    let queueGroups: { members: string[]; timeAttached: string[]; parts: string[][] }[] = [];
     let queuePhotos: ReturnType<typeof mk>[] = [];
     let queueSingles: string[] = [];
     const flush = async () => {
@@ -78,7 +78,7 @@ describe('browse pages at S23 scale', () => {
         queuePhotos.push(p);
         members.push(p.assetId);
       }
-      queueGroups.push({ members, timeAttached: [] });
+      queueGroups.push({ members, timeAttached: [], parts: [members] });
       if (g % 2 === 0 && queueSingles.length < SINGLES) {
         for (let s = 0; s < 3; s++) {
           t -= 45_000;

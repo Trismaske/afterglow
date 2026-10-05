@@ -37,6 +37,8 @@ export type FullPassReason =
   | 'manual'
   /** The embedding model changed; every vector is recomputed. */
   | 'model'
+  /** The grouping rules changed (core GROUPING_RULES_VERSION); every group re-forms. */
+  | 'rules'
   /** A storage volume the baseline never saw, or one without generation evidence. */
   | 'storage'
   /** Tracked items left MediaStore with no trace and the id walk could not explain it. */
@@ -80,6 +82,7 @@ export interface ScanProgress {
  * | forced         | Rescanning · settings changed      |
  * | manual         | Rescanning · manually triggered    |
  * | model          | Rescanning · model changed         |
+ * | rules          | Rescanning · grouping changed      |
  * | storage        | Scanning new storage               |
  * | loss           | Reconciling deletions              |
  * | dates          | Rescanning · dates changed         |
@@ -104,6 +107,8 @@ export function fullPassLabel(reason: FullPassReason | null): string {
       return 'Rescanning · manually triggered';
     case 'model':
       return 'Rescanning · model changed';
+    case 'rules':
+      return 'Rescanning · grouping changed';
     case 'storage':
       return 'Scanning new storage';
     case 'loss':

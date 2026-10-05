@@ -92,7 +92,13 @@ async function seedMixed(d: TestDb): Promise<void> {
     asExpo(d),
     {
       photos: [photo(PRIMARY, 'p1'), photo(PRIMARY, 'p2'), photo(SD, 'sd1'), photo(SD, 'sd2')],
-      groups: [{ members: [`${PRIMARY}/p1`, `${SD}/sd1`], timeAttached: [] }],
+      groups: [
+        {
+          members: [`${PRIMARY}/p1`, `${SD}/sd1`],
+          timeAttached: [],
+          parts: [[`${PRIMARY}/p1`, `${SD}/sd1`]],
+        },
+      ],
       singles: [`${PRIMARY}/p2`, `${SD}/sd2`],
     },
     AT,
@@ -136,7 +142,13 @@ describe('eject → pass over the mounted remainder → zero SD row changes (inv
       asExpo(d),
       {
         photos: [photo(PRIMARY, 'p2'), photo(PRIMARY, 'p3', AT - 3_500_000)],
-        groups: [{ members: [`${PRIMARY}/p2`, `${PRIMARY}/p3`], timeAttached: [] }],
+        groups: [
+          {
+            members: [`${PRIMARY}/p2`, `${PRIMARY}/p3`],
+            timeAttached: [],
+            parts: [[`${PRIMARY}/p2`, `${PRIMARY}/p3`]],
+          },
+        ],
         singles: [],
       },
       AT + 1000,

@@ -266,7 +266,7 @@ export function applyLocalAction(s: ReviewSnapshot, action: LocalAction): Review
       // A group this ejection shrinks below 2 members DISSOLVES — the
       // repair leaves its last member a plain single (the recorded pair,
       // not a flag, is what keeps the two apart, v22); everyone leaving
-      // a group drops its time-attached badge.
+      // a group drops its time-attached badge and its part (v27).
       const remaining = group.members.filter((m) => m.asset_id !== action.assetId);
       const ejected = remaining.length < 2 ? [member, ...remaining] : [member];
       const updated = s.groups.map((g) =>
@@ -283,7 +283,7 @@ export function applyLocalAction(s: ReviewSnapshot, action: LocalAction): Review
       for (const m of ejected) {
         // Feed order is taken_at DESC, asset_id DESC.
         if (inSinglesFeed(m.state))
-          singles = insertFeedOrdered(singles, { ...m, time_attached: 0 });
+          singles = insertFeedOrdered(singles, { ...m, time_attached: 0, part: 0 });
         if (m.state === 'unreviewed') {
           counts.grouped -= 1;
           counts.singles += 1;
@@ -321,6 +321,10 @@ function memberEquals(a: ReviewMemberRow, b: ReviewMemberRow): boolean {
     a.state === b.state &&
     a.needs_edit === b.needs_edit &&
     a.time_attached === b.time_attached &&
+    // The part (phase 10): a parts-only scan write keeps the group id,
+    // the membership and the order, so the index is the only change an
+    // open deck would see — read state like the version.
+    a.part === b.part &&
     a.uri === b.uri &&
     a.taken_at === b.taken_at &&
     a.day === b.day

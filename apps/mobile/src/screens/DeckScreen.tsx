@@ -36,8 +36,14 @@ type DeckItem = MediaItem & {
   motion: MotionClipRow | null;
   /** What the item's STRIP thumbnail animates as (phase 6). */
   animated: AnimatedKind | null;
+  /** The item's part ORDINAL in deck order (phase 10, lib/groupParts.ts):
+   * the strip draws a divider where it changes and the stage names the
+   * part; 0 throughout a one-part group, a singles deck or a list. */
+  part: number;
 };
 import type { RootStackParamList } from '../navigation';
+import { orderByParts, partLabel, type PartOrder } from '../lib/groupParts';
+import { useMembershipVersion } from '../components/useMembershipVersion';
 import { useReview, type RedecideTarget } from '../review/ReviewContext';
 import type { ReviewGroupRow, ReviewMemberRow } from '../db/store';
 import { BigButton } from '../components/BigButton';
@@ -467,6 +473,10 @@ interface DeckView {
   untracked: ReadonlySet<string>;
   /** What the finish button counts (pending singles / alive members). */
   finishCount: number;
+  /** The current photo's part chip (phase 10, lib/groupParts.ts); null
+   * for a singles deck, a list and a one-part group. Frozen with the
+   * rest of the view while a held advance shows the outgoing unit. */
+  partLabel: string | null;
 }
 
 function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
@@ -647,6 +657,12 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   const loadedGroup = groupLoad.unit === unitKey ? groupLoad.value : 'loading';
   // Bumped by the failure card's Retry — re-runs whichever load failed.
   const [loadTick, setLoadTick] = useState(0);
+  // A group outside the review queue (opened from Everything, a day
+  // page, History) is not in the provider's snapshot, so a structural
+  // change — an eject, a scan re-forming it, a parts-only write (phase
+  // 10) — bumps no `version`; the membership signal is its refresh, as
+  // it is the Timeline's (throttled the same).
+  const membershipVer = useMembershipVersion(2000);
   useEffect(() => {
     let cancelled = false;
     if (listMode || singlesMode || !explicitGroupId || queueGroup) {
@@ -665,7 +681,17 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     return () => {
       cancelled = true;
     };
-  }, [explicitGroupId, queueGroup, loadGroup, singlesMode, listMode, version, loadTick, unitKey]);
+  }, [
+    explicitGroupId,
+    queueGroup,
+    loadGroup,
+    singlesMode,
+    listMode,
+    version,
+    membershipVer,
+    loadTick,
+    unitKey,
+  ]);
   const group: ReviewGroupRow | null =
     queueGroup ?? (typeof loadedGroup === 'object' ? loadedGroup : null);
   // m0.8.3 §5 (D9): a group straddling volumes shows only reachable
@@ -995,7 +1021,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     index: unitRef ? findUnitIndex(timeline, unitRef) : -1,
   });
 
-  const toItem = (m: ReviewMemberRow): DeckItem => ({
+  const toItem = (m: ReviewMemberRow, part = 0): DeckItem => ({
     id: m.asset_id,
     timestamp: m.taken_at,
     uri: m.uri,
@@ -1003,20 +1029,32 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     version: m.image_version,
     motion: motionClipOf(m),
     animated: thumbRowOf(m.asset_id, m).animated,
+    part,
   });
   const aliveItems: DeckItem[] = useMemo(
-    () => (group ? group.members.filter((m) => m.state === 'unreviewed').map(toItem) : []),
+    () =>
+      group ? group.members.filter((m) => m.state === 'unreviewed').map((m) => toItem(m)) : [],
     [group],
   );
   // The group deck is the WHOLE group, live and browse alike (m0.8.1
   // round 4): a decided photo stays in place badged with its verdict —
   // Keep behaves exactly like Cull, and re-tapping the active verdict
   // clears it. Nothing leaves until the final delete confirmation.
-  const groupItems: DeckItem[] = useMemo(() => (group ? group.members.map(toItem) : []), [group]);
+  // Phase 10: a group reads part by part (lib/groupParts.ts), so the
+  // look-alikes the engine cut apart sit together on the strip.
+  const partOrder: PartOrder<ReviewMemberRow> | null = useMemo(
+    () => (group ? orderByParts(group.members) : null),
+    [group],
+  );
+  const groupItems: DeckItem[] = useMemo(
+    () =>
+      partOrder ? partOrder.ordered.map((m) => toItem(m, partOrder.ordinalOf.get(m.asset_id))) : [],
+    [partOrder],
+  );
   // A singles deck's rows: every non-trashed state, decided photos
   // badged in place (m0.8.2 unification — group-deck parity).
   const singlesItems: DeckItem[] = useMemo(
-    () => (singlesMode ? singleRows.map(toItem) : []),
+    () => (singlesMode ? singleRows.map((m) => toItem(m)) : []),
     [singleRows, singlesMode],
   );
   const listItems: DeckItem[] = useMemo(
@@ -1030,6 +1068,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
         motion: r.motion,
         // A flat list has no strip, the one reader of this.
         animated: null,
+        part: 0,
       })),
     [shownListRows],
   );
@@ -2027,6 +2066,34 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       setBrowseCursor(clamped);
     }
   }, [listMode, cursorAppliedFor, unitKey, deckItems, browseCursor]);
+  // A group's items reordered under the cursor (phase 10: a parts-only
+  // scan write re-ranks the parts, the unit and its membership
+  // unchanged): follow the photo, not the index — the same snap the
+  // list anchor above makes. The anchor is the photo under the cursor,
+  // re-taken on every cursor move; a reorder is a change in the SEQUENCE
+  // of ids with the cursor where it was. The sequence, not the array's
+  // identity: a verdict re-reads the rows (fresh objects, same order)
+  // in the same render that advances the cursor, and an identity test
+  // snapped the deck back onto the photo just culled (the r22 gate).
+  const groupAnchorRef = useRef<{ unitKey: string; id: string } | null>(null);
+  const groupOrderSeenRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (listMode || singlesMode || cursorAppliedFor !== unitKey || deckItems.length === 0) return;
+    const order = deckItems.map((i) => i.id).join('\n');
+    const reordered = groupOrderSeenRef.current !== null && groupOrderSeenRef.current !== order;
+    groupOrderSeenRef.current = order;
+    const anchor = groupAnchorRef.current;
+    if (reordered && anchor !== null && anchor.unitKey === unitKey) {
+      const index = deckItems.findIndex((i) => i.id === anchor.id);
+      if (index >= 0 && index !== browseCursor) {
+        stampedCursorRef.current = index;
+        setBrowseCursor(index);
+        return;
+      }
+    }
+    const under = deckItems[browseCursor]?.id;
+    groupAnchorRef.current = under === undefined ? null : { unitKey, id: under };
+  }, [listMode, singlesMode, cursorAppliedFor, unitKey, deckItems, browseCursor]);
   // An emptied list quietly goes back to its host (the whole-day
   // precedent).
   // ... and only once the feed is EXHAUSTED: a History page can hold
@@ -2335,6 +2402,10 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
           browseControls,
           keepCount: deckItems.length,
           finishCount: singlesMode ? singlesPending : aliveItems.length,
+          partLabel:
+            partOrder !== null && !singlesMode && !listMode
+              ? partLabel(partOrder, current.part)
+              : null,
         };
   if (liveView) heldViewRef.current = liveView;
   const view = liveView ?? heldViewRef.current;
@@ -2601,6 +2672,16 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                     </Text>
                   </View>
                 )}
+                {/* Phase 10: the part the current photo belongs to — the
+                    chip changes at each boundary, so the look-alikes the
+                    engine cut apart read as "Part 2 of 4 · 5 photos"
+                    without leaving the group. A one-part group shows
+                    nothing. Rides the position row's visibility. */}
+                {overlay.position && view.partLabel !== null && (
+                  <View style={styles.partBadge} pointerEvents="none">
+                    <Text style={styles.partBadgeText}>{view.partLabel}</Text>
+                  </View>
+                )}
                 {/* P2-6: the corner is the GLANCE; tapping it (or the
                     badge cluster) opens the details overlay with the
                     complete truth. Day AND time (F17): rendered from
@@ -2772,6 +2853,13 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                     if (!inert && item.id !== view.current.id) openCompare(item.id);
                   }}
                 >
+                  {/* Phase 10: a part boundary — a bar in the gap before
+                      the first thumbnail of every part but the first,
+                      absolutely placed so the strip's fixed cell pitch
+                      (the follow and visibility maths) stays true. */}
+                  {index > 0 && view.items[index - 1].part !== item.part && (
+                    <View style={styles.partDivider} pointerEvents="none" />
+                  )}
                   <AnimatedThumb
                     row={item}
                     px={STRIP_THUMB_PX}
@@ -3136,6 +3224,26 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   posBadgeText: { color: colors.text, fontSize: 13, fontWeight: '700' },
+  // The part chip sits under the position badge, same backdrop (phase 10).
+  partBadge: {
+    position: 'absolute',
+    top: 40,
+    right: 10,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderRadius: 6,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  partBadgeText: { color: colors.text, fontSize: 12, fontWeight: '600' },
+  partDivider: {
+    position: 'absolute',
+    left: -(THUMB_GAP / 2) - 1,
+    top: 6,
+    bottom: 6,
+    width: 2,
+    borderRadius: 1,
+    backgroundColor: colors.textDim,
+  },
   timeBadge: {
     position: 'absolute',
     top: 10,

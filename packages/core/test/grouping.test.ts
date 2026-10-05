@@ -4,8 +4,10 @@ import { describe, expect, it } from 'vitest';
 import {
   ADJACENT_MERGE_MAX_GAP_MS,
   BURST_GAP_MS,
+  FAR_MERGE_GAP_MS,
   LINK_BASE_THRESHOLD,
   LINK_BONUS_WINDOW_MS,
+  SUBGROUP_MAX_SIZE,
   effectiveLinkThreshold,
   groupByEmbedding,
   type EmbedGroup,
@@ -100,7 +102,7 @@ describe('groupByEmbedding', () => {
     expect(memberIds(groups)).toEqual([['a'], ['b']]);
   });
 
-  it('merges internally tight groups across adjacent bursts (≤ 15 min)', () => {
+  it('merges internally tight groups across adjacent bursts (≤ 60 min)', () => {
     const vecs = { a: v(1, 0), b: v(1, 0), c: v(0.8, 0.6) };
     const near = groupByEmbedding(
       [item('a', 0), item('b', 5_000), item('c', 10 * 60_000)],
@@ -112,6 +114,38 @@ describe('groupByEmbedding', () => {
       lookup(vecs),
     );
     expect(memberIds(far)).toEqual([['a', 'b'], ['c']]);
+  });
+
+  it('a long chain of look-alike bursts merges in well under a second (far-pair cache)', () => {
+    // 358 identical photos four minutes apart: every one its own burst,
+    // every pair beyond the far gap once the chain grows — the far pair
+    // is computed once per group pair and carried through merges.
+    // Real-sized vectors: the cost that matters is the 1280-d dot.
+    const v1 = new Float32Array(1280);
+    v1[0] = 1;
+    const items = Array.from({ length: 358 }, (_, i) => item(`p${i}`, i * 4 * 60_000));
+    const started = performance.now();
+    const groups = groupByEmbedding(items, () => v1);
+    expect(groups).toHaveLength(1);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
+  it('beyond 15 min the far bar asks for the same shot again (phase 10)', () => {
+    // c at 20 min: its best pair against the group is 0.8 — the same
+    // place, not the same shot — so it stays apart although its centroid
+    // cosine clears the single's bar; d at 20 min matches a at 0.9.
+    const vecs = { a: v(1, 0), b: v(1, 0), c: v(0.8, 0.6), d: v(0.9, 0.4359) };
+    const place = groupByEmbedding(
+      [item('a', 0), item('b', 5_000), item('c', FAR_MERGE_GAP_MS + 5 * 60_000)],
+      lookup(vecs),
+    );
+    expect(memberIds(place)).toEqual([['a', 'b'], ['c']]);
+    const shot = groupByEmbedding(
+      [item('a', 0), item('b', 5_000), item('d', FAR_MERGE_GAP_MS + 5 * 60_000)],
+      lookup(vecs),
+    );
+    expect(memberIds(shot)).toEqual([['a', 'b', 'd']]);
+    // Within 15 min the standing bars alone decide (c joins at 10 min above).
   });
 
   it('a merged group never re-merges with its own bursts remnants', () => {
@@ -140,16 +174,39 @@ describe('groupByEmbedding', () => {
     expect(memberIds(groups)).toEqual([['a1', 'a2', 'a3', 'c'], ['b']]);
   });
 
-  it('refuses adjacent merges when a group is internally loose', () => {
+  it('refuses adjacent merges between GROUPS when one is internally loose', () => {
     // a~b linked only via the 45 s bonus (cos 0.47 < tight bar 0.55), so
-    // their group must not merge with the adjacent singleton even though
-    // the centroids agree well beyond 0.70.
+    // their group must not merge with the adjacent PAIR c~d even though
+    // the centroids agree well beyond 0.70 (the pair is tight; the loose
+    // side alone refuses).
     const centroidish = v(0.8578, 0.514); // ≈ normalize(a + b)
     const groups = groupByEmbedding(
+      [item('a', 0), item('b', 45_000), item('c', 10 * 60_000), item('d', 10 * 60_000 + 2_000)],
+      lookup({ a: v(1, 0), b: v(0.47, 0.8829), c: centroidish, d: centroidish }),
+    );
+    expect(memberIds(groups)).toEqual([
+      ['a', 'b'],
+      ['c', 'd'],
+    ]);
+  });
+
+  it('lets a SINGLE join an adjacent loose group on its own bar (phase 10 re-pin)', () => {
+    // The same loose pair, and one photo ten minutes later: a single has
+    // no internal pairs to be tight about, so it joins on centroid
+    // agreement alone — at 0.73 (the device round's judged edge), not
+    // below it.
+    const centroidish = v(0.8578, 0.514);
+    const joins = groupByEmbedding(
       [item('a', 0), item('b', 45_000), item('c', 10 * 60_000)],
       lookup({ a: v(1, 0), b: v(0.47, 0.8829), c: centroidish }),
     );
-    expect(memberIds(groups)).toEqual([['a', 'b'], ['c']]);
+    expect(memberIds(joins)).toEqual([['a', 'b', 'c']]);
+    // A vector at ≈0.675 to that centroid stays apart.
+    const apart = groupByEmbedding(
+      [item('a', 0), item('b', 45_000), item('c', 10 * 60_000)],
+      lookup({ a: v(1, 0), b: v(0.47, 0.8829), c: v(0.2, 0.9798) }), // cos to centroidish ≈ 0.675
+    );
+    expect(memberIds(apart)).toEqual([['a', 'b'], ['c']]);
   });
 
   it('force-links near-duplicate dHash pairs within a burst and annotates them', () => {
@@ -273,6 +330,84 @@ describe('groupByEmbedding', () => {
     expect(() => groupByEmbedding([], lookup({}), undefined, { burstGapMs: -1 })).toThrow(
       /non-negative/,
     );
+  });
+});
+
+describe('phase-10 parts (m0.9)', () => {
+  it('rejects a malformed parts option, and a NaN single bar', () => {
+    const items = [item('a', 0), item('b', 5_000)];
+    const vecs = lookup({ a: v(1, 0), b: v(1, 0) });
+    expect(() => groupByEmbedding(items, vecs, undefined, { subgroupMinSize: 1 })).toThrow(
+      /integer ≥ 2/,
+    );
+    expect(() =>
+      groupByEmbedding(items, vecs, undefined, { subgroupThreshold: Number.NaN }),
+    ).toThrow(/subgroupThreshold/);
+    expect(() =>
+      groupByEmbedding(items, vecs, undefined, { adjacentMergeSingleMinCentroid: Number.NaN }),
+    ).toThrow(/singleMinCentroid/);
+  });
+
+  it('cuts a group into parts at its own mean cosine without touching membership', () => {
+    // One burst, two looks: a~b near-identical, c~d near-identical, the
+    // looks 0.8 apart (all four link at the 0.5 base). The group's mean
+    // pairwise cosine sits between the within-look and the across-look
+    // similarities, so the relative bar cuts exactly between the looks.
+    const items = [item('a', 0), item('b', 2_000), item('c', 4_000), item('d', 6_000)];
+    const vecs = lookup({
+      a: v(1, 0),
+      b: v(0.995, 0.0998),
+      c: v(0.8, 0.6),
+      d: v(0.7071, 0.7071),
+    });
+    const groups = groupByEmbedding(items, vecs);
+    expect(memberIds(groups)).toEqual([['a', 'b', 'c', 'd']]);
+    expect(groups[0].parts).toEqual([
+      ['a', 'b'],
+      ['c', 'd'],
+    ]);
+    // Below the size floor a group is one part.
+    const pair = groupByEmbedding(items.slice(0, 2), vecs);
+    expect(pair[0].parts).toEqual([['a', 'b']]);
+    // An absolute bar is the replay harness's override.
+    const absolute = groupByEmbedding(items, vecs, undefined, { subgroupThreshold: 0.5 });
+    expect(absolute[0].parts).toEqual([['a', 'b', 'c', 'd']]);
+  });
+
+  it('a group above the size cap is one part; at the cap it is cut', () => {
+    // Two alternating looks a second apart: cut into two parts at the
+    // cap, left whole one member above it.
+    const build = (count: number) => {
+      const items = Array.from({ length: count }, (_, i) => item(`p${i}`, i * 1_000));
+      const vecs = (id: string) => (Number(id.slice(1)) % 2 === 0 ? v(1, 0) : v(0.6, 0.8));
+      return groupByEmbedding(items, vecs, undefined, { burstGapMs: 1_000_000_000 });
+    };
+    const atCap = build(SUBGROUP_MAX_SIZE);
+    expect(atCap).toHaveLength(1);
+    expect(atCap[0].parts).toHaveLength(2);
+    const aboveCap = build(SUBGROUP_MAX_SIZE + 1);
+    expect(aboveCap).toHaveLength(1);
+    expect(aboveCap[0].parts).toHaveLength(1);
+  });
+
+  it('the parts pass keeps a near-duplicate pair together whatever the embeddings say', () => {
+    // Four photos in one burst: a~b and c~d are two looks; c and d carry
+    // identical hashes with disagreeing embeddings. A cut at 0.9 would
+    // put c and d in different parts on embeddings alone; the floor holds.
+    const items = [item('a', 0), item('b', 2_000), item('c', 4_000), item('d', 6_000)];
+    const vecs = lookup({ a: v(1, 0), b: v(0.99, 0.141), c: v(0.7071, 0.7071), d: v(0, 1) });
+    const hashes = (id: string) =>
+      id === 'c' || id === 'd'
+        ? '0000000000000000'
+        : id === 'a'
+          ? 'ffffffffffffffff'
+          : 'ff00ff00ff00ff00';
+    const groups = groupByEmbedding(items, vecs, hashes, { subgroupThreshold: 0.9 });
+    expect(memberIds(groups)).toEqual([['a', 'b', 'c', 'd']]);
+    expect(groups[0].parts).toEqual([
+      ['a', 'b'],
+      ['c', 'd'],
+    ]);
   });
 });
 
@@ -527,5 +662,122 @@ describe('labels-v1 regression', () => {
     expect(kept).toBeGreaterThanOrEqual(PINNED_MUST_LINK_KEPT);
     expect(violations).toBeLessThanOrEqual(PINNED_VIOLATIONS);
     expect(largest).toBeLessThanOrEqual(PINNED_LARGEST_GROUP);
+  });
+});
+
+/**
+ * Device regression suite (m0.9 phase 10): replays the engine at shipped
+ * defaults over the frozen device-rounds-v1 fixture — every photo inside
+ * the judged S10e cards' merge windows, with the DEVICE vectors, and
+ * Tristan's verdicts from rounds 1, 2, 3a and 3b as pairwise constraints
+ * — and pins the baseline at two levels: GROUP (membership) and PART
+ * (the unit the deck shows contiguous). Round 1 judged groups, round 2
+ * and 3b judged partitions, round 3a judged far pairs. Quality can never
+ * silently drop; improving on a pin means re-pinning deliberately with
+ * `docs/grouping-study/make_device_fixture.mjs`'s printed score.
+ */
+describe('device-rounds-v1 regression', () => {
+  const dir = fileURLToPath(new URL('../../../docs/grouping-study/', import.meta.url));
+  const fixture = JSON.parse(readFileSync(`${dir}device-rounds-v1.json`, 'utf8')) as {
+    version: string;
+    mergeGapMs: number;
+    photos: { id: string; ts: number; hash: string | null; vec: string }[];
+    cards: {
+      round: string;
+      card: number;
+      kind: string;
+      verdict: string;
+      members: string[];
+      must: [string, string][];
+      cannot: [string, string][];
+    }[];
+  };
+  // Pinned at the shipped rules' measured score (2026-10-05): cards the
+  // engine satisfies exactly, per round, kind and verdict, at the level
+  // the round judged. Exact counts are floors; the parts' corrected
+  // classes hold their mean pair agreement (floored to the hundredth).
+  const PINNED_EXACT: Record<string, number> = {
+    'group r1 group/ok': 44, // of 44
+    'group r1 excluded/join': 8, // of 8
+    'group r1 excluded/ok': 2, // of 2
+    'group r3a far-pair/join': 2, // of 10 — the far bar's reach within the hour
+    'group r3a far-pair/apart': 56, // of 57
+    'part r2 split-card/ok': 8, // of 12
+    'part r2 large-group/ok': 3, // of 7
+    'part r3b split-card/ok': 11, // of 11
+    'part r3b large-group/ok': 6, // of 6
+    'part r3b ok-group/ok': 17, // of 17
+  };
+  const PINNED_AGREEMENT: Record<string, number> = {
+    'part r3b split-card/edited': 0.82,
+    'part r3b large-group/edited': 0.74,
+    'part r3b ok-group/edited': 0.78,
+  };
+
+  it('fixture is internally consistent', () => {
+    expect(fixture.version).toBe('device-rounds-v1');
+    expect(fixture.mergeGapMs).toBe(ADJACENT_MERGE_MAX_GAP_MS);
+    expect(fixture.photos).toHaveLength(2297);
+    expect(fixture.cards).toHaveLength(233);
+    const ids = new Set(fixture.photos.map((p) => p.id));
+    for (const c of fixture.cards) {
+      for (const id of c.members) expect(ids.has(id), `${c.round}#${c.card} ${id}`).toBe(true);
+    }
+    for (const p of fixture.photos) expect(Buffer.from(p.vec, 'base64').byteLength).toBe(1280 * 4);
+  });
+
+  it('holds the pinned device baseline at shipped defaults', () => {
+    const byId = new Map(
+      fixture.photos.map((p) => {
+        const raw = Uint8Array.prototype.slice.call(Buffer.from(p.vec, 'base64'));
+        return [p.id, { ...p, vec: new Float32Array(raw.buffer) }];
+      }),
+    );
+    // The device's merge windows re-form over the fixture (its header).
+    const groupOf = new Map<string, number>();
+    const partOf = new Map<string, string>();
+    let window: typeof fixture.photos = [];
+    let gi = 0;
+    const flush = (): void => {
+      if (window.length === 0) return;
+      const groups = groupByEmbedding(
+        window.map((p) => item(p.id, p.ts)),
+        (id) => byId.get(id)?.vec ?? null,
+        (id) => byId.get(id)?.hash ?? null,
+      );
+      for (const g of groups) {
+        const key = gi++;
+        g.items.forEach((it) => groupOf.set(it.id, key));
+        g.parts.forEach((part, pi) => part.forEach((id) => partOf.set(id, `${key}/${pi}`)));
+      }
+      window = [];
+    };
+    for (const p of fixture.photos) {
+      if (window.length > 0 && p.ts - window[window.length - 1].ts > fixture.mergeGapMs) flush();
+      window.push(p);
+    }
+    flush();
+    const tally: Record<string, { n: number; exact: number; agree: number }> = {};
+    for (const c of fixture.cards) {
+      for (const level of ['group', 'part'] as const) {
+        const unit: Map<string, number | string> = level === 'group' ? groupOf : partOf;
+        const same = (a: string, b: string): boolean => unit.get(a) === unit.get(b);
+        const agreed =
+          c.must.filter(([a, b]) => same(a, b)).length +
+          c.cannot.filter(([a, b]) => !same(a, b)).length;
+        const pairs = c.must.length + c.cannot.length;
+        const k = `${level} r${c.round} ${c.kind}/${c.verdict}`;
+        tally[k] ??= { n: 0, exact: 0, agree: 0 };
+        tally[k].n++;
+        if (agreed === pairs) tally[k].exact++;
+        tally[k].agree += pairs ? agreed / pairs : 1;
+      }
+    }
+    for (const [k, floor] of Object.entries(PINNED_EXACT)) {
+      expect(tally[k]?.exact ?? 0, k).toBeGreaterThanOrEqual(floor);
+    }
+    for (const [k, floor] of Object.entries(PINNED_AGREEMENT)) {
+      expect(tally[k].agree / tally[k].n, k).toBeGreaterThanOrEqual(floor);
+    }
   });
 });

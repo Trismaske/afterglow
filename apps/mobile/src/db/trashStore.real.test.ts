@@ -271,7 +271,13 @@ describe('resolveTrashBatch — unreachable partner (final cycle O2)', () => {
             sizeBytes: 1_000,
           },
         ],
-        groups: [{ members: ['external_primary/p1', '0a91-e18d/s1'], timeAttached: [] }],
+        groups: [
+          {
+            members: ['external_primary/p1', '0a91-e18d/s1'],
+            timeAttached: [],
+            parts: [['external_primary/p1', '0a91-e18d/s1']],
+          },
+        ],
         singles: [],
       },
       AT,

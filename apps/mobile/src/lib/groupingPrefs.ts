@@ -10,6 +10,10 @@
  */
 
 export const GROUPING_STRICTNESS_KEY = 'grouping_strictness';
+/** Settings key: the grouping rules version (core GROUPING_RULES_VERSION)
+ * the last COMPLETE full pass grouped under. A different current version
+ * is a full pass (m0.9 phase 10): a rule change regroups everything. */
+export const GROUPING_RULES_KEY = 'grouping_rules';
 
 export interface StrictnessStep {
   id: string;

@@ -83,6 +83,7 @@ describe('queueEquals (the refresh no-op rule)', () => {
     state: 'kept',
     needs_edit: 0,
     time_attached: 0,
+    part: 0,
   });
   const snapshot = (v: number): ReviewSnapshot => ({
     groups: [],
@@ -94,6 +95,10 @@ describe('queueEquals (the refresh no-op rule)', () => {
   it('treats a changed image version as a change — an in-place edit must commit', () => {
     expect(queueEquals(snapshot(1), snapshot(1))).toBe(true);
     expect(queueEquals(snapshot(1), snapshot(2))).toBe(false);
+  });
+  it('treats a moved part as a change — a parts-only scan write keeps everything else (phase 10)', () => {
+    const moved: ReviewSnapshot = { ...snapshot(1), singles: [{ ...member('a', 1), part: 1 }] };
+    expect(queueEquals(snapshot(1), moved)).toBe(false);
   });
 });
 describe('queueEquals — the motion facts are read state (phase 5)', () => {
@@ -111,6 +116,7 @@ describe('queueEquals — the motion facts are read state (phase 5)', () => {
     state: 'unreviewed',
     needs_edit: 0,
     time_attached: 0,
+    part: 0,
   });
   const snapshot = (motion_offset: number | null): ReviewSnapshot => ({
     groups: [],

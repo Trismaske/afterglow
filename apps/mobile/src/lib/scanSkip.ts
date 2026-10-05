@@ -7,8 +7,8 @@
  * one is OS-guaranteed evidence the scan would be a no-op.
  *
  * The fingerprint binds EVERYTHING a pass depends on — the volume
- * generations, the source scope, the grouping strictness, and the
- * embedding model — so any configuration change misses naturally, with
+ * generations, the source scope, the grouping strictness, the embedding
+ * model and the grouping rules — so any configuration change misses naturally, with
  * no force-flag bookkeeping for settings paths. Forced rescans
  * (requestRescan: settings applies and resets that rewrite scan OUTPUT
  * without changing scan INPUT) bypass the check entirely.
@@ -42,6 +42,8 @@ export function scanFingerprint(args: {
   strictness: string | null;
   /** Pinned embedding-model SHA. */
   modelSha: string;
+  /** Core's GROUPING_RULES_VERSION. */
+  rules: string;
 }): string {
   const volumes = Object.keys(args.generations)
     .sort()
@@ -54,7 +56,7 @@ export function scanFingerprint(args: {
           .map((root) => `${root.volume}:${root.dir}`)
           .sort()
           .join(',');
-  return `gen:${volumes}|src:${roots}|strict:${args.strictness ?? 'default'}|model:${args.modelSha}`;
+  return `gen:${volumes}|src:${roots}|strict:${args.strictness ?? 'default'}|model:${args.modelSha}|rules:${args.rules}`;
 }
 
 /**

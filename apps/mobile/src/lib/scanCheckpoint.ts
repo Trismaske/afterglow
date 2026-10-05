@@ -19,7 +19,7 @@
  *   - reconciles unseen rows through the ids-only enumeration (its own
  *     walk covered only the lower part), and counts as the full pass.
  *
- * SCOPE, NOT FINGERPRINT: the key binds sources, strictness and model —
+ * SCOPE, NOT FINGERPRINT: the key binds sources, strictness, model and the grouping rules —
  * never the volume generations, which move with every capture; a
  * checkpoint keyed on them would be discarded by exactly the activity
  * it exists to survive. A forced pass (settings apply, reset) discards
@@ -41,6 +41,7 @@ const REASONS: readonly FullPassReason[] = [
   'forced',
   'manual',
   'model',
+  'rules',
   'storage',
   'loss',
   'dates',
@@ -72,6 +73,8 @@ export function checkpointScope(args: {
   roots: readonly { volume: string; dir: string }[] | null;
   strictness: string | null;
   modelSha: string;
+  /** Core's GROUPING_RULES_VERSION: a checkpoint from other rules cannot resume. */
+  rules: string;
 }): string {
   const roots =
     args.roots === null
@@ -80,7 +83,7 @@ export function checkpointScope(args: {
           .map((root) => `${root.volume}:${root.dir}`)
           .sort()
           .join(',');
-  return `src:${roots}|strict:${args.strictness ?? 'default'}|model:${args.modelSha}`;
+  return `src:${roots}|strict:${args.strictness ?? 'default'}|model:${args.modelSha}|rules:${args.rules}`;
 }
 
 /** The stored JSON, validated field by field; anything malformed is no

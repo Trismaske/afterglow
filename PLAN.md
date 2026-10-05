@@ -133,10 +133,13 @@ Every verdict stays revisable until the final cull confirmation.
   A false inclusion costs a swipe, but a false exclusion costs a navigation loop.
   This is a different concept from desktop *moments*, even where machinery is shared.
   The same grouping engine is intended for desktop organizer culling (v0.7+), so investment here pays twice.
-  The algorithm (m0.8): on-device image embeddings (MediaPipe MobileNetV3-large) with a 3-min burst gate, centroid linkage, and adjacent-burst merges ≤15 min.
+  The algorithm (m0.8, widened m0.9): on-device image embeddings (MediaPipe MobileNetV3-large) with a 3-min burst gate, centroid linkage, and adjacent-burst merges ≤60 min — beyond 15 min only for the same shot again (one member pair across the units at cosine ≥ 0.85), never merely the same place.
   Validated against a committed suite of human-judged pairs.
   dHash survives only as a time-gated exact/near-duplicate annotation.
   Groups persist, so completed days re-show them.
+  **Parts (m0.9 phase 10):** a group is also cut into its looks — average-linkage parts at a bar relative to the group's own mean similarity, floored at 0.60 — and the deck shows the group part by part with a divider and a "Part 2 of 4 · 5 photos" chip at each boundary; the Everything and day-page cards carry the same divider.
+  Membership is untouched: a part is presentation, so Everything, History and the counts never see it.
+  **Known limit (m0.9 phase 10, measured):** look-alikes beyond the hour, and a same-place pair that is not the same shot, stay apart — the embedding does not tell the same vantage from the same place (the trigger backlog's "Far look-alike links").
   1-photo groups are singles.
 - **Review order — one timeline (m0.8.2):** the review queue is a single newest-first timeline of units: groups (anchored at their newest member) interleaved with runs of ungrouped singles, split at day boundaries.
   Recent singles come up where they were taken, instead of behind every group.
@@ -363,7 +366,7 @@ Auto-update (electron-updater) lands here too.
   **And the scan stops re-walking the library:** a DELTA pass asks MediaStore which rows changed since the last per-volume generation, walks the real merge-window bounds around each one, and re-pages only those.
   262 s → 0.25 s on a 27k corpus, with byte-identical grouping (a full pass is the same code over one unbounded range).
   Deletions arrive as trashed rows, since an Android 11+ gallery delete keeps the row with `IS_TRASHED` set; a delete that bypasses the system trash (Samsung Gallery's Recycle bin deletes the row outright) shows only as a volume count that fell, and an ids-only MediaStore enumeration names the missing rows in seconds (m0.9).
-  Counts are checked before AND after each pass, and every uncertainty falls back to a full pass, which names its reason on Home and in Settings (m0.9: Initial scan, Weekly full scan, Rescanning · settings changed, Rescanning · manually triggered, Rescanning · model changed, Scanning new storage, Reconciling deletions, Rescanning · dates changed, Rescanning · many changes, Rescanning · counts disagreed, Rescanning · delta check failed; a resumed pass shows the interrupted pass's own reason with a "resumed" marker, or "Resuming last scan" without one; the table lives in `lib/scanProgress.ts`).
+  Counts are checked before AND after each pass, and every uncertainty falls back to a full pass, which names its reason on Home and in Settings (m0.9: Initial scan, Weekly full scan, Rescanning · settings changed, Rescanning · manually triggered, Rescanning · model changed, Rescanning · grouping changed, Scanning new storage, Reconciling deletions, Rescanning · dates changed, Rescanning · many changes, Rescanning · counts disagreed, Rescanning · delta check failed; a resumed pass shows the interrupted pass's own reason with a "resumed" marker, or "Resuming last scan" without one; the table lives in `lib/scanProgress.ts`).
   A full pass checkpoints each closed window's boundary and resumes below it on the next open (m0.9); the screen stays awake while a pass runs in the foreground.
   The scan notices changes through MediaStore's observer, every foreground return, and pull-to-refresh on Home, Everything and Progress; no timer polls (m0.9).
   Schema v18 (destructive reset, pre-v1 policy), which discards the embedding cache.
@@ -530,6 +533,10 @@ No release target until then.
   m0.9 phase 9 ships the in-app half — an enumeration checkpoint, a durable-state progress line, and a foreground keep-awake — which is also this item's prerequisite: a WorkManager slot is ~10 minutes, so a background pass MUST be resumable.
   The remaining blockers are measured in docs/TODO.md ("If it stays, idle + charging"): two new dependencies to reach `requiresCharging`/`requiresDeviceIdle`, a DB-backed cross-process scan lease, and Samsung's background-job culling on both test devices.
   Trigger: the weekly full pass survives its field-time revisit (docs/TODO.md) AND a tester reports an initial pass that phase 9's resume still cannot finish in normal use.
+- **Far look-alike links beyond the hour** — photos that would group but sit beyond the 60-minute merge window (the next-day sunset over the same pan).
+  Measured on Tristan's judged round (m0.9 phase 10, 2026-10-05, 67 pairs at centroid cosine ≥ 0.80 within 24 h): 10 joins, 57 apart, and no similarity the MobileNetV3 embedding yields separates them past the hour — the safest bar (mean member-pair cosine ≥ 0.885) catches 3 of the 10 with no wrong join; every lower bar joins more wrong pairs than right ones. Within the hour the merge window itself now reaches them under the far bar (one member pair ≥ 0.85: 2 of the 4 judged joins, 1 wrong of 13).
+  The mechanism for the rest is settled (docs/Plan_m0.9.md phase 10): a link relation between stored units computed per window over ±24 h, the deck assembling linked units into one with the gap on the divider, the scan's windows untouched, "not related" undoing a link.
+  Trigger: an embedding that separates the round's joins from its aparts (re-run `far_links.mjs` and the round-3a verdicts against the candidate model).
 - **GitLab releases** — deferred until further notice.
   GitHub Releases is the sole delivery path.
   Do not add GitLab CI or remotes without a new decision.

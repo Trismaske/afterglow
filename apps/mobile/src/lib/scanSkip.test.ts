@@ -25,6 +25,7 @@ const base = {
   roots: [root('DCIM/Camera')] as readonly { volume: string; dir: string }[] | null,
   strictness: null as string | null,
   modelSha: 'abc123',
+  rules: 'r1',
 };
 
 describe('scanFingerprint', () => {
@@ -51,6 +52,7 @@ describe('scanFingerprint', () => {
     expect(scanFingerprint({ ...base, roots: [root('Pictures')] })).not.toBe(reference);
     expect(scanFingerprint({ ...base, strictness: '2' })).not.toBe(reference);
     expect(scanFingerprint({ ...base, modelSha: 'def456' })).not.toBe(reference);
+    expect(scanFingerprint({ ...base, rules: 'r2' })).not.toBe(reference);
   });
 
   it('distinguishes the same dir on two volumes (m0.8.3, D4)', () => {
@@ -92,12 +94,14 @@ describe('multi-volume proof (m0.8.2)', () => {
       roots: [root('DCIM/Camera')],
       strictness: null,
       modelSha: 'sha',
+      rules: 'r1',
     });
     const primaryOnly = scanFingerprint({
       generations: { external_primary: 12 },
       roots: [root('DCIM/Camera')],
       strictness: null,
       modelSha: 'sha',
+      rules: 'r1',
     });
     expect(primaryOnly).not.toBe(both);
     // Stored under two volumes, seen with one: no skip.
@@ -114,6 +118,7 @@ describe('multi-volume proof (m0.8.2)', () => {
       roots: [root('DCIM/Camera')],
       strictness: null,
       modelSha: 'sha',
+      rules: 'r1',
     });
     expect(scanCanSkip({ generations: { x: 1 }, stored: both, current: sdMoved })).toBe(false);
   });

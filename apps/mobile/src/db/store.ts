@@ -715,7 +715,7 @@ async function applyNotRelatedEjection(
       assetId,
     );
     await txn.runAsync(
-      `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0
+      `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0, part = 0
        WHERE photo_id = ?`,
       assetId,
     );
@@ -816,7 +816,7 @@ export async function repairGroupMembership(
     const inList = scope === null ? '' : `(${scope.map(() => '?').join(',')})`;
     const params = scope === null ? [] : scope;
     const dissolved = await txn.runAsync(
-      `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0
+      `UPDATE photo_group_assignments SET group_id = NULL, time_attached = 0, part = 0
        WHERE group_id IN (
          SELECT g.id FROM photo_groups g
          WHERE ${scope === null ? '' : `g.id IN ${inList} AND `}
@@ -1019,6 +1019,9 @@ export interface ReviewMemberRow {
   state: PhotoState;
   needs_edit: number;
   time_attached: number;
+  /** The member's part within its group (v27; lib/groupParts.ts orders
+   * a deck by it). 0 for a single. */
+  part: number;
   /** 1 = the member itself matches the active source filter (always 1
    * when unfiltered). Projected ONLY by listGroupsForDay, for the
    * DayProgress CTA's eligibility check: a group queues whole via any
@@ -1111,7 +1114,7 @@ async function listReviewGroupsIn(
     // newer SD member must not pull a group ahead of what the page
     // actually shows — the timeline's anchors come from visible members.
     const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
-      `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+      `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, a.part
        FROM photo_group_assignments a
        CROSS JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id IN (${groups.map(() => '?').join(',')}) AND p.is_present = 1${reach.sql}
@@ -1151,6 +1154,7 @@ async function listReviewGroupsIn(
         state: m.state,
         needs_edit: m.needs_edit,
         time_attached: m.time_attached,
+        part: m.part,
       };
       if (bucket) bucket.push(row);
       else byGroup.set(Number(m.group_id), [row]);
@@ -1276,7 +1280,7 @@ export async function fetchBrowseGroupsPage(
     const ids = heads.map((h) => Number(h.id));
     const placeholders = ids.map(() => '?').join(',');
     const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
-      `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+      `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, a.part
          FROM photo_group_assignments a
          CROSS JOIN photos p ON p.asset_id = a.photo_id
         WHERE a.group_id IN (${placeholders}) AND p.is_present = 1${reach.sql}
@@ -1314,6 +1318,7 @@ export async function fetchBrowseGroupsPage(
         state: m.state,
         needs_edit: m.needs_edit,
         time_attached: m.time_attached,
+        part: m.part,
       };
       const bucket = byGroup.get(Number(m.group_id));
       if (bucket) bucket.push(row);
@@ -1356,7 +1361,7 @@ export async function fetchBrowseSinglesPage(
     before === undefined ? '' : ' AND p.taken_at <= ? AND (p.taken_at < ? OR p.asset_id < ?)';
   const keysetParams = before === undefined ? [] : [before.takenAt, before.takenAt, before.assetId];
   return db.getAllAsync<ReviewMemberRow>(
-    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, a.part
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
       WHERE a.group_id IS NULL AND p.is_present = 1${src.sql}${reach.sql}${keyset}
@@ -1389,7 +1394,7 @@ export async function getReviewGroup(
     );
     if (!group) return;
     const members = await txn.getAllAsync<ReviewMemberRow>(
-      `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+      `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, a.part
        FROM photo_group_assignments a
        CROSS JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id = ? AND p.is_present = 1${reach.sql}
@@ -1437,7 +1442,7 @@ async function listSinglesFeedIn(
   const src = sourceClause(roots, 'p.uri');
   const reach = reachClause(mounted, 'p.volume_name');
   const page = await txn.getAllAsync<ReviewMemberRow>(
-    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, a.part
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
      WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled') AND p.is_present = 1${src.sql}${reach.sql}
@@ -1458,7 +1463,7 @@ async function listSinglesFeedIn(
   if (page.length >= limit && !page.some((row) => row.state === 'unreviewed')) {
     const tail = page[page.length - 1];
     const pending = await txn.getAllAsync<ReviewMemberRow>(
-      `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+      `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, a.part
        FROM photo_group_assignments a
        JOIN photos p ON p.asset_id = a.photo_id
        WHERE a.group_id IS NULL AND p.state = 'unreviewed' AND p.is_present = 1${src.sql}${reach.sql}
@@ -1526,7 +1531,7 @@ export async function listSinglesForDeck(
   // run's inclusive range).
   const rangePredicate = range ? ' AND p.taken_at BETWEEN ? AND ?' : '';
   return db.getAllAsync<ReviewMemberRow>(
-    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached
+    `SELECT p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, a.part
      FROM photo_group_assignments a
      JOIN photos p ON p.asset_id = a.photo_id
      WHERE a.group_id IS NULL AND p.state IN ('unreviewed', 'culled', 'kept') AND p.is_present = 1${src.sql}${reach.sql}${dayPredicate}${rangePredicate}
@@ -1590,7 +1595,7 @@ export async function listGroupsForDay(
         ...batch,
       );
       const members = await txn.getAllAsync<ReviewMemberRow & { group_id: number }>(
-        `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, ${memberInSource.sql} AS in_source
+        `SELECT a.group_id, p.asset_id, p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version, p.kind, p.mime_type, p.motion_video_offset AS motion_offset, p.motion_video_length AS motion_length, p.motion_presentation_us AS motion_presentation_us, p.taken_at, p.day, p.state, (EXISTS (SELECT 1 FROM photo_actions pa WHERE pa.photo_id = p.asset_id AND pa.kind = 'edit' AND pa.state IN ('queued', 'error'))) AS needs_edit, a.time_attached, a.part, ${memberInSource.sql} AS in_source
          FROM photo_group_assignments a
          CROSS JOIN photos p ON p.asset_id = a.photo_id
          WHERE a.group_id IN (${placeholders}) AND p.is_present = 1${reach.sql}
@@ -1615,6 +1620,7 @@ export async function listGroupsForDay(
           state: m.state,
           needs_edit: m.needs_edit,
           time_attached: m.time_attached,
+          part: m.part,
           in_source: m.in_source,
         };
         const bucket = byGroup.get(Number(m.group_id));
@@ -2468,6 +2474,9 @@ export interface ContinuousGroupWrite {
   members: readonly string[];
   /** Members grouped by time because their embedding was unavailable. */
   timeAttached: readonly string[];
+  /** The engine's parts (core grouping.ts step 5): every member in
+   * exactly one; the index is stored as the member's `part`. */
+  parts: readonly (readonly string[])[];
 }
 
 /** One grouped window's membership writes — the engine's output, landed
@@ -2780,20 +2789,43 @@ export async function writeContinuousGroups(
     // window writes per pass). A group is identical only when every
     // planned member already sits in ONE existing group of exactly the
     // planned size with matching time-attached flags.
-    const identicalGroup = (group: ContinuousGroupWrite): boolean => {
+    // (v27) The parts are compared separately: a group whose membership
+    // is identical but whose parts moved keeps its id and has its part
+    // indexes rewritten in place — parts are presentation, and a fresh
+    // id for an unchanged membership would trip the deck's staleness
+    // guard for nothing.
+    const partIndexOf = (group: ContinuousGroupWrite): Map<string, number> => {
+      const out = new Map<string, number>();
+      let listed = 0;
+      group.parts.forEach((part, index) =>
+        part.forEach((member) => {
+          out.set(member, index);
+          listed++;
+        }),
+      );
+      if (
+        listed !== out.size ||
+        out.size !== group.members.length ||
+        group.members.some((m) => !out.has(m))
+      ) {
+        throw new Error('writeContinuousGroups: parts must cover every member exactly once');
+      }
+      return out;
+    };
+    const identicalMembership = (group: ContinuousGroupWrite): number | null => {
       const timeAttached = new Set(group.timeAttached);
       let existing: number | null = null;
       for (const member of group.members) {
         const live = liveAssignments.get(member);
-        if (!live || live.groupId === null) return false;
+        if (!live || live.groupId === null) return null;
         if (existing === null) existing = live.groupId;
-        else if (live.groupId !== existing) return false;
-        if (live.timeAttached !== timeAttached.has(member)) return false;
+        else if (live.groupId !== existing) return null;
+        if (live.timeAttached !== timeAttached.has(member)) return null;
       }
-      if (existing === null) return false;
+      if (existing === null) return null;
       const liveSet = liveMembers.get(existing);
       // Same size + every planned member inside ⇒ the sets are equal.
-      return liveSet !== undefined && liveSet.length === group.members.length;
+      return liveSet !== undefined && liveSet.length === group.members.length ? existing : null;
     };
 
     const runId = await ensureContinuousRun(txn, at);
@@ -2808,7 +2840,21 @@ export async function writeContinuousGroups(
         );
         continue;
       }
-      if (identicalGroup(group)) continue;
+      const parts = partIndexOf(group);
+      const sameMembership = identicalMembership(group);
+      if (sameMembership !== null) {
+        const moved = group.members.filter((m) => liveAssignments.get(m)!.part !== parts.get(m));
+        if (moved.length === 0) continue;
+        changed = true;
+        for (const assetId of moved) {
+          await txn.runAsync(
+            'UPDATE photo_group_assignments SET part = ? WHERE photo_id = ?',
+            parts.get(assetId)!,
+            assetId,
+          );
+        }
+        continue;
+      }
       changed = true;
       const groupResult = await txn.runAsync('INSERT INTO photo_groups (run_id) VALUES (?)', runId);
       const groupId = Number(groupResult.lastInsertRowId);
@@ -2816,12 +2862,13 @@ export async function writeContinuousGroups(
       const timeAttached = new Set(group.timeAttached);
       for (const assetId of group.members) {
         await txn.runAsync(
-          `INSERT OR REPLACE INTO photo_group_assignments (photo_id, run_id, group_id, time_attached)
-           VALUES (?, ?, ?, ?)`,
+          `INSERT OR REPLACE INTO photo_group_assignments (photo_id, run_id, group_id, time_attached, part)
+           VALUES (?, ?, ?, ?, ?)`,
           assetId,
           runId,
           groupId,
           timeAttached.has(assetId) ? 1 : 0,
+          parts.get(assetId)!,
         );
       }
     }
@@ -2830,8 +2877,8 @@ export async function writeContinuousGroups(
       if (live && live.groupId === null && !live.timeAttached) continue; // already this single
       changed = true;
       await txn.runAsync(
-        `INSERT OR REPLACE INTO photo_group_assignments (photo_id, run_id, group_id, time_attached)
-         VALUES (?, ?, NULL, 0)`,
+        `INSERT OR REPLACE INTO photo_group_assignments (photo_id, run_id, group_id, time_attached, part)
+         VALUES (?, ?, NULL, 0, 0)`,
         assetId,
         runId,
       );
@@ -2892,6 +2939,8 @@ export interface GroupAssignmentRow {
   groupId: number | null;
   /** Grouped by time only (embedding was unavailable). */
   timeAttached: boolean;
+  /** The member's part index (v27); 0 for a single. */
+  part: number;
 }
 
 /** Current durable group membership for the given photos (missing = no
@@ -2907,8 +2956,9 @@ export async function getGroupAssignments(
       photo_id: string;
       group_id: number | null;
       time_attached: number;
+      part: number;
     }>(
-      `SELECT photo_id, group_id, time_attached FROM photo_group_assignments
+      `SELECT photo_id, group_id, time_attached, part FROM photo_group_assignments
        WHERE photo_id IN (${placeholders})`,
       ...ids,
     );
@@ -2916,6 +2966,7 @@ export async function getGroupAssignments(
       out.set(row.photo_id, {
         groupId: row.group_id === null ? null : Number(row.group_id),
         timeAttached: row.time_attached === 1,
+        part: Number(row.part),
       });
   }
   return out;

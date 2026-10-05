@@ -53,6 +53,7 @@ import { useMembershipVersion } from '../components/useMembershipVersion';
 import type { VerdictChange } from '../lib/reviewPatch';
 import { BigButton } from '../components/BigButton';
 import { UNIT_CARD_HEIGHT, UnitCard, cardThumbRows } from '../components/UnitCard';
+import { orderByParts } from '../lib/groupParts';
 import { useAnimatedCells, useAnimatedThumbsMode } from '../components/useAnimatedCells';
 import { StateDots } from '../components/DecisionBadge';
 import { colors, useTheme } from '../theme';
@@ -125,8 +126,10 @@ function unitKeyOf(unit: TimelineUnit, filter: string | null): string {
     ? `r:${unit.day}:${unit.from}:${unit.to}`
     : `r:${unit.day}:${unit.to}`;
 }
+/** A unit's members in CARD order — a group part by part (phase 10),
+ * so the animated controller's positions match what the card shows. */
 const membersOf = (unit: TimelineUnit) =>
-  unit.kind === 'group' ? unit.group.members : unit.members;
+  unit.kind === 'group' ? orderByParts(unit.group.members).ordered : unit.members;
 /** Depth past which the back-to-top disc shows — and below which a
  * landing hides it (~a dozen cards: flinging back is a chore). */
 const DEEP_PX = 1600;
@@ -848,7 +851,8 @@ export function TimelineScreen({ navigation }: Props) {
           title={`Group · ${group.members.length} shots · ${labelForDayKey(newest?.day ?? UNDATED_DAY_KEY)}${newest ? ` ${formatClock(newest.taken_at)}` : ''}`}
           status={(pending === 0 ? done : `${pending} pending`) + away}
           statusDone={pending === 0}
-          members={group.members}
+          // Part by part, as the deck shows the group (phase 10).
+          members={membersOf(unit)}
           animated={animated}
           onPress={() => openUnit(unit)}
           renderOverlay={(id) => (

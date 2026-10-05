@@ -29,6 +29,7 @@ import { useReview } from '../review/ReviewContext';
 import { StateDots } from '../components/DecisionBadge';
 import { photoBadges, type PhotoBadge } from '../lib/photoBadges';
 import { UNIT_CARD_HEIGHT, UnitCard, cardThumbRows } from '../components/UnitCard';
+import { orderByParts } from '../lib/groupParts';
 import {
   HostListContext,
   useAnimatedCells,
@@ -210,7 +211,10 @@ function DayGroupCards({
   current.current = groups;
   const kindsAt = useCallback(
     (index: number) =>
-      cardThumbRows(current.current[index]?.members ?? []).map((row) => row.animated),
+      // Card order — part by part (phase 10) — so positions match the card.
+      cardThumbRows(orderByParts(current.current[index]?.members ?? []).ordered).map(
+        (row) => row.animated,
+      ),
     [],
   );
   const cells = useAnimatedCells({
@@ -280,7 +284,8 @@ function DayGroupCards({
               title={`${group.members.length} shots${first ? ` · ${formatClock(first.taken_at)}` : ''}`}
               status={(pending === 0 ? done : `${pending} pending`) + away}
               statusDone={pending === 0}
-              members={group.members}
+              // Part by part, as the deck shows the group (phase 10).
+              members={orderByParts(group.members).ordered}
               animated={{ cells, index, cellKey: `g:${group.groupId}` }}
               onPress={() => navigation.navigate('Deck', { groupId: String(group.groupId) })}
               renderOverlay={(assetId) => {

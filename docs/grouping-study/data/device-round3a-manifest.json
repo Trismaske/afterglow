@@ -1,0 +1,1202 @@
+[
+ {
+  "card": 0,
+  "sim": 0.9534051365824335,
+  "gap_s": 85257,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221109_193333.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221109_193340.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221110_191437.jpg"
+  ]
+ },
+ {
+  "card": 1,
+  "sim": 0.9245233075452575,
+  "gap_s": 85355,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220425_182941.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220425_182946.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220426_181220.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220426_181225.jpg"
+  ]
+ },
+ {
+  "card": 2,
+  "sim": 0.9219088673876341,
+  "gap_s": 85864,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221020_192624.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221020_192630.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221020_192636.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221021_191741.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221021_191749.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221021_191802.jpg"
+  ]
+ },
+ {
+  "card": 3,
+  "sim": 0.9190452578700048,
+  "gap_s": 1205,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221203_185428.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221203_185430.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221203_191436.jpg"
+  ]
+ },
+ {
+  "card": 4,
+  "sim": 0.9008983025769726,
+  "gap_s": 84379,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221116_193940.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_193949.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_193953.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_194000.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_194009.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_194025.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_194035.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_194843.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_194852.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_195031.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_195036.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_195100.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_195728.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_195734.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_195753.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_195803.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_195824.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_200004.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_200008.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_200011.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_200648.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193307.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193311.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193322.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193340.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193350.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193747.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193755.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193800.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193806.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193821.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193828.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193831.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193834.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193843.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_194052.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_194430.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_194440.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_194446.jpg"
+  ]
+ },
+ {
+  "card": 5,
+  "sim": 0.8970569202630266,
+  "gap_s": 86370,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221123_195943.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221123_195947.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221123_195953.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221124_195923.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221124_195932.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221124_195938.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221124_195951.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221124_195956.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221124_201352.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221124_201356.jpg"
+  ]
+ },
+ {
+  "card": 6,
+  "sim": 0.8929110025257266,
+  "gap_s": 85226,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221028_192428.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221028_192431.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221028_192438.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221028_192441.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221029_190508.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221029_190738.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221029_190741.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221029_190744.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221029_190750.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221029_191527.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221029_191936.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221029_191941.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221029_191945.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221029_192226.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221029_192235.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221029_192240.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221029_192309.jpg"
+  ]
+ },
+ {
+  "card": 7,
+  "sim": 0.8912216846579154,
+  "gap_s": 66028,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220718_163534.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_163712.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_163738.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220719_105805.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_105809.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_110014.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_110018.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_110033.jpg"
+  ]
+ },
+ {
+  "card": 8,
+  "sim": 0.8850717506974095,
+  "gap_s": 84427,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221110_191437.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221111_184144.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221111_184147.jpg"
+  ]
+ },
+ {
+  "card": 9,
+  "sim": 0.8807232203227751,
+  "gap_s": 1058,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221123_194137.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221123_194144.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221123_194151.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221123_194157.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221123_194205.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221123_195943.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221123_195947.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221123_195953.jpg"
+  ]
+ },
+ {
+  "card": 10,
+  "sim": 0.8776466440501764,
+  "gap_s": 84460,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221218_201838.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221218_201840.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221219_194620.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221219_195839.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221219_195843.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221219_195856.jpg"
+  ]
+ },
+ {
+  "card": 11,
+  "sim": 0.875622913946581,
+  "gap_s": 83778,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221202_195818.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221203_191436.jpg"
+  ]
+ },
+ {
+  "card": 12,
+  "sim": 0.8717656681888473,
+  "gap_s": 86298,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221105_193946.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221105_194001.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221105_194011.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221105_194017.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221106_193835.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221106_193840.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221106_193845.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221106_193852.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221106_193900.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221106_193909.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221106_193917.jpg"
+  ]
+ },
+ {
+  "card": 13,
+  "sim": 0.8687315848425536,
+  "gap_s": 86096,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220429_183521.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220429_183526.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220429_183535.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220430_183032.jpg"
+  ]
+ },
+ {
+  "card": 14,
+  "sim": 0.8676795741706707,
+  "gap_s": 85415,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221022_192059.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221022_192107.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221022_192113.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221022_193316.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221023_191651.jpg"
+  ]
+ },
+ {
+  "card": 15,
+  "sim": 0.863070540419455,
+  "gap_s": 86313,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220705_183816.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220705_183826.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220706_183659.jpg"
+  ]
+ },
+ {
+  "card": 16,
+  "sim": 0.8584863411526942,
+  "gap_s": 1091,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221113_192827.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_192834.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_192839.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221113_194650.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_194712.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_194729.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_194739.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_194745.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_194754.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_195455.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_195459.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_195502.jpg"
+  ]
+ },
+ {
+  "card": 17,
+  "sim": 0.8563833783036863,
+  "gap_s": 84678,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221113_194650.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_194712.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_194729.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_194739.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_194745.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_194754.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_195455.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_195459.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_195502.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221114_192620.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221114_192624.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221114_192628.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221114_192633.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221114_193119.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221114_193128.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221114_193136.jpg"
+  ]
+ },
+ {
+  "card": 18,
+  "sim": 0.8515316013568346,
+  "gap_s": 85175,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221025_192245.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221025_192251.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221025_193531.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221026_191506.jpg"
+  ]
+ },
+ {
+  "card": 19,
+  "sim": 0.8512194000767195,
+  "gap_s": 85119.994,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220515_181641.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220515_181701.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220515_181713.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220515_181734.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220515_181741.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220515_181747.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220515_181750.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220516_175630.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220516_175634.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220516_175639.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220516_175651.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220516_175657.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220516_175907.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220516_175952.jpg"
+  ]
+ },
+ {
+  "card": 20,
+  "sim": 0.8500489717391392,
+  "gap_s": 1629,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20210317_110631.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210317_110637.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210317_110648.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210317_110943.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210317_110947.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210317_111151.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210317_112108.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20210317_114817.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210317_114818.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210317_114823.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210317_114829.jpg"
+  ]
+ },
+ {
+  "card": 21,
+  "sim": 0.8469285350006,
+  "gap_s": 1032,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221214_194550.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221214_194552.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221214_200304.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221214_200314.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221214_200316.jpg"
+  ]
+ },
+ {
+  "card": 22,
+  "sim": 0.843811282497994,
+  "gap_s": 1374,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220720_115607.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220720_115610.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220720_115615.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220720_115618.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220720_121912.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220720_121916.jpg"
+  ]
+ },
+ {
+  "card": 23,
+  "sim": 0.840847814468603,
+  "gap_s": 85319,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221119_193353.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221119_193402.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221120_191602.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221120_191608.jpg"
+  ]
+ },
+ {
+  "card": 24,
+  "sim": 0.83683522857898,
+  "gap_s": 84242,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221130_201504.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221130_201522.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221130_202715.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221130_202722.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221201_195123.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221201_195315.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221201_195323.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221201_195331.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221201_195338.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221201_195414.jpg"
+  ]
+ },
+ {
+  "card": 25,
+  "sim": 0.8345416568926365,
+  "gap_s": 85099,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220427_174218.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220428_172037.jpg"
+  ]
+ },
+ {
+  "card": 26,
+  "sim": 0.8340602634590494,
+  "gap_s": 86261,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221113_192827.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_192834.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221113_192839.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221114_192620.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221114_192624.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221114_192628.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221114_192633.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221114_193119.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221114_193128.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221114_193136.jpg"
+  ]
+ },
+ {
+  "card": 27,
+  "sim": 0.8338560741896062,
+  "gap_s": 85061,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220109_195203.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220109_195209.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220109_195213.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220109_195219.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220109_195224.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220109_195236.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220109_195241.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220109_195901.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220109_195907.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220109_195912.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220109_200548.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220109_200553.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220109_200600.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220109_200855.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220109_200902.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220109_201100.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220110_194842.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220110_194850.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220110_194854.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220110_194902.jpg"
+  ]
+ },
+ {
+  "card": 28,
+  "sim": 0.8305709656185332,
+  "gap_s": 86004,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221008_185849.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221009_185212.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221009_185217.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221009_185225.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221009_185230.jpg"
+  ]
+ },
+ {
+  "card": 29,
+  "sim": 0.8292773642171275,
+  "gap_s": 1084,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221119_193353.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221119_193402.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221119_195206.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221119_195638.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221119_195814.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221119_195821.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221119_195827.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221119_195838.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221119_195907.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221119_195913.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221119_201042.jpg"
+  ]
+ },
+ {
+  "card": 30,
+  "sim": 0.8278894178234038,
+  "gap_s": 85560,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221115_195335.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221115_195339.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221116_193940.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_193949.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_193953.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_194000.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_194009.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_194025.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_194035.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_194843.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_194852.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_195031.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_195036.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_195100.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_195728.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_195734.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_195753.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_195803.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_195824.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_200004.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_200008.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_200011.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221116_200648.jpg"
+  ]
+ },
+ {
+  "card": 31,
+  "sim": 0.8249066112988827,
+  "gap_s": 85997,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220130_200635.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220130_200643.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220130_200654.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220130_200657.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220130_200710.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220130_200714.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220130_200718.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220130_200737.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220130_200739.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220130_200753.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220130_200756.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220130_200802.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220131_200119.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220131_200125.jpg"
+  ]
+ },
+ {
+  "card": 32,
+  "sim": 0.8222628415281747,
+  "gap_s": 85926.087,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220718_124238.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_124240.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_124243.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_124245.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220719_123451.jpg"
+  ]
+ },
+ {
+  "card": 33,
+  "sim": 0.8219291440951989,
+  "gap_s": 9745,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220717_123846.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_123903.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_123906.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220717_152131.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_152133.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_152143.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_152155.jpg"
+  ]
+ },
+ {
+  "card": 34,
+  "sim": 0.8213522087401516,
+  "gap_s": 1136,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20210308_101819_05.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_101819_06.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_101819_07.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_101819_08.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_101819_12.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_101819_13.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_101837.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_101840.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_101853.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_101859.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_101905.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_101908.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_101914.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20210308_103811.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_103815.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_103911.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_103915.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_103919.jpg"
+  ]
+ },
+ {
+  "card": 35,
+  "sim": 0.8209369126516304,
+  "gap_s": 27615,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085028.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085508.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085511.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085515.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085519.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220718_163534.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_163712.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_163738.jpg"
+  ]
+ },
+ {
+  "card": 36,
+  "sim": 0.820521243622633,
+  "gap_s": 67534,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220718_161120.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_161123.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_161232.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220719_105805.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_105809.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_110014.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_110018.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_110033.jpg"
+  ]
+ },
+ {
+  "card": 37,
+  "sim": 0.8203128591212371,
+  "gap_s": 1039,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20210308_082949.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_083007.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_083012.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_083042.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_083056.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_083100.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_083111.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20210308_084829.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_084839.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_084845.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_084858.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_084900.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_084905.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_085000.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_085004.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_085033.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_085040.jpg"
+  ]
+ },
+ {
+  "card": 38,
+  "sim": 0.8196784083947679,
+  "gap_s": 55999,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220718_161120.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_161123.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_161232.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220719_074542.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_074558.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_074606.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_074730.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_074734.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_075340.jpg"
+  ]
+ },
+ {
+  "card": 39,
+  "sim": 0.8190129311817446,
+  "gap_s": 8313,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220717_130257.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220717_152131.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_152133.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_152143.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_152155.jpg"
+  ]
+ },
+ {
+  "card": 40,
+  "sim": 0.8184566925670017,
+  "gap_s": 82570,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221202_195818.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221203_185428.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221203_185430.jpg"
+  ]
+ },
+ {
+  "card": 41,
+  "sim": 0.8175723296631273,
+  "gap_s": 85858,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221101_194025.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221101_194029.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221102_193128.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221102_193136.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221102_193141.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221102_193147.jpg"
+  ]
+ },
+ {
+  "card": 42,
+  "sim": 0.8169855385951665,
+  "gap_s": 15827,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220716_115743.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_115747.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_115816.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_115824.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_115837.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_115909.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_115913.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_115923.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220716_162319.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_162323.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_162325.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_162426.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_162434.jpg"
+  ]
+ },
+ {
+  "card": 43,
+  "sim": 0.8159741539447886,
+  "gap_s": 1119,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20210821_110413.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_110418.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_110423.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20210821_112303.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_112306.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_112310.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_112325.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_112329.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_112333.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_112337.jpg"
+  ]
+ },
+ {
+  "card": 44,
+  "sim": 0.8158984125394471,
+  "gap_s": 86223,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220913_185754.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220913_185757.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220913_185805.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220913_185810.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220914_185513.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220914_185516.jpg"
+  ]
+ },
+ {
+  "card": 45,
+  "sim": 0.8137853430915674,
+  "gap_s": 1615,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221123_193233.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221123_193238.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221123_193248.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221123_195943.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221123_195947.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221123_195953.jpg"
+  ]
+ },
+ {
+  "card": 46,
+  "sim": 0.8134994924759404,
+  "gap_s": 85540,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220802_182202.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220802_182223.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220803_180802.jpg"
+  ]
+ },
+ {
+  "card": 47,
+  "sim": 0.812846677421397,
+  "gap_s": 72853,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220716_162319.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_162323.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_162325.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_162426.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_162434.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220717_123846.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_123903.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_123906.jpg"
+  ]
+ },
+ {
+  "card": 48,
+  "sim": 0.8124395594184998,
+  "gap_s": 2050,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220720_113027.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220720_113028.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220720_113030.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220720_113631.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220720_113639.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220720_113642.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220720_114453.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220720_114502.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220720_121912.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220720_121916.jpg"
+  ]
+ },
+ {
+  "card": 49,
+  "sim": 0.8124264171053122,
+  "gap_s": 83103,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220717_094514.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_094518.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_094521.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_094525.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085028.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085508.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085511.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085515.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085519.jpg"
+  ]
+ },
+ {
+  "card": 50,
+  "sim": 0.8120577362157135,
+  "gap_s": 85460.913,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220719_123451.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220720_121912.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220720_121916.jpg"
+  ]
+ },
+ {
+  "card": 51,
+  "sim": 0.811737318490207,
+  "gap_s": 80121,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220718_124238.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_124240.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_124243.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_124245.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220719_105805.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_105809.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_110014.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_110018.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_110033.jpg"
+  ]
+ },
+ {
+  "card": 52,
+  "sim": 0.8079206277820278,
+  "gap_s": 1959.998,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220628_230815.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220628_234055.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220629_000707.jpg"
+  ]
+ },
+ {
+  "card": 53,
+  "sim": 0.807797084769928,
+  "gap_s": 86176,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20211026_191147.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20211026_191150.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20211026_191151.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20211026_191156.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20211026_191328.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20211026_191333.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20211026_191342.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20211026_191352.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20211027_191008.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20211027_191012.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20211027_191015.jpg"
+  ]
+ },
+ {
+  "card": 54,
+  "sim": 0.8065523395590666,
+  "gap_s": 2220,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20210821_112303.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_112306.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_112310.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_112325.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_112329.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_112333.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_112337.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20210821_120038.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_120042.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_120057.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_120059.jpg"
+  ]
+ },
+ {
+  "card": 55,
+  "sim": 0.8063439750185699,
+  "gap_s": 72682,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220717_123846.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_123903.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_123906.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085028.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085508.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085511.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085515.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085519.jpg"
+  ]
+ },
+ {
+  "card": 56,
+  "sim": 0.8052007481691749,
+  "gap_s": 13528,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220719_105240.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_105244.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220719_143811.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_143815.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_143901.jpg"
+  ]
+ },
+ {
+  "card": 57,
+  "sim": 0.8046179433827173,
+  "gap_s": 83949,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193307.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193311.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193322.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193340.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193350.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193747.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193755.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193800.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193806.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193821.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193828.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193831.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193834.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_193843.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_194052.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_194430.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_194440.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221117_194446.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221118_190354.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221118_190401.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221118_190411.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221118_190422.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221118_190448.jpg"
+  ]
+ },
+ {
+  "card": 58,
+  "sim": 0.8044158923389788,
+  "gap_s": 1581,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20210308_082949.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_083007.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_083012.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_083042.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_083056.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_083100.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_083111.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20210308_085731.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_085735.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_085736.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210308_085905.jpg"
+  ]
+ },
+ {
+  "card": 59,
+  "sim": 0.8042566574505718,
+  "gap_s": 1184,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20210314_121404.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210314_121408.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20210314_123352.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210314_123359.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210314_123417.jpg"
+  ]
+ },
+ {
+  "card": 60,
+  "sim": 0.8037671779260227,
+  "gap_s": 62440,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220716_162319.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_162323.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_162325.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_162426.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220716_162434.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220717_094514.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_094518.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_094521.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_094525.jpg"
+  ]
+ },
+ {
+  "card": 61,
+  "sim": 0.8034290017310611,
+  "gap_s": 80496,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20221021_191741.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221021_191749.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20221021_191802.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20221022_173938.jpg"
+  ]
+ },
+ {
+  "card": 62,
+  "sim": 0.8032772905045721,
+  "gap_s": 4365,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20210821_124107.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_124126.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_124133.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_124137.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20210821_135422.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_135424.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_135435.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_135439.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_135444.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_135502.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_135510.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_135545.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_135554.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_135602.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_135609.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20210821_135617.jpg"
+  ]
+ },
+ {
+  "card": 63,
+  "sim": 0.8029865137041494,
+  "gap_s": 26161,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085028.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085508.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085511.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085515.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085519.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220718_161120.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_161123.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_161232.jpg"
+  ]
+ },
+ {
+  "card": 64,
+  "sim": 0.8023135305687039,
+  "gap_s": 1778,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220718_082050.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085028.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085508.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085511.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085515.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_085519.jpg"
+  ]
+ },
+ {
+  "card": 65,
+  "sim": 0.8022601031868728,
+  "gap_s": 76836,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220717_152131.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_152133.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_152143.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220717_152155.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220718_124238.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_124240.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_124243.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220718_124245.jpg"
+  ]
+ },
+ {
+  "card": 66,
+  "sim": 0.8001572742854316,
+  "gap_s": 15272,
+  "a": [
+   "file:///storage/emulated/0/DCIM/Camera/20220719_105805.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_105809.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_110014.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_110018.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_110033.jpg"
+  ],
+  "b": [
+   "file:///storage/emulated/0/DCIM/Camera/20220719_151504.jpg",
+   "file:///storage/emulated/0/DCIM/Camera/20220719_151508.jpg"
+  ]
+ }
+]

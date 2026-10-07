@@ -18,7 +18,9 @@ import { ADJACENT_MERGE_MAX_GAP_MS, groupByEmbedding } from '../../packages/core
 const argv = process.argv.slice(2);
 const windowArg = argv.indexOf('--window-min');
 const windowMin = windowArg === -1 ? null : Number(argv[windowArg + 1]);
-const positional = argv.filter((a, i) => a !== '--window-min' && i !== windowArg + 1);
+const positional = argv.filter(
+  (a, i) => a !== '--window-min' && !(windowArg !== -1 && i === windowArg + 1),
+);
 const [rowsPath, outPath] = positional;
 const unitOptions =
   windowMin === null

@@ -1409,14 +1409,19 @@ await step('animated thumbnails play on the Progress grid', null, async () => {
     // players borrow; then read the sink.
     await new Promise((r) => setTimeout(r, 6000));
     const lines = shell(
-      `grep -h '\\[thumbs\\] playing' /sdcard/Android/data/${APP_ID}/files/diag/*.log 2>/dev/null || true`,
+      `grep -h '\\[thumbs\\] framed' /sdcard/Android/data/${APP_ID}/files/diag/*.log 2>/dev/null || true`,
     )
       .split('\n')
       .filter((l) => l.trim() !== '' && l.slice(0, 24) >= since);
-    const named = lines.find((l) => /playing: \d/.test(l));
-    if (!named) {
+    // Evidence of PLAYBACK, not of an eligible row: a clip's first frame
+    // reaching the screen is what AnimatedThumb logs (codex, m0.9
+    // close-out rounds 7 and 8) — the settled-cells line counted
+    // eligible rows, not borrowed players, and passed on a still-only
+    // or a failing screenful.
+    const framed = lines.find((l) => /\[thumbs\] framed \S+/.test(l));
+    if (!framed) {
       throw new Error(
-        `no [thumbs] playing line since ${since} — the grid did not animate (lines: ${lines.length}); a corpus without a clip in its first screenful also lands here: seed a video or a motion photo`,
+        `no [thumbs] framed line since ${since} — no clip thumbnail rendered a frame (lines: ${lines.length}); a corpus without a clip in its first screenful lands here: seed a video or a motion photo`,
       );
     }
   } finally {

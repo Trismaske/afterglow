@@ -23,7 +23,11 @@
 import type { StoredMediaKind } from './mediaIdentity';
 import { Platform } from 'react-native';
 import * as IntentLauncher from 'expo-intent-launcher';
-import { requestMediaWriteAccess } from '../../modules/media-store-actions';
+import {
+  mediaStoreActionsAvailable,
+  queryMediaDetailsByUri,
+  requestMediaWriteAccess,
+} from '../../modules/media-store-actions';
 import { ACTION_EDIT, ACTION_VIEW, launchMimeType } from './editActions';
 
 const FLAG_GRANT_READ_URI_PERMISSION = 0x00000001;
@@ -107,6 +111,23 @@ export async function launchViewer(
       error: 'The selected asset did not resolve to a content URI.',
       uri: contentUri,
     };
+  }
+  // Dispatch-only preflight (codex, close-out round 3): a viewer launch
+  // succeeds before the target opens the uri, so a mis-addressed
+  // collection uri must be refused here, named, not handed over.
+  if (mediaStoreActionsAvailable()) {
+    const [row] = await queryMediaDetailsByUri([contentUri]).catch(() => [null]);
+    if (row?.status === 'mismatch') {
+      console.error(
+        `[edit] view launch refused: ${contentUri} is under the wrong collection (kind ${kind})`,
+      );
+      return {
+        outcome: 'failed',
+        stage: 'resolve',
+        error: 'The asset is addressed under the wrong media collection.',
+        uri: contentUri,
+      };
+    }
   }
   const params = {
     data: contentUri,

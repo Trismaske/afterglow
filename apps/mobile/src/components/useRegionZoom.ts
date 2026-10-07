@@ -97,7 +97,18 @@ interface RetainedBase {
    * same staleness app-wide via expo-image's cache — docs/TODO.md; the
    * pipeline at least never MIXES eras within the overlay.) */
   modTime: number;
+  /** The row's image version (generation ?? mtime) the base was decoded
+   * for: the authoritative edit boundary app-wide, which modTime alone
+   * misses for an editor that preserves timestamps (m0.9 close-out
+   * codex). A retained base from another version is stale. */
+  version: number;
+  /** The decode flight's sequence number (module-wide, monotonic): what
+   * orders two flights for one photo, because versions do not — an
+   * untracked row's mtime and a tracked row's generation are numbers
+   * from different clocks (codex, close-out round 8). */
+  seq: number;
 }
+let baseFlightSeq = 0;
 
 /** The current photo each mounted surface wants kept warm on a trim —
  * and PINNED against byte-budget eviction while on screen (Compare
@@ -240,6 +251,10 @@ export interface RegionZoomState {
 export function useRegionZoom(
   photoId: string | null,
   uri: string | null,
+  /** The row's image version (lib/imageKeys): a changed version re-runs
+   * the lifecycle and retires the retained base, exactly as a changed
+   * uri would. */
+  version: number,
   enabled: boolean,
   /** MUST be the exact box the overlay Images render in — measure a
    * BORDERLESS view (a border insets absoluteFill children while
@@ -275,6 +290,11 @@ export function useRegionZoom(
    * srcW/srcH are DISPLAY dimensions (rotation applied). */
   const pipeline = useRef<{
     photoId: string | null;
+    /** Bumped by every lifecycle restart (a photo, version or foreground
+     * change): a patch decode captured on an older generation is
+     * discarded on completion — the photo id alone cannot tell V1's
+     * decode from V2's (codex, close-out round 4). */
+    generation: number;
     handle: number | null;
     srcW: number;
     srcH: number;
@@ -296,6 +316,7 @@ export function useRegionZoom(
     pendingApply: { plan: PatchPlan; ref: RegionBitmap } | null;
   }>({
     photoId: null,
+    generation: 0,
     handle: null,
     srcW: 0,
     srcH: 0,
@@ -487,6 +508,7 @@ export function useRegionZoom(
     }
     p.decoding = true;
     const photoAtStart = p.photoId;
+    const generationAtStart = p.generation;
     const started = Date.now();
     try {
       const ref = await decodeRegion(
@@ -498,7 +520,11 @@ export function useRegionZoom(
         plan.sample,
         p.rotation,
       );
-      if (!aliveRef.current || pipeline.current.photoId !== photoAtStart) {
+      if (
+        !aliveRef.current ||
+        pipeline.current.photoId !== photoAtStart ||
+        pipeline.current.generation !== generationAtStart
+      ) {
         // The photo changed — or the surface UNMOUNTED (codex round 1:
         // photoId survives unmount, so the identity check alone let a
         // late decode apply into an orphaned slot past the release
@@ -536,7 +562,10 @@ export function useRegionZoom(
       // A decode racing a close loses cleanly. Persistent failures must
       // not retry every settle tick (review pass): three in a row
       // fail-softs the photo — the base keeps carrying the zoom.
-      if (pipeline.current.photoId === photoAtStart) {
+      if (
+        pipeline.current.photoId === photoAtStart &&
+        pipeline.current.generation === generationAtStart
+      ) {
         p.patchFailures += 1;
         if (p.patchFailures >= 3) {
           p.failed = true;
@@ -551,7 +580,10 @@ export function useRegionZoom(
       // object is shared across photos, and an abandoned decode's
       // completion must not clobber the NEW photo's bookkeeping — the
       // photo-change effect already reset the flag for it.
-      if (pipeline.current.photoId === photoAtStart) {
+      if (
+        pipeline.current.photoId === photoAtStart &&
+        pipeline.current.generation === generationAtStart
+      ) {
         p.decoding = false;
         if (p.pendingPlan) {
           p.pendingPlan = false;
@@ -665,6 +697,12 @@ export function useRegionZoom(
     // Leaving the previous photo: close its decoder, drop its patch.
     const previousHandle = p.handle;
     p.photoId = photoId;
+    p.generation += 1;
+    // This lifecycle's generation: the base flight's bookkeeping below is
+    // fenced on it beside the photo id (codex, close-out round 9) — a
+    // superseded lifecycle's completion must not clear the replacement's
+    // baseDecoding gate and let a patch decode race its base.
+    const generationAtStart = p.generation;
     p.handle = null;
     p.failed = false;
     p.plan = null;
@@ -688,8 +726,13 @@ export function useRegionZoom(
 
     // A retained base shows instantly; the decoder still opens on dwell
     // (patches need it), but the user sees full base sharpness at once.
+    // A retained base is adopted at once only for THIS version: an
+    // in-place edit under the same id must not show the pre-edit base
+    // for the dwell's 400 ms (codex, close-out round 2).
     const retained = retention.get(photoId);
-    if (retained) {
+    if (retained && retained.version !== version) {
+      retention.drop(photoId);
+    } else if (retained) {
       setBaseSource(retained.ref);
       setSourceSize({ width: retained.width, height: retained.height });
       p.srcW = retained.width;
@@ -744,7 +787,10 @@ export function useRegionZoom(
           let entry = retention.get(photoId);
           if (
             entry &&
-            (entry.modTime === 0 || opened.modTime === 0 || entry.modTime !== opened.modTime)
+            (entry.version !== version ||
+              entry.modTime === 0 ||
+              opened.modTime === 0 ||
+              entry.modTime !== opened.modTime)
           ) {
             console.log('[zoom] retained base stale or unverifiable — re-decoding');
             setBaseSource(null);
@@ -755,9 +801,10 @@ export function useRegionZoom(
           if (!entry) {
             p.baseDecoding = true;
             try {
-              const flightKey = `${photoId}@${opened.modTime}`;
+              const flightKey = `${photoId}@${version}@${opened.modTime}`;
               let flight = baseInflight.get(flightKey);
               if (!flight) {
+                const seq = ++baseFlightSeq;
                 flight = (async () => {
                   const started = Date.now();
                   const ref = await decodeScaled(uri, chosen.sample, rotation);
@@ -777,7 +824,20 @@ export function useRegionZoom(
                     rotation,
                     sample: chosen.sample,
                     modTime: opened.modTime,
+                    version,
+                    seq,
                   };
+                  // Flights ORDER by sequence: a flight older than the one
+                  // retained must not overwrite it — its base is released
+                  // unseen and the retained (newer) entry is what the
+                  // awaiting effect adopts, never a released bitmap — and
+                  // a newer one replaces whatever an older flight installed
+                  // first (codex, close-out rounds 3 and 8).
+                  const current = retention.get(photoId);
+                  if (current && current.seq > seq) {
+                    setTimeout(() => ref.release?.(), 300);
+                    return current;
+                  }
                   retention.put(photoId, made, bytes);
                   return made;
                 })();
@@ -786,11 +846,17 @@ export function useRegionZoom(
               }
               entry = await flight;
             } finally {
-              // The pipeline object is SHARED across photos: only this
-              // closure's own photo may clear the gate — an old decode
-              // completing after a swap must not unblock the NEW
-              // photo's patch decodes mid-base (codex round 1).
-              if (pipeline.current.photoId === photoId) p.baseDecoding = false;
+              // The pipeline object is SHARED across photos and across a
+              // photo's lifecycles: only this closure's own photo AND
+              // generation may clear the gate — an old decode completing
+              // after a swap or a version restart must not unblock the
+              // replacement's patch decodes mid-base (codex round 1,
+              // close-out round 9).
+              if (
+                pipeline.current.photoId === photoId &&
+                pipeline.current.generation === generationAtStart
+              )
+                p.baseDecoding = false;
             }
           }
           if (cancelled || pipeline.current.photoId !== photoId) return; // retention owns the ref
@@ -800,7 +866,11 @@ export function useRegionZoom(
           // dwell completed) — serve it.
           if (p.lastViewport.scale > 1.02) void decodePlannedPatch();
         } catch (error) {
-          if (pipeline.current.photoId === photoId) p.baseDecoding = false;
+          if (
+            pipeline.current.photoId === photoId &&
+            pipeline.current.generation === generationAtStart
+          )
+            p.baseDecoding = false;
           if (cancelled || pipeline.current.photoId !== photoId) return;
           p.failed = true;
           setFailed(true);
@@ -830,7 +900,7 @@ export function useRegionZoom(
     // clearPatches/decodePlannedPatch/stageSize are stable useCallbacks.
     // foregroundTick re-runs the lifecycle on every return to the
     // foreground (same photo included — the in-place-edit case above).
-  }, [photoId, uri, enabled, stageSize, clearPatches, decodePlannedPatch, foregroundTick]);
+  }, [photoId, uri, version, enabled, stageSize, clearPatches, decodePlannedPatch, foregroundTick]);
 
   return { forPhotoId, failed, baseSource, sourceSize, patchSlots };
 }

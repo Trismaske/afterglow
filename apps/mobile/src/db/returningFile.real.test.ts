@@ -73,7 +73,7 @@ async function land(
   at = AT,
   oldGone: () => Promise<boolean> = async () => true,
 ): Promise<void> {
-  await adoptReturningFiles(asExpo(d), photos, oldGone);
+  await adoptReturningFiles(asExpo(d), photos, oldGone, null);
   await writeContinuousGroups(
     asExpo(d),
     { photos, groups: [], singles: photos.map((p) => p.assetId) },

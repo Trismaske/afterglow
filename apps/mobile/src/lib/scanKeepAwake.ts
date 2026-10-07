@@ -3,7 +3,7 @@
  * (m0.9 phase 9, `expo-keep-awake`). A phone left on the charger with Afterglow
  * open then finishes its pass instead of being throttled or killed with
  * the screen — the S23's 27-minute session that ended without a trace
- * (docs/Plan_m0.9.md, phase 9) went exactly that way. Released at
+ * (PLAN.md's m0.9 entry, phase 9) went exactly that way. Released at
  * done, idle, error, and whenever the app leaves the foreground: the
  * wake lock never outlives the work or the user's attention on it.
  * Background execution stays out of scope; this is its prerequisite.

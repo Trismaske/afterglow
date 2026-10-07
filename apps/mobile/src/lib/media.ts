@@ -408,6 +408,14 @@ export async function getAssetDetails(ref: MediaRef): Promise<AssetDetails | nul
   if (mediaStoreActionsAvailable()) {
     try {
       const [row] = await queryMediaDetailsByUri([await getEditableContentUri(ref)]);
+      if (row.status === 'mismatch') {
+        // A caller identity defect, named loudly; the read is "no signal"
+        // (null), never an absence (m0.9 close-out codex).
+        console.error(
+          `[media] details of ${assetId} queried under the wrong collection (kind ${ref.kind})`,
+        );
+        return null;
+      }
       if (row.status !== 'found') return null;
       // No DATA path or no DATE_MODIFIED = no usable repair/detection
       // signal — same "no signal" contract as a failed lookup.
@@ -620,10 +628,21 @@ export async function checkMediaPresence(
  * walk nets a pending row out of its count checks, where a merely
  * "present" row absent from the enumeration must stay unexplained.
  */
-export async function checkMediaPresenceDetailed(ref: MediaRef): Promise<MediaPresence> {
+export async function checkMediaPresenceDetailed(
+  ref: MediaRef,
+): Promise<Exclude<MediaPresence, 'mismatch'>> {
   if (!mediaStoreActionsAvailable()) return 'unknown';
   try {
     const presence = await getMediaPresence(await getEditableContentUri(ref));
+    if (presence === 'mismatch') {
+      // A mis-addressed collection (an images uri for a video row or the
+      // reverse) is a caller defect, named loudly and read as unknown:
+      // nothing destructive may follow from it (m0.9 close-out codex).
+      console.error(
+        `[media] presence of ${ref.id} queried under the wrong collection (kind ${ref.kind})`,
+      );
+      return 'unknown';
+    }
     if (presence !== 'absent') return presence;
     // 'absent' (a successful EMPTY cursor) is authoritative only while
     // the row's volume is actually mounted (final cycle V1) — cross-OEM

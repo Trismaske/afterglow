@@ -9,7 +9,7 @@
 The repo's guidance is scattered and partly dangling.
 Symptoms found so far:
 
-- **Dangling lettered principles.** `docs/Feedback_m0.8.7-m0.9.md` cites "L1" (line 7) and "L6" (lines 38, 166) — the definitions lived in the previous round's feedback doc, which was deleted per its own lifecycle. Letters outlived their home.
+- **Dangling lettered principles.** Feedback docs cited "L1" and "L6" whose definitions lived in an earlier round's feedback doc, deleted per its own lifecycle (the m0.8.7–m0.9 doc that carried the citations is itself gone with m0.9's ship). Letters outlived their home; the code headers that restate them (below) are what remains to recover.
 - **Principles restated instead of cited.** The "settings rows earned by a guess" reasoning is restated in at least three code headers (`apps/mobile/src/lib/badgePrefs.ts`, `apps/mobile/src/screens/DeckScreen.tsx`, `apps/mobile/src/components/DecisionBadge.tsx`). When the principle changed (see L6 below), every copy went stale at once.
 - **No CONTRIBUTING.md.** The industry-standard home for repo-local engineering principles and process does not exist; fragments of that content sit in CLAUDE.md files, code headers, and release docs.
 - Docs have grown organically: some content is durable and generic, some is stale, some is slop.

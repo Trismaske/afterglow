@@ -208,7 +208,7 @@ Same hygiene as above: promote on trigger, delete when answered.
   It only helps a user who opens the app while plugged in, and it adds a deferral rule to a mechanism that may be deleted.
   So it is listed as an option rather than a recommendation.
 
-  **Status (2026-09-08):** the resumability prerequisite is scheduled — m0.9 phase 9 builds the enumeration checkpoint, the durable-state progress line, and a foreground keep-awake (the S23 spent four days restarting a never-completed initial pass at 0%).
+  **Status:** the resumability prerequisite shipped in m0.9 — the enumeration checkpoint, the durable-state progress line, and the foreground keep-awake (the S23 had spent four days restarting a never-completed initial pass at 0%).
   Background execution itself is a PLAN.md backlog item for a later version; the blockers above are its design input.
 
 - **Coalesce tiny singles runs?** (m0.8.2 build, settled as keep-as-is by Tristan 2026-07-29; trigger: tester complaints about ceremony.)
@@ -257,14 +257,6 @@ Same hygiene as above: promote on trigger, delete when answered.
 
   Trigger: a tester organising app-media photos often enough that the wasted consent tap, rather than the confusion, is the complaint.
 
-- **Rescued photos never window with same-moment dated photos** (m0.8.3 grilling Q9).
-  A D15-rescued photo carries its real timestamp but pages in MediaStore's undated batch.
-  So an NEF+JPEG same-moment pair reviews as two separate cards.
-  In practice this means NEF (measured on the S23: NEF `datetaken` NULL, DNG and ARW both dated).
-  Rescued photos group stably among themselves.
-  The fix is a designed re-merge of rescued photos into the dated windowing stream (plan m0.8.3 B8 deferred real-pair grouping).
-  Trigger: a tester actually reviewing RAW+JPEG pairs and wanting them on one card.
-
 - **Bucket-id hash collision: named-folder warning** (m0.8.3 grilling Q11).
   A cross-volume BUCKET_ID hash collision (~0.005% lifetime odds, measured 0 across 643 buckets on the S10e) would over-include another folder's photos in MediaStore-paged grids.
   It would also cause repeated tripwire full-passes.
@@ -280,3 +272,22 @@ Same hygiene as above: promote on trigger, delete when answered.
   Only a persistent open-failure could trigger it.
   Fix shape: cap consecutive identical-content retries, then stamp honestly-undated.
   Trigger: field logs (TODO "Field diagnostics" item) showing the same `exifFailed` warning across consecutive passes.
+
+- **Phase-2 residuals of the deck as the one surface** (m0.9, tester-accepted as pre-v1 polish).
+  Three small items with a known shape: the immersive-EXIT flash in History decks; the blank immersive stage seen once on the S23 and never reproduced (fix on repro); and History not re-reconciling on foreground after an out-of-app deletion (fix shape: a focus-time page reconcile, the same discipline Everything has).
+  Trigger: a tester hits one of them in daily use.
+- **The list anchor hunt is quadratic for a deep row** (codex, m0.9 phase 2).
+  A deck opened from a host list hunts for its anchor by re-reading pages 1…N per step, O(N²) for a deep History row; the fix carries the keyset cursor forward across hunt steps.
+  Trigger: a deep History open measurably lags.
+- **List mode: Compare and a batch finish** (m0.9 P2-4, parked).
+  Compare is unavailable in a list-mode deck, and so is a finish: there is no honest list-batch verb, so a future "keep all here" is a designed batch, not a retrofit.
+  Trigger: a tester wants A/B from a list, or asks to finish a list in one tap.
+- **Details-overlay candidates parked** (m0.9 P2-6).
+  Location on a map (its own future version), a swipe-up opener, and capture EXIF, container detail and group membership as further overlay rows.
+  Trigger: a tester asks for one by name.
+- **Per-key image-cache eviction, verified and unused** (m0.9 phase 3 spike).
+  `writeToCacheAsync` + `getCachePathAsync` + an external file delete is a clean per-key Glide miss, in-session and across a restart — standing ready if the `[perf] footprint` line ever shows the cache growing past its 250 MB LRU.
+  Trigger: a footprint line that reads wrong.
+- **The animated-thumbnail battery line** (m0.9 phase 6, un-run).
+  Five minutes of grid browsing unplugged on each phone, All against Off, from `dumpsys batterystats`; a drain that reads wrong changes the Playback row's thumbnail default from All to One.
+  Trigger: a tester reports battery drain while browsing grids.

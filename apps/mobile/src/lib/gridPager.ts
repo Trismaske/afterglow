@@ -41,6 +41,11 @@ export interface GridPagedItem {
   undated: boolean;
   /** Came from the DB rescued stream, not MediaStore. */
   fromDb: boolean;
+  /** The image version the row's cache keys carry (lib/imageKeys): a
+   * tracked row's stored version, an untracked MediaStore row's
+   * generation (else its mtime) — never its capture time, which an
+   * in-place edit keeps (codex, close-out round 3). */
+  version: number;
 }
 
 /** Each bucket's private cursor: a MediaStore endCursor string, or the
@@ -118,6 +123,7 @@ export function createLibraryGridStream(
         timestamp: p.item.timestamp,
         undated: p.undated,
         fromDb: false,
+        version: p.generation ?? p.modTime,
       }));
       return {
         items,
@@ -147,6 +153,7 @@ export function createLibraryGridStream(
       timestamp: r.taken_at,
       undated: false,
       fromDb: true,
+      version: r.image_version,
     }));
     const last = rows.length > 0 ? rows[rows.length - 1] : undefined;
     return {
@@ -204,7 +211,7 @@ export function createLibraryGridStream(
                   : p.uri.toLowerCase().endsWith('.gif')
                     ? 'image/gif'
                     : null,
-              version: row?.image_version ?? p.timestamp,
+              version: row?.image_version ?? p.version,
               takenAt: row?.taken_at ?? p.timestamp,
               day: row !== undefined ? row.day : p.undated ? null : undefined,
               dbState: row?.state ?? null,

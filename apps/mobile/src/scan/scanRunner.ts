@@ -2462,10 +2462,15 @@ async function processWindow(
   // the write's revalidation. The window's write then revives the row
   // under its new id.
   if (mountedVolumes) await assertMountedUnchanged(mountedVolumes);
-  await adoptReturningFiles(db, window.map(upsertRowOf), async (ref) => {
-    const presence = await checkMediaPresence(ref);
-    return presence === 'absent' || presence === 'trashed';
-  });
+  await adoptReturningFiles(
+    db,
+    window.map(upsertRowOf),
+    async (ref) => {
+      const presence = await checkMediaPresence(ref);
+      return presence === 'absent' || presence === 'trashed';
+    },
+    mountedVolumes ? [...mountedVolumes] : null,
+  );
   const cannotLink = await getNotRelatedPairsAmong(db, ids);
 
   const groupStarted = Date.now();

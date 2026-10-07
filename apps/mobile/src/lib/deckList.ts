@@ -1,6 +1,6 @@
 /**
  * The deck's LIST-SOURCE contract (m0.9 phase 2, P2-1 —
- * docs/Plan_m0.9.md): the deck browses arbitrary photo lists without
+ * PLAN.md's m0.9 entry): the deck browses arbitrary photo lists without
  * knowing any surface. A host navigates with a serializable
  * `DeckListDescriptor` in the route params; `resolveDeckListPage` is
  * the ONE resolver the deck calls, and its table delegates to the SAME

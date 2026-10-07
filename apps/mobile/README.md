@@ -8,6 +8,17 @@ Photos that need editing wait in an in-app queue that launches your editor.
 Usually those are keepers, but you can flag one before you have decided about it, when the edit is what tells you whether to keep it.
 A daily goal ring and per-day progress views carry you to inbox zero.
 
+> **What changed in 0.9:** media kinds, and the groups you can read.
+> **Videos and motion photos are in review.** A video pages through the deck like a photo, muted, playing on settle; a tap shows its controls (play, pause, replay, speaker, a seek track you can drag, expand to full screen) and they hide themselves while it plays. A motion photo plays its clip then rests on the still; a pinch zooms the still. Every verdict and every queue takes a video; Compare does not.
+> **Settings › Playback** chooses Once, Loop or Off per kind, and whether thumbnails animate (Off · One · All). Every clip thumbnail wears a kind mark; GIF, Motion and Video chips join the badge vocabulary.
+> **One stage.** The full-screen viewer is gone: the deck is the one place you review and browse, with an expand button for the edge-to-edge view and a details corner that names the day and time, the format and the resolution (a video's duration too). The zoom surfaces all run the same pixel-perfect pipeline, and grids and strips use the system's own thumbnails, so a 200 MP photo opens without a black stage.
+> **Settings › Overlay** switches each on-stage badge on or off, and the eye hides them all at once.
+> **Groups read as parts.** A group of look-alikes is cut into its looks: the deck walks it part by part with a divider on the strip and a "Part 2 of 4 · 5 photos" chip, and the Everything and day cards carry the same divider. Shots up to an hour apart join a group when one of them is the same shot again, not merely the same place.
+> **The scan explains itself.** A full pass names its reason (Initial scan, Weekly full scan, Rescanning · settings changed, …), a delta names its size, an interrupted pass resumes where it stopped, pull down on Home, Everything or Progress to check for changes, and the screen stays awake while a pass runs.
+> **A photo deleted in your gallery and restored comes back as it left** — kept, culled or edit-flagged — and a Recycle-bin delete is noticed within a minute.
+> Counts say "items" wherever videos can be among them.
+> **This upgrade resets the app's local database** (review decisions, queues and compare history start fresh; the first scan runs again). Your photos and videos are never touched.
+
 > **What changed in 0.8.8:** the review deck.
 > **Zoom is pixel-perfect now, at any depth, on any photo** — the app decodes exactly the region you are looking at from the original file, so a 50 MP or 200 MP shot inspects like it does in the system gallery, and the maximum zoom adapts to each photo's real resolution (a 200 MP photo zooms far deeper than a 12 MP one).
 > Zooming, panning, and flinging while zoomed were rebuilt on one gesture core: the photo stays locked under your fingers through any pinch, pan, or finger change, and lifting your fingers after holding still moves nothing.
@@ -101,11 +112,12 @@ A daily goal ring and per-day progress views carry you to inbox zero.
 > Expect roughly 10–15 minutes on a recent phone for ~25 k photos, longer on hardware from the S10e era.
 > Progress shows live on Home, the app stays usable throughout, and later scans reuse the stored analysis.
 
-## Supported photo formats (the honest list)
+## Supported formats (the honest list)
 
-The app reviews what Android's MediaStore indexes as a photo on your device.
-Everything your gallery treats as a picture (JPEG, PNG, WebP, HEIC, GIF) reviews normally.
-Videos are not reviewable yet.
+The app reviews what Android's MediaStore indexes as a photo or a video on your device.
+Everything your gallery treats as a picture (JPEG, PNG, WebP, HEIC, GIF) reviews normally; a GIF animates in place.
+Videos review as videos (0.9): any container Android's player decodes pages through the deck muted, with its own controls on a tap; they take every verdict and every queue, and sit out Compare.
+Motion photos (Samsung and Google containers) are both: the still for zoom, grouping and metadata, the clip for playback.
 
 **RAW**, measured on real hardware.
 The "measured on" column says which devices we ran each row on: Samsung S23 (Android 16), Samsung S10e (Android 12), and an Android 11 emulator, which is the supported floor.
@@ -160,10 +172,10 @@ The photo is simply a keeper with an edit waiting, which is why the same photo c
 Culls stage into a durable global queue and stay **badged in the deck** until the final trash confirmation.
 Every decision is reversible until then.
 A staged cull steps out of the favourite and organize queues (you are about to delete it) and back in if you un-stage it — but its share and edit requests stay live (0.8.7): "delete it, but share it first" works, and the trash confirmation names any share or edit request that never went out.
-Photos deleted outside Afterglow drop out.
-Photos restored from the system trash re-enter review automatically.
+Photos deleted outside Afterglow drop out, and a photo brought back — restored from the system trash, or the same file returning to its path — comes back as it left: kept, culled or edit-flagged, its waiting edit or share with it (0.9).
+A photo Afterglow itself culled and you then restore from the system trash re-enters review.
 
-> **Pre-1.0 testers:** a 0.x upgrade resets the app's local database whenever the release changes the schema baseline — 0.8.7 does (review decisions, queues, and compare history start fresh; the release notes say when a release keeps data instead).
+> **Pre-1.0 testers:** a 0.x upgrade resets the app's local database whenever the release changes the schema baseline — 0.9 does (review decisions, queues, and compare history start fresh; the release notes say when a release keeps data instead).
 > Your photos are never touched either way.
 
 ## Running it (dev build required — NOT Expo Go)
@@ -210,7 +222,8 @@ The on-device installer says only "App not installed".
 3. **Review queue**: cull groups (thumbnail strips, decision badges) plus the singles bucket, newest first.
    Enter any group in any order, or let **Review groups** walk you through linearly.
    Groups form by **image similarity**: the same subject seconds apart lands together, and a strictness control in Settings tunes how tight.
-   Photos whose analysis failed attach by time only (badged with a clock).
+   A group is cut into its **parts** — the distinct looks inside it — and reads part by part (0.9).
+   Photos whose analysis failed attach by time only.
 4. **Group review (swipe deck)**: swipe through the group.
    One verdict row: **Keep · Compare · Not related · Cull** (Not related is dimmed where it does not apply, so the row never shifts).
    Deciding a photo advances to the **nearest undecided one** — forward first, backward at the end of the group.
@@ -219,8 +232,8 @@ The on-device installer says only "App not installed".
    Below: the queue row **Edit · Favourite · Organize · Share**.
    **Not related** ejects a mis-grouped photo to singles, durably: the scan never regroups it.
    **Keep remaining (N)** finishes the group.
-   Pinch or double-tap to zoom in place (double-tap again resets).
-   Completed groups reopen in browse/re-decide mode, where a tap opens the full-screen viewer.
+   Pinch or double-tap to zoom in place (double-tap again resets); the expand button opens the edge-to-edge view, and the corner opens the photo's details.
+   Completed groups reopen in browse/re-decide mode on the same deck.
 5. **Compare**: two candidates full-screen.
    Tap anywhere to flip between them, and pinch to zoom.
    The transform applies to both photos identically, so a flip while zoomed compares the exact same crop.
@@ -233,9 +246,8 @@ The on-device installer says only "App not installed".
    Tap any photo to change its verdict (the sheet's chips re-decide, and a tap on the active Cull chip restores to unreviewed).
    One final confirmation moves batches to the system trash with verified results, dialog by dialog until done.
    Afterglow never permanently deletes a photo.
-8. **Standard photo viewer**: one full-screen viewer everywhere: deck browse, progress grids, History, and all queue tabs (share uses long-press).
-   It offers paging, pinch or double-tap zoom, a decision-detail panel, and **Change decision**.
-   The panel explains each badge: state, best/favourite/share/organize facts, and "grouped by time" for clock-badged photos.
+8. **The deck is the one surface** (0.9): progress grids, History and every queue tab open their photos in the same deck in list mode, paging in the host's order, with the same zoom, the expand button, the details corner and **Change decision**.
+   A video or a motion photo shows its playback controls on a tap; Settings › Playback sets Once, Loop or Off per kind.
 9. **Edit queue**: every photo with an edit waiting, decided or not.
    A finished edit clears from the queue and changes nothing about the verdict, so a photo you flagged before judging returns to the review queue still awaiting your decision.
    **Edit here** asks Android for write access once, then opens an editor that can save over the original.
@@ -280,11 +292,11 @@ Every decision is already durable, and an interrupted scan resumes from the stor
 
 ## Architecture notes
 
-- Grouping is `@afterglow/core` `groupByEmbedding`: pure TS over MediaPipe MobileNetV3-large vectors (1280-dim).
+- Grouping is `@afterglow/core` `groupByEmbedding`: pure TS over MediaPipe MobileNetV3-large vectors (1280-dim) — a burst gate, centroid linkage, an adjacent-burst merge up to an hour with a far bar past 15 minutes, and a parts pass that cuts each group into its looks.
   The local `modules/image-embedder` Kotlin module computes the vectors from a single decode per photo, which also yields the dHash used as a near-duplicate floor.
-  A human-judged regression suite in CI pins grouping quality.
+  Two human-judged regression suites in CI pin grouping quality: the labels-v1 pairs and the device rounds of 0.9 (`docs/grouping-study/`).
 - The continuous scan (`src/scan/scanRunner.ts`) pages MediaStore newest-first into merge windows, embeds cache-aware (per-photo BLOB vectors in SQLite, model-SHA pinned), groups, and lands assignments durably.
-  It honors the regroup boundary: the scan never rewrites reviewed groups, user-ejected singles, or groups carrying stars/compares.
+  Groups are presentation and re-form freely under every scan; the one durable membership judgment is the "not related" pair, and a changed grouping rule regroups the whole library in a named full pass.
   Interactive writes take priority over scan writes (`lib/writePriority`).
 - `src/lib/media.ts` is the only MediaStore adapter (`expo-media-library/legacy`, deliberately) and contains the app's single delete call.
   Trash and favourite operations go through the local `modules/media-store-actions` module (system dialogs, verified results).

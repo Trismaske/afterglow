@@ -12,6 +12,7 @@ import React, { useCallback, useContext, useEffect, useRef, useState } from 'rea
 import { StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useExternalRefresh } from '../components/useExternalRefresh';
+import { useMembershipVersion } from '../components/useMembershipVersion';
 import { useSQLiteContext } from 'expo-sqlite';
 import { mountedVolumeSet } from '../lib/mountedVolumes';
 import type {
@@ -53,6 +54,7 @@ export function DayProgressScreen({ route, navigation }: Props) {
   // the child ProgressView refreshes its own counts/grid, but this list
   // is loaded here and `version` may not move on a card swap.
   const [foregroundTick, setForegroundTick] = useState(0);
+  const membershipVer = useMembershipVersion(2000);
   useExternalRefresh(() => setForegroundTick((t) => t + 1));
 
   useFocusEffect(
@@ -88,9 +90,10 @@ export function DayProgressScreen({ route, navigation }: Props) {
       // refresh the
       // review context, and the day's group list (badges, pending counts)
       // must follow without a leave-and-return (a closing Modal does not
-      // refocus the screen).
+      // refocus the screen). membershipVer: a scan commit (a new image
+      // version, a regroup) reaches an open day page (codex, close-out).
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [db, day, version, hydrateBadges, foregroundTick]),
+    }, [db, day, version, membershipVer, hydrateBadges, foregroundTick]),
   );
 
   /** Same badge set as the review overview (TimelineScreen): the verdict

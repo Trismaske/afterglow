@@ -19,7 +19,7 @@
  * is warned once — never a silent blank.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { loadOsThumbnail, type RegionBitmap } from '../../modules/media-store-actions';
 import { BaseRetention } from '../lib/regionZoom';
 import { canonicalContentUri, type StoredMediaKind } from '../lib/mediaIdentity';
@@ -96,11 +96,17 @@ export function useOsThumbnail(
   // its thumbnail on an in-place edit, and our retained ref must not
   // outlive that.
   const key = `${imageCacheKey(assetId, version)}@${px}`;
-  const [state, setState] = useState<OsThumbnailState>(() => {
+  // The state carries the key it was computed for: a hook whose props
+  // moved to another asset or version (an in-place edit, a recycled
+  // cell) must not render the previous key's bitmap for the frame before
+  // the effect below re-resolves it (codex, close-out round 2).
+  const [keyed, setKeyed] = useState<{ key: string; state: OsThumbnailState }>(() => {
     const hit = retention.get(key);
-    if (hit) return { status: 'ready', ref: hit };
-    return failed.has(key) ? { status: 'failed' } : { status: 'loading' };
+    if (hit) return { key, state: { status: 'ready', ref: hit } };
+    return { key, state: failed.has(key) ? { status: 'failed' } : { status: 'loading' } };
   });
+  const setState = useCallback((state: OsThumbnailState): void => setKeyed({ key, state }), [key]);
+  const state: OsThumbnailState = keyed.key === key ? keyed.state : { status: 'loading' };
   const keyRef = useRef(key);
   useEffect(() => {
     keyRef.current = key;
@@ -132,6 +138,6 @@ export function useOsThumbnail(
       cancelled = true;
       unpin(key);
     };
-  }, [assetId, kind, px, version, key]);
+  }, [assetId, kind, px, version, key, setState]);
   return state;
 }

@@ -32,6 +32,11 @@
  * Attribute form only (every specimen); Samsung's SEF trailer is NOT
  * parsed — every Samsung motion photo seen carries the XMP, and the
  * trailer is present on plain stills too, so it is no signal by itself.
+ *
+ * API-30 limitation (m0.9 phase 4): ExifInterface reads HEIC's XMP from
+ * API 31, so on API 30 a HEIC motion photo reads as a still, its marker
+ * stamps, and nothing is logged — the reader cannot tell "no XMP" from
+ * "unreadable here". JPEG motion photos read on every supported API.
  */
 package expo.modules.mediastoreactions
 

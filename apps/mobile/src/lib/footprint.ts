@@ -1,5 +1,5 @@
 /**
- * Phase-3 spike (a) instrument (docs/Plan_m0.9.md): ASSIGN THE
+ * Phase-3 spike (a) instrument (PLAN.md's m0.9 entry): ASSIGN THE
  * GIGABYTE. One `[perf] footprint` line breaks the app's storage into
  * the buckets the cache pass will act on — DB main, WAL, Glide's image
  * cache, and the rest of the document/cache trees — measured on the

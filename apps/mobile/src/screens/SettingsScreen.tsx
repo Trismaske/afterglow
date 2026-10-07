@@ -7,6 +7,7 @@
  * for suppressed confirmation dialogs, and the app version. Values
  * persist in the m0.3.1 settings table.
  */
+import { readPlaybackValues, writePlaybackValue } from '../lib/playbackSettings';
 import {
   ANIMATED_THUMBS_KEY,
   ANIMATED_THUMBS_MODES,
@@ -159,15 +160,26 @@ export function SettingsScreen({ navigation }: Props) {
   );
   const durableAnimatedRef = useRef<AnimatedThumbsMode>(DEFAULT_ANIMATED_THUMBS_MODE);
   const animatedWriteGen = useRef(0);
+  /** Committed-since-focus and in-flight tracking, as the Overlay rows
+   * keep (codex, close-out round 7): the focus read establishes the
+   * durable value for a row with no write in flight and none committed
+   * since focus — a tap that FAILED before the read landed must roll
+   * back to what SQLite holds, not to the default the read never set. */
+  const animatedCommitted = useRef(false);
+  const animatedInFlight = useRef(0);
   const pickAnimatedThumbs = useCallback(
     (mode: AnimatedThumbsMode) => {
       const gen = (animatedWriteGen.current += 1);
       setAnimatedThumbs(mode);
-      void setSetting(db, ANIMATED_THUMBS_KEY, mode).then(
+      animatedInFlight.current += 1;
+      void writePlaybackValue(db, ANIMATED_THUMBS_KEY, mode).then(
         () => {
+          animatedInFlight.current -= 1;
           durableAnimatedRef.current = mode;
+          animatedCommitted.current = true;
         },
         (error) => {
+          animatedInFlight.current -= 1;
           console.warn('[settings] animated thumbnails write failed:', String(error));
           if (animatedWriteGen.current !== gen) return;
           setAnimatedThumbs(durableAnimatedRef.current);
@@ -177,18 +189,24 @@ export function SettingsScreen({ navigation }: Props) {
     },
     [db],
   );
+  const playbackCommitted = useRef(new Set<PlaybackKind>());
+  const playbackInFlight = useRef<Record<PlaybackKind, number>>({ video: 0, motion: 0 });
   const pickPlayback = useCallback(
     (kind: PlaybackKind, mode: PlaybackMode) => {
       const gen = (playbackWriteGen.current[kind] += 1);
       setPlayback((prev) => ({ ...prev, [kind]: mode }));
-      void setSetting(db, PLAYBACK_KEYS[kind], serializePlaybackMode(mode)).then(
+      playbackInFlight.current[kind] += 1;
+      void writePlaybackValue(db, PLAYBACK_KEYS[kind], serializePlaybackMode(mode)).then(
         () => {
           // Every committed write moves the anchor, whatever generation
           // is current: a later tap that then fails must roll back to
           // what SQLite actually holds, which is this value.
+          playbackInFlight.current[kind] -= 1;
           durablePlaybackRef.current[kind] = mode;
+          playbackCommitted.current.add(kind);
         },
         (error) => {
+          playbackInFlight.current[kind] -= 1;
           console.warn('[settings] playback mode write failed:', String(error));
           if (playbackWriteGen.current[kind] !== gen) return; // a newer tap owns the row
           const durable = durablePlaybackRef.current[kind];
@@ -439,15 +457,24 @@ export function SettingsScreen({ navigation }: Props) {
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
+      playbackCommitted.current.clear();
+      animatedCommitted.current = false;
       (async () => {
-        const [rawGoal, rawCoverage, rawStrictness, rawVideo, rawMotion, rawAnimated] =
+        // The playback rows read through their write chain (codex,
+        // close-out round 5): a reopened Settings must see a save the
+        // previous instance issued on the way out, not the value before it.
+        const [[rawGoal, rawCoverage, rawStrictness], [rawVideo, rawMotion, rawAnimated]] =
           await Promise.all([
-            getSetting(db, DAILY_GOAL_KEY),
-            getSetting(db, COVERAGE_GOAL_KEY),
-            getSetting(db, GROUPING_STRICTNESS_KEY),
-            getSetting(db, PLAYBACK_KEYS.video),
-            getSetting(db, PLAYBACK_KEYS.motion),
-            getSetting(db, ANIMATED_THUMBS_KEY),
+            Promise.all([
+              getSetting(db, DAILY_GOAL_KEY),
+              getSetting(db, COVERAGE_GOAL_KEY),
+              getSetting(db, GROUPING_STRICTNESS_KEY),
+            ]),
+            readPlaybackValues(db, [
+              PLAYBACK_KEYS.video,
+              PLAYBACK_KEYS.motion,
+              ANIMATED_THUMBS_KEY,
+            ]),
           ]);
         if (!cancelled) {
           // FENCED against user writes (codex r9): a selection made while
@@ -465,21 +492,27 @@ export function SettingsScreen({ navigation }: Props) {
             setCoverage(durableCoverage);
           }
           setStrictness(parseStrictness(rawStrictness));
-          // Fenced like the goals: a tap since focus owns its row.
+          // A row with a write in flight keeps its optimistic value and
+          // takes the read as its rollback anchor; one whose writes all
+          // settled without a commit since focus shows the read's value,
+          // the durable truth (the Overlay rows' rule).
           const loaded = {
             video: parsePlaybackMode(rawVideo),
             motion: parsePlaybackMode(rawMotion),
           };
+          const settled = (kind: PlaybackKind): boolean =>
+            playbackInFlight.current[kind] === 0 && !playbackCommitted.current.has(kind);
           setPlayback((prev) => ({
-            video: playbackWriteGen.current.video === 0 ? loaded.video : prev.video,
-            motion: playbackWriteGen.current.motion === 0 ? loaded.motion : prev.motion,
+            video: settled('video') ? loaded.video : prev.video,
+            motion: settled('motion') ? loaded.motion : prev.motion,
           }));
-          if (playbackWriteGen.current.video === 0) durablePlaybackRef.current.video = loaded.video;
-          if (playbackWriteGen.current.motion === 0)
-            durablePlaybackRef.current.motion = loaded.motion;
-          if (animatedWriteGen.current === 0) {
-            const loadedAnimated = parseAnimatedThumbsMode(rawAnimated);
-            durableAnimatedRef.current = loadedAnimated;
+          for (const kind of ['video', 'motion'] as const) {
+            if (!playbackCommitted.current.has(kind))
+              durablePlaybackRef.current[kind] = loaded[kind];
+          }
+          const loadedAnimated = parseAnimatedThumbsMode(rawAnimated);
+          if (!animatedCommitted.current) durableAnimatedRef.current = loadedAnimated;
+          if (animatedInFlight.current === 0 && !animatedCommitted.current) {
             setAnimatedThumbs(loadedAnimated);
           }
         }

@@ -207,7 +207,13 @@ function PlayerLayer({
       nativeControls={false}
       surfaceType="textureView"
       fullscreenOptions={{ enable: false }}
-      onFirstFrameRender={() => setFramed(true)}
+      onFirstFrameRender={() => {
+        setFramed(true);
+        // Playback EVIDENCE for the UI gate (m0.9 close-out): a frame of
+        // the clip reached the screen — the eligible-row count alone did
+        // not prove it.
+        console.log(`[thumbs] framed ${row.id}`);
+      }}
     />
   );
 }

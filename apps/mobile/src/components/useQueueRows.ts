@@ -16,11 +16,12 @@
  * reload clears it. An INITIAL failure leaves rows null, so screens swap
  * their loading state for the failure line instead of loading forever.
  */
-import { useCallback, useRef, useState } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { useReview } from '../review/ReviewContext';
 import { perfAggregate } from '../lib/perfLog';
 import { useExternalRefresh } from './useExternalRefresh';
+import { useMembershipVersion } from './useMembershipVersion';
 
 /** The one quiet failure line every queue screen renders when `failed`
  * is set — stale rows stay on screen, this says why they might be. */
@@ -85,5 +86,18 @@ export function useQueueRows<T>(
   // swapped while away would otherwise leave its rows on screen — visible
   // and tappable — until the user navigates off the tab and back.
   useExternalRefresh(() => void reload());
+  // A scan commit (a new image version after an in-place edit, a
+  // regroup, a return) re-reads a FOCUSED queue too (codex, close-out
+  // round 6): its rows carry the image version every thumbnail and
+  // animated player keys on, and focus and foreground alone would leave
+  // the pre-edit pixels until the next visit.
+  const membershipVer = useMembershipVersion(2000);
+  const isFocused = useIsFocused();
+  const focusedRef = useRef(isFocused);
+  focusedRef.current = isFocused;
+  useEffect(() => {
+    if (membershipVer === 0 || !focusedRef.current) return;
+    void reload();
+  }, [membershipVer, reload]);
   return { rows, failed, reload };
 }

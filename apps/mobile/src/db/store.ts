@@ -13,6 +13,7 @@
  * never persisted (m0.1 decision: SQLite keeps 'culled' until the system
  * trash request succeeds).
  */
+import { versionedUri } from '../lib/imageKeys';
 import type { MediaRef, StoredMediaKind } from '../lib/mediaIdentity';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { withReadTransaction, withWriteTransaction } from './database';
@@ -2287,6 +2288,10 @@ export async function adoptReturningFiles(
    * Decided outside the transaction (a native probe); false keeps the
    * two rows apart. */
   oldRowGone: (ref: MediaRef) => Promise<boolean>,
+  /** The mounted volumes (m0.8.3 phase 2): the repair a replaced fresh
+   * duplicate's old group gets must keep a member on an ejected card,
+   * like every other membership writer's (codex, close-out round 4). */
+  mountedVolumes: readonly string[] | null,
 ): Promise<number> {
   // The candidates are read and probed BEFORE the transaction: the
   // probe is native and slow against an exclusive lock, and a present
@@ -2339,7 +2344,7 @@ export async function adoptReturningFiles(
   if (matches.length === 0) return 0;
   let adopted = 0;
   await withWriteTransaction(db, async (txn) => {
-    adopted = await adoptTombstones(txn, matches);
+    adopted = await adoptTombstones(txn, matches, mountedVolumes);
   });
   // A fresh duplicate given way had an assignment (its group repaired
   // inside the transaction, codex r9): the browse structure moved.
@@ -2369,6 +2374,7 @@ async function isFreshRow(db: SQLiteDatabase, id: string): Promise<boolean> {
 async function adoptTombstones(
   txn: SQLiteDatabase,
   matches: readonly { photo: ContinuousPhotoUpsert; oldId: string }[],
+  mountedVolumes: readonly string[] | null,
 ): Promise<number> {
   let adopted = 0;
   let deferred = false;
@@ -2415,7 +2421,7 @@ async function adoptTombstones(
     adopted += 1;
     console.log(`[scan] a returned file adopted its tombstone: ${oldId} → ${photo.assetId}`);
   }
-  if (affectedGroups.length > 0) await repairGroupMembership(txn, affectedGroups);
+  if (affectedGroups.length > 0) await repairGroupMembership(txn, affectedGroups, mountedVolumes);
   return adopted;
 }
 
@@ -3755,12 +3761,16 @@ export async function getHistoryPage(
   const rows = merged.slice(0, HISTORY_PAGE);
   for (const row of rows) {
     if (row.kind !== 'share') continue;
-    const thumbs = await db.getAllAsync<{ uri: string }>(
-      `SELECT p.uri FROM share_batch_members m JOIN photos p ON p.asset_id = m.photo_id
-       WHERE m.batch_id = ? LIMIT 4`,
+    // Versioned uris (item 3): the share row's thumbnails render the
+    // CURRENT bytes, so an in-place edit must miss the image cache here
+    // as on every other surface (m0.9 close-out codex).
+    const thumbs = await db.getAllAsync<{ uri: string; image_version: number }>(
+      `SELECT p.uri, COALESCE(p.file_generation, p.file_mtime) AS image_version
+         FROM share_batch_members m JOIN photos p ON p.asset_id = m.photo_id
+        WHERE m.batch_id = ? LIMIT 4`,
       row.batch_id,
     );
-    row.thumb_uris = thumbs.map((t) => t.uri);
+    row.thumb_uris = thumbs.map((t) => versionedUri(t.uri, t.image_version));
   }
 
   // Advance each stream to its last EMITTED row; a stream ends when its

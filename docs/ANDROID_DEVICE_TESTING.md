@@ -343,6 +343,8 @@ adb -s SERIAL push burst_1.jpg /sdcard/DCIM/Camera/AG_BURST_1.jpg
 adb -s SERIAL shell "content call --uri content://media/none/ --method scan_volume --arg external_primary"
 ```
 
+A motion-photo specimen must be a camera original or a byte-exact copy: an exiftool-dated HEIC copy is NOT one, because exiftool rebuilds the container and the video tail moves, so the byte-range reader correctly sees no clip and the page is a plain photo (m0.9 device pass).
+
 Landing a file under another app's storage (`/sdcard/Android/media/com.whatsapp/...`) makes an **out-of-source** change for scan tests; a REAL row owned by that app (check `owner_package_name`) is what forces the organize boundary's ownership refusal — a shell-pushed file may scan with no owner and behave differently.
 Prefix generated files (`AG_...`) so cleanup is a name match.
 

@@ -150,7 +150,9 @@ export interface RelativePathInfo {
  * evidence of anything. dateModifiedMs is already converted to ms. */
 export interface MediaDetailsRow {
   uri: string;
-  status: 'found' | 'absent' | 'error';
+  /** 'mismatch': the row exists under another collection — a mis-addressed
+   * kind, logged natively; never an absence (m0.9 close-out). */
+  status: 'found' | 'absent' | 'error' | 'mismatch';
   displayName?: string | null;
   dateModifiedMs?: number | null;
   dateTakenMs?: number | null;
@@ -242,7 +244,10 @@ export async function isMediaFavourite(uri: string): Promise<boolean | null> {
  * is still being written (IS_PENDING) — present for every consumer that
  * asks "do the bytes exist", and named for the one that must not treat
  * it as a row it cannot explain (the scan's loss walk). */
-export type MediaPresence = 'present' | 'pending' | 'trashed' | 'absent' | 'unknown';
+/** 'mismatch' (m0.9 close-out): the row exists under ANOTHER collection
+ * on the same volume — a mis-addressed kind, never an absence; the native
+ * probe logs it and the caller treats it as unknown. */
+export type MediaPresence = 'present' | 'pending' | 'trashed' | 'absent' | 'unknown' | 'mismatch';
 
 export async function getMediaPresence(uri: string): Promise<MediaPresence> {
   if (!available()) return 'unknown';

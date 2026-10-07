@@ -1,6 +1,7 @@
 package expo.modules.mediastoreactions
 
 import android.content.ActivityNotFoundException
+import android.content.ContentUris
 import android.content.BroadcastReceiver
 import android.content.ComponentCallbacks2
 import android.content.ContentResolver
@@ -16,6 +17,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import android.util.Log
 import android.util.Size
 import android.provider.MediaStore
 import androidx.core.content.ContextCompat
@@ -859,7 +861,20 @@ class MediaStoreActionsModule : Module() {
               "data" to (if (c.isNull(3)) null else c.getString(3)),
             ) else null
           }
-          row ?: mapOf("uri" to uri.toString(), "status" to "absent")
+          row ?: run {
+            // The same discipline as the presence probe: an empty cursor
+            // under the caller's collection is absence only when the
+            // Files collection agrees; a row under another kind is a
+            // mis-addressed uri, named, never silent "no signal".
+            when (val files = filesRowOf(resolver, uri)) {
+              "absent" -> mapOf("uri" to uri.toString(), "status" to "absent")
+              "unknown" -> mapOf("uri" to uri.toString(), "status" to "error")
+              else -> {
+                Log.e("Afterglow", "queryMediaDetails: $uri exists as MEDIA_TYPE ${files.removePrefix("type:")} — mis-addressed collection")
+                mapOf("uri" to uri.toString(), "status" to "mismatch")
+              }
+            }
+          }
         } catch (error: Exception) {
           mapOf(
             "uri" to uri.toString(),
@@ -1002,6 +1017,21 @@ class MediaStoreActionsModule : Module() {
     AsyncFunction("shareUris") { uris: List<Uri>, token: Int, mimeType: String ->
       val activity = appContext.currentActivity
         ?: return@AsyncFunction mapOf("result" to "error", "message" to "No current activity")
+      // Dispatch-only preflight (codex, close-out round 3): the chooser
+      // accepts an EXTRA_STREAM it never opens, so a mis-addressed
+      // collection uri would earn a chosen-target event and durable
+      // "shared" accounting for a stream no receiver can read. Every uri
+      // must sit under the collection its path names.
+      val resolverForCheck = appContext.reactContext?.contentResolver
+      if (resolverForCheck != null) {
+        for (uri in uris) {
+          val mismatch = collectionMismatch(resolverForCheck, uri)
+          if (mismatch != null) {
+            Log.e("Afterglow", "shareUris: $mismatch")
+            return@AsyncFunction mapOf("result" to "error", "message" to mismatch)
+          }
+        }
+      }
       val send = if (uris.size == 1) {
         Intent(Intent.ACTION_SEND).apply {
           type = mimeType
@@ -1106,6 +1136,53 @@ class MediaStoreActionsModule : Module() {
    * id-walk reconciliation tombstone a photo that is merely being
    * written, and a probe that only said "present" would let the scan
    * net it out of a count check beside rows it cannot explain. */
+  /** What the Files collection of the uri's volume says about the id —
+   * the one table that sees every kind. Three answers, never folded
+   * (codex, close-out round 2): a row with its MEDIA_TYPE, a SUCCESSFUL
+   * empty cursor ("absent"), or a failed read ("unknown": a null cursor,
+   * a throw, or a uri that is not a per-id collection uri). */
+  private fun filesRowOf(resolver: ContentResolver, uri: Uri): String {
+    val segments = uri.pathSegments
+    if (segments.size < 4 || segments[2] != "media") return "unknown"
+    val id = segments[3].toLongOrNull() ?: return "unknown"
+    val filesUri = ContentUris.withAppendedId(MediaStore.Files.getContentUri(segments[0]), id)
+    val queryArgs = android.os.Bundle().apply {
+      putInt(MediaStore.QUERY_ARG_MATCH_TRASHED, MediaStore.MATCH_INCLUDE)
+      putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+    }
+    return try {
+      val cursor = resolver.query(
+        filesUri,
+        arrayOf(MediaStore.Files.FileColumns.MEDIA_TYPE),
+        queryArgs,
+        null,
+      ) ?: return "unknown"
+      cursor.use { c -> if (c.moveToFirst()) "type:${c.getInt(0)}" else "absent" }
+    } catch (e: Exception) {
+      "unknown"
+    }
+  }
+
+  /** A per-id collection uri whose Files row carries another MEDIA_TYPE
+   * than its path names (images ↔ MEDIA_TYPE_IMAGE, video ↔
+   * MEDIA_TYPE_VIDEO): the message naming it, or null when the row
+   * agrees, is absent, or cannot be read (those are the reads' own
+   * verdicts; this guard only refuses a PROVEN mismatch). */
+  private fun collectionMismatch(resolver: ContentResolver, uri: Uri): String? {
+    val segments = uri.pathSegments
+    if (segments.size < 4 || segments[2] != "media") return null
+    val expected = when (segments[1]) {
+      "images" -> MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE
+      "video" -> MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO
+      else -> return null
+    }
+    val files = filesRowOf(resolver, uri)
+    if (!files.startsWith("type:")) return null
+    val actual = files.removePrefix("type:").toIntOrNull() ?: return null
+    return if (actual == expected) null
+    else "mismatch: $uri names the ${segments[1]} collection but the row's MEDIA_TYPE is $actual"
+  }
+
   private fun mediaPresenceOf(uri: Uri): String {
     val resolver = appContext.reactContext?.contentResolver ?: return "unknown"
     val queryArgs = android.os.Bundle().apply {
@@ -1121,7 +1198,24 @@ class MediaStoreActionsModule : Module() {
       ) ?: return "unknown"
       cursor.use { c ->
         if (!c.moveToFirst()) {
-          if (hasFullMediaAccess()) "absent" else "unknown"
+          if (!hasFullMediaAccess()) {
+            "unknown"
+          } else {
+            // An empty cursor under the caller's collection is absence
+            // only when the row is not sitting under ANOTHER collection
+            // on the same volume: an images uri for a video row (or the
+            // reverse) is a mis-addressed kind, and reading it as
+            // deletion would let trash verification and the loss walk
+            // tombstone a file that exists (m0.9 close-out codex).
+            when (val files = filesRowOf(resolver, uri)) {
+              "absent" -> "absent"
+              "unknown" -> "unknown"
+              else -> {
+                Log.e("Afterglow", "mediaPresence: $uri exists as MEDIA_TYPE ${files.removePrefix("type:")} — mis-addressed collection, read as mismatch")
+                "mismatch"
+              }
+            }
+          }
         } else {
           val index = c.getColumnIndex(MediaStore.MediaColumns.IS_TRASHED)
           val pendingIndex = c.getColumnIndex(MediaStore.MediaColumns.IS_PENDING)

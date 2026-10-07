@@ -23,6 +23,8 @@ import { DOUBLE_TAP_MS } from '../lib/zoomTarget';
 import { colors, touch, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded } from '../lib/format';
 import { imageCacheKey, versionedUri } from '../lib/imageKeys';
+import { orderByParts } from '../lib/groupParts';
+import { useMembershipVersion } from '../components/useMembershipVersion';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { isFavouriteSelected } from '../lib/favouriteState';
 import { ActionChip } from '../components/ActionChip';
@@ -119,8 +121,14 @@ export function CompareScreen({ navigation, route }: Props) {
     loadGroup,
     loadDeckSingles,
     registerCelebrationHost,
+    version,
   } = useReview();
   const isFocused = useIsFocused();
+  // An off-page group and a day's singles are fetched here, outside the
+  // provider's snapshot: they follow the provider's version and the
+  // membership signal so a scan-committed edit (a new image version)
+  // reaches an open Compare (codex, close-out round 4).
+  const membershipVer = useMembershipVersion(2000);
   const numericGroupId = groupId ? Number(groupId) : null;
   const queueGroup = useMemo(
     () =>
@@ -156,7 +164,7 @@ export function CompareScreen({ navigation, route }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [numericGroupId, queueGroup, loadGroup, loadTick]);
+  }, [numericGroupId, queueGroup, loadGroup, loadTick, version, membershipVer]);
   const group = queueGroup ?? (typeof loadedGroup === 'object' ? loadedGroup : null);
   /** An off-page group fetch is still in flight — a missing pair is not
    * terminal yet. */
@@ -186,7 +194,7 @@ export function CompareScreen({ navigation, route }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [day, from, to, loadDeckSingles, loadTick]);
+  }, [day, from, to, loadDeckSingles, loadTick, version, membershipVer]);
   /** The day fetch is still in flight — a missing pair is not terminal
    * yet (same rule as groupPending). */
   const dayPending = !!day && dayRows === null;
@@ -279,8 +287,11 @@ export function CompareScreen({ navigation, route }: Props) {
   // kept members included (they are duel-able now, F11).
   const groupInfo = useMemo(() => {
     if (!group || singles) return null;
+    // The DECK's order — part by part (phase 10, lib/groupParts.ts) —
+    // so Compare's numbers name the positions the deck and its picker
+    // showed (codex, close-out round 4).
     return {
-      memberIds: group.members.map((m) => m.asset_id),
+      memberIds: orderByParts(group.members).ordered.map((m) => m.asset_id),
     };
   }, [group, singles]);
   const posOf = useCallback(
@@ -306,7 +317,7 @@ export function CompareScreen({ navigation, route }: Props) {
   // stacked pair flips at every zoom level via the JS Pressable) is the
   // shared MediaStage hook — drivers, shared values and zoomStyle in
   // one place, with the m0.9 phase-1 drift fixes in
-  // (docs/Plan_m0.9.md; rationale in the hook's header).
+  // (PLAN.md's m0.9 entry; rationale in the hook's header).
   const stage = useMediaStageSingleDriver();
   const {
     scale,
@@ -373,6 +384,11 @@ export function CompareScreen({ navigation, route }: Props) {
   // hook plans against its own source dimensions under the one shared
   // transform; the ceiling is the MAX of the pair. Wiring:
   // components/useStageZoom.ts.
+  /** The pair's image versions (item 3) from the rows that carry them. */
+  const versionOf = (id: string): number =>
+    group?.members.find((m) => m.asset_id === id)?.image_version ??
+    dayList?.find((m) => m.asset_id === id)?.image_version ??
+    0;
   const stageZoomValues = { stageW, stageH, scale, tx, ty };
   // Only the VISIBLE pane decodes patches (m0.9 phase 1, S23 pass):
   // both bases stay warm so the flip is instant, and the hidden pane's
@@ -383,6 +399,7 @@ export function CompareScreen({ navigation, route }: Props) {
     stageZoomValues,
     pair?.a.id ?? null,
     pair?.a.uri ?? null,
+    pair ? versionOf(pair.a.id) : 0,
     pair !== null && isFocused,
     !showB,
   );
@@ -390,6 +407,7 @@ export function CompareScreen({ navigation, route }: Props) {
     stageZoomValues,
     pair?.b.id ?? null,
     pair?.b.uri ?? null,
+    pair ? versionOf(pair.b.id) : 0,
     pair !== null && isFocused,
     showB,
   );
@@ -636,11 +654,6 @@ export function CompareScreen({ navigation, route }: Props) {
 
   // Seconds always; millis when the two candidates share a second and the
   // data has sub-second resolution (same rule as the deck labels).
-  /** The pair's image versions (item 3) from the rows that carry them. */
-  const versionOf = (id: string): number =>
-    group?.members.find((m) => m.asset_id === id)?.image_version ??
-    dayList?.find((m) => m.asset_id === id)?.image_version ??
-    0;
   const needMs = millisNeeded([pair.a.timestamp, pair.b.timestamp].sort((x, y) => x - y));
   const withMs = needMs[0] || needMs[1];
   const showClock = overlay.dateTime && !overlayHidden;

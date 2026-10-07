@@ -15,10 +15,11 @@
  * to show. Photos deleted outside Afterglow while UNDECIDED still drop
  * out through the reconcile, exactly as before.
  */
+import { useMembershipVersion } from '../components/useMembershipVersion';
 import { AnimatedThumb } from '../components/AnimatedThumb';
 import { useAnimatedList } from '../components/useAnimatedCells';
 import { thumbRowOf, type AnimatedThumbRow } from '../lib/animatedThumbRow';
-import React, { useCallback, useRef, useState, useMemo } from 'react';
+import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { PixelRatio } from 'react-native';
 import { OsThumbnail } from '../components/OsThumbnail';
@@ -27,7 +28,7 @@ const ROW_THUMB_PX = thumbBucketPx(56, PixelRatio.get());
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
@@ -201,9 +202,15 @@ export function HistoryScreen({ navigation }: Props) {
     [db, refreshReview],
   );
 
+  // The loading-more flag is OWNED by the request token (codex, close-out
+  // round 8): every flight — a reload, a depth refresh, a page — raises
+  // it and only the flight still holding the current token lowers it, so
+  // a superseded page cannot free pagination under a refresh and a
+  // superseded refresh cannot leave it blocked under a reload.
   const reload = useCallback(
     async (which: HistoryFilter) => {
       const token = ++requestRef.current;
+      setLoadingMore(true);
       try {
         const page = await getHistoryPage(db, which, null);
         const rowsNow = await reconcilePage(page.rows);
@@ -216,6 +223,8 @@ export function HistoryScreen({ navigation }: Props) {
         // with an unhandled rejection; a focus-refresh rejection kept a
         // stale feed silently. Mark it and keep what is shown.
         if (requestRef.current === token) setFailed(true);
+      } finally {
+        if (requestRef.current === token) setLoadingMore(false);
       }
     },
     [db, reconcilePage],
@@ -228,6 +237,78 @@ export function HistoryScreen({ navigation }: Props) {
       void reload(filter);
     }, [reload, filter]),
   );
+  // A scan commit (a new image version, a regroup, a return) re-reads
+  // the feed while it is on screen — to the DEPTH already loaded, so a
+  // reader deep in older history keeps their pages (codex, close-out
+  // rounds 5 and 6): the pages re-walk from the top under one token and
+  // land together; a reload or a loadMore started meanwhile supersedes.
+  const membershipVer = useMembershipVersion(2000);
+  const isFocused = useIsFocused();
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  /** A depth walk in flight, and whether a notification arrived during
+   * it (codex, close-out round 9): notifications COALESCE behind the
+   * running walk — one more walk after it, never a chain of superseded
+   * walks that publish nothing — and an obsolete walk stops between
+   * pages instead of reading to its depth for nothing. */
+  const refreshingRef = useRef(false);
+  const refreshQueuedRef = useRef(false);
+  const refreshToDepth = useCallback(
+    async (which: HistoryFilter, depth: number): Promise<void> => {
+      const token = ++requestRef.current;
+      // One flight at a time with pagination (codex, close-out round 7):
+      // the token discards a loadMore already in flight, and the
+      // loading-more flag refuses a new one until the refreshed cursor is
+      // in place, so a page can never append to rows from another walk.
+      setLoadingMore(true);
+      refreshingRef.current = true;
+      try {
+        const collected: HistoryRow[] = [];
+        let cursor: HistoryCursor | null = null;
+        let nextCursor: HistoryCursor | null = null;
+        do {
+          const page = await getHistoryPage(db, which, cursor);
+          if (requestRef.current !== token) return; // superseded: stop here
+          collected.push(...(await reconcilePage(page.rows)));
+          nextCursor = page.next;
+          cursor = page.next;
+        } while (cursor !== null && collected.length < depth);
+        if (requestRef.current !== token) return;
+        setRows(collected);
+        setNext(nextCursor);
+        setFailed(false);
+      } catch {
+        if (requestRef.current === token) setFailed(true);
+      } finally {
+        if (requestRef.current === token) setLoadingMore(false);
+        refreshingRef.current = false;
+      }
+    },
+    [db, reconcilePage],
+  );
+  const refreshIfIdle = useCallback(
+    async (which: HistoryFilter) => {
+      const loaded = rowsRef.current;
+      if (loaded === null) return;
+      if (refreshingRef.current) {
+        refreshQueuedRef.current = true;
+        return;
+      }
+      await refreshToDepth(which, Math.max(loaded.length, 1));
+      if (refreshQueuedRef.current) {
+        refreshQueuedRef.current = false;
+        void refreshIfIdle(which);
+      }
+    },
+    [refreshToDepth],
+  );
+  useEffect(() => {
+    if (membershipVer === 0 || !isFocused) return;
+    void refreshIfIdle(filter);
+    // membershipVer is the trigger; the filter and the depth are read at
+    // that moment.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [membershipVer]);
 
   const loadMore = useCallback(async () => {
     if (!next || loadingMore) return;
@@ -248,7 +329,7 @@ export function HistoryScreen({ navigation }: Props) {
       // the footer below says so; a later scroll or reopen retries.
       if (requestRef.current === token) setFailed(true);
     } finally {
-      setLoadingMore(false);
+      if (requestRef.current === token) setLoadingMore(false);
     }
   }, [db, filter, next, loadingMore, reconcilePage]);
 
@@ -273,6 +354,7 @@ export function HistoryScreen({ navigation }: Props) {
                 <Image
                   key={`${item.batch_id}-${i}`}
                   source={{ uri }}
+                  recyclingKey={uri}
                   style={[styles.shareThumb, { left: i * 14 }]}
                   contentFit="cover"
                 />

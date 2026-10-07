@@ -265,6 +265,13 @@ Six rules. They apply to every surface that paints a state.
 - **Milestone bars** — the hue of what each one counts: reviewed keep-green, culled cull-red, edits completed edit-blue.
   Three bars with three subjects, so one shared colour would have claimed they measured the same thing.
 
+## Media kinds are annotations (m0.9)
+
+A photo, a video, a motion photo or a GIF is a **kind**, read from MIME, and a kind is an annotation: it changes what the stage plays and what the chip says, never the verdict or the actions.
+A video takes every verdict and all four actions, and sits out Compare; a motion photo is a photo for grouping, zoom and Compare and a video while its clip plays; a GIF is a photo that animates.
+The display name renders the extension (uppercase, no dot) and MIME classifies, and the two may disagree — each layer claims only what it read.
+Copy says "items" wherever a count can include videos.
+
 ## Deliberately not states
 
 Recorded here so no one re-invents them:

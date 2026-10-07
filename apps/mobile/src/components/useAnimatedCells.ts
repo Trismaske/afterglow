@@ -42,6 +42,7 @@
  * day page's cards, the deck's strip) reports its own visibility
  * (`reportVisible`) and sizes the pool from `extentDp`.
  */
+import { readPlaybackValues, writePlaybackValue } from '../lib/playbackSettings';
 import React, {
   useCallback,
   useEffect,
@@ -85,8 +86,8 @@ export function useAnimatedThumbsMode(): AnimatedThumbsMode | null {
       return;
     }
     let cancelled = false;
-    void getSetting(db, ANIMATED_THUMBS_KEY).then(
-      (raw) => {
+    void readPlaybackValues(db, [ANIMATED_THUMBS_KEY]).then(
+      ([raw]) => {
         if (!cancelled) setMode(parseAnimatedThumbsMode(raw));
       },
       (error) => console.warn('[thumbs] mode read failed:', String(error)),

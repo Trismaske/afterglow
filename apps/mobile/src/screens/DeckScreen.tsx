@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { readPlaybackValues, writePlaybackValue } from '../lib/playbackSettings';
 import {
   Alert,
   FlatList,
@@ -168,10 +169,13 @@ const THUMB = 52;
  * full decode as soon as it lands. */
 const STRIP_THUMB_PX = thumbBucketPx(THUMB, PixelRatio.get());
 const STAGE_THUMB_PX = 512;
-/** The player's Android surface (M27): fixed per build for the
- * measurement — SurfaceView vs TextureView on both phones over ≥ 1 min
- * of playback. The stage's always-mounted overlays are the documented
- * SurfaceView overlap case, so the measurement starts here. */
+/** The player's Android surface (M27, measured 2026-09-09): TextureView.
+ * Both builds on both phones over 90 s of looped playback with three
+ * players mounted — SurfaceView cost the S10e, the floor device, 59 CPU
+ * points and 24 MB more for a mild S23 win (8 points, 28 MB); both
+ * render the stage's always-mounted overlays correctly. TextureView also
+ * keeps the parked video-zoom hedge open (view transforms apply to it;
+ * PLAN.md's trigger backlog). */
 const VIDEO_SURFACE_TYPE: SurfaceType = 'textureView';
 const PICKER_THUMB_PX = thumbBucketPx(72, PixelRatio.get());
 const THUMB_GAP = 6;
@@ -733,7 +737,17 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     return () => {
       cancelled = true;
     };
-  }, [day, range, singlesMode, listMode, loadDeckSingles, version, loadTick, unitKey]);
+  }, [
+    day,
+    range,
+    singlesMode,
+    listMode,
+    loadDeckSingles,
+    version,
+    membershipVer,
+    loadTick,
+    unitKey,
+  ]);
   /** The rows this deck reviews (singles mode). */
   const singleRows = useMemo(() => (Array.isArray(deckSingles) ? deckSingles : []), [deckSingles]);
   // -------------------------------------------------- list mode (P2)
@@ -832,7 +846,17 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     };
     // `list` is identity-stable per listKey (the wrapper's memo).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listMode, listKey, unitKey, version, loadTick, externalTick, listPagesWanted, db]);
+  }, [
+    listMode,
+    listKey,
+    unitKey,
+    version,
+    membershipVer,
+    loadTick,
+    externalTick,
+    listPagesWanted,
+    db,
+  ]);
   const listRowsLoad = listLoad.unit === unitKey ? listLoad.rows : null;
   const listLoadGen = listLoad.unit === unitKey ? listLoad.gen : -1;
   const listRows = useMemo(() => (Array.isArray(listRowsLoad) ? listRowsLoad : []), [listRowsLoad]);
@@ -1250,7 +1274,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   // The whole driver set — shared values, the two-detector gesture
   // split, stream arbitration, and the overlay's animated styles — is
   // the deck-canonical MediaStage (m0.9 phase 1, moved VERBATIM from
-  // this file; docs/Plan_m0.9.md). The bridge rule, the
+  // this file; PLAN.md's m0.9 entry). The bridge rule, the
   // inline-callback rule, and the detector rationale live in its
   // header and still bind everything below.
   const stage = useMediaStage();
@@ -1273,10 +1297,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       return;
     }
     let cancelled = false;
-    void Promise.all([
-      getSetting(db, PLAYBACK_KEYS.video),
-      getSetting(db, PLAYBACK_KEYS.motion),
-    ]).then(
+    void readPlaybackValues(db, [PLAYBACK_KEYS.video, PLAYBACK_KEYS.motion]).then(
       ([video, motion]) => {
         if (!cancelled) {
           setPlayback({ video: parsePlaybackMode(video), motion: parsePlaybackMode(motion) });
@@ -2245,7 +2266,10 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       const stage: PlaybackStage = {
         immersive,
         // Immersive is edge to edge: the chrome keeps clear of the OS
-        // navigation bar (the S23's three-button bar, 2026-09-10).
+        // navigation bar (the S23's three-button bar, 2026-09-10). The
+        // gallery-style floating-control idiom was weighed and rejected
+        // for immersive (m0.9 P2-7): the deck's controls are too many
+        // and too large to float over the picture.
         insetBottom: immersive ? insetsRef.current.bottom : 0,
         chromeVisible: active && playbackChromeRef.current === item.id,
         onChromeVisibleChange: (visible) => setChromeFor(item.id, visible),
@@ -2321,6 +2345,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     { stageW, stageH, scale, tx, ty },
     zoomable ? current.id : null,
     zoomable ? current.uri : null,
+    zoomable ? current.version : 0,
     zoomable,
   );
   // D7: retained bases die with the unit (the new current stays warm).

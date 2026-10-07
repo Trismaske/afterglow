@@ -9,7 +9,7 @@
  * the ~6.5 min (S23, 27k) it already covered. The S23 evidence that
  * decided this: an hour of re-embedding received in fragments, each
  * session restarting the enumeration at 0% while every window
- * underneath had persisted (docs/Plan_m0.9.md, phase 9).
+ * underneath had persisted (PLAN.md's m0.9 entry, phase 9).
  *
  * What a resumed pass does with the checkpoint (the runner):
  *   - pages ONE range [0, boundary) for the dated walk, plus the rows

@@ -1,6 +1,6 @@
 /**
  * MediaStage — THE shared photo/video stage (m0.9 phase 1,
- * docs/Plan_m0.9.md). One component owns the stage machinery its two
+ * PLAN.md's m0.9 entry). One component owns the stage machinery its two
  * hosts (DeckScreen, CompareScreen) share: the
  * measured borderless stage box, the virtual-detector arrangement, the
  * pinch/pan/double-tap drivers over the ONE `zoomTouchFrame` tracker,

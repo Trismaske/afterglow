@@ -56,11 +56,7 @@ Numbers change whenever an item closes, so **cross-references from code or other
    Until then the directional predicates (FAVOURITE_HELD, the lifetime COALESCE(applied_target, target) read, the heart-off 'removing' badge) are settled behavior.
    Decide it with "History event streams for actions" above: one feed, one design.
 
-6. **Type-scale and token pass** (returned from m0.8.7, which ran long — its plan's own lift-out rider).
-   The measured drift: headings 28 or 24; subtitles 12–16; thumbnail radii 8, 9 and 10; chip radii 10–20; scrim opacities 0.55–0.7; root paddings 12–20.
-   One pass over the type scale and spacing tokens, with before/after screenshots from a device pass; Summary's blank loading view and the UnitCard thumbnail-size question (Tristan leans "probably okay as is") ride it.
-
-7. **Capture-time truth: DST-normalized times, and photos shot in another timezone** (Tristan, m0.8.3 grilling Q2).
+6. **Capture-time truth: DST-normalized times, and photos shot in another timezone** (Tristan, m0.8.3 grilling Q2).
    EXIF `DateTimeOriginal` is a ZONELESS wall time.
    Every consumer, Android's own `DATE_TAKEN` extraction and our D15 rescue alike, reads it in whatever zone applies at read time.
    Two consequences follow, both currently silent.
@@ -79,18 +75,18 @@ Numbers change whenever an item closes, so **cross-references from code or other
    - where the original zone surfaces (the deck's details overlay vs deck header)
    - what an offset-less photo shows: the honest answer may be "no claim" rather than a guess
 
-8. **Goal notes do not survive process death** (codex, m0.8.5 device-pass review round 3).
+7. **Goal notes do not survive process death** (codex, m0.8.5 device-pass review round 3).
    Every `noteDecisions` call is in-memory and post-commit: a process killed between a verdict's commit and its note evaluating loses the note, on every verdict path.
    The sharpest instance is the edited-copy trash flow, where Android's consent dialog sits between the staging commit and Home's note — a kill there leaves the row in today's ring while the celebration baseline later initializes at-or-past the goal, so that day's crossing never fires.
    Damage is bounded: the ring (durable) stays correct, and the miss self-heals at the next day boundary.
    A durable fix means persisting un-noted credits and replaying them from startup recovery — its own design pass.
 
-9. **Script the release-pass recipes into the UI gate** (from m0.8.7's agent-driven device pass).
+8. **Script the release-pass recipes into the UI gate** (from m0.8.7's agent-driven device pass).
    The eight recipes in [MOBILE_UI_GATE.md](MOBILE_UI_GATE.md) "Release-pass recipes" each ran end to end by hand-driven adb (harness: `scripts/adb-ui.sh`; techniques: [ANDROID_DEVICE_TESTING.md](ANDROID_DEVICE_TESTING.md) §6.1–6.6) — seeded media, sink-line assertions, pixel diffs, OS-dialog walks included.
    The open design questions before they join `scripts/mobile-ui-gate.mjs`: the gate is deliberately mutation-light while these recipes seed media, change sources/strictness, and trash photos (a separate `--release-pass` mode? a second script sharing the gate's helpers?); host-side deps appear (ImageMagick, exiftool, PIL); and several steps take minutes of scan time each, so the pass wants its own budget and ordering.
    Until scripted, an agent replays the recipes directly — they are written as specifications.
 
-10. **One timestamp per decision write, carried into the goal note** (codex, m0.8.5 device-pass review).
+9. **One timestamp per decision write, carried into the goal note** (codex, m0.8.5 device-pass review).
    Every verdict path samples `Date.now()` twice: once for the write's `decided_at` (freshness judged against that day) and again inside `noteDecisions` (the note's day, captured synchronously at the call).
    A transaction that spans local midnight can therefore compute freshness against the old day while the note evaluates against the new one.
    The damage is bounded: the window is one sub-second transaction at exactly midnight, `noteDecisions` already drops notes whose chain runs on a later day than their call, and the per-day cache re-reads on the next note.
@@ -117,23 +113,13 @@ Numbers change whenever an item closes, so **cross-references from code or other
    The read-source half of the same family is related: "A D15-rescued photo's date does not reach the Progress library scope".
    That item was designed and shipped in m0.8.6.
 
-11. **Android cross-OS / cross-device audit** (Tristan, 2026-09-09, phase-4 close grilling).
+10. **Android cross-OS / cross-device audit** (Tristan, 2026-09-09, phase-4 close grilling).
    Both test phones are Samsung, so every OEM-observed dependency (gallery, editor and player intent handling, camera formats such as the SEF trailer, One UI's process killer) has been checked on one flavour.
    The standing rule for NEW decisions is in `apps/mobile/AGENTS.md` ("Compatibility drives platform decisions"): documented contract over observed behaviour.
    Two-part mechanism for the decisions already made:
    part one, cheap and repeatable — run the UI gate (`scripts/mobile-ui-gate.mjs`) against the Android emulator's Google system image per release, the Pixel flavour of AOSP for free;
    part two, triggered — an inventory of every OEM-observed dependency, classified documented contract / Mainline-module behaviour / OEM observation, walked on a non-Samsung device.
    Trigger for part two: the first non-Samsung tester, or a Pixel on the bench.
-
-12. **The immersive flip as a continuous animation** (Tristan, 2026-09-10 S23 pass).
-   The flip is a dip to black (P2-7: `LayoutAnimation` could not tween the pager's page content).
-   Wanted: the photo or video stays on screen throughout and scales between the framed stage and the edge-to-edge one as the chrome collapses or returns.
-   The design question is the mechanism: a shared-element style transform of the stage frame over the native header and status-bar reflows, or a Reanimated layout transition on the measured stage box, against the deck's virtual-detector and always-mounted-overlay constraints (MediaStage.tsx).
-   A playing clip must keep playing through it (the tree stays; only its box moves).
-
-13. **The segmented control on every single-choice Settings row** (Tristan, 2026-09-10).
-   The Playback rows use `components/SegmentedControl`; the daily goal, keeping-up and grouping rows still use loose chips for the same one-of-a-few choice.
-   A small sweep, waiting only on the type-scale pass above so the pill sizes land once; the chip styles and the goal rows' write fences are the parts to keep.
 
 ## Waiting for a trigger
 

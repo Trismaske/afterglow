@@ -28,8 +28,9 @@
  * act on, and the scan itself rewrites it once embeddings land.)
  *
  * m0.9 phase 7 — the KIND CHIP (G6/G7): a video, a motion photo or a GIF
- * carries its kind LAST, as a layer-3 annotation (docs/STATE_MODEL.md):
- * quiet, near-white, never an action hue; a plain photo carries none.
+ * carries its kind FIRST (rule 7: the chip leads the stage cluster's
+ * row), as a layer-3 annotation (docs/STATE_MODEL.md): quiet,
+ * near-white, never an action hue; a plain photo carries none.
  * The folder and SD annotations left the cluster for the stage's
  * metadata corner (F31, lib/stageMeta): facts read wrong among the
  * action glyphs, and small squares carry no annotation at all.
@@ -91,12 +92,41 @@ export interface PhotoBadgeInput extends WeightedActionSet {
 }
 
 /** Does this canonical id live on a non-primary (SD) volume? (F14). */
+/** The gap between the marks of a cluster row, and between its rows. */
+export const CLUSTER_GAP = 3;
+
+/** Rule 7, marks FLOW: whether the kind chips and the discs share one
+ * line of `maxWidth` (the box's inner width) — the discs are `size`
+ * wide each, the chips as wide as their first layout measured. Unknown
+ * (null) until every chip has a width: the cluster renders one line
+ * meanwhile and corrects itself from the chip's first layout. No chip
+ * or no disc always fits — the discs alone never wrap (five glyphs,
+ * 132 dp at the stage's size, inside the narrowest window's 152 dp). */
+export function marksFitOneLine(
+  chipWidths: ReadonlyArray<number | undefined>,
+  markCount: number,
+  size: number,
+  maxWidth: number,
+): boolean | null {
+  if (chipWidths.length === 0 || markCount === 0) return true;
+  let width = markCount * size + (markCount - 1) * CLUSTER_GAP;
+  for (const w of chipWidths) {
+    if (w === undefined) return null;
+    width += w + CLUSTER_GAP;
+  }
+  return width <= maxWidth;
+}
+
 export function isSdPhoto(assetId: string): boolean {
   return volumeOf(assetId) !== PRIMARY_VOLUME;
 }
 
 export function photoBadges(input: PhotoBadgeInput): PhotoBadge[] {
   const badges: PhotoBadge[] = [];
+  // The annotation FIRST and always quiet: a fact about the item, never
+  // a chore — it leads the stage cluster's row (rule 7) and must not
+  // compete with the to-do badges.
+  if (input.kind) badges.push({ kind: input.kind, weight: 'carried' });
   // Layer 1, the verdict. 'trashed' badges too since m0.8.6 (D9):
   // History's tombstone rows render executed culls, and D9 promises the
   // placeholder a verdict badge — the trash-can in cull-red, read apart
@@ -109,8 +139,5 @@ export function photoBadges(input: PhotoBadgeInput): PhotoBadge[] {
   else if (input.favourite) badges.push({ kind: 'fav', weight: input.favourite });
   if (input.organize) badges.push({ kind: 'organize', weight: input.organize });
   if (input.share) badges.push({ kind: 'share', weight: input.share });
-  // The annotation LAST and always quiet: a fact about the item, never
-  // a chore — it must not compete with the to-do badges.
-  if (input.kind) badges.push({ kind: input.kind, weight: 'carried' });
   return badges;
 }

@@ -59,7 +59,7 @@ Work happens on branch `initial`.
 | docs/DEVELOPMENT.md | Dev env setup, emulator, run/debug commands |
 | docs/ANDROID_DEVICE_TESTING.md | Pair and control physical Android phones over wireless ADB. Multi-device automation |
 | docs/MOBILE_UI_GATE.md | Automated pre-release UI walk of the mobile app (`scripts/mobile-ui-gate.mjs`) plus the manual pass |
-| docs/STATE_MODEL.md | **Read before touching any surface that shows photo state.** The three layers (verdict · actions · annotations) and the six visual rules. The contract every state surface is held to |
+| docs/STATE_MODEL.md | **Read before touching any surface that shows photo state.** The three layers (verdict · actions · annotations) and the seven visual rules. The contract every state surface is held to |
 | docs/TODO.md | Open questions parked for their own investigation |
 | docs/DocsAudit.md | The standalone documentation/comments reorganization work order (CONTRIBUTING.md creation, lettered-principle recovery) — parallel to the release trains; delete when it lands |
 | docs/REVIEW_CLASSES.md | The recurring defect-class checklist. The self-review input before any `codex-review` round |

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { demoteForState, isSdPhoto, photoBadges } from './photoBadges';
+import { demoteForState, isSdPhoto, marksFitOneLine, photoBadges } from './photoBadges';
 
 const NONE = {
   state: 'unreviewed',
@@ -72,7 +72,7 @@ describe('the annotation badges (m0.8.7, F14/F19)', () => {
     share: null,
   };
 
-  it('the kind chip renders LAST and always quiet — a fact, never a chore', () => {
+  it('the kind chip renders FIRST and always quiet — a fact, never a chore (rule 7)', () => {
     expect(
       photoBadges({
         state: 'kept',
@@ -83,12 +83,28 @@ describe('the annotation badges (m0.8.7, F14/F19)', () => {
         kind: 'motion',
       }),
     ).toEqual([
+      { kind: 'motion', weight: 'carried' },
       { kind: 'keep', weight: 'live' },
       { kind: 'edit', weight: 'live' },
       { kind: 'share', weight: 'carried' },
-      { kind: 'motion', weight: 'carried' },
     ]);
     expect(photoBadges({ ...NONE, kind: null })).toEqual([]);
+  });
+});
+
+describe('marksFitOneLine (rule 7: the chip and the discs share a line when they fit)', () => {
+  // The S10e's deck stage at 24 dp marks: 152 dp inside the pill.
+  it('four discs and a 60 dp Motion chip overrun 152 dp; three fit', () => {
+    expect(marksFitOneLine([60], 4, 24, 152)).toBe(false); // 60+3+105 = 168
+    expect(marksFitOneLine([60], 3, 24, 152)).toBe(true); // 60+3+78 = 141
+    expect(marksFitOneLine([60], 4, 24, 168)).toBe(true); // exactly the budget
+  });
+  it('no chip, or no disc, is always one line', () => {
+    expect(marksFitOneLine([], 5, 24, 10)).toBe(true);
+    expect(marksFitOneLine([60], 0, 24, 10)).toBe(true);
+  });
+  it('is unknown until every chip has measured', () => {
+    expect(marksFitOneLine([undefined], 4, 24, 152)).toBeNull();
   });
 });
 

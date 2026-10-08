@@ -199,6 +199,9 @@ const VERDICT_FLEX = 1.75;
 const FINISH_MIN_HEIGHT = 56;
 /** The badge pill's inset from the stage's left edge. */
 const FLAG_BADGE_LEFT = 10;
+/** The badge pill's horizontal padding, per side: the cluster's one-line
+ * fit is measured against the width inside it. */
+const FLAG_BADGE_PAD_X = 9;
 /** The deck stage's gutter, per side: the root's horizontal padding plus
  * the frame's border — the ONE width difference between the deck stage
  * and immersive's edge-to-edge stage. The pager never sees it: each page
@@ -477,9 +480,10 @@ interface DeckView {
   untracked: ReadonlySet<string>;
   /** What the finish button counts (pending singles / alive members). */
   finishCount: number;
-  /** The current photo's part chip (phase 10, lib/groupParts.ts); null
-   * for a singles deck, a list and a one-part group. Frozen with the
-   * rest of the view while a held advance shows the outgoing unit. */
+  /** The current photo's part line (phase 10, lib/groupParts.ts), the
+   * position box's second line under the Parts Overlay row; null for a
+   * singles deck, a list and a one-part group. Frozen with the rest of
+   * the view while a held advance shows the outgoing unit. */
   partLabel: string | null;
 }
 
@@ -2549,6 +2553,12 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   const stageBadges = badgesFor(view.current).filter(
     (b) => overlay.statusBadges || isKindChip(b.kind),
   );
+  /** The badge pill's width budget: the stage's width inside the gutters,
+   * less the pill's inset and the playback buttons' end of the row. */
+  const badgePillMaxWidth = Math.max(
+    0,
+    pageW - 2 * gutter - FLAG_BADGE_LEFT - STAGE_BOTTOM_ROW_BUTTONS,
+  );
 
   // Re-decide: tapping the ACTIVE verdict clears back to unreviewed; a
   // A DECIDED photo changing to keep/to-edit takes the state-aware path:
@@ -2690,21 +2700,25 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 until the eye reopens. */}
             {!stageHidden && !scrubbing && (
               <>
-                {overlay.position && (
+                {/* The top-right box (STATE_MODEL rule 7: one box per
+                    corner, text facts stack, lines flush to the corner's
+                    side): the position line under the Position row, and
+                    under the Parts row the part the current photo belongs
+                    to (phase 10) — the line changes at each boundary, so
+                    the look-alikes the engine cut apart read as "Part 2
+                    of 4 · 5 photos" without leaving the group; a one-part
+                    group has no part line. Either row alone still draws
+                    the box. */}
+                {(overlay.position || (overlay.parts && view.partLabel !== null)) && (
                   <View style={styles.posBadge} pointerEvents="none">
-                    <Text style={styles.posBadgeText}>
-                      {view.cursor + 1}/{view.keepCount}
-                    </Text>
-                  </View>
-                )}
-                {/* Phase 10: the part the current photo belongs to — the
-                    chip changes at each boundary, so the look-alikes the
-                    engine cut apart read as "Part 2 of 4 · 5 photos"
-                    without leaving the group. A one-part group shows
-                    nothing. Rides the position row's visibility. */}
-                {overlay.position && view.partLabel !== null && (
-                  <View style={styles.partBadge} pointerEvents="none">
-                    <Text style={styles.partBadgeText}>{view.partLabel}</Text>
+                    {overlay.position && (
+                      <Text style={styles.posBadgeText}>
+                        {view.cursor + 1}/{view.keepCount}
+                      </Text>
+                    )}
+                    {overlay.parts && view.partLabel !== null && (
+                      <Text style={styles.partBadgeText}>{view.partLabel}</Text>
+                    )}
                   </View>
                 )}
                 {/* P2-6: the corner is the GLANCE; tapping it (or the
@@ -2737,23 +2751,21 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 )}
                 {stageBadges.length > 0 && (
                   <Pressable
-                    // The pill wraps its badges upward before the buttons'
-                    // end of the row (a full badge set on a narrow stage).
+                    // The bottom-left box (rule 7, marks flow): the pill
+                    // ends before the buttons' end of the row, and the
+                    // cluster drops its chip to a second line, flush left,
+                    // when a full badge set on a narrow stage overruns it.
                     // Only with something to show: an empty pill's backdrop
                     // is a mark of its own (codex round 1).
-                    style={[
-                      styles.flagBadge,
-                      {
-                        maxWidth: Math.max(
-                          0,
-                          pageW - 2 * gutter - FLAG_BADGE_LEFT - STAGE_BOTTOM_ROW_BUTTONS,
-                        ),
-                      },
-                    ]}
+                    style={[styles.flagBadge, { maxWidth: badgePillMaxWidth }]}
                     onPress={() => setDetailsOpen(true)}
                     accessibilityLabel="Show photo details"
                   >
-                    <BadgeCluster badges={stageBadges} size={24} />
+                    <BadgeCluster
+                      badges={stageBadges}
+                      size={24}
+                      maxWidth={badgePillMaxWidth - 2 * FLAG_BADGE_PAD_X}
+                    />
                   </Pressable>
                 )}
               </>
@@ -3239,26 +3251,19 @@ const styles = StyleSheet.create({
   /** The cold-open last-photo container — NOT the measured stage (that
    * lives in MediaStageView); just a frameless flex box. */
   coldStage: { flex: 1 },
+  // The top-right box: its lines stack flush right (rule 7).
   posBadge: {
     position: 'absolute',
     top: 10,
     right: 10,
+    alignItems: 'flex-end',
     backgroundColor: 'rgba(0,0,0,0.55)',
     borderRadius: 6,
     paddingHorizontal: 9,
     paddingVertical: 4,
   },
   posBadgeText: { color: colors.text, fontSize: 13, fontWeight: '700' },
-  // The part chip sits under the position badge, same backdrop (phase 10).
-  partBadge: {
-    position: 'absolute',
-    top: 40,
-    right: 10,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    borderRadius: 6,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-  },
+  // The part line under the position, one weight quieter (phase 10).
   partBadgeText: { color: colors.text, fontSize: 12, fontWeight: '600' },
   partDivider: {
     position: 'absolute',
@@ -3292,7 +3297,7 @@ const styles = StyleSheet.create({
     left: FLAG_BADGE_LEFT,
     backgroundColor: 'rgba(0,0,0,0.55)',
     borderRadius: 6,
-    paddingHorizontal: 9,
+    paddingHorizontal: FLAG_BADGE_PAD_X,
     paddingVertical: 4,
   },
   flagBadgeText: { fontSize: 13, fontWeight: '700' },

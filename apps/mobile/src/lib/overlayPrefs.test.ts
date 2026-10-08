@@ -8,11 +8,12 @@ import {
 } from './overlayPrefs';
 
 describe('overlayPrefs', () => {
-  it('defaults everything on except megapixels (M19)', () => {
+  it('defaults everything on except megapixels (M19) and parts', () => {
     expect(DEFAULT_OVERLAY_PREFS).toEqual({
       dateTime: true,
       folder: true,
       position: true,
+      parts: false,
       pixels: true,
       megapixels: false,
       extension: true,
@@ -22,9 +23,9 @@ describe('overlayPrefs', () => {
     });
   });
 
-  it('has nine rows with distinct settings keys', () => {
-    expect(OVERLAY_ROWS).toHaveLength(9);
-    expect(new Set(OVERLAY_KEYS).size).toBe(9);
+  it('has ten rows with distinct settings keys', () => {
+    expect(OVERLAY_ROWS).toHaveLength(10);
+    expect(new Set(OVERLAY_KEYS).size).toBe(10);
   });
 
   it('reads 1/0 rows and keeps the default for unset or odd rows', () => {

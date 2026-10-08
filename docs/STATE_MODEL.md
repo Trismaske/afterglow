@@ -199,7 +199,7 @@ A deck that shows a partially-reachable group names the hidden members ("N on un
 
 ## The visual language
 
-Six rules. They apply to every surface that paints a state.
+Seven rules. They apply to every surface that paints a state.
 
 1. **Fill = reviewed.** The coloured part of any bar is exactly the photos that carry a verdict.
    The filled fraction therefore always equals the percentage printed beside it.
@@ -238,6 +238,10 @@ Six rules. They apply to every surface that paints a state.
    A suspended queued removal shows the carried heart: the gallery favourite still stands.
    The deck's favourite and organize chips disable on a staged cull; edit and share stay active (the browse-mode edit chip flag-toggles there, so queueing the edit never silently rescues the cull).
    Verdicts have no lifecycle and always render at full strength.
+7. **One box per corner.** Everything a stage corner says shares one backdrop, and every line in it aligns to the corner's side.
+   Text facts **stack**: one line per kind of fact (when, where, what in the top-left; position, part in the top-right), facts of one kind joined by ` · `, and a line never wraps.
+   Marks **flow**: the kind chip first, then the verdict and action discs, on one line when they fit before the playback buttons, otherwise the chip on its own line above the discs.
+   A second box in a corner, or content drawn outside its backdrop, is drift.
 
 ### What this means per surface
 
@@ -246,7 +250,7 @@ Six rules. They apply to every surface that paints a state.
 - **Progress chips** — two rows: verdicts (Unreviewed · Kept · Staged cull), then actions (Edit · Favourite · Organize · Share).
   They answer the **grid** question (third row of the table above), never the queue one.
   Their count is the grid's population by construction, so a tapped chip always shows exactly the number it printed.
-- **Grid dots and badges** — verdict first, then actions, then the one quiet annotation (the kind chip: Video · Motion · GIF, near-white, m0.9), in the one order `photoBadges.ts` defines.
+- **Grid dots and badges** — the one quiet annotation first (the kind chip: Video · Motion · GIF, near-white, m0.9; it leads the stage cluster and never reaches a thumbnail), then the verdict, then actions, in the one order `photoBadges.ts` defines.
   The folder and the SD card are facts of the stage's metadata corner (`lib/stageMeta.ts`), never badges, and a small square carries no annotation at all.
   Time-attachment stays internal and draws nothing.
   A clip thumbnail (video, motion photo, GIF) wears its kind mark top-left on every surface, playing or not — an annotation, exempt from the eye; a plain photo carries none.

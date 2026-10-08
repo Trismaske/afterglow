@@ -1,9 +1,22 @@
-import React, { useEffect, useState } from 'react';
-import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import React, { useEffect, useReducer, useState } from 'react';
+import {
+  PixelRatio,
+  StyleSheet,
+  Text,
+  View,
+  type LayoutChangeEvent,
+  type StyleProp,
+  type ViewStyle,
+} from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors } from '../theme';
 import { badgesHidden, subscribeBadgesHidden } from '../lib/badgePrefs';
-import type { BadgeWeight, PhotoBadge } from '../lib/photoBadges';
+import {
+  CLUSTER_GAP,
+  marksFitOneLine,
+  type BadgeWeight,
+  type PhotoBadge,
+} from '../lib/photoBadges';
 import type { EffectiveState } from '../lib/progress';
 import { VERDICT_META } from './progress/stateMeta';
 
@@ -35,13 +48,14 @@ import { VERDICT_META } from './progress/stateMeta';
  * Only actions take a weight; a verdict has no lifecycle and always
  * renders live.
  *
- * `BadgeCluster` is the REVIEW surfaces' layout (deck, Groups): the full
- * set from lib/photoBadges.ts — verdict plus all four actions — WRAPPED
- * inside its anchor, so a photo carrying every flag shows them all
- * (stacked rows on a small thumbnail) and none hides another. The summary
- * rows that read out one durable STATE (History, DayProgress strips) keep
- * their single state glyph, where a pencil means "in the edit queue"
- * rather than a flag beside a verdict.
+ * `BadgeCluster` is the deck stage's badge box (docs/STATE_MODEL.md rule
+ * 7, marks FLOW): the full set from lib/photoBadges.ts — the kind chip,
+ * then the verdict and all four actions — on one line when it fits the
+ * box, otherwise the chip on its own line above the discs, every line
+ * flush left (the box sits bottom-left). The summary rows that read out
+ * one durable STATE (History, DayProgress strips) keep their single
+ * state glyph, where a pencil means "in the edit queue" rather than a
+ * flag beside a verdict.
  */
 // prettier-ignore
 export type DecisionKind =
@@ -147,9 +161,20 @@ export function DecisionBadge({
 /** A kind chip: the kind's word as quiet near-white text on the plain
  * disc. Only legible at deck-stage sizes — small clusters render the
  * glyph badges alone (see BadgeCluster). */
-function KindChip({ kind, size }: { kind: 'video' | 'motion' | 'gif'; size: number }) {
+function KindChip({
+  kind,
+  size,
+  onWidth,
+}: {
+  kind: 'video' | 'motion' | 'gif';
+  size: number;
+  onWidth?: (width: number) => void;
+}) {
   return (
-    <View style={[styles.pill, { height: size, borderRadius: size / 2 }]}>
+    <View
+      style={[styles.pill, { height: size, borderRadius: size / 2 }]}
+      onLayout={onWidth && ((e: LayoutChangeEvent) => onWidth(e.nativeEvent.layout.width))}
+    >
       <Text style={[styles.pillText, { fontSize: Math.round(size * 0.55) }]} numberOfLines={1}>
         {KIND_CHIP_LABELS[kind]}
       </Text>
@@ -169,47 +194,83 @@ export function useBadgesHidden(): boolean {
  * keep the glyph badges and drop only the kind chip. */
 const MIN_PILL_SIZE = 18;
 
+/** A kind chip's laid-out width per label, size and font scale, learnt
+ * from its first layout and kept for the session: the one-line fit is
+ * arithmetic over it (lib/photoBadges' marksFitOneLine), never a Yoga
+ * wrap — Yoga sized the pill to one line and drew a wrapped second
+ * outside its backdrop (the tester, 2026-09-28; reproduced on the S10e
+ * with three badges and a chip). */
+const chipWidths = new Map<string, number>();
+
+function chipWidthKey(kind: DecisionKind, size: number): string {
+  return `${kind}|${size}|${PixelRatio.getFontScale()}`;
+}
+
 /**
- * Every badge a photo carries, inside its anchor so none is hidden: the
- * glyph badges on one row and the kind chip on a row beneath, the pill
- * growing upward from its bottom anchor. Renders nothing when `badges` is empty or the user
- * hid badges (the one durable toggle, F19/L6).
+ * Every badge a photo carries, inside its box so none is hidden (rule 7,
+ * marks FLOW): the kind chip first, then the glyph badges, on one line
+ * when `maxWidth` holds them, otherwise the chip on its own line above
+ * the discs, both flush left; the pill grows upward from its bottom
+ * anchor. Without a `maxWidth` the cluster is always one line. Renders
+ * nothing when `badges` is empty or the user hid badges (the one durable
+ * toggle, F19/L6).
  */
 export function BadgeCluster({
   badges,
   size = 18,
+  maxWidth,
   style,
 }: {
   badges: readonly PhotoBadge[];
   size?: number;
+  /** The inner width the box offers (its padding excluded). */
+  maxWidth?: number;
   style?: StyleProp<ViewStyle>;
 }) {
   const hidden = useBadgesHidden();
+  const [, relayout] = useReducer((n: number) => n + 1, 0);
   if (hidden || badges.length === 0) return null;
-  // Two rows by construction — the glyph badges, then the kind chip
-  // beneath — never a wrapped line: Yoga sized the pill to one line and
-  // drew a wrapped second outside its backdrop (the tester, 2026-09-28;
-  // reproduced on the S10e with three badges and a chip).
   const marks = badges.filter((badge) => !isKindChip(badge.kind));
   const chips = size >= MIN_PILL_SIZE ? badges.filter((badge) => isKindChip(badge.kind)) : [];
   if (marks.length === 0 && chips.length === 0) return null;
+  const oneLine =
+    maxWidth === undefined ||
+    marksFitOneLine(
+      chips.map((chip) => chipWidths.get(chipWidthKey(chip.kind, size))),
+      marks.length,
+      size,
+      maxWidth,
+    ) !== false;
+  const chipNodes = chips.map((badge) =>
+    isKindChip(badge.kind) ? (
+      <KindChip
+        key={badge.kind}
+        kind={badge.kind}
+        size={size}
+        onWidth={(width) => {
+          const key = chipWidthKey(badge.kind, size);
+          if (chipWidths.get(key) === width) return;
+          chipWidths.set(key, width);
+          relayout();
+        }}
+      />
+    ) : null,
+  );
+  const markNodes = marks.map((badge) => (
+    <DecisionBadge key={badge.kind} kind={badge.kind} size={size} weight={badge.weight} />
+  ));
   return (
     <View style={[styles.cluster, style]} pointerEvents="none">
-      {marks.length > 0 && (
+      {oneLine ? (
         <View style={styles.clusterRow}>
-          {marks.map((badge) => (
-            <DecisionBadge key={badge.kind} kind={badge.kind} size={size} weight={badge.weight} />
-          ))}
+          {chipNodes}
+          {markNodes}
         </View>
-      )}
-      {chips.length > 0 && (
-        <View style={styles.clusterRow}>
-          {chips.map((badge) =>
-            isKindChip(badge.kind) ? (
-              <KindChip key={badge.kind} kind={badge.kind} size={size} />
-            ) : null,
-          )}
-        </View>
+      ) : (
+        <>
+          <View style={styles.clusterRow}>{chipNodes}</View>
+          <View style={styles.clusterRow}>{markNodes}</View>
+        </>
       )}
     </View>
   );
@@ -289,11 +350,13 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceRaised,
   },
   pillText: { color: colors.text, fontWeight: '600' },
-  // A column of rows (BadgeCluster): the pill is anchored at its
-  // bottom, so a second row grows it upward. The glyph row never wraps:
-  // a full set is five glyphs, 132 dp at the stage's size, and the
-  // narrowest supported window (360 dp, portrait-locked) leaves the pill
-  // 152 dp after the gutters, the buttons' row and its padding (codex).
-  cluster: { alignItems: 'flex-end', gap: 3 },
-  clusterRow: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 3 },
+  // A column of rows (BadgeCluster), flush left like the box it fills:
+  // the pill is anchored at its bottom, so a second row grows it upward.
+  // The glyph row itself never wraps: a full set is five glyphs, 132 dp
+  // at the stage's size, and the narrowest supported window (360 dp,
+  // portrait-locked) leaves the pill 152 dp after the gutters, the
+  // buttons' row and its padding (codex); the chip is what drops to its
+  // own line.
+  cluster: { alignItems: 'flex-start', gap: CLUSTER_GAP },
+  clusterRow: { flexDirection: 'row', alignItems: 'center', gap: CLUSTER_GAP },
 });

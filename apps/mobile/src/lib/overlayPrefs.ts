@@ -1,6 +1,6 @@
 /**
  * The Overlay section (m0.9 phase 7, F34): which items the deck stage
- * draws over the photo. Nine rows, each a durable boolean in the
+ * draws over the photo. Ten rows, each a durable boolean in the
  * settings table, each with the subtext Settings shows under it (M22:
  * full switch rows with an explanation, no chip grid). The rows CURATE
  * the set; the eye (lib/badgePrefs) MUTES the whole set at once (M20).
@@ -12,13 +12,16 @@
  *
  * Defaults: everything on except Megapixels (M19) — pixels are the
  * editing fact a photographer reads; megapixels the capture-settings
- * one (M14), a second rendering of the same fact.
+ * one (M14), a second rendering of the same fact — and Parts (settled
+ * with Tristan, 2026-10-08): the strip divider already marks a part
+ * boundary, so the chip is opt-in.
  */
 
 export type OverlayRow =
   | 'dateTime'
   | 'folder'
   | 'position'
+  | 'parts'
   | 'pixels'
   | 'megapixels'
   | 'extension'
@@ -29,7 +32,8 @@ export type OverlayRow =
 export type OverlayPrefs = Readonly<Record<OverlayRow, boolean>>;
 
 /** The rows in Settings order: the metadata corner's lines first (when,
- * where, what), then the position counter, then the two badge rows. */
+ * where, what), then the position box's two lines, then the two badge
+ * rows. */
 export const OVERLAY_ROWS: ReadonlyArray<{
   row: OverlayRow;
   key: string;
@@ -57,6 +61,13 @@ export const OVERLAY_ROWS: ReadonlyArray<{
     title: 'Position',
     hint: 'Where you are in the group or the list, in the top-right corner.',
     defaultOn: true,
+  },
+  {
+    row: 'parts',
+    key: 'overlay_parts',
+    title: 'Parts',
+    hint: 'Which look-alike part of a group you are in, under the position: Part 2 of 4 · 5 photos.',
+    defaultOn: false,
   },
   {
     row: 'pixels',

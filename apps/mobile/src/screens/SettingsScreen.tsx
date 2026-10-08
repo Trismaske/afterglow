@@ -217,7 +217,7 @@ export function SettingsScreen({ navigation }: Props) {
     },
     [db],
   );
-  /** Phase 7 (F34): the nine Overlay rows, each with the durable anchor
+  /** Phase 7 (F34): the ten Overlay rows, each with the durable anchor
    * and write fence the playback rows use, read on focus. */
   const [overlay, setOverlay] = useState<OverlayPrefs>(DEFAULT_OVERLAY_PREFS);
   const durableOverlayRef = useRef<OverlayPrefs>(DEFAULT_OVERLAY_PREFS);
@@ -989,7 +989,7 @@ export function SettingsScreen({ navigation }: Props) {
           </View>
         </View>
 
-        {/* Phase 7 (F34, M22): the Overlay section — nine full switch
+        {/* Phase 7 (F34, M22): the Overlay section — ten full switch
             rows with subtext. The rows say what the stage draws over
             the photo; the deck's eye hides the whole set at once. */}
         <Text style={styles.sectionLabel}>Overlay</Text>

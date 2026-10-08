@@ -22,11 +22,11 @@ export interface StrictnessStep {
 }
 
 export const STRICTNESS_STEPS: readonly StrictnessStep[] = [
-  { id: 'loosest', label: 'Much looser', baseThreshold: 0.42 },
+  { id: 'loosest', label: 'Loosest', baseThreshold: 0.42 },
   { id: 'looser', label: 'Looser', baseThreshold: 0.46 },
   { id: 'default', label: 'Default', baseThreshold: 0.5 },
   { id: 'stricter', label: 'Stricter', baseThreshold: 0.54 },
-  { id: 'strictest', label: 'Much stricter', baseThreshold: 0.58 },
+  { id: 'strictest', label: 'Strictest', baseThreshold: 0.58 },
 ];
 
 export function parseStrictness(raw: string | null): StrictnessStep {

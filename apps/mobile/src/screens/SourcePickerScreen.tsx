@@ -50,7 +50,7 @@ import { requestRescan, supersedeScan } from '../scan/scanRunner';
 import { useReview } from '../review/ReviewContext';
 import { showToast } from '../lib/toast';
 import { BigButton } from '../components/BigButton';
-import { colors, touch, useTheme } from '../theme';
+import { colors, scrim, space, touch, type, useTheme } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'SourcePicker'>;
 
@@ -458,20 +458,20 @@ export function SourcePickerScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   loadFailed: { gap: 10, alignItems: 'flex-start' },
   retryButton: { minHeight: 44, justifyContent: 'center' },
-  retryText: { fontSize: 15, fontWeight: '700' },
+  retryText: { ...type.body, fontWeight: '700' },
   applyingOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: scrim.sheet,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 14,
   },
-  applyingText: { color: colors.text, fontSize: 15, fontWeight: '600' },
+  applyingText: { color: colors.text, ...type.body, fontWeight: '600' },
   root: { flex: 1, backgroundColor: colors.background },
   scroll: { flex: 1 },
-  content: { padding: 16, gap: 10 },
-  hint: { color: colors.textDim, fontSize: 14, lineHeight: 20, marginBottom: 4 },
-  loading: { color: colors.textDim, fontSize: 14, padding: 8 },
+  content: { padding: space.page, gap: 10 },
+  hint: { color: colors.textDim, ...type.label, marginBottom: 4 },
+  loading: { color: colors.textDim, ...type.label, padding: 8 },
   loadingState: { alignItems: 'center', gap: 6, paddingVertical: 32 },
   row: {
     flexDirection: 'row',
@@ -486,7 +486,7 @@ const styles = StyleSheet.create({
   },
   rowBody: { flex: 1 },
   rowTitleLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  rowTitle: { color: colors.text, fontSize: 15, fontWeight: '600', flexShrink: 1 },
+  rowTitle: { color: colors.text, ...type.body, fontWeight: '600', flexShrink: 1 },
   // Unmounted = greyed, never gone (D5): the row names the state and
   // keeps its place; the data returns with the card.
   rowUnmounted: { opacity: 0.55 },
@@ -496,7 +496,7 @@ const styles = StyleSheet.create({
   // variable-width name, each row's tag sat somewhere else.
   rowTag: {
     color: colors.textDim,
-    fontSize: 11,
+    ...type.caption,
     fontWeight: '700',
     borderWidth: 1,
     borderColor: colors.border,
@@ -506,9 +506,9 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginLeft: 'auto',
   },
-  rowHint: { color: colors.textDim, fontSize: 12 },
-  rowIncluded: { fontSize: 12 },
-  rowCount: { color: colors.textDim, fontSize: 13 },
+  rowHint: { color: colors.textDim, ...type.caption },
+  rowIncluded: { ...type.caption },
+  rowCount: { color: colors.textDim, ...type.label },
   // F11 (m0.8.7, measured on the S10e): a fixed 28dp box in BOTH
   // states — the check glyph's font line box (~28dp > the title line)
   // used to grow a row on selection and shift every row below it. The

@@ -77,8 +77,9 @@ import {
 } from '../lib/statsLoad';
 import { perfLog } from '../lib/perfLog';
 import { GoalRing } from '../components/GoalRing';
+import { useLargeText } from '../components/useLargeText';
 import { useReview } from '../review/ReviewContext';
-import { colors, touch, useTheme } from '../theme';
+import { colors, space, touch, type, useTheme } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Stats'>;
 
@@ -279,6 +280,7 @@ export function StatsScreen({ navigation }: Props) {
 // ------------------------------------------------------------- Activity
 
 function ActivityTab({ decisions }: { decisions: DecisionStats | null }) {
+  const largeText = useLargeText();
   if (!decisions) return <Text style={styles.loading}>Loading stats…</Text>;
 
   const reviewedToday = decisions.reviewedByDay.get(decisions.day) ?? 0;
@@ -303,7 +305,7 @@ function ActivityTab({ decisions }: { decisions: DecisionStats | null }) {
   return (
     <>
       <View style={styles.card}>
-        <View style={styles.todayRow}>
+        <View style={[styles.todayRow, largeText && styles.todayRowStacked]}>
           <GoalRing
             size={116}
             strokeWidth={11}
@@ -992,25 +994,27 @@ const styles = StyleSheet.create({
     borderBottomWidth: 2,
     borderBottomColor: 'transparent',
   },
-  tabLabel: { color: colors.textDim, fontSize: 15, fontWeight: '700' },
-  content: { paddingHorizontal: 20, paddingTop: 16, gap: 16 },
-  loading: { color: colors.textDim, fontSize: 15, padding: 20 },
+  tabLabel: { color: colors.textDim, ...type.body, fontWeight: '700' },
+  content: { paddingHorizontal: space.page, paddingTop: space.page, gap: space.card },
+  loading: { color: colors.textDim, ...type.body, padding: 20 },
   card: {
     backgroundColor: colors.surface,
     borderRadius: touch.radius,
     borderWidth: 1,
     borderColor: colors.border,
-    padding: 16,
+    padding: space.card,
     gap: 12,
   },
-  cardTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
-  cardText: { color: colors.textDim, fontSize: 15, lineHeight: 21 },
-  cardHint: { color: colors.textDim, fontSize: 13, lineHeight: 18 },
-  headline: { color: colors.text, fontSize: 20, fontWeight: '700', lineHeight: 27 },
-  timeLine: { color: colors.text, fontSize: 15, fontWeight: '600' },
+  cardTitle: { color: colors.text, ...type.heading, fontWeight: '700' },
+  cardText: { color: colors.textDim, ...type.body },
+  cardHint: { color: colors.textDim, ...type.label },
+  headline: { color: colors.text, ...type.heading, fontWeight: '700' },
+  timeLine: { color: colors.text, ...type.body, fontWeight: '600' },
   todayRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  /** Large text: the copy goes under the ring (lib/textScale.ts). */
+  todayRowStacked: { flexDirection: 'column', alignItems: 'stretch' },
   todayBody: { flex: 1, gap: 4 },
-  streakText: { color: colors.text, fontSize: 14, fontWeight: '600' },
+  streakText: { color: colors.text, ...type.label, fontWeight: '600' },
   tiles: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   tile: {
     flexBasis: '47%',
@@ -1020,8 +1024,8 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 2,
   },
-  tileValue: { fontSize: 24, fontWeight: '800' },
-  tileLabel: { color: colors.textDim, fontSize: 12 },
+  tileValue: { ...type.title, fontWeight: '800' },
+  tileLabel: { color: colors.textDim, ...type.caption },
   plot: { justifyContent: 'flex-end' },
   goalLine: {
     position: 'absolute',
@@ -1046,30 +1050,30 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: colors.surfaceRaised,
   },
-  axisLabel: { color: colors.textDim, fontSize: 12 },
+  axisLabel: { color: colors.textDim, ...type.caption },
   heatmap: { gap: 3 },
   heatRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  heatDay: { color: colors.textDim, fontSize: 10, width: 12 },
+  heatDay: { color: colors.textDim, ...type.caption, width: 12 },
   heatCell: { flex: 1, height: 12, borderRadius: 2, backgroundColor: colors.surfaceRaised },
   heatAxis: { flexDirection: 'row', justifyContent: 'space-between', paddingLeft: 14 },
   legend: { gap: 6 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   swatch: { width: 12, height: 12, borderRadius: 3 },
-  legendLabel: { color: colors.text, fontSize: 14, flex: 1 },
-  legendValue: { color: colors.textDim, fontSize: 14, fontWeight: '600' },
+  legendLabel: { color: colors.text, ...type.label, flex: 1 },
+  legendValue: { color: colors.textDim, ...type.label, fontWeight: '600' },
   projectionRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  projectionText: { color: colors.text, fontSize: 15, flex: 1 },
+  projectionText: { color: colors.text, ...type.body, flex: 1 },
   // An empty projection is a fact about your history, not a number —
   // it recedes rather than competing with the real ones.
   projectionTextEmpty: { color: colors.textDim },
   queueRow: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 44 },
   queueBody: { flex: 1 },
-  queueLabel: { color: colors.text, fontSize: 15, fontWeight: '600' },
-  queueHint: { color: colors.textDim, fontSize: 12 },
-  queueCount: { color: colors.textDim, fontSize: 18, fontWeight: '800' },
+  queueLabel: { color: colors.text, ...type.body, fontWeight: '600' },
+  queueHint: { color: colors.textDim, ...type.caption },
+  queueCount: { color: colors.textDim, ...type.heading, fontWeight: '800' },
   lifetimeTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   milestone: { gap: 6 },
-  milestoneLabel: { color: colors.text, fontSize: 14, fontWeight: '600' },
+  milestoneLabel: { color: colors.text, ...type.label, fontWeight: '600' },
   milestoneTrack: {
     height: 6,
     borderRadius: 3,

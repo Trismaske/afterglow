@@ -47,7 +47,7 @@ import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { DecisionBadge } from '../components/DecisionBadge';
 import { demoteForState, photoBadges, type BadgeWeight, type PhotoBadge } from '../lib/photoBadges';
 import { useReview } from '../review/ReviewContext';
-import { colors, touch, useTheme } from '../theme';
+import { colors, radius, space, touch, type, useTheme } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'History'>;
 
@@ -499,12 +499,17 @@ export function HistoryScreen({ navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 14, paddingTop: 10 },
+  root: {
+    flex: 1,
+    backgroundColor: colors.background,
+    paddingHorizontal: space.page,
+    paddingTop: 10,
+  },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 10 },
   chip: {
     paddingHorizontal: 11,
     paddingVertical: 6,
-    borderRadius: 15,
+    borderRadius: radius.card,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
@@ -513,7 +518,7 @@ const styles = StyleSheet.create({
   // fill — a filled chip in edit-blue said "this filter is an edit".
   // Same shape the Progress chips use.
   chipActive: { backgroundColor: colors.surfaceRaised },
-  chipText: { color: colors.textDim, fontSize: 13, fontWeight: '600' },
+  chipText: { color: colors.textDim, ...type.label, fontWeight: '600' },
   chipTextActive: { color: colors.text },
   row: {
     flexDirection: 'row',
@@ -541,15 +546,20 @@ const styles = StyleSheet.create({
     position: 'absolute',
     width: 38,
     height: 38,
-    borderRadius: 8,
+    borderRadius: radius.thumb,
     borderWidth: 1,
     borderColor: colors.border,
   },
-  thumb: { width: 56, height: 56, borderRadius: 10, backgroundColor: colors.surfaceRaised },
+  thumb: {
+    width: 56,
+    height: 56,
+    borderRadius: radius.chip,
+    backgroundColor: colors.surfaceRaised,
+  },
   tombstone: { alignItems: 'center', justifyContent: 'center' },
   rowBody: { flex: 1, gap: 4 },
-  rowTitle: { color: colors.text, fontSize: 14, fontWeight: '600' },
-  rowTime: { color: colors.textDim, fontSize: 13 },
+  rowTitle: { color: colors.text, ...type.label, fontWeight: '600' },
+  rowTime: { color: colors.textDim, ...type.label },
   badges: { flexDirection: 'row', gap: 6, alignItems: 'center' },
-  empty: { color: colors.textDim, fontSize: 14, textAlign: 'center', marginTop: 40 },
+  empty: { color: colors.textDim, ...type.label, textAlign: 'center', marginTop: 40 },
 });

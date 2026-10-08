@@ -10,7 +10,7 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { colors } from '../theme';
+import { colors, radius, type } from '../theme';
 
 export type ActionChipKind = 'edit' | 'favourite' | 'organize' | 'share';
 
@@ -60,6 +60,7 @@ const META: Record<
 export function ActionChip({
   kind,
   active,
+  wrap = false,
   disabled = false,
   dimmed = false,
   onPress,
@@ -67,6 +68,9 @@ export function ActionChip({
   kind: ActionChipKind;
   /** The action is WAITING on the current photo — chip lights up. */
   active: boolean;
+  /** Large text (lib/textScale.ts): the row wraps two by two, each chip
+   * half the row, instead of breaking its label mid-word. */
+  wrap?: boolean;
   disabled?: boolean;
   /** The offer is WITHDRAWN (staged cull): render the chip visibly
    * inert. Deliberately separate from `disabled`, which also covers the
@@ -81,6 +85,7 @@ export function ActionChip({
     <Pressable
       style={[
         styles.chip,
+        wrap && styles.chipWrapped,
         active && { backgroundColor: meta.dim, borderColor: meta.color },
         dimmed && styles.chipDimmed,
       ]}
@@ -98,10 +103,11 @@ export function ActionChip({
 }
 
 const styles = StyleSheet.create({
+  chipWrapped: { flexBasis: '46%', flexGrow: 1 },
   chip: {
     flex: 1,
     minHeight: 44,
-    borderRadius: 10,
+    borderRadius: radius.chip,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.surface,
@@ -111,6 +117,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 6,
   },
-  text: { color: colors.textDim, fontSize: 13, fontWeight: '700' },
+  text: { color: colors.textDim, ...type.label, fontWeight: '700' },
   chipDimmed: { opacity: 0.4 },
 });

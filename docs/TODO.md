@@ -121,6 +121,10 @@ Numbers change whenever an item closes, so **cross-references from code or other
    part two, triggered — an inventory of every OEM-observed dependency, classified documented contract / Mainline-module behaviour / OEM observation, walked on a non-Samsung device.
    Trigger for part two: the first non-Samsung tester, or a Pixel on the bench.
 
+11. **The native stack header's title ignores the OS font size** (the m0.9.1 accessibility walk, 2026-10-09).
+   Every screen title in the React Navigation native header stayed the same pixel width from font scale 0.8 to 2.0 on both phones and the emulator, while every Text of ours scaled.
+   Either the header title is rendered without `sp` scaling by the library, or a `headerTitleStyle` size pins it; decide whether to supply a scaled `headerTitleStyle` (fontSize × fontScale from `useWindowDimensions`) on every route, or a custom `headerTitle` component, and measure the header height's growth against the deck's transparent-header padding (`useHeaderHeight`).
+
 ## Waiting for a trigger
 
 This section holds fixes whose shape is known but whose value is unproven, and questions whose answer needs evidence that does not exist yet.

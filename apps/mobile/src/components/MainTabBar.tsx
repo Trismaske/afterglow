@@ -18,10 +18,11 @@
  * icon (it is the bar's one primary action, not a toggling tab icon).
  */
 import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { colors, useTheme } from '../theme';
+import { colors, radius, type, useTheme } from '../theme';
+import { useHugeText } from './useLargeText';
 
 export const TAB_ICONS = {
   Home: 'home-variant',
@@ -42,6 +43,13 @@ const CRADLE = 6;
 
 export function MainTabBar({ state, descriptors, navigation, insets }: BottomTabBarProps) {
   const { accent, onAccent, accentMuted } = useTheme();
+  /** Huge text (lib/textScale.ts): the labels go — a fifth of the bar
+   * cannot hold "Favourite" past 1.6× on 360 dp — and the icons carry
+   * the tab (the content-desc names it to a screen reader); the badge
+   * grows with its digits instead of overflowing its 16 dp disc. */
+  const hugeText = useHugeText();
+  const fontScale = useWindowDimensions().fontScale;
+  const badgeSize = Math.round(16 * Math.max(1, fontScale));
   const barHeight = BAR_HEIGHT + insets.bottom;
 
   const pressHandlers = (routeKey: string, routeName: string, isFocused: boolean) => ({
@@ -104,14 +112,21 @@ export function MainTabBar({ state, descriptors, navigation, insets }: BottomTab
                   />
                 </View>
                 {badge !== undefined && badge !== 0 && (
-                  <View style={[styles.badge, { backgroundColor: accent }]}>
+                  <View
+                    style={[
+                      styles.badge,
+                      { backgroundColor: accent, minWidth: badgeSize, height: badgeSize },
+                    ]}
+                  >
                     <Text style={styles.badgeText}>{badge}</Text>
                   </View>
                 )}
               </View>
-              <Text style={[styles.label, { color: tint }, isFocused && styles.labelFocused]}>
-                {options.title ?? route.name}
-              </Text>
+              {!hugeText && (
+                <Text style={[styles.label, { color: tint }, isFocused && styles.labelFocused]}>
+                  {options.title ?? route.name}
+                </Text>
+              )}
             </Pressable>
           );
         })}
@@ -174,7 +189,7 @@ const styles = StyleSheet.create({
     gap: 2,
     paddingTop: 4,
   },
-  label: { fontSize: 11, fontWeight: '600' },
+  label: { ...type.caption, fontWeight: '600' },
   labelFocused: { fontWeight: '800' },
   // Near-circle around the icon (tester decision — the wide pill pushed
   // the badge so far out it read as Home's). M3 keeps the LABEL outside
@@ -183,7 +198,7 @@ const styles = StyleSheet.create({
   iconPill: {
     width: 36,
     height: 36,
-    borderRadius: 17,
+    borderRadius: radius.card,
     borderWidth: 1.5,
     borderColor: 'transparent',
     overflow: 'hidden',
@@ -195,14 +210,13 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: -3,
     right: -7,
-    minWidth: 16,
-    height: 16,
-    borderRadius: 8,
+    // minWidth and height follow the font scale (set per render).
+    borderRadius: radius.thumb,
     paddingHorizontal: 4,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  badgeText: { color: colors.background, fontSize: 10, fontWeight: '700' },
+  badgeText: { color: colors.background, ...type.caption, fontWeight: '700' },
   overlay: {
     position: 'absolute',
     top: 0,

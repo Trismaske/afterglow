@@ -228,7 +228,18 @@ function ThemedNavigator() {
         <Stack.Screen name="Timeline" component={TimelineScreen} options={{ title: 'Timeline' }} />
         {/* ONE deck route for both unit kinds (m0.8.5, L4). The title is
             per-unit, so the screen sets it itself as it advances. */}
-        <Stack.Screen name="Deck" component={DeckScreen} options={{ title: 'Review' }} />
+        <Stack.Screen
+          name="Deck"
+          component={DeckScreen}
+          // The header overlays the deck instead of pushing it down: hiding
+          // it for immersive then reflows nothing (useImmersiveFlight.ts).
+          // The deck pads its own top by the header's height.
+          options={{
+            title: 'Review',
+            headerTransparent: true,
+            headerStyle: { backgroundColor: colors.background },
+          }}
+        />
         <Stack.Screen name="Compare" component={CompareScreen} options={{ title: 'Compare' }} />
         <Stack.Screen name="CullList" component={CullListScreen} options={{ title: 'Cull list' }} />
         <Stack.Screen

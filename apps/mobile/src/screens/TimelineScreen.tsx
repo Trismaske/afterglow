@@ -40,6 +40,7 @@ import {
   Text,
   View,
   type ViewToken,
+  useWindowDimensions,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -52,11 +53,11 @@ import { useReview } from '../review/ReviewContext';
 import { useMembershipVersion } from '../components/useMembershipVersion';
 import type { VerdictChange } from '../lib/reviewPatch';
 import { BigButton } from '../components/BigButton';
-import { UNIT_CARD_HEIGHT, UnitCard, cardThumbRows } from '../components/UnitCard';
+import { unitCardHeight, UnitCard, cardThumbRows } from '../components/UnitCard';
 import { orderByParts } from '../lib/groupParts';
 import { useAnimatedCells, useAnimatedThumbsMode } from '../components/useAnimatedCells';
 import { StateDots } from '../components/DecisionBadge';
-import { colors, useTheme } from '../theme';
+import { colors, radius, space, type, useTheme } from '../theme';
 import { formatClock, plural } from '../lib/format';
 import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { classifyPhotoState } from '../lib/progress';
@@ -112,9 +113,9 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Timeline'>;
  * stretch is mostly singles). */
 const BROWSE_BATCH = 40;
 /** Every row = one uniform card + the row gap. getItemLayout's exactness
- * rests on UNIT_CARD_HEIGHT being style-pinned. */
+ * rests on unitCardHeight being pinned per font scale (UnitCard.tsx). */
 const ROW_GAP = 12;
-const ROW_H = UNIT_CARD_HEIGHT + ROW_GAP;
+const rowHeightFor = (fontScale: number) => unitCardHeight(fontScale) + ROW_GAP;
 
 /** A unit's list key — and its identity to the animated controller.
  * Browse runs page in with stable full ranges per load generation; the
@@ -160,6 +161,11 @@ interface BrowseState {
 }
 
 export function TimelineScreen({ navigation }: Props) {
+  /** The uniform row height at this font scale; the ref serves the
+   * scroll handlers and landings that close over it. */
+  const ROW_H = rowHeightFor(useWindowDimensions().fontScale);
+  const rowHRef = useRef(ROW_H);
+  rowHRef.current = ROW_H;
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const db = useSQLiteContext();
@@ -236,7 +242,8 @@ export function TimelineScreen({ navigation }: Props) {
         // Still at the clamped bottom? (exact: uniform rows) — within a
         // row of the end counts; scrolling away spends the slot.
         const atBottom =
-          scrollYRef.current + viewportHRef.current >= ROW_H * dataLenRef.current - ROW_H;
+          scrollYRef.current + viewportHRef.current >=
+          rowHRef.current * dataLenRef.current - rowHRef.current;
         const slot = clampReturnRef.current;
         clampReturnRef.current = null;
         if (atTop) {
@@ -691,7 +698,7 @@ export function TimelineScreen({ navigation }: Props) {
     // would overwrite these fresh mirrors.
     const landAt = (offset: number) => {
       const contentH =
-        ROW_H * data.length + LIST_PAD_BOTTOM + (footerNoteRef.current ? FOOTER_H : 0);
+        rowHRef.current * data.length + LIST_PAD_BOTTOM + (footerNoteRef.current ? FOOTER_H : 0);
       const max = Math.max(0, contentH - viewportHRef.current);
       const y = Math.max(0, Math.min(offset, max));
       scrollYRef.current = y;
@@ -701,7 +708,7 @@ export function TimelineScreen({ navigation }: Props) {
       // initial top instead of what the landing shows. Exact, since
       // rows are.
       viewableRef.current =
-        data.length === 0 ? null : data[Math.min(Math.floor(y / ROW_H), data.length - 1)];
+        data.length === 0 ? null : data[Math.min(Math.floor(y / rowHRef.current), data.length - 1)];
       jumpAtRef.current = Date.now();
       setShowBackToTop(y > DEEP_PX);
     };
@@ -772,7 +779,7 @@ export function TimelineScreen({ navigation }: Props) {
     // Everything restores the unit this clamp came from.
     if (clampToEnd && index === data.length - 1 && findUnitIndex(data, anchor.ref) < 0)
       clampReturnRef.current = { cameFrom: anchor };
-    landAt(ROW_H * index);
+    landAt(rowHRef.current * index);
     listRef.current?.scrollToIndex({ index, animated: false, viewPosition: 0 });
     // data is deliberately not a dependency: the jump happens once per
     // switch, not on every page the browse pager lands afterwards (the
@@ -825,10 +832,12 @@ export function TimelineScreen({ navigation }: Props) {
   const renderUnit = useCallback(
     ({ item: unit, index }: { item: TimelineUnit; index: number }) => {
       const card = renderUnitCard(unit, index);
-      return <View style={styles.row}>{card}</View>;
+      return <View style={[styles.row, { height: ROW_H }]}>{card}</View>;
     },
+    // ROW_H is a dependency on purpose: a font-scale change re-lays
+    // every row at the new height (codex, m0.9.1 round 2).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [badgesFor, openUnit, cells, filter],
+    [badgesFor, openUnit, cells, filter, ROW_H],
   );
   const renderUnitCard = (unit: TimelineUnit, index: number) => {
     const animated = { cells, index, cellKey: unitKeyOf(unit, filter) };
@@ -1055,16 +1064,17 @@ export function TimelineScreen({ navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 16 },
-  emptyText: { color: colors.textDim, fontSize: 14, textAlign: 'center', marginVertical: 24 },
-  subtitle: { color: colors.textDim, fontSize: 14, marginBottom: 10 },
-  filterRow: { flexDirection: 'row', gap: 6, marginBottom: 10 },
+  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: space.page },
+  emptyText: { color: colors.textDim, ...type.label, textAlign: 'center', marginVertical: 24 },
+  subtitle: { color: colors.textDim, ...type.label, marginBottom: 10 },
+  // Wraps rather than overflowing the screen at large text (the walk, 1.5×).
+  filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 10 },
   // Accent outline over a neutral lift — the app's one selection
   // language (docs/STATE_MODEL.md rule 4), matching History's chips.
   filterChip: {
     minHeight: 36,
     paddingHorizontal: 12,
-    borderRadius: 999,
+    borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: 'transparent',
     backgroundColor: colors.surface,
@@ -1072,16 +1082,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   filterChipActive: { backgroundColor: colors.surfaceRaised },
-  filterLabel: { color: colors.textDim, fontSize: 13, fontWeight: '600' },
+  filterLabel: { color: colors.textDim, ...type.label, fontWeight: '600' },
   filterLabelActive: { color: colors.text },
   list: { paddingBottom: LIST_PAD_BOTTOM },
   /** Height-pinned like the cards (FOOTER_H is part of the landing
    * mirror's exact geometry); extreme font scales ellipsize. */
   footerNote: { height: FOOTER_H, justifyContent: 'center' },
-  footerNoteText: { color: colors.textDim, fontSize: 14, textAlign: 'center' },
+  footerNoteText: { color: colors.textDim, ...type.label, textAlign: 'center' },
   /** The row owns the gap (padding, not margin): getItemLayout's ROW_H
    * must equal the cell's true laid-out height. */
-  row: { height: ROW_H, paddingBottom: ROW_GAP },
+  row: { paddingBottom: ROW_GAP },
   // Wrapping cluster inside the thumbnail — every badge stays visible.
   badges: { position: 'absolute', right: 2, bottom: 2, left: 2 },
   footer: { paddingTop: 8, gap: 8 },
@@ -1093,7 +1103,7 @@ const styles = StyleSheet.create({
     right: 16,
     width: 44,
     height: 44,
-    borderRadius: 22,
+    borderRadius: radius.pill,
     backgroundColor: colors.surfaceRaised,
     borderWidth: 1.5,
     alignItems: 'center',

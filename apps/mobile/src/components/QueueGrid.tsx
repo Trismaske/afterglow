@@ -16,7 +16,7 @@ import type { AnimatedThumbRow } from '../lib/animatedThumbRow';
 import { thumbBucketPx } from '../lib/thumbnailSize';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { colors } from '../theme';
+import { colors, radius, type } from '../theme';
 import { StateDots } from './DecisionBadge';
 import type { QueueDots } from './useQueueBadges';
 
@@ -118,7 +118,7 @@ const styles = StyleSheet.create({
   // coloured wash would read as "this photo carries that action".
   thumb: {
     flex: 1,
-    borderRadius: 8,
+    borderRadius: radius.thumb,
     backgroundColor: colors.surfaceRaised,
     borderWidth: 2,
     borderColor: 'transparent',
@@ -130,12 +130,12 @@ const styles = StyleSheet.create({
   chip: {
     paddingHorizontal: 12,
     paddingVertical: 7,
-    borderRadius: 16,
+    borderRadius: radius.card,
     backgroundColor: colors.surfaceRaised,
     borderWidth: 1,
     borderColor: colors.border,
   },
-  chipText: { color: colors.text, fontSize: 13, fontWeight: '600' },
+  chipText: { color: colors.text, ...type.label, fontWeight: '600' },
   chipDestructive: { borderColor: colors.cullDim },
   chipTextDestructive: { color: colors.cull },
   disabled: { opacity: 0.5 },

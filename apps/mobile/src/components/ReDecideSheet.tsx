@@ -20,7 +20,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { MediaItem } from '@afterglow/core';
 import { useReview, type RedecideTarget } from '../review/ReviewContext';
 import { formatClockSeconds } from '../lib/format';
-import { colors, touch, useTheme } from '../theme';
+import { colors, radius, scrim, touch, type, useTheme } from '../theme';
 import { DecisionBadge } from './DecisionBadge';
 
 /** The three re-decidable verdicts ('to_edit' = kept + needs-edit flag). */
@@ -146,7 +146,7 @@ export function ReDecideSheet({
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    backgroundColor: scrim.sheet,
     justifyContent: 'flex-end',
   },
   card: {
@@ -159,11 +159,16 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   header: { flexDirection: 'row', gap: 12 },
-  thumb: { width: 72, height: 72, borderRadius: 10, backgroundColor: colors.surfaceRaised },
+  thumb: {
+    width: 72,
+    height: 72,
+    borderRadius: radius.chip,
+    backgroundColor: colors.surfaceRaised,
+  },
   headerBody: { flex: 1, gap: 2, justifyContent: 'center' },
-  stateLabel: { color: colors.text, fontSize: 16, fontWeight: '800' },
-  when: { color: colors.textDim, fontSize: 13 },
-  hint: { color: colors.textDim, fontSize: 12 },
+  stateLabel: { color: colors.text, ...type.body, fontWeight: '800' },
+  when: { color: colors.textDim, ...type.label },
+  hint: { color: colors.textDim, ...type.caption },
   chipRow: { flexDirection: 'row', gap: 10 },
   chip: {
     flex: 1,
@@ -175,10 +180,10 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
     gap: 2,
   },
-  chipText: { color: colors.text, fontSize: 15, fontWeight: '800' },
+  chipText: { color: colors.text, ...type.body, fontWeight: '800' },
   chipLabel: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   transparentBadge: { backgroundColor: 'transparent' },
-  chipCurrent: { fontSize: 11, fontWeight: '700' },
+  chipCurrent: { ...type.caption, fontWeight: '700' },
   close: { minHeight: 44, alignItems: 'center', justifyContent: 'center' },
-  closeText: { color: colors.textDim, fontSize: 15, fontWeight: '600' },
+  closeText: { color: colors.textDim, ...type.body, fontWeight: '600' },
 });

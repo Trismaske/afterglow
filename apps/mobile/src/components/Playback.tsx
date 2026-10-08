@@ -91,7 +91,7 @@ import Animated, {
   type SharedValue,
 } from 'react-native-reanimated';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { colors, useTheme } from '../theme';
+import { colors, radius, scrim, useTheme } from '../theme';
 import type { PlaybackMode } from '../lib/playbackPrefs';
 
 /** The chrome's life after a tap while the clip plays (tester's call,
@@ -738,10 +738,10 @@ const styles = StyleSheet.create({
     marginTop: -36,
     width: 72,
     height: 72,
-    borderRadius: 36,
+    borderRadius: radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(0,0,0,0.45)',
+    backgroundColor: scrim.mark,
   },
   button: {
     position: 'absolute',
@@ -750,7 +750,7 @@ const styles = StyleSheet.create({
     borderRadius: BUTTON_SIZE / 2,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(0,0,0,0.45)',
+    backgroundColor: scrim.mark,
   },
   seekBand: {
     position: 'absolute',

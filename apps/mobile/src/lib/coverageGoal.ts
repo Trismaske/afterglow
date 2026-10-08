@@ -62,7 +62,7 @@ export const COVERAGE_GOAL_LABELS: Record<CoverageGoal, string> = {
   today: 'Today',
   '2days': '2 days',
   '7days': '7 days',
-  all: 'All time',
+  all: 'All',
 };
 
 /** One capture day's review coverage (from db `getCoverageByDay`). */

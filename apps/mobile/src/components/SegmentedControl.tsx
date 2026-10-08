@@ -6,7 +6,8 @@
  */
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { colors, useTheme } from '../theme';
+import { colors, radius, type, useTheme } from '../theme';
+import { useHugeText, useLargeText } from './useLargeText';
 
 export function SegmentedControl<Id extends string>({
   options,
@@ -15,15 +16,23 @@ export function SegmentedControl<Id extends string>({
   accessibilityLabel,
 }: {
   options: readonly { id: Id; label: string }[];
-  value: Id;
+  /** The selected segment; null selects nothing (a value not read yet). */
+  value: Id | null;
   onChange: (id: Id) => void;
   /** What the choice governs (read before each segment's label). */
   accessibilityLabel: string;
 }) {
   const theme = useTheme();
+  // Large text (lib/textScale.ts): more than three segments wrap onto
+  // two rows, three to a row, instead of breaking a label mid-word (the
+  // walk at 1.3×: "Strictes / t").
+  const wrap = useLargeText() && options.length > 3;
+  // Past the huge threshold a third of the pill no longer holds
+  // "Strictest" either: two to a row.
+  const huge = useHugeText();
   return (
     <View
-      style={styles.pill}
+      style={[styles.pill, wrap && styles.pillWrapped]}
       accessibilityRole="radiogroup"
       accessibilityLabel={accessibilityLabel}
     >
@@ -35,7 +44,11 @@ export function SegmentedControl<Id extends string>({
             onPress={() => onChange(option.id)}
             accessibilityRole="radio"
             accessibilityState={{ selected: active, checked: active }}
-            style={[styles.segment, active && { backgroundColor: theme.accent }]}
+            style={[
+              styles.segment,
+              wrap && (huge ? styles.segmentWrappedHuge : styles.segmentWrapped),
+              active && { backgroundColor: theme.accent },
+            ]}
           >
             <Text style={[styles.label, active && { color: theme.onAccent }]}>{option.label}</Text>
           </Pressable>
@@ -46,17 +59,20 @@ export function SegmentedControl<Id extends string>({
 }
 
 const styles = StyleSheet.create({
+  pillWrapped: { flexWrap: 'wrap' },
+  segmentWrapped: { flexBasis: '32%', flexGrow: 1 },
+  segmentWrappedHuge: { flexBasis: '48%', flexGrow: 1 },
   pill: {
     flexDirection: 'row',
-    borderRadius: 999,
+    borderRadius: radius.pill,
     backgroundColor: colors.surfaceRaised,
     padding: 3,
   },
   segment: {
     flex: 1,
     paddingVertical: 8,
-    borderRadius: 999,
+    borderRadius: radius.pill,
     alignItems: 'center',
   },
-  label: { color: colors.textDim, fontSize: 14, fontWeight: '600' },
+  label: { color: colors.textDim, ...type.label, fontWeight: '600' },
 });

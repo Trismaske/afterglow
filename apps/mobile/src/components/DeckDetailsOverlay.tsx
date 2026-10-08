@@ -41,7 +41,7 @@ import {
 } from '../lib/stageMeta';
 import { DECISION_GLYPHS, KIND_CHIP_LABELS } from './DecisionBadge';
 import { VERDICT_META } from './progress/stateMeta';
-import { colors } from '../theme';
+import { colors, scrim, type } from '../theme';
 
 type FactLine = {
   icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
@@ -300,7 +300,7 @@ const styles = StyleSheet.create({
   root: { zIndex: 10 },
   sheet: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.72)',
+    backgroundColor: scrim.sheet,
     padding: 16,
     gap: 8,
     justifyContent: 'flex-end',
@@ -308,13 +308,13 @@ const styles = StyleSheet.create({
   },
   scroll: { flexGrow: 0 },
   lines: { gap: 8 },
-  header: { color: colors.text, fontSize: 15, fontWeight: '700' },
+  header: { color: colors.text, ...type.body, fontWeight: '700' },
   stateRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   swatch: { width: 12, height: 12, borderRadius: 4 },
-  stateText: { color: colors.text, fontSize: 14, fontWeight: '600' },
+  stateText: { color: colors.text, ...type.label, fontWeight: '600' },
   line: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
-  lineText: { color: colors.textDim, fontSize: 13, lineHeight: 18, flex: 1 },
+  lineText: { color: colors.textDim, ...type.label, flex: 1 },
   staleText: { opacity: 0.5 },
-  quietText: { color: colors.textDim, fontSize: 13 },
-  retryText: { color: colors.text, fontSize: 13, textDecorationLine: 'underline' },
+  quietText: { color: colors.textDim, ...type.label },
+  retryText: { color: colors.text, ...type.label, textDecorationLine: 'underline' },
 });

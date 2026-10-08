@@ -276,6 +276,19 @@ A video takes every verdict and all four actions, and sits out Compare; a motion
 The display name renders the extension (uppercase, no dot) and MIME classifies, and the two may disagree — each layer claims only what it read.
 Copy says "items" wherever a count can include videos.
 
+## Text scales; layouts stack (m0.9.1)
+
+Every text in the app scales with the OS font size, at every step, with no cap: a user who asked for larger text gets it everywhere.
+What changes with the scale is layout, measured on the accessibility walk (docs/accessibility-audit.md while the release is open) and decided in `lib/textScale.ts` by the font scale RELATIVE TO THE WINDOW WIDTH, so a wider phone holds a row one step longer:
+
+- **Free text wraps** and its container grows. Nothing else is needed for most of the app.
+- **Past the large-text threshold (1.3 effective)** a side-by-side pairing of a fixed-size element and a text column STACKS (Home's goal ring and its numbers, Stats' Today ring, the Settings rows that put a title beside a pill), a row of a title and its actions WRAPS the actions under the title (Home's brand row), and a row of labelled chips wraps two per row (the deck's Edit · Favourite · Organize · Share).
+- **Past the huge-text threshold (1.6 effective)** a label beside an icon in a slot that cannot grow DROPS and the icon carries the meaning with its accessibility label (the tab bar); dense chip grids wrap two per row (the Progress chips).
+- **Exact-geometry surfaces grow by the scale, deterministically**: the Timeline's unit card, the tab badge's disc and the histogram's axis rows are heights COMPUTED from the font scale, never measured, so the Timeline's exact landings and the chart's geometry hold at every scale.
+- A fixed width is never a text's; it is a row layout's, and the stacked layout drops it.
+
+The `type` tokens in `theme.tsx` give every text one of six sizes with a line height that scales with it (React Native scales both), so a wrapped line and a stacked row keep their rhythm.
+
 ## Deliberately not states
 
 Recorded here so no one re-invents them:

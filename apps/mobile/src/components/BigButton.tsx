@@ -1,6 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, type ViewStyle } from 'react-native';
-import { colors, touch } from '../theme';
+import { colors, touch, type } from '../theme';
 
 interface Props {
   label: string;
@@ -52,5 +52,5 @@ const styles = StyleSheet.create({
   },
   pressed: { opacity: 0.75 },
   dimmed: { opacity: 0.4 },
-  label: { fontSize: 18, fontWeight: '700', textAlign: 'center' },
+  label: { ...type.heading, fontWeight: '700', textAlign: 'center' },
 });

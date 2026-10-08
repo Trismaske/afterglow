@@ -20,7 +20,7 @@ import {
 } from '../lib/comparePrefs';
 import { showToast } from '../lib/toast';
 import { DOUBLE_TAP_MS } from '../lib/zoomTarget';
-import { colors, touch, useTheme } from '../theme';
+import { colors, radius, scrim, touch, type, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded } from '../lib/format';
 import { imageCacheKey, versionedUri } from '../lib/imageKeys';
 import { orderByParts } from '../lib/groupParts';
@@ -951,8 +951,8 @@ const styles = StyleSheet.create({
     paddingTop: 8,
   },
   header: { gap: 2, paddingHorizontal: 4 },
-  headerTitle: { color: colors.text, fontSize: 16, fontWeight: '700' },
-  headerHint: { color: colors.textDim, fontSize: 12 },
+  headerTitle: { color: colors.text, ...type.body, fontWeight: '700' },
+  headerHint: { color: colors.textDim, ...type.caption },
   /** Border here, NOT on the stage (DeckScreen's stageFrame comment). */
   stageFrame: {
     flex: 1,
@@ -968,33 +968,33 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 10,
     left: 10,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    borderRadius: 6,
+    backgroundColor: scrim.mark,
+    borderRadius: radius.box,
     paddingHorizontal: 9,
     paddingVertical: 4,
   },
   /** The zoom fail-soft notice (DeckScreen's zoomNotice). */
   abBadgeText: {
     color: colors.text,
-    fontSize: 13,
+    ...type.label,
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
   },
   subRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  actingOn: { color: colors.textDim, fontSize: 12, fontWeight: '600' },
+  actingOn: { color: colors.textDim, ...type.caption, fontWeight: '600' },
   chipRow: { flexDirection: 'row', gap: 10 },
   abChips: { flexDirection: 'row', gap: 6 },
   abChip: {
     minWidth: 44,
     minHeight: 36,
-    borderRadius: 10,
+    borderRadius: radius.chip,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
   },
-  abChipText: { color: colors.textDim, fontSize: 15, fontWeight: '700' },
+  abChipText: { color: colors.textDim, ...type.body, fontWeight: '700' },
   actionRow: { flexDirection: 'row', gap: 10 },
   actionButton: {
     flex: 1,
@@ -1007,25 +1007,25 @@ const styles = StyleSheet.create({
   },
   cullButton: { backgroundColor: colors.cullDim },
   keepButton: { backgroundColor: colors.keepDim },
-  actionText: { color: colors.text, fontSize: 17, fontWeight: '800' },
+  actionText: { color: colors.text, ...type.heading, fontWeight: '800' },
   closeButton: {
     minHeight: 44,
-    borderRadius: 10,
+    borderRadius: radius.chip,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
   },
-  closeText: { color: colors.textDim, fontSize: 14, fontWeight: '700' },
+  closeText: { color: colors.textDim, ...type.label, fontWeight: '700' },
   // Inline failure card (DeckScreen's quiet retry language).
   loadFailedRoot: { alignItems: 'center', justifyContent: 'center' },
-  loadFailedText: { color: colors.textDim, fontSize: 14, textAlign: 'center' },
+  loadFailedText: { color: colors.textDim, ...type.label, textAlign: 'center' },
   retryButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 16 },
-  retryText: { fontSize: 15, fontWeight: '700' },
+  retryText: { ...type.body, fontWeight: '700' },
   offerBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: scrim.sheet,
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
@@ -1039,19 +1039,19 @@ const styles = StyleSheet.create({
     padding: 18,
     gap: 12,
   },
-  offerTitle: { color: colors.text, fontSize: 18, fontWeight: '800' },
-  offerText: { color: colors.textDim, fontSize: 14, lineHeight: 20 },
+  offerTitle: { color: colors.text, ...type.heading, fontWeight: '800' },
+  offerText: { color: colors.textDim, ...type.label },
   offerCheckRow: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 44 },
   offerCheckbox: {
     width: 22,
     height: 22,
-    borderRadius: 6,
+    borderRadius: radius.box,
     borderWidth: 2,
     borderColor: colors.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  offerCheckLabel: { color: colors.textDim, fontSize: 13, flex: 1, lineHeight: 18 },
+  offerCheckLabel: { color: colors.textDim, ...type.label, flex: 1 },
   offerButtons: { flexDirection: 'row', gap: 10 },
   offerButton: {
     flex: 1,
@@ -1067,5 +1067,5 @@ const styles = StyleSheet.create({
   },
   offerKeepButton: { backgroundColor: colors.keepDim },
   offerCullButton: { backgroundColor: colors.cullDim },
-  offerButtonText: { color: colors.text, fontSize: 15, fontWeight: '800' },
+  offerButtonText: { color: colors.text, ...type.body, fontWeight: '800' },
 });

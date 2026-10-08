@@ -61,6 +61,7 @@ Work happens on branch `initial`.
 | docs/MOBILE_UI_GATE.md | Automated pre-release UI walk of the mobile app (`scripts/mobile-ui-gate.mjs`) plus the manual pass |
 | docs/STATE_MODEL.md | **Read before touching any surface that shows photo state.** The three layers (verdict · actions · annotations) and the seven visual rules. The contract every state surface is held to |
 | docs/TODO.md | Open questions parked for their own investigation |
+| docs/IOS.md | The iOS readiness ledger: what iOS support must handle, each entry tied to the Android decision it mirrors. Add to it when an Android decision rests on something iOS does differently |
 | docs/DocsAudit.md | The standalone documentation/comments reorganization work order (CONTRIBUTING.md creation, lettered-principle recovery) — parallel to the release trains; delete when it lands |
 | docs/REVIEW_CLASSES.md | The recurring defect-class checklist. The self-review input before any `codex-review` round |
 | docs/STATS_ACCURACY.md | **Read before touching any stat, deleter, or scope predicate.** Per-stat lifetime-true vs current-state verdicts, the ranked accuracy gaps with fix shapes, and the update discipline |

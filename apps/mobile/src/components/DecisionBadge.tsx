@@ -9,7 +9,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { colors } from '../theme';
+import { colors, radius } from '../theme';
 import { badgesHidden, subscribeBadgesHidden } from '../lib/badgePrefs';
 import {
   CLUSTER_GAP,
@@ -338,7 +338,7 @@ const styles = StyleSheet.create({
   stateDot: {
     width: 11,
     height: 11,
-    borderRadius: 6,
+    borderRadius: radius.box,
     borderWidth: 1.5,
     borderColor: colors.background,
   },

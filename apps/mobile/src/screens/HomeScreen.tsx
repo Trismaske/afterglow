@@ -84,12 +84,13 @@ import {
 import { scanProgressLine } from '../lib/scanProgress';
 import { Ghost } from '../components/Ghost';
 import { GoalRing } from '../components/GoalRing';
+import { useLargeText } from '../components/useLargeText';
 import { firstPendingUnit, unitDestination } from '../lib/timeline';
 import { deckParamsFor } from '../lib/deckUnit';
 import { useReview } from '../review/ReviewContext';
 import { BigButton } from '../components/BigButton';
 import { StateProgressBar } from '../components/StateProgressBar';
-import { colors, touch, useTheme } from '../theme';
+import { colors, radius, space, touch, type, useTheme } from '../theme';
 
 type Props = MainTabScreenProps<'Home'>;
 
@@ -117,6 +118,7 @@ interface DayRow {
 
 export function HomeScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
+  const largeText = useLargeText();
   const db = useSQLiteContext();
   const theme = useTheme();
   const review = useReview();
@@ -901,7 +903,7 @@ export function HomeScreen({ navigation }: Props) {
 
       {permission?.granted && (
         <View style={styles.card}>
-          <View style={styles.goalRow}>
+          <View style={[styles.goalRow, largeText && styles.goalRowStacked]}>
             <GoalRing
               size={132}
               strokeWidth={12}
@@ -1216,19 +1218,22 @@ export function HomeScreen({ navigation }: Props) {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
-  content: { paddingHorizontal: 20, gap: 16 },
+  content: { paddingHorizontal: space.page, gap: space.card },
   titleRow: {
     flexDirection: 'row',
+    // The three actions drop under the brand when large text makes the
+    // row too long — the brand never breaks mid-word (the walk, 1.3×).
+    flexWrap: 'wrap',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
   },
-  title: { color: colors.text, fontSize: 28, fontWeight: '800', flexShrink: 1 },
+  title: { color: colors.text, ...type.display, fontWeight: '800', flexShrink: 1 },
   titleActions: { flexDirection: 'row', gap: 8 },
   gearButton: {
     width: 44,
     height: 44,
-    borderRadius: 22,
+    borderRadius: radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.surface,
@@ -1236,9 +1241,12 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   goalRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  /** Large text (lib/textScale.ts): the numbers go under the ring instead
+   * of wrapping to three lines each beside it. */
+  goalRowStacked: { flexDirection: 'column', alignItems: 'stretch' },
   goalBody: { flex: 1, gap: 4 },
-  streakText: { color: colors.text, fontSize: 14, fontWeight: '600' },
-  scanStatus: { color: colors.textDim, fontSize: 12, marginTop: 2 },
+  streakText: { color: colors.text, ...type.label, fontWeight: '600' },
+  scanStatus: { color: colors.textDim, ...type.caption, marginTop: 2 },
   olderRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1250,26 +1258,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     minHeight: 52,
   },
-  olderRowText: { color: colors.textDim, fontSize: 14, flex: 1 },
+  olderRowText: { color: colors.textDim, ...type.label, flex: 1 },
   sectionLabel: {
     color: colors.textDim,
-    fontSize: 13,
+    ...type.label,
     textTransform: 'uppercase',
     letterSpacing: 1,
   },
   card: {
     backgroundColor: colors.surface,
     borderRadius: touch.radius,
-    padding: 16,
+    padding: space.card,
     gap: 12,
     borderWidth: 1,
     borderColor: colors.border,
   },
-  cardTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
-  cardText: { color: colors.textDim, fontSize: 15, lineHeight: 21 },
+  cardTitle: { color: colors.text, ...type.heading, fontWeight: '700' },
+  cardText: { color: colors.textDim, ...type.body },
   // Reachability is a FACT line, not an error: near-white (colors.text,
   // the no-hue-of-its-own colour), never cull-red — nothing is wrong.
-  unreachableLine: { color: colors.text, fontSize: 14, lineHeight: 20 },
+  unreachableLine: { color: colors.text, ...type.label },
   coverageCard: {
     backgroundColor: colors.surface,
     borderRadius: touch.radius,
@@ -1279,8 +1287,8 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   coverageHeader: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' },
-  coverageTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
-  coverageScope: { color: colors.textDim, fontSize: 13, fontWeight: '600' },
+  coverageTitle: { color: colors.text, ...type.heading, fontWeight: '700' },
+  coverageScope: { color: colors.textDim, ...type.label, fontWeight: '600' },
   coverageBarTrack: {
     height: 10,
     borderRadius: 5,
@@ -1288,8 +1296,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   coverageBarFill: { height: '100%', borderRadius: 5 },
-  coverageText: { color: colors.textDim, fontSize: 14, lineHeight: 19 },
-  queueBreakdown: { color: colors.textDim, fontSize: 13, lineHeight: 18 },
+  coverageText: { color: colors.textDim, ...type.label },
+  queueBreakdown: { color: colors.textDim, ...type.label },
   queueLink: { flexDirection: 'row', alignItems: 'center' },
   queueLinkBody: { flex: 1 },
   progressRow: {
@@ -1302,11 +1310,11 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     padding: 14,
   },
-  progressIcon: { color: colors.keep, fontSize: 22, fontWeight: '700' },
+  progressIcon: { color: colors.keep, ...type.title, fontWeight: '700' },
   progressBody: { flex: 1 },
-  progressTitle: { color: colors.text, fontSize: 16, fontWeight: '700' },
-  progressHint: { color: colors.textDim, fontSize: 13 },
-  progressChevron: { fontSize: 22, fontWeight: '600' },
+  progressTitle: { color: colors.text, ...type.body, fontWeight: '700' },
+  progressHint: { color: colors.textDim, ...type.label },
+  progressChevron: { ...type.title, fontWeight: '600' },
   dateField: {
     flex: 1,
     backgroundColor: colors.surface,
@@ -1316,8 +1324,8 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 4,
   },
-  dateFieldLabel: { color: colors.textDim, fontSize: 12 },
-  dateFieldValue: { color: colors.text, fontSize: 16, fontWeight: '600' },
+  dateFieldLabel: { color: colors.textDim, ...type.caption },
+  dateFieldValue: { color: colors.text, ...type.body, fontWeight: '600' },
   nameField: {
     flex: 1,
     backgroundColor: colors.surface,
@@ -1326,7 +1334,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     paddingHorizontal: 12,
     color: colors.text,
-    fontSize: 14,
+    ...type.label,
     minHeight: 48,
   },
   notice: {
@@ -1341,8 +1349,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
   },
-  noticeText: { color: colors.text, fontSize: 14, fontWeight: '600', flexShrink: 1 },
-  noticeDismiss: { color: colors.textDim, fontSize: 12 },
+  noticeText: { color: colors.text, ...type.label, fontWeight: '600', flexShrink: 1 },
+  noticeDismiss: { color: colors.textDim, ...type.caption },
   editQueueRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1354,12 +1362,12 @@ const styles = StyleSheet.create({
     padding: 14,
   },
   editQueueBody: { flex: 1 },
-  editQueueTitle: { color: colors.text, fontSize: 16, fontWeight: '700' },
-  editQueueHint: { color: colors.textDim, fontSize: 13 },
+  editQueueTitle: { color: colors.text, ...type.body, fontWeight: '700' },
+  editQueueHint: { color: colors.textDim, ...type.label },
   badge: {
     minWidth: 28,
     height: 28,
-    borderRadius: 14,
+    borderRadius: radius.card,
     // Neutral by default: a generic badge carries no action (rule 2).
     // Its one caller overrides this with the cull hue.
     backgroundColor: colors.surfaceRaised,
@@ -1367,7 +1375,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 8,
   },
-  badgeText: { color: colors.background, fontSize: 14, fontWeight: '800' },
+  badgeText: { color: colors.background, ...type.label, fontWeight: '800' },
   dayRow: {
     backgroundColor: colors.surface,
     borderRadius: touch.radius,
@@ -1377,7 +1385,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   dayRowHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  dayRowTitle: { color: colors.text, fontSize: 15, fontWeight: '700' },
-  dayRowPct: { color: colors.textDim, fontSize: 13 },
-  dayRowHint: { color: colors.textDim, fontSize: 12 },
+  dayRowTitle: { color: colors.text, ...type.body, fontWeight: '700' },
+  dayRowPct: { color: colors.textDim, ...type.label },
+  dayRowHint: { color: colors.textDim, ...type.caption },
 });

@@ -31,7 +31,7 @@ import { StateDots } from '../components/DecisionBadge';
 import { showToast } from '../lib/toast';
 import { labelForDayKey } from '../lib/dates';
 import { formatClock } from '../lib/format';
-import { colors, touch, useTheme } from '../theme';
+import { colors, radius, space, touch, type, useTheme } from '../theme';
 
 type Props = MainTabScreenProps<'EditQueue'>;
 
@@ -328,9 +328,9 @@ export function EditQueueScreen({ navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
-  heading: { color: colors.text, fontSize: 24, fontWeight: '800', marginBottom: 2 },
-  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 16 },
-  subtitle: { color: colors.textDim, fontSize: 14, marginBottom: 10 },
+  heading: { color: colors.text, ...type.title, fontWeight: '800', marginBottom: 2 },
+  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: space.page },
+  subtitle: { color: colors.textDim, ...type.label, marginBottom: 10 },
   chips: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   list: { gap: 10, flexGrow: 1 },
   row: {
@@ -346,16 +346,16 @@ const styles = StyleSheet.create({
   thumb: {
     width: 84,
     height: 84,
-    borderRadius: 10,
+    borderRadius: radius.chip,
     backgroundColor: colors.surfaceRaised,
   },
   rowBody: { flex: 1, justifyContent: 'space-between', gap: 8 },
-  rowTitle: { color: colors.text, fontSize: 15, fontWeight: '600' },
+  rowTitle: { color: colors.text, ...type.body, fontWeight: '600' },
   rowActions: { flexDirection: 'row', gap: 8 },
   rowButton: {
     flex: 1,
     minHeight: 44,
-    borderRadius: 10,
+    borderRadius: radius.chip,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 8,
@@ -371,8 +371,8 @@ const styles = StyleSheet.create({
   // Completing an edit is NOT the keep verdict, so it does not wear
   // keep-green (rule 2) — it is a confirm, and confirms take the accent.
   doneButton: { backgroundColor: colors.surfaceRaised, borderWidth: 1 },
-  rowButtonText: { color: colors.text, fontSize: 14, fontWeight: '700' },
-  emptyText: { color: colors.textDim, fontSize: 15, textAlign: 'center', marginTop: 40 },
+  rowButtonText: { color: colors.text, ...type.label, fontWeight: '700' },
+  emptyText: { color: colors.textDim, ...type.body, textAlign: 'center', marginTop: 40 },
   // codex r9: quiet stale-rows notice — dim like every read-failure line.
-  refreshFailed: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginBottom: 8 },
+  refreshFailed: { color: colors.textDim, ...type.label, textAlign: 'center', marginBottom: 8 },
 });

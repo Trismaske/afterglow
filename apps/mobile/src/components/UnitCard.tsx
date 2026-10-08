@@ -7,7 +7,7 @@
  * and any per-thumbnail overlay (badge clusters, decision badges).
  *
  * UNIFORM HEIGHT (final device pass, Tristan): every card is exactly
- * UNIT_CARD_HEIGHT tall — one single-line header, one fixed-height
+ * unitCardHeight(fontScale) tall — one single-line header, one fixed-height
  * thumb row of at most STRIP_THUMBS slots (more members wear the "+N"
  * chip in the last slot). Uniformity is LOAD-BEARING, not cosmetic: it
  * is what makes the Timeline's getItemLayout exact, which is what makes
@@ -18,12 +18,12 @@
  */
 import React, { useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { PixelRatio } from 'react-native';
+import { PixelRatio, useWindowDimensions } from 'react-native';
 import { AnimatedThumb } from './AnimatedThumb';
 import type { AnimatedCells } from './useAnimatedCells';
 import { thumbRowOf, type AnimatedThumbRow, type ThumbFacts } from '../lib/animatedThumbRow';
 import { thumbBucketPx } from '../lib/thumbnailSize';
-import { colors, touch } from '../theme';
+import { colors, radius, touch, type } from '../theme';
 
 /** Thumbs per row; a card with more members shows STRIP_THUMBS - 1 plus
  * the "+N" chip (Tristan, final device pass: five reads best on
@@ -33,14 +33,25 @@ const THUMB_H = 56;
 /** A card thumb is at most a quarter of the card wide (~100 dp), taller
  * than THUMB_H never — bucket on the wider side at device scale. */
 const CARD_THUMB_PX = thumbBucketPx(100, PixelRatio.get());
-const HEADER_H = 20;
+/** The header row at font scale 1: one line of `type.body`. */
+const HEADER_H = type.body.lineHeight;
 const CARD_PAD = 12;
 const CARD_GAP = 10;
 
-/** The exact rendered height of every card — the Timeline's
- * getItemLayout is built on this number being TRUE (heights are pinned
- * by style, never by content). */
-export const UNIT_CARD_HEIGHT = CARD_PAD * 2 + HEADER_H + CARD_GAP + THUMB_H + 2;
+/** The header row's height at an OS font scale: its one line of text,
+ * scaled — the card grows with the text instead of clipping it (the
+ * accessibility walk, 1.5×: the title was cut mid-glyph at 20 dp). */
+export function unitCardHeaderHeight(fontScale: number): number {
+  return Math.round(HEADER_H * (Number.isFinite(fontScale) && fontScale > 0 ? fontScale : 1));
+}
+
+/** The exact rendered height of every card at a font scale — the
+ * Timeline's getItemLayout is built on this number being TRUE (heights
+ * are pinned by style, never by content; the one scaling part is the
+ * header line, pinned to the same function). */
+export function unitCardHeight(fontScale: number): number {
+  return CARD_PAD * 2 + unitCardHeaderHeight(fontScale) + CARD_GAP + THUMB_H + 2;
+}
 
 /** A card member: its identity plus the facts its thumbnail animates by
  * (phase 6; every member projection carries them). */
@@ -88,9 +99,10 @@ export function UnitCard({
   // bar the deck's strip draws, in the gap, consuming no width.
   const boundary = (sub: number): boolean =>
     sub > 0 && (members[sub - 1].part ?? 0) !== (members[sub].part ?? 0);
+  const fontScale = useWindowDimensions().fontScale;
   return (
-    <Pressable style={styles.card} onPress={onPress}>
-      <View style={styles.header}>
+    <Pressable style={[styles.card, { height: unitCardHeight(fontScale) }]} onPress={onPress}>
+      <View style={[styles.header, { height: unitCardHeaderHeight(fontScale) }]}>
         <Text style={styles.title} numberOfLines={1}>
           {title}
         </Text>
@@ -127,7 +139,6 @@ export function UnitCard({
 
 const styles = StyleSheet.create({
   card: {
-    height: UNIT_CARD_HEIGHT,
     backgroundColor: colors.surface,
     borderRadius: touch.radius,
     borderWidth: 1,
@@ -137,28 +148,32 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   header: {
-    height: HEADER_H,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     gap: 8,
   },
-  title: { color: colors.text, fontSize: 15, fontWeight: '600', flexShrink: 1 },
+  title: { color: colors.text, ...type.body, fontWeight: '600', flexShrink: 1 },
   // Shrinkable as a LAST resort (large font scales): numberOfLines then
   // ellipsizes instead of the card's overflow clipping mid-glyph. At
   // normal scale the callers' copy fits whole (codex r7).
-  status: { color: colors.textDim, fontSize: 13, flexShrink: 1 },
+  status: { color: colors.textDim, ...type.label, flexShrink: 1 },
   statusDone: { color: colors.keep },
   strip: { flexDirection: 'row', gap: 6 },
   // Fixed HEIGHT, flexible width capped for sparse cards: a one-photo
   // run must not render a screen-wide banner — a quarter of the row is
   // the largest a thumbnail gets; strips of four or more share evenly.
   thumbWrap: { flex: 1, maxWidth: '25%', height: THUMB_H },
-  thumb: { width: '100%', height: '100%', borderRadius: 8, backgroundColor: colors.surfaceRaised },
+  thumb: {
+    width: '100%',
+    height: '100%',
+    borderRadius: radius.thumb,
+    backgroundColor: colors.surfaceRaised,
+  },
   thumbMore: {
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 8,
+    borderRadius: radius.thumb,
     backgroundColor: colors.surfaceRaised,
   },
   thumbMoreText: { color: colors.textDim, fontWeight: '700' },

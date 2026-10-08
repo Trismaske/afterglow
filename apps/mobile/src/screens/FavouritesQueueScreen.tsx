@@ -33,7 +33,7 @@ import { applyFavouriteBatch, FAVOURITE_BATCH_LIMIT } from '../lib/favourites';
 import { describeFavouriteFailure } from '../lib/favouriteFailures';
 import { BigButton } from '../components/BigButton';
 import { showToast } from '../lib/toast';
-import { colors, touch, useTheme } from '../theme';
+import { colors, radius, space, touch, type, useTheme } from '../theme';
 import { useReview } from '../review/ReviewContext';
 import {
   decodeFavouriteTarget,
@@ -426,14 +426,14 @@ const styles = StyleSheet.create({
   // Two dp in: the 52 dp thumbnail then holds the verdict dot and three
   // marks on one row.
   dots: { position: 'absolute', left: 2, right: 2, bottom: 2 },
-  heading: { color: colors.text, fontSize: 24, fontWeight: '800', marginBottom: 2 },
-  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 16 },
-  intro: { color: colors.textDim, fontSize: 14, lineHeight: 20, marginBottom: 10 },
+  heading: { color: colors.text, ...type.title, fontWeight: '800', marginBottom: 2 },
+  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: space.page },
+  intro: { color: colors.textDim, ...type.label, marginBottom: 10 },
   chips: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   list: { gap: 10, paddingBottom: 12, flexGrow: 1 },
-  empty: { color: colors.textDim, fontSize: 14, textAlign: 'center', marginTop: 40 },
+  empty: { color: colors.textDim, ...type.label, textAlign: 'center', marginTop: 40 },
   // codex r9: quiet stale-rows notice — dim like every read-failure line.
-  refreshFailed: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginBottom: 8 },
+  refreshFailed: { color: colors.textDim, ...type.label, textAlign: 'center', marginBottom: 8 },
   row: {
     minHeight: 72,
     flexDirection: 'row',
@@ -445,11 +445,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  thumb: { width: 52, height: 52, borderRadius: 9, backgroundColor: colors.surfaceRaised },
+  thumb: {
+    width: 52,
+    height: 52,
+    borderRadius: radius.thumb,
+    backgroundColor: colors.surfaceRaised,
+  },
   rowCopy: { flex: 1 },
   rowTitle: { color: colors.text, fontWeight: '700' },
   rowMetaError: { color: colors.cull, fontWeight: '600' },
-  rowMeta: { color: colors.textDim, fontSize: 12, marginTop: 3 },
+  rowMeta: { color: colors.textDim, ...type.caption, marginTop: 3 },
   actions: { gap: 8, paddingTop: 8 },
   removeButton: {
     minHeight: 52,

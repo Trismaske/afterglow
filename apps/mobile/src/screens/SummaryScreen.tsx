@@ -13,7 +13,7 @@ import { loadDecisionStats } from '../lib/statsLoad';
 import { resolveSources } from '../lib/sourceCatalog';
 import type { SourceRoot } from '../lib/sources';
 import { BigButton } from '../components/BigButton';
-import { colors, touch, useTheme } from '../theme';
+import { colors, touch, type, useTheme } from '../theme';
 import { formatBytes, plural } from '../lib/format';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Summary'>;
@@ -154,10 +154,10 @@ function LifetimeStat({ value, label }: { value: number; label: string }) {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 20 },
-  title: { color: colors.text, fontSize: 28, fontWeight: '800' },
+  title: { color: colors.text, ...type.display, fontWeight: '800' },
   subtitle: {
     color: colors.textDim,
-    fontSize: 16,
+    ...type.body,
     marginTop: 4,
     marginBottom: 20,
     paddingHorizontal: 20,
@@ -173,8 +173,8 @@ const styles = StyleSheet.create({
     padding: 18,
     gap: 4,
   },
-  statValue: { fontSize: 30, fontWeight: '800' },
-  statLabel: { color: colors.textDim, fontSize: 13 },
+  statValue: { ...type.display, fontWeight: '800' },
+  statLabel: { color: colors.textDim, ...type.label },
   lifetimeCard: {
     marginHorizontal: 20,
     marginTop: 18,
@@ -186,17 +186,16 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   lifetimeTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  lifetimeTitle: { color: colors.text, fontSize: 18, fontWeight: '800' },
+  lifetimeTitle: { color: colors.text, ...type.heading, fontWeight: '800' },
   lifetimeGrid: { flexDirection: 'row', flexWrap: 'wrap', rowGap: 12 },
   lifetimeStat: { flexBasis: '33.33%', minWidth: 95 },
-  lifetimeValue: { color: colors.text, fontSize: 21, fontWeight: '800' },
-  lifetimeLabel: { color: colors.textDim, fontSize: 11, lineHeight: 15 },
-  reclaimedAllTime: { color: colors.textDim, fontSize: 13 },
+  lifetimeValue: { color: colors.text, ...type.title, fontWeight: '800' },
+  lifetimeLabel: { color: colors.textDim, ...type.caption },
+  reclaimedAllTime: { color: colors.textDim, ...type.label },
   warning: {
     color: colors.cull,
-    fontSize: 14,
+    ...type.label,
     marginTop: 14,
-    lineHeight: 20,
     marginHorizontal: 20,
   },
   finishButton: { marginHorizontal: 20, marginTop: 24 },

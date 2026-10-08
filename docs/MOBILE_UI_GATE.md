@@ -35,6 +35,15 @@ Nothing there needs keeping.
 ⚠️ **The gate makes real review decisions** (keeps, culls, edit flags, favourite/share intents) on the target's corpus.
 Run it on a test device or emulator, never on a phone whose review state matters.
 
+## The accessibility walk (m0.9.1)
+
+A read-only companion to the gate: `node scripts/accessibility-walk.mjs --serial SERIAL --report-dir DIR` screenshots every screen at each OS font-scale step and display size (`--fonts`, `--densities`), relaunching the app per combination and restoring the device's own values at the end, even on failure.
+It taps nothing that decides, so it may run on a phone whose review state matters.
+One walk per phone: a second walk on the same serial is refused (a lock file per serial), because two walks record each other's values as the phone's starting state and restore the wrong ones.
+Launch one invocation per command and wait for its `WALK DONE` before the next.
+`node scripts/accessibility-report.mjs DIR --md` reads the UI dumps saved beside the screenshots and lists, per screen and target, the first scale at which a text node clips, wraps, overlaps another or disappears; `node scripts/text-audit.mjs --md` is the static inventory of every Text site and its container class.
+Both scripts and the gate share `scripts/lib/ui-driver.mjs`.
+
 ## What it covers
 
 - Home: the goal card, the "N to review"/zero-state copy, the library totals line, and the cull-list row after a cull.

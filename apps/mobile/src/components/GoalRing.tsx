@@ -9,7 +9,7 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { ringArcs } from '../lib/dailyGoal';
-import { colors } from '../theme';
+import { colors, type } from '../theme';
 
 export function GoalRing({
   size,
@@ -68,6 +68,6 @@ export function GoalRing({
 const styles = StyleSheet.create({
   halfClip: { position: 'absolute', overflow: 'hidden' },
   center: { alignItems: 'center', justifyContent: 'center' },
-  centerTitle: { color: colors.text, fontSize: 26, fontWeight: '800' },
-  centerSubtitle: { color: colors.textDim, fontSize: 12, marginTop: 2 },
+  centerTitle: { color: colors.text, ...type.display, fontWeight: '800' },
+  centerSubtitle: { color: colors.textDim, ...type.caption, marginTop: 2 },
 });

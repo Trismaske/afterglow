@@ -29,7 +29,7 @@ import { ProgressView } from '../components/progress/ProgressView';
 import { useReview } from '../review/ReviewContext';
 import { StateDots } from '../components/DecisionBadge';
 import { photoBadges, type PhotoBadge } from '../lib/photoBadges';
-import { UNIT_CARD_HEIGHT, UnitCard, cardThumbRows } from '../components/UnitCard';
+import { unitCardHeight, UnitCard, cardThumbRows } from '../components/UnitCard';
 import { orderByParts } from '../lib/groupParts';
 import {
   HostListContext,
@@ -37,7 +37,7 @@ import {
   useAnimatedThumbsMode,
 } from '../components/useAnimatedCells';
 import { BigButton } from '../components/BigButton';
-import { colors } from '../theme';
+import { colors, type } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'DayProgress'>;
 
@@ -209,7 +209,7 @@ function DayGroupCards({
 }) {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const mode = useAnimatedThumbsMode();
-  const windowHeight = useWindowDimensions().height;
+  const { height: windowHeight, fontScale } = useWindowDimensions();
   const current = useRef(groups);
   current.current = groups;
   const kindsAt = useCallback(
@@ -223,7 +223,7 @@ function DayGroupCards({
   const cells = useAnimatedCells({
     mode,
     columns: 5,
-    tileDp: UNIT_CARD_HEIGHT,
+    tileDp: unitCardHeight(fontScale),
     kindsAt,
     rows: groups,
     extentDp: windowHeight,
@@ -313,12 +313,12 @@ const styles = StyleSheet.create({
   ctaBlock: { gap: 12 },
   groupsLabel: {
     color: colors.textDim,
-    fontSize: 13,
+    ...type.label,
     textTransform: 'uppercase',
     letterSpacing: 1,
     marginTop: 4,
   },
-  groupsFailed: { color: colors.textDim, fontSize: 13 },
+  groupsFailed: { color: colors.textDim, ...type.label },
   // Wrapping cluster inside the thumbnail (TimelineScreen's rule) — every
   // badge stays visible.
   badges: { position: 'absolute', right: 2, bottom: 2, left: 2 },

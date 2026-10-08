@@ -21,7 +21,7 @@ import { countStagedCullsWithUnsentIntents, getStagedCulls, type StagedCullRow }
 import { describeTrashFailure } from '../lib/trashFailures';
 import { BigButton } from '../components/BigButton';
 import { ReDecideSheet, type DecidedState } from '../components/ReDecideSheet';
-import { colors, touch } from '../theme';
+import { colors, radius, scrim, space, touch, type } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'CullList'>;
 
@@ -326,22 +326,22 @@ export function CullListScreen({ navigation, route }: Props) {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 12 },
-  subtitle: { color: colors.textDim, fontSize: 14, marginBottom: 10 },
+  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: space.page },
+  subtitle: { color: colors.textDim, ...type.label, marginBottom: 10 },
   list: { gap: 6, paddingBottom: 12, flexGrow: 1 },
   column: { gap: 6 },
-  tile: { flex: 1 / 3, aspectRatio: 1, borderRadius: 10, overflow: 'hidden' },
+  tile: { flex: 1 / 3, aspectRatio: 1, borderRadius: radius.chip, overflow: 'hidden' },
   tileImage: { flex: 1, backgroundColor: colors.surfaceRaised },
   tileBadge: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: 'rgba(0,0,0,0.55)',
+    backgroundColor: scrim.mark,
     paddingVertical: 2,
     alignItems: 'center',
   },
-  tileBadgeText: { color: colors.textDim, fontSize: 10 },
-  emptyText: { color: colors.textDim, fontSize: 15, textAlign: 'center', marginTop: 40 },
+  tileBadgeText: { color: colors.textDim, ...type.caption },
+  emptyText: { color: colors.textDim, ...type.body, textAlign: 'center', marginTop: 40 },
   footer: { paddingTop: 8 },
 });

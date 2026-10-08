@@ -55,7 +55,7 @@ import { getEditableContentUri } from '../lib/media';
 import { getActionsForPhotos } from '../db/actions';
 import { describeShareFailure } from '../lib/shareFailures';
 import { showToast } from '../lib/toast';
-import { colors, touch, useTheme } from '../theme';
+import { colors, radius, scrim, space, touch, type, useTheme } from '../theme';
 import { Chip, QueueGridCell } from '../components/QueueGrid';
 import { QueueRemoveChip } from '../components/QueueRemoveChip';
 import { useQueueBadges } from '../components/useQueueBadges';
@@ -569,12 +569,12 @@ export function ShareQueueScreen({ navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
-  heading: { color: colors.text, fontSize: 24, fontWeight: '800', marginBottom: 2 },
-  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 12 },
-  subtitle: { color: colors.textDim, fontSize: 14, marginBottom: 10 },
+  heading: { color: colors.text, ...type.title, fontWeight: '800', marginBottom: 2 },
+  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: space.page },
+  subtitle: { color: colors.textDim, ...type.label, marginBottom: 10 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
   // codex r9: quiet stale-rows notice — dim like every read-failure line.
-  refreshFailed: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginBottom: 8 },
+  refreshFailed: { color: colors.textDim, ...type.label, textAlign: 'center', marginBottom: 8 },
   passBadge: {
     position: 'absolute',
     top: 4,
@@ -582,13 +582,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: colors.keepDim,
-    borderRadius: 8,
+    borderRadius: radius.thumb,
     paddingHorizontal: 4,
     paddingVertical: 1,
     borderWidth: 1,
     borderColor: colors.keep,
   },
-  passBadgeText: { color: colors.text, fontSize: 10, fontWeight: '700' },
+  passBadgeText: { color: colors.text, ...type.caption, fontWeight: '700' },
   actions: {
     position: 'absolute',
     left: 12,
@@ -608,11 +608,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
   },
-  shareText: { color: colors.text, fontSize: 16, fontWeight: '700' },
+  shareText: { color: colors.text, ...type.body, fontWeight: '700' },
   disabled: { opacity: 0.5 },
   labelBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: scrim.sheet,
     justifyContent: 'center',
     padding: 24,
   },
@@ -624,16 +624,16 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 10,
   },
-  labelTitle: { color: colors.text, fontSize: 17, fontWeight: '700' },
-  labelHint: { color: colors.textDim, fontSize: 13 },
+  labelTitle: { color: colors.text, ...type.heading, fontWeight: '700' },
+  labelHint: { color: colors.textDim, ...type.label },
   labelInput: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 10,
+    borderRadius: radius.chip,
     color: colors.text,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    fontSize: 15,
+    ...type.body,
   },
   labelActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
 });

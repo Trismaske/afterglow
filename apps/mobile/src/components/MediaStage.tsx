@@ -93,6 +93,7 @@ import {
 } from '../lib/zoomTarget';
 import type { RegionZoomState } from './useRegionZoom';
 import { STAGE_BOTTOM_ROW } from './Playback';
+import { radius, scrim, type } from '../theme';
 
 /** The deck-canonical pager-negotiating driver set: stage pinch claims
  * two-finger streams from the pager by ACTIVATION; pan + double-tap on
@@ -880,10 +881,10 @@ const styles = StyleSheet.create({
     // The stage's bottom row (Playback's STAGE_BOTTOM_ROW, set per
     // render with the host's foot inset): the foot is one line.
     alignSelf: 'center',
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    borderRadius: 6,
+    backgroundColor: scrim.mark,
+    borderRadius: radius.box,
     paddingHorizontal: 9,
     paddingVertical: 4,
   },
-  zoomNoticeText: { color: 'rgba(255,255,255,0.85)', fontSize: 12 },
+  zoomNoticeText: { color: 'rgba(255,255,255,0.85)', ...type.caption },
 });

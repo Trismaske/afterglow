@@ -54,6 +54,58 @@ export const touch = {
   radius: 14,
 } as const;
 
+/**
+ * The type scale (m0.9.1): six named text styles, each a size and the
+ * line height that fits it. Every Text site spreads one of them
+ * (`...type.body`) and keeps its own weight and colour, so the app has
+ * six sizes instead of sixteen and a line height that scales with the
+ * OS font setting (React Native scales both with `fontScale`). Sizes are
+ * dp before scaling; the accessibility walk (docs/accessibility-audit.md)
+ * measured how each surface survives the scale.
+ */
+export const type = {
+  /** The one big number or headline on a screen (Home's ring, Summary). */
+  display: { fontSize: 28, lineHeight: 34 },
+  /** A screen or card title. */
+  title: { fontSize: 22, lineHeight: 28 },
+  /** A section heading, a row title, a button label. */
+  heading: { fontSize: 17, lineHeight: 22 },
+  /** Body copy, hints, explainers. */
+  body: { fontSize: 15, lineHeight: 20 },
+  /** Secondary labels, chips, badges, table cells. */
+  label: { fontSize: 13, lineHeight: 18 },
+  /** Captions, timestamps, axis ticks, tab labels. */
+  caption: { fontSize: 11, lineHeight: 15 },
+} as const;
+
+/** Spacing on a 4-dp grid: a screen's horizontal inset, a card's inner
+ * padding, the gap between cards or sections, and the gap between the
+ * rows inside one. */
+export const space = {
+  page: 16,
+  card: 16,
+  gap: 12,
+  tight: 8,
+} as const;
+
+/** Corner radii by role: the stage's boxes and badge tags, thumbnails,
+ * chips, cards and sheets, and the fully round pill. */
+export const radius = {
+  box: 6,
+  thumb: 8,
+  chip: 10,
+  card: 14,
+  pill: 999,
+} as const;
+
+/** The two darkening scrims: a sheet's backdrop over the screen, and a
+ * mark's backdrop over a photo (the stage boxes, thumbnail marks,
+ * playback chrome). */
+export const scrim = {
+  sheet: 'rgba(0,0,0,0.65)',
+  mark: 'rgba(0,0,0,0.55)',
+} as const;
+
 export interface AccentTheme extends AccentTokens {
   /** The persisted selection ("system" may still resolve to amber when unavailable). */
   choice: AccentChoice;

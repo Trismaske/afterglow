@@ -33,6 +33,7 @@ import type { StoredMediaKind } from '../lib/mediaIdentity';
 import type { MotionClipRow } from '../db/store';
 import { motionClipKey, resolveMotionClip } from '../lib/motionClips';
 import { versionedUri } from '../lib/imageKeys';
+import { radius, scrim } from '../theme';
 
 /** The kind glyphs — the vocabulary phase 7's stage chips share. */
 const KIND_ICON: Record<
@@ -224,8 +225,8 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 5,
     left: 5,
-    borderRadius: 9,
+    borderRadius: radius.thumb,
     padding: 2,
-    backgroundColor: 'rgba(0,0,0,0.45)',
+    backgroundColor: scrim.mark,
   },
 });

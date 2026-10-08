@@ -8,6 +8,13 @@ Photos that need editing wait in an in-app queue that launches your editor.
 Usually those are keepers, but you can flag one before you have decided about it, when the edit is what tells you whether to keep it.
 A daily goal ring and per-day progress views carry you to inbox zero.
 
+> **What changed in 0.9.1:** the app follows your phone's text size, and the flip into full screen is a glide.
+> **Font size and display size are honoured everywhere.** Text scales with the phone's setting at every step; past the larger steps the layouts that paired a ring or a pill with a column of text stack instead of wrapping word by word, the deck's chips go two to a row, and at the largest steps the tab bar keeps its icons and badges and drops its labels. Nothing is capped.
+> **One type scale** (six text sizes, one spacing grid, one set of corner radii) replaces the drift that had crept in, so headings, hints and labels read the same on every screen.
+> **Every single-choice Settings row is a pill**: daily goal (with its Custom segment), keeping up, grouping and the Playback rows. Grouping's ends read Loosest and Strictest; keeping up's last choice reads All.
+> **Tapping a photo into full screen glides it there** and back, the photo or the playing clip staying on screen the whole way; with your phone's "Remove animations" on, it cuts instead.
+> **This release keeps your database.** No reinstall, no rescan.
+
 > **What changed in 0.9:** media kinds, and the groups you can read.
 > **Videos and motion photos are in review.** A video pages through the deck like a photo, muted, playing on settle; a tap shows its controls (play, pause, replay, speaker, a seek track you can drag, expand to full screen) and they hide themselves while it plays. A motion photo plays its clip then rests on the still; a pinch zooms the still. Every verdict and every queue takes a video; Compare does not.
 > **Settings › Playback** chooses Once, Loop or Off per kind, and whether thumbnails animate (Off · One · All). Every clip thumbnail wears a kind mark; GIF, Motion and Video chips join the badge vocabulary.

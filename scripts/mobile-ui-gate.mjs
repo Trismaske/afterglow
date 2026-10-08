@@ -30,6 +30,7 @@
  * so it always shows exactly one run. Exit code 1 when anything failed.
  */
 import { execFileSync, spawn } from 'node:child_process';
+import { adbRaw, createDriver, resolveSerial } from './lib/ui-driver.mjs';
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -49,246 +50,32 @@ for (const entry of readdirSync(REPORT_DIR))
   if (/^fail-.*\.png$/.test(entry)) rmSync(join(REPORT_DIR, entry));
 
 // ---------------------------------------------------------------- adb
-function adbRaw(list, opts = {}) {
-  return execFileSync('adb', list, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, ...opts });
-}
-const SERIAL =
-  argOf('--serial') ??
-  (() => {
-    const lines = adbRaw(['devices'])
-      .split('\n')
-      .slice(1)
-      .filter((l) => l.trim().endsWith('device'));
-    if (lines.length === 0) throw new Error('no adb device connected');
-    if (lines.length > 1)
-      throw new Error('multiple devices connected — pass --serial (see `adb devices`)');
-    return lines[0].split('\t')[0];
-  })();
-const adb = (...a) => adbRaw(['-s', SERIAL, ...a]);
-const shell = (cmd) => adb('shell', cmd);
-
-// ------------------------------------------------------------- ui dump
-/** Parse `uiautomator dump` XML into flat nodes (regex — no deps). */
-function dumpUi() {
-  // Delete first: a dump that fails to reach UI idle writes NOTHING,
-  // and reading the previous file back would poison every wait with
-  // stale state (observed: the gate "stuck" on a tab it had left).
-  shell(
-    'rm -f /sdcard/ag-ui-gate.xml; uiautomator dump /sdcard/ag-ui-gate.xml >/dev/null 2>&1 || true',
-  );
-  let xml = '';
-  try {
-    xml = adb('exec-out', 'cat', '/sdcard/ag-ui-gate.xml');
-  } catch {
-    return []; // dump failed (busy UI) — caller polls again
-  }
-  const nodes = [];
-  for (const tag of xml.match(/<node[^>]*>/g) ?? []) {
-    const attr = (name) => {
-      const m = tag.match(new RegExp(`${name}="([^"]*)"`));
-      return m ? m[1] : '';
-    };
-    const b = attr('bounds').match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
-    if (!b) continue;
-    // Detached (inactive-tab) screens leave ghost nodes with zero-area
-    // bounds in the dump; matching one sends taps to (0,0).
-    if (Number(b[3]) <= Number(b[1]) || Number(b[4]) <= Number(b[2])) continue;
-    nodes.push({
-      text: attr('text'),
-      desc: attr('content-desc'),
-      enabled: attr('enabled') === 'true',
-      selected: attr('selected') === 'true',
-      x: (Number(b[1]) + Number(b[3])) / 2,
-      y: (Number(b[2]) + Number(b[4])) / 2,
-      x1: Number(b[1]),
-    });
-  }
-  return nodes;
-}
-
-let cachedSize = null;
-/** Physical screen size, cached — the gate runs on phones of two sizes. */
-function screenSize() {
-  if (cachedSize) return cachedSize;
-  const out = shell('wm size');
-  const m = out.match(/(\d+)x(\d+)/);
-  cachedSize = m ? { width: Number(m[1]), height: Number(m[2]) } : { width: 1080, height: 2280 };
-  return cachedSize;
-}
-
-const matches = (node, re) => re.test(node.text) || re.test(node.desc);
-const findNode = (nodes, re) => nodes.find((n) => matches(n, re));
-
-/** Scroll the current page down one screenful. */
-function scrollDown() {
-  shell('input swipe 540 1700 540 600 300');
-}
-
-/** Scroll the current page up one screenful. */
-function scrollUp() {
-  shell('input swipe 540 600 540 1700 300');
-}
-
-/** Wait for Home, scrolling BACK UP to find it.
- *
- * "Daily goal" is Home's first card, so several steps use it to mean "we
- * are on Home" — matched as a PREFIX, because the card renames itself to
- * "Daily goal reached 🎉" once today's count passes the goal, and this
- * walk makes ~50 decisions of its own. Anchored exactly, the gate stopped
- * recognising Home the moment its own reviewing crossed the S23's goal of
- * 53, and every later step timed out on a perfectly healthy screen.
- *
- * The other half: the gate itself scrolls Home down to reach the
- * Progress row, and on a phone with many day cards Home stays where it
- * was left. The card is then merely off-screen, and every later step
- * inherits the misreading: the deck step concluded "no unreviewed photos
- * on target" on an S10e whose Home was showing "27 to review" one
- * screenful below (2026-08-04). Being on Home and being at the TOP of
- * Home are different claims; this asserts the first by restoring the
- * second. */
-async function waitForHome(timeoutMs = 40000) {
-  const deadline = Date.now() + timeoutMs;
-  for (let scrolls = 0; ; scrolls += 1) {
-    const nodes = dumpUi();
-    if (nodes.length > 0 && findNode(nodes, /^Daily goal/)) return;
-    if (Date.now() > deadline) throw new Error('timed out waiting for the top of Home');
-    // Scroll unconditionally rather than testing "are we on Home first?":
-    // Home's own "Afterglow" title scrolls away with its content, so the
-    // obvious marker is absent in exactly the case this exists to fix.
-    // A scroll on some other screen is harmless — the deadline still
-    // reports the real failure, that Home never appeared.
-    if (scrolls < 8) scrollUp();
-    await new Promise((r) => setTimeout(r, 400));
-  }
-}
-
-/** Swipe the deck's pager one photo to the left, in DEVICE coordinates
- * (the two test phones differ by 1080 vs 1440 wide). */
-function swipeDeckLeft() {
-  const { width, height } = screenSize();
-  const y = Math.round(height * 0.38); // inside the photo stage
-  shell(`input swipe ${Math.round(width * 0.8)} ${y} ${Math.round(width * 0.12)} ${y} 250`);
-}
-
-/** Swipe the deck's pager one photo back to the right. */
-function swipeDeckRight() {
-  const { width, height } = screenSize();
-  const y = Math.round(height * 0.38);
-  shell(`input swipe ${Math.round(width * 0.12)} ${y} ${Math.round(width * 0.8)} ${y} 250`);
-}
-
-/** Single-tap the middle of the photo stage (a photo's immersive
- * toggle; a video or motion photo's chrome toggle). */
-function tapStage() {
-  const { width, height } = screenSize();
-  shell(`input tap ${Math.round(width / 2)} ${Math.round(height * 0.38)}`);
-}
-
-/** Double-tap the middle of the photo stage.
- *
- * Two separate `adb shell input tap` calls land ~500 ms apart — past the
- * app's 300 ms DOUBLE_TAP_MS window, so they read as two single taps and
- * nothing zooms (measured on the API 30 emulator). The two `input`
- * processes are therefore started TOGETHER on the device, the second
- * delayed by a fraction of the window, so the gap is the sleep rather
- * than two JVM start-ups. */
-function doubleTapStage() {
-  const { width, height } = screenSize();
-  const x = Math.round(width / 2);
-  const y = Math.round(height * 0.38);
-  shell(`input tap ${x} ${y} & (sleep 0.12; input tap ${x} ${y}); wait`);
-}
-
-/** The deck pager position as [current, total], or null when no
- * indicator is on screen. */
-function pagerPosition(nodes = dumpUi()) {
-  const node = findNode(nodes, /^\d+\/\d+$/);
-  if (!node) return null;
-  const [pos, total] = node.text.split('/').map(Number);
-  return [pos, total];
-}
-
-/** Poll until a node matching `re` appears; returns { node, ms }. */
-async function waitFor(re, timeoutMs, label = String(re)) {
-  const start = Date.now();
-  // At least two inspections before declaring a timeout — a single
-  // idle-blocked dump can outlast any reasonable deadline on its own.
-  for (let attempts = 0; ; attempts += 1) {
-    const node = findNode(dumpUi(), re);
-    if (node) return { node, ms: Date.now() - start };
-    if (attempts >= 1 && Date.now() - start > timeoutMs)
-      throw new Error(`timed out waiting for ${label}`);
-    await new Promise((r) => setTimeout(r, 150));
-  }
-}
-
-/** Poll until NO node matches `re` (e.g. a stuck "Saving…" label).
- * Only a SUCCESSFUL dump counts as evidence of absence — a failed dump
- * returns [] and once made waitGone declare a still-open sheet "gone"
- * (the next tap then hit its backdrop). */
-async function waitGone(re, timeoutMs, label = String(re)) {
-  const start = Date.now();
-  for (;;) {
-    const nodes = dumpUi();
-    if (nodes.length > 0 && !findNode(nodes, re)) return { ms: Date.now() - start };
-    if (Date.now() - start > timeoutMs) throw new Error(`${label} still visible`);
-    await new Promise((r) => setTimeout(r, 150));
-  }
-}
-
-const tap = (node) => shell(`input tap ${Math.round(node.x)} ${Math.round(node.y)}`);
-async function tapText(re, timeoutMs = 20000) {
-  const { node } = await waitFor(re, timeoutMs);
-  tap(node);
-}
-
-// ------------------------------------------------------------- results
-/**
- * A phone in real use interrupts: an update prompt, an incoming call, a
- * notification tapped by nobody. When another app takes the foreground
- * mid-walk, every following assertion fails against ITS screen — and the
- * messages lie ("no unreviewed photos on target" on a phone with
- * thousands waiting). Detect the theft, name the thief, and put us back.
- */
-function foregroundPackage() {
-  const focus = shell('dumpsys window 2>/dev/null | grep -E "mCurrentFocus|mFocusedApp" | head -2');
-  const match = /([A-Za-z][\w.]+)\/[\w.]+/.exec(focus);
-  return match ? match[1] : null;
-}
-
-/** Media apps on the test phones can leave a picture-in-picture window
- * floating over the title-row icons — it steals taps WITHOUT taking the
- * foreground (device-observed: a YouTube PiP over the Stats icon failed
- * four steps). Dismiss every known PiP-capable offender outright:
- * force-stopping a package that is not installed or not running is
- * harmless (`|| true`), so the list errs wide. */
-function dismissPipOverlays() {
-  for (const pkg of [
-    'com.google.android.youtube',
-    'com.android.chrome',
-    'com.sec.android.app.sbrowser', // Samsung Internet
-    'org.videolan.vlc',
-    'com.netflix.mediaclient',
-    'com.google.android.apps.tachyon', // Google Meet
-    'com.mxtech.videoplayer.ad', // MX Player
-  ]) {
-    shell(`am force-stop ${pkg} 2>/dev/null || true`);
-  }
-}
-
-async function ensureForeground() {
-  const front = foregroundPackage();
-  if (front === null || front === APP_ID) return;
-  console.warn(`  … ${front} took the foreground; returning to Afterglow`);
-  dismissPipOverlays();
-  shell(`am start -n ${APP_ID}/.MainActivity >/dev/null`);
-  const deadline = Date.now() + 10000;
-  while (Date.now() < deadline) {
-    if (foregroundPackage() === APP_ID) return;
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error(`${front} holds the foreground — Afterglow would not come back`);
-}
+// The device hands live in scripts/lib/ui-driver.mjs, shared with the
+// accessibility walk (m0.9.1); the rules learnt on the phones are in its
+// header.
+const SERIAL = resolveSerial(argOf('--serial'));
+const {
+  adb,
+  shell,
+  dumpUi,
+  screenSize,
+  findNode,
+  scrollDown,
+  scrollUp,
+  waitForHome,
+  swipeDeckLeft,
+  swipeDeckRight,
+  tapStage,
+  doubleTapStage,
+  pagerPosition,
+  waitFor,
+  waitGone,
+  tap,
+  tapText,
+  foregroundPackage,
+  dismissPipOverlays,
+  ensureForeground,
+} = createDriver(SERIAL, APP_ID);
 
 const results = [];
 let failures = 0;

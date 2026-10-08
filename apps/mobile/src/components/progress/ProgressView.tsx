@@ -16,7 +16,15 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -65,7 +73,8 @@ import {
 } from '../../scan/scanRunner';
 import type { SourceRoot } from '../../lib/sources';
 import { StateProgressBar } from '../StateProgressBar';
-import { colors, touch, useTheme } from '../../theme';
+import { colors, radius, touch, type, useTheme } from '../../theme';
+import { useHugeText } from '../useLargeText';
 import {
   ACTION_META,
   ACTION_ORDER,
@@ -159,6 +168,9 @@ function buildInsightLines(
  * Months across the library, each bar shaded by how much of that month
  * is reviewed. Tapping one filters the grid; tapping it again clears.
  */
+/** The plot's height; the axis rows below it scale with the font. */
+const HISTOGRAM_PLOT_H = 74;
+
 function CaptureHistogram({
   histogram,
   selected,
@@ -184,6 +196,15 @@ function CaptureHistogram({
   const offsetX = useRef(0);
   const viewportW = useRef(0);
   const [contentW, setContentW] = useState(0);
+  /** The axis rows scale with the font: a tick line is one caption line,
+   * and the year row sits one line under the month row (the walk, 1.5×:
+   * at fixed offsets the two collided). */
+  const axisLine = Math.round(type.caption.lineHeight * useWindowDimensions().fontScale) + 1;
+  const axis = {
+    column: { height: HISTOGRAM_PLOT_H + 4 + 2 * axisLine + 2 },
+    tick: { top: HISTOGRAM_PLOT_H + 4 },
+    year: { top: HISTOGRAM_PLOT_H + 4 + axisLine },
+  };
   useEffect(() => {
     if (selected === null || contentW === 0 || viewportW.current === 0) return;
     const index = histogram.bars.findIndex((bar) => bar.key === selected);
@@ -238,7 +259,7 @@ function CaptureHistogram({
               key={bar.key}
               // A gap after the undated bar keeps its tick clear of the
               // first month's and shows it standing outside the timeline.
-              style={[styles.histogramColumn, bar.undated && styles.histogramUndated]}
+              style={[styles.histogramColumn, axis.column, bar.undated && styles.histogramUndated]}
               onPress={() => onSelect(bar.key)}
               accessibilityLabel={`${bar.label}: ${bar.reviewed} of ${bar.total} reviewed`}
             >
@@ -273,10 +294,16 @@ function CaptureHistogram({
               </View>
               {/* Two rows: quarters on top so a 3-letter month has room,
                   years beneath their January. */}
-              <Text style={[styles.histogramTick, active && { color: accent }]} numberOfLines={1}>
+              <Text
+                style={[styles.histogramTick, axis.tick, active && { color: accent }]}
+                numberOfLines={1}
+              >
                 {bar.monthTick ?? ''}
               </Text>
-              <Text style={[styles.histogramYear, active && { color: accent }]} numberOfLines={1}>
+              <Text
+                style={[styles.histogramYear, axis.year, active && { color: accent }]}
+                numberOfLines={1}
+              >
                 {bar.yearTick ?? ''}
               </Text>
             </Pressable>
@@ -334,6 +361,7 @@ export function ProgressView({
   /** Optional CTA (Day progress: "Review this day"). */
   renderCta?: (breakdown: StateBreakdown) => React.ReactNode;
 }) {
+  const hugeText = useHugeText();
   const base = useMemo(() => resolveTarget(target), [target]);
   /** Month filter driven by the histogram ("YYYY-MM", or the undated
    * bucket key). Null = the whole target. */
@@ -672,14 +700,18 @@ export function ProgressView({
           ]}
         />
 
-        <View style={styles.chips}>
+        <View style={[styles.chips, hugeText && styles.chipsWrapped]}>
           {VERDICT_ORDER.map((state) => {
             const meta = VERDICT_META[state];
             const active = filter === state;
             return (
               <Pressable
                 key={state}
-                style={[styles.chip, active && [styles.chipActive, { borderColor: accent }]]}
+                style={[
+                  styles.chip,
+                  hugeText && styles.chipWrapped,
+                  active && [styles.chipActive, { borderColor: accent }],
+                ]}
                 onPress={() => toggleFilter(state)}
                 accessibilityLabel={`${meta.label}: ${countOf(b, state)}`}
               >
@@ -695,7 +727,7 @@ export function ProgressView({
         {/* Row 2: PENDING ACTIONS. A separate row because they are a
             separate layer — a photo can be kept AND queued to share, so
             these never replace a verdict (docs/STATE_MODEL.md). */}
-        <View style={styles.chips}>
+        <View style={[styles.chips, hugeText && styles.chipsWrapped]}>
           {ACTION_ORDER.map((kind) => {
             const meta = ACTION_META[kind];
             const value = actionFilterOf(kind);
@@ -703,7 +735,11 @@ export function ProgressView({
             return (
               <Pressable
                 key={kind}
-                style={[styles.chip, active && [styles.chipActive, { borderColor: accent }]]}
+                style={[
+                  styles.chip,
+                  hugeText && styles.chipWrapped,
+                  active && [styles.chipActive, { borderColor: accent }],
+                ]}
                 onPress={() => setFilter((current) => (current === value ? 'all' : value))}
                 accessibilityLabel={`${meta.label} queued: ${b.actions[kind]}`}
               >
@@ -774,7 +810,18 @@ export function ProgressView({
         </View>
       </View>
     );
-  }, [data, heading, filter, toggleFilter, renderCta, accent, insights, month, target.kind]);
+  }, [
+    data,
+    heading,
+    filter,
+    toggleFilter,
+    renderCta,
+    accent,
+    insights,
+    month,
+    target.kind,
+    hugeText,
+  ]);
 
   // First load only. A SCOPE change (a histogram-month tap) deliberately
   // does NOT pass through here: unmounting the grid unmounts the header
@@ -835,14 +882,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  loadingText: { color: colors.textDim, fontSize: 15 },
+  loadingText: { color: colors.textDim, ...type.body },
   header: { paddingHorizontal: 2, paddingTop: 16, paddingBottom: 12, gap: 14 },
-  title: { color: colors.text, fontSize: 24, fontWeight: '800' },
-  subtitle: { color: colors.textDim, fontSize: 15, marginTop: -8 },
+  title: { color: colors.text, ...type.title, fontWeight: '800' },
+  subtitle: { color: colors.textDim, ...type.body, marginTop: -8 },
   // Five columns instead of five rows (m0.8.2): the same filters and
   // counts in ~130 px instead of ~790, which is what buys the histogram
   // and insight lines their space above the grid.
   chips: { flexDirection: 'row', gap: 6, marginTop: -4 },
+  /** Huge text (lib/textScale.ts): two chips per row, whole labels. */
+  chipsWrapped: { flexWrap: 'wrap' },
+  chipWrapped: { flexBasis: '46%' },
   chip: {
     flex: 1,
     alignItems: 'center',
@@ -859,8 +909,8 @@ const styles = StyleSheet.create({
   },
   chipActive: { backgroundColor: colors.surfaceRaised },
   chipSwatch: { width: 12, height: 4, borderRadius: 2 },
-  chipCount: { color: colors.text, fontSize: 17, fontWeight: '800' },
-  chipLabel: { color: colors.textDim, fontSize: 10, textAlign: 'center', lineHeight: 13 },
+  chipCount: { color: colors.text, ...type.heading, fontWeight: '800' },
+  chipLabel: { color: colors.textDim, ...type.caption, textAlign: 'center' },
   histogramBlock: { marginHorizontal: -2 },
   histogramContent: { alignItems: 'flex-end', paddingHorizontal: HISTOGRAM_PAD },
   // FIXED width per month, not flex: the chart scrolls instead of
@@ -869,14 +919,15 @@ const styles = StyleSheet.create({
   // ~4 dp wide and genuinely hard to hit). The widths live in
   // libraryInsights.ts because histogramScrollX derives bar positions
   // from them (F8) — style and math must move together.
-  histogramColumn: { width: HISTOGRAM_COLUMN_W, height: 112, alignItems: 'center' },
+  // The height follows the font scale (the `axis` styles in the render).
+  histogramColumn: { width: HISTOGRAM_COLUMN_W, alignItems: 'center' },
   histogramUndated: { marginRight: HISTOGRAM_UNDATED_GAP },
   // The plot area is also the selection outline (rule 4). The border is
   // always present but transparent, so selecting a month cannot shift
   // the bar's width or the column's alignment.
   histogramPlot: {
     width: HISTOGRAM_COLUMN_W,
-    height: 74,
+    height: HISTOGRAM_PLOT_H,
     justifyContent: 'flex-end',
     paddingHorizontal: 1,
     paddingBottom: 1,
@@ -892,25 +943,23 @@ const styles = StyleSheet.create({
   // that only one bar in three actually has.
   histogramTick: {
     position: 'absolute',
-    top: 78,
     width: 42,
     left: -14,
     textAlign: 'center',
     color: colors.textDim,
-    fontSize: 10,
+    ...type.caption,
   },
   histogramYear: {
     position: 'absolute',
-    top: 94,
     width: 42,
     left: -14,
     textAlign: 'center',
     color: colors.text,
-    fontSize: 11,
+    ...type.caption,
     fontWeight: '700',
   },
-  insightLine: { color: colors.textDim, fontSize: 13, lineHeight: 18, marginTop: -6 },
-  footnote: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: -6 },
+  insightLine: { color: colors.textDim, ...type.label, marginTop: -6 },
+  footnote: { color: colors.textDim, ...type.caption, marginTop: -6 },
   gridLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -920,16 +969,16 @@ const styles = StyleSheet.create({
   },
   gridLabel: {
     color: colors.textDim,
-    fontSize: 13,
+    ...type.label,
     textTransform: 'uppercase',
     letterSpacing: 1,
     flexShrink: 1,
   },
   monthPill: {
     borderWidth: 1,
-    borderRadius: 999,
+    borderRadius: radius.pill,
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
-  monthPillText: { fontSize: 12, fontWeight: '700' },
+  monthPillText: { ...type.caption, fontWeight: '700' },
 });

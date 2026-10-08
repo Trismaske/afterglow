@@ -59,7 +59,7 @@ import { hydrateActionWeights } from '../../db/actions';
 import { photoBadges, type WeightedActionSet } from '../../lib/photoBadges';
 import { StateDots } from '../DecisionBadge';
 import { UNDATED_DAY_KEY } from '../../lib/dates';
-import { colors, useTheme } from '../../theme';
+import { colors, radius, type, useTheme } from '../../theme';
 
 /** One grid tile: identity + what the tile's badge rendering needs. */
 export interface GridPhoto {
@@ -474,10 +474,10 @@ const styles = StyleSheet.create({
   tileWrap: { width: '33.33%', aspectRatio: 1, padding: 2 },
   tile: {
     flex: 1,
-    borderRadius: 8,
+    borderRadius: radius.thumb,
     backgroundColor: colors.surfaceRaised,
   },
   dots: { position: 'absolute', left: 7, right: 7, bottom: 7 },
-  empty: { color: colors.textDim, fontSize: 14, textAlign: 'center', marginVertical: 24 },
+  empty: { color: colors.textDim, ...type.label, textAlign: 'center', marginVertical: 24 },
   footer: { marginVertical: 16 },
 });

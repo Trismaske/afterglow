@@ -48,7 +48,7 @@ import {
 import { getEditableContentUri, PRIMARY_VOLUME } from '../lib/media';
 import { showToast } from '../lib/toast';
 import { describeOrganizeFailures, type OrganizeFailure } from '../lib/organizeFailures';
-import { colors, touch, useTheme } from '../theme';
+import { colors, radius, space, touch, type, useTheme } from '../theme';
 import { AlbumPicker } from '../components/AlbumPicker';
 import { Chip, QueueGridCell } from '../components/QueueGrid';
 import { QueueRemoveChip } from '../components/QueueRemoveChip';
@@ -575,12 +575,12 @@ export function OrganizeQueueScreen({ navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
-  heading: { color: colors.text, fontSize: 24, fontWeight: '800', marginBottom: 2 },
-  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: 12 },
-  subtitle: { color: colors.textDim, fontSize: 14, marginBottom: 10 },
+  heading: { color: colors.text, ...type.title, fontWeight: '800', marginBottom: 2 },
+  root: { flex: 1, backgroundColor: colors.background, paddingHorizontal: space.page },
+  subtitle: { color: colors.textDim, ...type.label, marginBottom: 10 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
   // codex r9: quiet stale-rows notice — dim like every read-failure line.
-  refreshFailed: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginBottom: 8 },
+  refreshFailed: { color: colors.textDim, ...type.label, textAlign: 'center', marginBottom: 8 },
   // The cell's album tag: the organize hue marks an assigned target
   // (rule 2 — the hue identifies the kind); "No album" stays neutral.
   dotsAboveTag: { bottom: 26 },
@@ -593,12 +593,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 3,
     backgroundColor: colors.organizeDim,
-    borderRadius: 6,
+    borderRadius: radius.box,
     paddingHorizontal: 4,
     paddingVertical: 1,
   },
   targetTagEmpty: { backgroundColor: colors.surfaceRaised },
-  targetTagText: { color: colors.text, fontSize: 10, fontWeight: '600', flexShrink: 1 },
+  targetTagText: { color: colors.text, ...type.caption, fontWeight: '600', flexShrink: 1 },
   errorBadge: { position: 'absolute', top: 4, right: 4 },
   actions: {
     position: 'absolute',
@@ -618,7 +618,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
   },
-  assignText: { color: colors.text, fontSize: 14, fontWeight: '700' },
+  assignText: { color: colors.text, ...type.label, fontWeight: '700' },
   applyButton: {
     minHeight: 52,
     borderRadius: touch.radius,
@@ -632,6 +632,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
   },
-  applyText: { color: colors.text, fontSize: 16, fontWeight: '700' },
+  applyText: { color: colors.text, ...type.body, fontWeight: '700' },
   disabled: { opacity: 0.5 },
 });

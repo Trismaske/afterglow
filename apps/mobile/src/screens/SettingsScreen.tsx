@@ -16,6 +16,7 @@ import {
   type AnimatedThumbsMode,
 } from '../lib/animatedCells';
 import { SegmentedControl } from '../components/SegmentedControl';
+import { useLargeText } from '../components/useLargeText';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { plural } from '../lib/format';
 import {
@@ -104,7 +105,7 @@ import {
 import { readOverlayPrefs, writeOverlayRow } from '../components/useOverlayPrefs';
 import { ACCENT_PRESETS } from '../lib/accentTheme';
 import { showToast } from '../lib/toast';
-import { colors, touch, useTheme } from '../theme';
+import { colors, radius, scrim, space, touch, type, useTheme } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Settings'>;
 
@@ -134,6 +135,7 @@ export function SettingsScreen({ navigation }: Props) {
   const db = useSQLiteContext();
   const { refresh } = useReview();
   const theme = useTheme();
+  const largeText = useLargeText();
   const systemAvailable = theme.systemAccent !== null;
   const [sourceLabel, setSourceLabel] = useState<string | null>(null);
   const [goal, setGoal] = useState<number | null>(null);
@@ -858,86 +860,49 @@ export function SettingsScreen({ navigation }: Props) {
           A gentle target for items reviewed per day — it drives the Home ring and streaks, and
           never blocks anything.
         </Text>
-        <View style={styles.chipRow}>
-          {DAILY_GOAL_CHOICES.map((value) => {
-            const active = goal === value;
-            return (
-              <Pressable
-                key={value}
-                onPress={() => pickGoal(value)}
-                style={[
-                  styles.chip,
-                  active && { backgroundColor: theme.accent, borderColor: theme.accent },
-                ]}
-              >
-                <Text style={[styles.chipText, active && { color: theme.onAccent }]}>{value}</Text>
-              </Pressable>
-            );
-          })}
-          {/* Any goal off the chips shows its number here, so the current
-              setting is never invisible. */}
-          <Pressable
-            onPress={openCustomGoal}
-            style={[
-              styles.chip,
-              customGoalActive && { backgroundColor: theme.accent, borderColor: theme.accent },
-            ]}
-          >
-            <Text style={[styles.chipText, customGoalActive && { color: theme.onAccent }]}>
-              {customGoalActive ? `${goal} · Custom` : 'Custom'}
-            </Text>
-          </Pressable>
-        </View>
+        {/* m0.9.1: one pill, like the Playback rows (every single-choice
+            row reads the same). The custom segment shows the number a
+            goal off the presets has, so the current setting is never
+            invisible; selecting it opens the custom-goal sheet. */}
+        <SegmentedControl
+          accessibilityLabel="Daily goal"
+          options={[
+            ...DAILY_GOAL_CHOICES.map((value) => ({ id: String(value), label: String(value) })),
+            { id: 'custom', label: customGoalActive ? String(goal) : 'Custom' },
+          ]}
+          value={customGoalActive ? 'custom' : String(goal)}
+          onChange={(id) => (id === 'custom' ? openCustomGoal() : pickGoal(Number(id)))}
+        />
 
         <Text style={styles.sectionLabel}>Keeping up</Text>
         <Text style={styles.hint}>
           A second, independent goal: leave nothing unreviewed from the last day or two — or aim for
-          the whole library. Items without a capture date count only under “All time”.
+          the whole library. Items without a capture date count only under “All”.
         </Text>
-        <View style={styles.chipRow}>
-          {COVERAGE_GOAL_CHOICES.map((value) => {
-            const active = coverage === value;
-            return (
-              <Pressable
-                key={value}
-                onPress={() => pickCoverage(value)}
-                style={[
-                  styles.chip,
-                  active && { backgroundColor: theme.accent, borderColor: theme.accent },
-                ]}
-              >
-                <Text style={[styles.chipText, active && { color: theme.onAccent }]}>
-                  {COVERAGE_GOAL_LABELS[value]}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
+        <SegmentedControl
+          accessibilityLabel="Keeping up"
+          options={COVERAGE_GOAL_CHOICES.map((value) => ({
+            id: value,
+            label: COVERAGE_GOAL_LABELS[value],
+          }))}
+          value={coverage}
+          onChange={pickCoverage}
+        />
 
         <Text style={styles.sectionLabel}>Grouping</Text>
         <Text style={styles.hint}>
           How similar photos must look to land in the same group. Stricter makes smaller, tighter
           groups; looser catches more near-duplicates.
         </Text>
-        <View style={styles.chipRow}>
-          {STRICTNESS_STEPS.map((step) => {
-            const active = strictness?.id === step.id;
-            return (
-              <Pressable
-                key={step.id}
-                onPress={() => pickStrictness(step)}
-                style={[
-                  styles.chip,
-                  active && { backgroundColor: theme.accent, borderColor: theme.accent },
-                ]}
-              >
-                <Text style={[styles.chipText, active && { color: theme.onAccent }]}>
-                  {step.label}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
+        <SegmentedControl
+          accessibilityLabel="Grouping"
+          options={STRICTNESS_STEPS.map((step) => ({ id: step.id, label: step.label }))}
+          value={strictness?.id ?? null}
+          onChange={(id) => {
+            const step = STRICTNESS_STEPS.find((s) => s.id === id);
+            if (step) pickStrictness(step);
+          }}
+        />
 
         <Text style={styles.sectionLabel}>Playback</Text>
         <View style={styles.card}>
@@ -957,8 +922,13 @@ export function SettingsScreen({ navigation }: Props) {
               { kind: 'motion' as const, title: 'Motion photos' },
             ] as const
           ).map((row) => (
-            <View key={row.kind} style={styles.playbackRow}>
-              <Text style={styles.playbackRowTitle}>{row.title}</Text>
+            <View
+              key={row.kind}
+              style={[styles.playbackRow, largeText && styles.playbackRowStacked]}
+            >
+              <Text style={[styles.playbackRowTitle, !largeText && styles.playbackRowTitleInline]}>
+                {row.title}
+              </Text>
               <View style={styles.playbackControl}>
                 <SegmentedControl
                   options={PLAYBACK_MODES}
@@ -976,8 +946,10 @@ export function SettingsScreen({ navigation }: Props) {
             Thumbnails play their clips while on screen — all of them, or one at a time; GIFs follow
             this too.
           </Text>
-          <View style={styles.playbackRow}>
-            <Text style={styles.playbackRowTitle}>Animated thumbnails</Text>
+          <View style={[styles.playbackRow, largeText && styles.playbackRowStacked]}>
+            <Text style={[styles.playbackRowTitle, !largeText && styles.playbackRowTitleInline]}>
+              Animated thumbnails
+            </Text>
             <View style={styles.playbackControl}>
               <SegmentedControl
                 options={ANIMATED_THUMBS_MODES}
@@ -1135,19 +1107,19 @@ export function SettingsScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
   rowDisabled: { opacity: 0.5 },
-  content: { padding: 20, gap: 12 },
-  hint: { color: colors.textDim, fontSize: 13, lineHeight: 18, marginBottom: 4 },
+  content: { padding: space.page, gap: space.gap },
+  hint: { color: colors.textDim, ...type.label, marginBottom: 4 },
   applyingOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: scrim.sheet,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 14,
   },
-  applyingText: { color: colors.text, fontSize: 15, fontWeight: '600' },
+  applyingText: { color: colors.text, ...type.body, fontWeight: '600' },
   dialogScrim: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: scrim.sheet,
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
@@ -1156,45 +1128,39 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 380,
     backgroundColor: colors.surface,
-    borderRadius: 20,
+    borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.border,
     padding: 20,
     gap: 14,
   },
-  dialogTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
+  dialogTitle: { color: colors.text, ...type.heading, fontWeight: '700' },
   dialogInput: {
     color: colors.text,
-    fontSize: 20,
+    ...type.heading,
     fontWeight: '700',
     borderWidth: 1,
-    borderRadius: 12,
+    borderRadius: radius.card,
     paddingHorizontal: 14,
     minHeight: touch.action,
   },
-  dialogError: { color: colors.cull, fontSize: 13 },
+  dialogError: { color: colors.cull, ...type.label },
   dialogButtons: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
   dialogButton: { minHeight: touch.action, paddingHorizontal: 16, justifyContent: 'center' },
-  dialogButtonText: { color: colors.textDim, fontSize: 15, fontWeight: '700' },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  dialogButtonText: { color: colors.textDim, ...type.body, fontWeight: '700' },
   playbackRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 10 },
+  /** Large text (lib/textScale.ts): the pill goes under its title. */
+  playbackRowStacked: { flexDirection: 'column', alignItems: 'stretch', gap: 8 },
   switchRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 6 },
   switchCopy: { flex: 1, gap: 2 },
-  playbackRowTitle: { color: colors.text, fontSize: 15, fontWeight: '700', width: 118 },
+  playbackRowTitle: { color: colors.text, ...type.body, fontWeight: '700' },
+  /** The row layout's title column, so the pills align; a stacked row
+   * lets the title take the width it needs. */
+  playbackRowTitleInline: { width: 118 },
   playbackControl: { flex: 1 },
-  chip: {
-    paddingHorizontal: 14,
-    minHeight: 40,
-    justifyContent: 'center',
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-  },
-  chipText: { color: colors.text, fontSize: 14, fontWeight: '600' },
   sectionLabel: {
     color: colors.textDim,
-    fontSize: 13,
+    ...type.label,
     textTransform: 'uppercase',
     letterSpacing: 1,
     marginTop: 8,
@@ -1207,13 +1173,13 @@ const styles = StyleSheet.create({
     borderRadius: touch.radius,
     borderWidth: 1,
     borderColor: colors.border,
-    padding: 14,
+    padding: space.card,
     minHeight: 56,
   },
   rowBody: { flex: 1, gap: 2 },
-  rowTitle: { color: colors.text, fontSize: 16, fontWeight: '700' },
-  rowHint: { color: colors.textDim, fontSize: 13 },
-  chevron: { fontSize: 22, fontWeight: '600' },
+  rowTitle: { color: colors.text, ...type.body, fontWeight: '700' },
+  rowHint: { color: colors.textDim, ...type.label },
+  chevron: { ...type.title, fontWeight: '600' },
   card: {
     backgroundColor: colors.surface,
     borderRadius: touch.radius,
@@ -1222,8 +1188,8 @@ const styles = StyleSheet.create({
     padding: 14,
     gap: 10,
   },
-  explainer: { color: colors.textDim, fontSize: 13, lineHeight: 19 },
-  stepHint: { color: colors.textDim, fontSize: 12, fontStyle: 'italic' },
+  explainer: { color: colors.textDim, ...type.label },
+  stepHint: { color: colors.textDim, ...type.caption, fontStyle: 'italic' },
   accentWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   accentChip: {
     minHeight: 44,
@@ -1240,10 +1206,10 @@ const styles = StyleSheet.create({
   accentSwatch: {
     width: 18,
     height: 18,
-    borderRadius: 9,
+    borderRadius: radius.thumb,
     borderWidth: 1,
     borderColor: 'rgba(0,0,0,0.35)',
   },
-  accentLabel: { color: colors.textDim, fontSize: 14, fontWeight: '600' },
+  accentLabel: { color: colors.textDim, ...type.label, fontWeight: '600' },
   accentLabelActive: { color: colors.text },
 });

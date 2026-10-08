@@ -21,7 +21,7 @@ import type { VolumeAlbum } from '../../modules/media-store-actions';
 import { listMediaAlbumsCached } from '../lib/sourceCatalog';
 import { PRIMARY_VOLUME } from '../lib/mediaIdentity';
 import { androidAllowsMediaIn, newAlbumPath } from '../db/organizeStore';
-import { colors, touch } from '../theme';
+import { colors, radius, scrim, touch, type } from '../theme';
 
 export function AlbumPicker({
   visible,
@@ -181,7 +181,7 @@ export function AlbumPicker({
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  backdrop: { flex: 1, backgroundColor: scrim.sheet, justifyContent: 'flex-end' },
   sheet: {
     backgroundColor: colors.surface,
     borderTopLeftRadius: touch.radius,
@@ -191,7 +191,7 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 10,
   },
-  title: { color: colors.text, fontSize: 17, fontWeight: '700' },
+  title: { color: colors.text, ...type.heading, fontWeight: '700' },
   albumRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -201,26 +201,26 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.border,
   },
   albumBody: { flex: 1, gap: 1 },
-  albumName: { color: colors.text, fontSize: 15 },
-  albumPath: { color: colors.textDim, fontSize: 12 },
-  albumCount: { color: colors.textDim, fontSize: 13 },
-  albumEmpty: { color: colors.textDim, fontSize: 14, paddingVertical: 12 },
+  albumName: { color: colors.text, ...type.body },
+  albumPath: { color: colors.textDim, ...type.caption },
+  albumCount: { color: colors.textDim, ...type.label },
+  albumEmpty: { color: colors.textDim, ...type.label, paddingVertical: 12 },
   catalogFailed: { alignItems: 'flex-start', gap: 2, paddingBottom: 10 },
   newRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   newInput: {
     flex: 1,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 10,
+    borderRadius: radius.chip,
     color: colors.text,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    fontSize: 15,
+    ...type.body,
   },
   button: {
     paddingHorizontal: 12,
     paddingVertical: 7,
-    borderRadius: 10,
+    borderRadius: radius.chip,
     backgroundColor: colors.surfaceRaised,
     borderWidth: 1,
     borderColor: colors.border,
@@ -228,6 +228,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     minHeight: 40,
   },
-  buttonText: { color: colors.text, fontSize: 13, fontWeight: '600' },
+  buttonText: { color: colors.text, ...type.label, fontWeight: '600' },
   disabled: { opacity: 0.5 },
 });

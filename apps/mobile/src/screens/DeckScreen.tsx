@@ -17,6 +17,8 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Reanimated from 'react-native-reanimated';
+import { useHeaderHeight } from '@react-navigation/elements';
 import { useIsFocused } from '@react-navigation/native';
 import type {
   NativeStackNavigationProp,
@@ -45,10 +47,13 @@ type DeckItem = MediaItem & {
 import type { RootStackParamList } from '../navigation';
 import { orderByParts, partLabel, type PartOrder } from '../lib/groupParts';
 import { useMembershipVersion } from '../components/useMembershipVersion';
+import { useImmersiveFlight } from '../components/useImmersiveFlight';
+import { useReduceMotion } from '../components/useReduceMotion';
+import { useLargeText } from '../components/useLargeText';
 import { useReview, type RedecideTarget } from '../review/ReviewContext';
 import type { ReviewGroupRow, ReviewMemberRow } from '../db/store';
 import { BigButton } from '../components/BigButton';
-import { colors, touch, useTheme } from '../theme';
+import { colors, radius, scrim, touch, type, useTheme } from '../theme';
 import { formatClockPrecise, millisNeeded, plural } from '../lib/format';
 import { labelForDayKey, UNDATED_DAY_KEY } from '../lib/dates';
 import { OsThumbnail } from '../components/OsThumbnail';
@@ -567,6 +572,8 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * portrait-locked, so the width changes only under a resize
    * (split-screen): the list is keyed by it and remounts at the cursor. */
   const pageW = useWindowDimensions().width;
+  /** Large text (lib/textScale.ts): the chip row wraps two by two. */
+  const largeText = useLargeText();
   const [comparePicker, setComparePicker] = useState(false);
   /** P2-6: the details overlay — the metadata corner's tap target. */
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -580,6 +587,16 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * in `immersiveFlip` masks the reflow). Never a navigate: no
    * remount, no zoom-pipeline re-warm. */
   const [immersive, setImmersive] = useState(false);
+  /** The stack header is transparent on this route (App.tsx), so the
+   * framed layout pads its own top by the header's height — and hiding
+   * the header for immersive no longer reflows the content a beat after
+   * the commit. The height is remembered while the header is shown: the
+   * hook reads 0 the moment the header hides, and the exit flight needs
+   * the framed padding on its first committed frame. */
+  const liveHeaderHeight = useHeaderHeight();
+  const headerHeightRef = useRef(liveHeaderHeight);
+  if (liveHeaderHeight > 0) headerHeightRef.current = liveHeaderHeight;
+  const headerHeight = headerHeightRef.current;
   /** The gutter each page draws inside itself; immersive is edge to edge.
    * The deck's OWN constant, never the measured stage box: a measured value
    * lags the flip's commit by one layout, and the list was 26 dp wider for
@@ -1371,10 +1388,14 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * animation at all. A DIP TO BLACK masks the reflow instead: fade a
    * black cover in, flip the layout under it, fade out. Plain RN
    * Animated with the native driver — opacity only, no worklets, no
-   * layout involvement. */
+   * layout involvement.
+   *
+   * m0.9.1 phase 4: the dip is now the REDUCE-MOTION cut (and the
+   * fallback before the stage ever measured); the flip itself is the
+   * continuous flight below (useImmersiveFlight). */
   const immersiveFade = useRef(new RNAnimated.Value(0)).current;
   const immersiveFlightRef = useRef(false);
-  const immersiveFlip = useCallback(
+  const immersiveDip = useCallback(
     (next: boolean) => {
       if (immersiveFlightRef.current) return;
       immersiveFlightRef.current = true;
@@ -1403,6 +1424,39 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       });
     },
     [immersiveFade, resetZoom],
+  );
+  /** The continuous flip (m0.9.1 phase 4, settled with Tristan): the
+   * stage glides between the framed box and the edge-to-edge one on
+   * shared values while the chrome cuts, a playing clip playing through;
+   * the layout commits at once and the wrapper's transform absorbs the
+   * layouts as they land (the hook's header). Remove animations keeps
+   * the dip. */
+  const reduceMotion = useReduceMotion();
+  const flightCommit = useCallback(
+    (next: boolean) => {
+      setImmersive(next);
+      resetZoom();
+    },
+    [resetZoom],
+  );
+  const flight = useImmersiveFlight({
+    immersive,
+    imageAspect,
+    gutter,
+    border: immersive ? 0 : STAGE_BORDER,
+    windowWidth: pageW,
+    commit: flightCommit,
+  });
+  const immersiveFlip = useCallback(
+    (next: boolean) => {
+      if (immersiveFlightRef.current) return;
+      if (reduceMotion) {
+        immersiveDip(next);
+        return;
+      }
+      if (flight.fly(next) === 'unmeasured') immersiveDip(next);
+    },
+    [reduceMotion, flight, immersiveDip],
   );
   // Page taps — a plain Pressable press (RN responder system),
   // deliberately not a tap gesture (`useTapGesture`), so no worklet is
@@ -1478,7 +1532,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   immersiveRef.current = immersive;
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (immersiveFlightRef.current) return true;
+      if (immersiveFlightRef.current || flight.flyingRef.current) return true;
       if (immersiveRef.current) {
         immersiveFlip(false);
         return true;
@@ -1486,7 +1540,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       return false;
     });
     return () => sub.remove();
-  }, [immersiveFlip]);
+  }, [immersiveFlip, flight.flyingRef]);
   // currentId scopes the tap window to one photo: the hook serves every
   // pager page, so without it tap A → swipe → tap B inside the window
   // read as a double tap on B.
@@ -1494,6 +1548,17 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
     { scale, savedScale, tx, ty, savedTx, savedTy, stageW, stageH, imageAspect },
     fireStageTap,
     currentId,
+  );
+  /** A press received DURING a flight is dropped here, before the
+   * double-tap arbitration delays it past the flight's end (codex round
+   * 1: a press 50 ms into a 280 ms flight would otherwise fire a reverse
+   * flight at 350 ms). */
+  const onPagePressFenced = useCallback(
+    (event: Parameters<typeof onPagePress>[0]) => {
+      if (flight.flyingRef.current || immersiveFlightRef.current) return;
+      onPagePress(event);
+    },
+    [onPagePress, flight.flyingRef],
   );
 
   useEffect(() => {
@@ -2318,14 +2383,14 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
           surfaceType={VIDEO_SURFACE_TYPE}
           zoomScale={scale}
           onClipAvailability={setClipAvailability}
-          onPress={onPagePress}
+          onPress={onPagePressFenced}
         />
       );
     },
     [
       pageW,
       gutter,
-      onPagePress,
+      onPagePressFenced,
       fireStageTap,
       scale,
       expandStage,
@@ -2651,7 +2716,11 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
 
   return (
     <View
-      style={immersive ? styles.rootImmersive : [styles.root, { paddingBottom: insets.bottom + 8 }]}
+      style={
+        immersive
+          ? styles.rootImmersive
+          : [styles.root, { paddingTop: headerHeight + 8, paddingBottom: insets.bottom + 8 }]
+      }
     >
       {/* P2-7: immersive is the GALLERY look — edge-to-edge black, no
           frame, no OS status bar; the photo owns the screen. */}
@@ -2673,24 +2742,33 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
           the virtual-detector and borderless-stage rationale lives in
           MediaStage.tsx's header. The pager is the host content; the
           badges ride the chrome slot until phase 6's overlay builder. */}
-      <MediaStageView
-        controller={stage}
-        frameStyle={immersive ? styles.stageFrameImmersive : styles.stageFrame}
-        overlayFor={view.current}
-        overlayUri={versionedUri(view.current.uri, view.current.version)}
-        regionZoom={regionZoom}
-        identityOk={current?.id === view.current.id}
-        backdropColor={immersive ? '#000' : colors.surface}
-        footInset={immersive ? insets.bottom : 0}
-        chrome={
-          // Immersive is edge to edge: the corner, the badge cluster and
-          // the details overlay keep clear of the OS navigation bar
-          // (the S23's three-button bar hid them, 2026-09-10).
-          <View
-            style={[StyleSheet.absoluteFill, { bottom: immersive ? insets.bottom : 0 }]}
-            pointerEvents="box-none"
-          >
-            {/* The eye clears the WHOLE stage (tester, 2026-08-31): the
+      {/* The flight wrapper (m0.9.1 phase 4): one always-present view
+          around the stage whose transform is empty when idle and, during
+          a flip, maps the committed layout onto the gliding path. */}
+      <Reanimated.View
+        ref={flight.hostRef}
+        style={styles.stageWrapper}
+        onLayout={flight.onHostLayout}
+      >
+        <Reanimated.View style={[styles.stageFlight, flight.flightStyle]}>
+          <MediaStageView
+            controller={stage}
+            frameStyle={immersive ? styles.stageFrameImmersive : styles.stageFrame}
+            overlayFor={view.current}
+            overlayUri={versionedUri(view.current.uri, view.current.version)}
+            regionZoom={regionZoom}
+            identityOk={current?.id === view.current.id}
+            backdropColor={immersive ? '#000' : colors.surface}
+            footInset={immersive ? insets.bottom : 0}
+            chrome={
+              // Immersive is edge to edge: the corner, the badge cluster and
+              // the details overlay keep clear of the OS navigation bar
+              // (the S23's three-button bar hid them, 2026-09-10).
+              <View
+                style={[StyleSheet.absoluteFill, { bottom: immersive ? insets.bottom : 0 }]}
+                pointerEvents="box-none"
+              >
+                {/* The eye clears the WHOLE stage (tester, 2026-08-31): the
                 photo purely as it is — position, corner, and the badge
                 pill all go, not just the cluster inside its pill (the
                 pill's own dark backdrop had stayed behind as a mark).
@@ -2698,9 +2776,9 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 claim, not decoration (M19). The details overlay stays
                 mounted; with the corner gone it simply has no opener
                 until the eye reopens. */}
-            {!stageHidden && !scrubbing && (
-              <>
-                {/* The top-right box (STATE_MODEL rule 7: one box per
+                {!stageHidden && !scrubbing && (
+                  <>
+                    {/* The top-right box (STATE_MODEL rule 7: one box per
                     corner, text facts stack, lines flush to the corner's
                     side): the position line under the Position row, and
                     under the Parts row the part the current photo belongs
@@ -2709,135 +2787,137 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                     of 4 · 5 photos" without leaving the group; a one-part
                     group has no part line. Either row alone still draws
                     the box. */}
-                {(overlay.position || (overlay.parts && view.partLabel !== null)) && (
-                  <View style={styles.posBadge} pointerEvents="none">
-                    {overlay.position && (
-                      <Text style={styles.posBadgeText}>
-                        {view.cursor + 1}/{view.keepCount}
-                      </Text>
+                    {(overlay.position || (overlay.parts && view.partLabel !== null)) && (
+                      <View style={styles.posBadge} pointerEvents="none">
+                        {overlay.position && (
+                          <Text style={styles.posBadgeText}>
+                            {view.cursor + 1}/{view.keepCount}
+                          </Text>
+                        )}
+                        {overlay.parts && view.partLabel !== null && (
+                          <Text style={styles.partBadgeText}>{view.partLabel}</Text>
+                        )}
+                      </View>
                     )}
-                    {overlay.parts && view.partLabel !== null && (
-                      <Text style={styles.partBadgeText}>{view.partLabel}</Text>
-                    )}
-                  </View>
-                )}
-                {/* P2-6: the corner is the GLANCE; tapping it (or the
+                    {/* P2-6: the corner is the GLANCE; tapping it (or the
                     badge cluster) opens the details overlay with the
                     complete truth. Day AND time (F17): rendered from
                     `day`, NEVER from taken_at. Phase 7: lines by kind of
                     fact (when / where / what) under the Overlay rows;
                     with nothing on, the corner goes and the cluster is
                     the overlay's opener. */}
-                {(cornerLines.length > 0 || stageBadges.length === 0) && (
-                  <Pressable
-                    style={styles.timeBadge}
-                    onPress={() => setDetailsOpen(true)}
-                    accessibilityLabel="Show photo details"
-                  >
-                    {cornerLines.length > 0 ? (
-                      cornerLines.map((line, i) => (
-                        <Text key={i} style={styles.timeBadgeText}>
-                          {line}
-                        </Text>
-                      ))
-                    ) : (
-                      <MaterialCommunityIcons
-                        name="information-outline"
-                        size={16}
-                        color={colors.text}
-                      />
+                    {(cornerLines.length > 0 || stageBadges.length === 0) && (
+                      <Pressable
+                        style={styles.timeBadge}
+                        onPress={() => setDetailsOpen(true)}
+                        accessibilityLabel="Show photo details"
+                      >
+                        {cornerLines.length > 0 ? (
+                          cornerLines.map((line, i) => (
+                            <Text key={i} style={styles.timeBadgeText}>
+                              {line}
+                            </Text>
+                          ))
+                        ) : (
+                          <MaterialCommunityIcons
+                            name="information-outline"
+                            size={16}
+                            color={colors.text}
+                          />
+                        )}
+                      </Pressable>
                     )}
-                  </Pressable>
+                    {stageBadges.length > 0 && (
+                      <Pressable
+                        // The bottom-left box (rule 7, marks flow): the pill
+                        // ends before the buttons' end of the row, and the
+                        // cluster drops its chip to a second line, flush left,
+                        // when a full badge set on a narrow stage overruns it.
+                        // Only with something to show: an empty pill's backdrop
+                        // is a mark of its own (codex round 1).
+                        style={[styles.flagBadge, { maxWidth: badgePillMaxWidth }]}
+                        onPress={() => setDetailsOpen(true)}
+                        accessibilityLabel="Show photo details"
+                      >
+                        <BadgeCluster
+                          badges={stageBadges}
+                          size={24}
+                          maxWidth={badgePillMaxWidth - 2 * FLAG_BADGE_PAD_X}
+                        />
+                      </Pressable>
+                    )}
+                  </>
                 )}
-                {stageBadges.length > 0 && (
-                  <Pressable
-                    // The bottom-left box (rule 7, marks flow): the pill
-                    // ends before the buttons' end of the row, and the
-                    // cluster drops its chip to a second line, flush left,
-                    // when a full badge set on a narrow stage overruns it.
-                    // Only with something to show: an empty pill's backdrop
-                    // is a mark of its own (codex round 1).
-                    style={[styles.flagBadge, { maxWidth: badgePillMaxWidth }]}
-                    onPress={() => setDetailsOpen(true)}
-                    accessibilityLabel="Show photo details"
-                  >
-                    <BadgeCluster
-                      badges={stageBadges}
-                      size={24}
-                      maxWidth={badgePillMaxWidth - 2 * FLAG_BADGE_PAD_X}
-                    />
-                  </Pressable>
-                )}
-              </>
-            )}
-            <DeckDetailsOverlay
-              open={detailsOpen}
-              photoId={view.current.id}
-              header={cornerLabel}
-              onClose={() => setDetailsOpen(false)}
-            />
-          </View>
-        }
-      >
-        {/* The pager sits one gutter OUTSIDE the stage box on each side
+                <DeckDetailsOverlay
+                  open={detailsOpen}
+                  photoId={view.current.id}
+                  header={cornerLabel}
+                  onClose={() => setDetailsOpen(false)}
+                />
+              </View>
+            }
+          >
+            {/* The pager sits one gutter OUTSIDE the stage box on each side
             (the frame clips it) so its pages are the window's width in
             both stages — see `pageW`. */}
-        <View style={[styles.pager, { marginHorizontal: -gutter }]}>
-          <FlatList
-            // Keyed by the DISPLAYED unit: a unit change swaps in
-            // a fresh native list at its own first pending photo
-            // (initialScrollIndex), and the outgoing list's
-            // offsets, momentum and in-flight animations are
-            // discarded with it — see DeckView.unitKey. And by the
-            // page width: a window resize is a fresh list at the
-            // cursor, never a scroll against a re-laid extent.
-            key={`${view.unitKey}:${pageW}`}
-            ref={listRef}
-            data={view.items}
-            keyExtractor={(i) => i.id}
-            renderItem={renderPage}
-            horizontal
-            pagingEnabled
-            // A FROZEN deck is fully inert (codex device-pass
-            // round): a swipe would move the native offset while
-            // every guard ignores it. A JUST-SWAPPED deck also
-            // ignores swipes for its settle window — see
-            // `pagerSettling`.
-            scrollEnabled={!inert && !pagerSettling && !scrubbing}
-            showsHorizontalScrollIndicator={false}
-            initialScrollIndex={Math.min(view.cursor, view.items.length - 1)}
-            getItemLayout={(_data, index) => ({
-              length: pageW,
-              offset: pageW * index,
-              index,
-            })}
-            onScroll={onPagerScroll}
-            scrollEventThrottle={32}
-            onScrollBeginDrag={() => {
-              pagerAnimatingRef.current = false;
-              cancelAlign(); // the finger is the intent now
-              if (scrubbingRef.current) scrubDragRef.current = true;
-            }}
-            onMomentumScrollEnd={onMomentumEnd}
-            // Phase 5 (M26): one page each side of the current one —
-            // at most three players alive — and the pages re-render
-            // on the facts they read through refs.
-            windowSize={3}
-            initialNumToRender={3}
-            extraData={[
-              view.current.id,
-              playback,
-              playbackChrome,
-              immersive,
-              pagerSettling,
-              holding,
-              isFocused,
-            ]}
-            onEndReached={view.listMode ? loadMoreList : undefined}
-            onEndReachedThreshold={2}
-          />
-        </View>
-      </MediaStageView>
+            <View style={[styles.pager, { marginHorizontal: -gutter }]}>
+              <FlatList
+                // Keyed by the DISPLAYED unit: a unit change swaps in
+                // a fresh native list at its own first pending photo
+                // (initialScrollIndex), and the outgoing list's
+                // offsets, momentum and in-flight animations are
+                // discarded with it — see DeckView.unitKey. And by the
+                // page width: a window resize is a fresh list at the
+                // cursor, never a scroll against a re-laid extent.
+                key={`${view.unitKey}:${pageW}`}
+                ref={listRef}
+                data={view.items}
+                keyExtractor={(i) => i.id}
+                renderItem={renderPage}
+                horizontal
+                pagingEnabled
+                // A FROZEN deck is fully inert (codex device-pass
+                // round): a swipe would move the native offset while
+                // every guard ignores it. A JUST-SWAPPED deck also
+                // ignores swipes for its settle window — see
+                // `pagerSettling`.
+                scrollEnabled={!inert && !pagerSettling && !scrubbing}
+                showsHorizontalScrollIndicator={false}
+                initialScrollIndex={Math.min(view.cursor, view.items.length - 1)}
+                getItemLayout={(_data, index) => ({
+                  length: pageW,
+                  offset: pageW * index,
+                  index,
+                })}
+                onScroll={onPagerScroll}
+                scrollEventThrottle={32}
+                onScrollBeginDrag={() => {
+                  pagerAnimatingRef.current = false;
+                  cancelAlign(); // the finger is the intent now
+                  if (scrubbingRef.current) scrubDragRef.current = true;
+                }}
+                onMomentumScrollEnd={onMomentumEnd}
+                // Phase 5 (M26): one page each side of the current one —
+                // at most three players alive — and the pages re-render
+                // on the facts they read through refs.
+                windowSize={3}
+                initialNumToRender={3}
+                extraData={[
+                  view.current.id,
+                  playback,
+                  playbackChrome,
+                  immersive,
+                  pagerSettling,
+                  holding,
+                  isFocused,
+                ]}
+                onEndReached={view.listMode ? loadMoreList : undefined}
+                onEndReachedThreshold={2}
+              />
+            </View>
+          </MediaStageView>
+        </Reanimated.View>
+      </Reanimated.View>
 
       {/* The strip FOLLOWS the current photo (m0.8.5, F7). It used to be
           a plain ScrollView with no ref, so past roughly the seventh
@@ -3053,7 +3133,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
             </Pressable>
           </View>
 
-          <View style={styles.secondaryRow}>
+          <View style={[styles.secondaryRow, largeText && styles.secondaryRowWrapped]}>
             {/* The Edit chip is the block's ONE per-mode behaviour fork:
             live and LIST decks FLAG-toggle (the verdict layer untouched
             — the retired state editor's edit row; the browse re-decide
@@ -3067,6 +3147,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
             first" is the flow; favourite and organize stay disabled
             (decorating a photo you are deleting makes no sense). */}
             <ActionChip
+              wrap={largeText}
               kind="edit"
               active={flagged}
               disabled={busy || inert || currentUntracked}
@@ -3083,6 +3164,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               }
             />
             <ActionChip
+              wrap={largeText}
               kind="favourite"
               active={favourite}
               disabled={busy || inert || currentState === 'culled' || currentUntracked}
@@ -3090,6 +3172,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               onPress={() => void run(() => toggleFavourite(current.id))}
             />
             <ActionChip
+              wrap={largeText}
               kind="organize"
               active={organizeQueued}
               disabled={busy || inert || currentState === 'culled' || currentUntracked}
@@ -3097,6 +3180,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               onPress={() => void run(toggleOrganize)}
             />
             <ActionChip
+              wrap={largeText}
               kind="share"
               active={shareQueued}
               disabled={busy || inert || currentUntracked}
@@ -3221,16 +3305,21 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
     paddingHorizontal: STAGE_PADDING,
     gap: 10,
-    paddingTop: 8,
   },
+  /** The flight's two wrappers (useImmersiveFlight): the untransformed
+   * HOST that is measured, drawn above the chrome the stage glides over
+   * during a flip, and the transformed view inside it. Both are
+   * layout-neutral around the stage frame. */
+  stageWrapper: { flex: 1, zIndex: 1 },
+  stageFlight: { flex: 1 },
   header: { gap: 2, paddingHorizontal: 4 },
-  headerTitle: { color: colors.text, fontSize: 16, fontWeight: '700' },
-  headerHint: { color: colors.textDim, fontSize: 12 },
+  headerTitle: { color: colors.text, ...type.body, fontWeight: '700' },
+  headerHint: { color: colors.textDim, ...type.caption },
   // Inline failure card (SourcePicker's quiet retry language).
   loadFailedRoot: { alignItems: 'center', justifyContent: 'center' },
-  loadFailedText: { color: colors.textDim, fontSize: 14, textAlign: 'center' },
+  loadFailedText: { color: colors.textDim, ...type.label, textAlign: 'center' },
   retryButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 16 },
-  retryText: { fontSize: 15, fontWeight: '700' },
+  retryText: { ...type.body, fontWeight: '700' },
   /** Border here, NOT on the stage (see the render comment): the
    * measured stage must be exactly the box its absoluteFill children
    * render in. */
@@ -3257,14 +3346,14 @@ const styles = StyleSheet.create({
     top: 10,
     right: 10,
     alignItems: 'flex-end',
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    borderRadius: 6,
+    backgroundColor: scrim.mark,
+    borderRadius: radius.box,
     paddingHorizontal: 9,
     paddingVertical: 4,
   },
-  posBadgeText: { color: colors.text, fontSize: 13, fontWeight: '700' },
+  posBadgeText: { color: colors.text, ...type.label, fontWeight: '700' },
   // The part line under the position, one weight quieter (phase 10).
-  partBadgeText: { color: colors.text, fontSize: 12, fontWeight: '600' },
+  partBadgeText: { color: colors.text, ...type.caption, fontWeight: '600' },
   partDivider: {
     position: 'absolute',
     left: -(THUMB_GAP / 2) - 1,
@@ -3278,14 +3367,17 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 10,
     left: 10,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    borderRadius: 6,
+    // Wraps its lines before it can reach the position box (the walk at
+    // 2.0× on a 357 dp effective width: the two boxes overlapped).
+    maxWidth: '72%',
+    backgroundColor: scrim.mark,
+    borderRadius: radius.box,
     paddingHorizontal: 9,
     paddingVertical: 4,
   },
   timeBadgeText: {
     color: colors.text,
-    fontSize: 13,
+    ...type.label,
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
   },
@@ -3295,12 +3387,12 @@ const styles = StyleSheet.create({
     // clear of the seek band (Playback's STAGE_BOTTOM_ROW).
     bottom: STAGE_BOTTOM_ROW,
     left: FLAG_BADGE_LEFT,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    borderRadius: 6,
+    backgroundColor: scrim.mark,
+    borderRadius: radius.box,
     paddingHorizontal: FLAG_BADGE_PAD_X,
     paddingVertical: 4,
   },
-  flagBadgeText: { fontSize: 13, fontWeight: '700' },
+  flagBadgeText: { ...type.label, fontWeight: '700' },
   thumbStrip: { flexGrow: 0 },
   // Both numbers feed lib/stripScroll's geometry as well as this style,
   // so the follow effect and the layout can never drift apart (F7).
@@ -3308,7 +3400,7 @@ const styles = StyleSheet.create({
   thumb: {
     width: THUMB,
     height: THUMB,
-    borderRadius: 8,
+    borderRadius: radius.thumb,
     backgroundColor: colors.surfaceRaised,
     borderWidth: 2,
     borderColor: 'transparent',
@@ -3334,16 +3426,18 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   middleButtonDead: { opacity: 0.45 },
-  actionText: { color: colors.text, fontSize: 16, fontWeight: '800' },
-  middleText: { color: colors.textDim, fontSize: 12, fontWeight: '700' },
+  actionText: { color: colors.text, ...type.body, fontWeight: '800' },
+  middleText: { color: colors.textDim, ...type.caption, fontWeight: '700' },
   actionTextDisabled: { color: colors.textDim },
   secondaryRow: { flexDirection: 'row', gap: 10 },
+  /** Large text: two chips per row (the walk, 1.5×: labels broke mid-word). */
+  secondaryRowWrapped: { flexWrap: 'wrap' },
   // Bounded by the thumbnail so the dots wrap inside it.
   thumbBadges: { position: 'absolute', left: 3, right: 3, bottom: 3 },
   // Bottom sheet, matching every other modal (the Organize screen's
   // album picker, the share label prompt) — the deck's pickers were the
   // app's only centered modal cards (m0.8.1 consistency sweep).
-  pickerBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  pickerBackdrop: { flex: 1, backgroundColor: scrim.sheet, justifyContent: 'flex-end' },
   pickerCard: {
     backgroundColor: colors.surface,
     borderTopLeftRadius: touch.radius,
@@ -3353,13 +3447,13 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 10,
   },
-  pickerTitle: { color: colors.text, fontSize: 17, fontWeight: '700' },
-  pickerHint: { color: colors.textDim, fontSize: 13 },
+  pickerTitle: { color: colors.text, ...type.heading, fontWeight: '700' },
+  pickerHint: { color: colors.textDim, ...type.label },
   pickerGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   pickerThumb: {
     width: 72,
     height: 72,
-    borderRadius: 10,
+    borderRadius: radius.chip,
     backgroundColor: colors.surfaceRaised,
   },
   pickerIndex: {
@@ -3368,14 +3462,14 @@ const styles = StyleSheet.create({
     left: 4,
     minWidth: 20,
     height: 20,
-    borderRadius: 10,
-    backgroundColor: 'rgba(0,0,0,0.65)',
+    borderRadius: radius.chip,
+    backgroundColor: scrim.sheet,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 5,
   },
-  pickerIndexText: { color: colors.text, fontSize: 11, fontWeight: '800' },
+  pickerIndexText: { color: colors.text, ...type.caption, fontWeight: '800' },
   pickerKeep: { position: 'absolute', top: 4, right: 4 },
   pickerClose: { minHeight: 44, alignItems: 'center', justifyContent: 'center' },
-  pickerCloseText: { color: colors.textDim, fontSize: 14, fontWeight: '700' },
+  pickerCloseText: { color: colors.textDim, ...type.label, fontWeight: '700' },
 });

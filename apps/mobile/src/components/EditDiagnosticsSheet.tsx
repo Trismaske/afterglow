@@ -27,7 +27,7 @@ import {
   type MatrixRecord,
   type MatrixStepId,
 } from '../lib/editMatrix';
-import { colors, touch } from '../theme';
+import { colors, radius, scrim, touch, type } from '../theme';
 
 interface Props {
   /** The item under diagnosis — id plus kind (its content URI's collection). */
@@ -206,7 +206,7 @@ export function EditDiagnosticsSheet({ asset, onClose }: Props) {
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: scrim.sheet,
     justifyContent: 'flex-end',
   },
   sheet: {
@@ -219,22 +219,22 @@ const styles = StyleSheet.create({
     maxHeight: '88%',
     gap: 10,
   },
-  title: { color: colors.text, fontSize: 18, fontWeight: '700' },
-  hint: { color: colors.textDim, fontSize: 13 },
+  title: { color: colors.text, ...type.heading, fontWeight: '700' },
+  hint: { color: colors.textDim, ...type.label },
   reportScroll: { flexGrow: 0 },
   report: {
     color: colors.text,
-    fontSize: 12,
+    ...type.caption,
     fontFamily: 'monospace',
     backgroundColor: colors.surfaceRaised,
-    borderRadius: 10,
+    borderRadius: radius.chip,
     padding: 10,
   },
   actions: { gap: 8 },
-  observePrompt: { color: colors.text, fontSize: 15, fontWeight: '600', textAlign: 'center' },
+  observePrompt: { color: colors.text, ...type.body, fontWeight: '600', textAlign: 'center' },
   button: {
     minHeight: 44,
-    borderRadius: 10,
+    borderRadius: radius.chip,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 12,
@@ -242,5 +242,5 @@ const styles = StyleSheet.create({
   primary: { backgroundColor: colors.editDim, borderWidth: 1, borderColor: colors.edit },
   warn: { backgroundColor: colors.cullDim, borderWidth: 1, borderColor: colors.cull },
   neutral: { backgroundColor: colors.surfaceRaised, borderWidth: 1, borderColor: colors.border },
-  buttonText: { color: colors.text, fontSize: 14, fontWeight: '700' },
+  buttonText: { color: colors.text, ...type.label, fontWeight: '700' },
 });

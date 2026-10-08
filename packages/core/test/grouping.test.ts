@@ -116,18 +116,23 @@ describe('groupByEmbedding', () => {
     expect(memberIds(far)).toEqual([['a', 'b'], ['c']]);
   });
 
-  it('a long chain of look-alike bursts merges in well under a second (far-pair cache)', () => {
+  it('a long chain of look-alike bursts merges in seconds, not tens of seconds (far-pair cache)', () => {
     // 358 identical photos four minutes apart: every one its own burst,
     // every pair beyond the far gap once the chain grows — the far pair
     // is computed once per group pair and carried through merges.
     // Real-sized vectors: the cost that matters is the 1280-d dot.
+    // The budget guards the order of magnitude, not the machine: the
+    // uncached loop took 15.8 s, the cached one 0.65 s here and 1.09 s
+    // on the shared CI runner (mobile-m0.9's first build), so a tight
+    // budget fails on runner noise while a 5 s one still catches the
+    // regression by a factor of three.
     const v1 = new Float32Array(1280);
     v1[0] = 1;
     const items = Array.from({ length: 358 }, (_, i) => item(`p${i}`, i * 4 * 60_000));
     const started = performance.now();
     const groups = groupByEmbedding(items, () => v1);
     expect(groups).toHaveLength(1);
-    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(performance.now() - started).toBeLessThan(5_000);
   });
 
   it('beyond 15 min the far bar asks for the same shot again (phase 10)', () => {

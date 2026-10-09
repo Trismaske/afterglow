@@ -26,7 +26,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon } from '../components/Icon';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
 import { invalidateMountedVolumes, mountedVolumeSet } from '../lib/mountedVolumes';
@@ -461,7 +461,7 @@ export function OrganizeQueueScreen({ navigation }: Props) {
         }
       >
         <View style={[styles.targetTag, item.organize_path === null && styles.targetTagEmpty]}>
-          <MaterialCommunityIcons
+          <Icon
             name={item.organize_path === null ? 'folder-question-outline' : 'folder-move'}
             size={11}
             color={item.organize_path === null ? colors.textDim : colors.organize}
@@ -471,12 +471,7 @@ export function OrganizeQueueScreen({ navigation }: Props) {
           </Text>
         </View>
         {item.state === 'error' ? (
-          <MaterialCommunityIcons
-            name="alert-circle"
-            size={16}
-            color={colors.cull}
-            style={styles.errorBadge}
-          />
+          <Icon name="alert-circle" size={16} color={colors.cull} style={styles.errorBadge} />
         ) : null}
       </QueueGridCell>
     ),
@@ -545,7 +540,7 @@ export function OrganizeQueueScreen({ navigation }: Props) {
             disabled={busy}
             onPress={() => setPickerOpen(true)}
           >
-            <MaterialCommunityIcons name="folder-image" size={20} color={colors.text} />
+            <Icon name="folder-image" size={20} color={colors.text} />
             <Text style={styles.assignText}>
               {selectionMode
                 ? `Choose album for ${selected.size}`
@@ -557,7 +552,7 @@ export function OrganizeQueueScreen({ navigation }: Props) {
             disabled={busy || targeted.length === 0}
             onPress={() => void applyAll()}
           >
-            <MaterialCommunityIcons name="folder-move" size={20} color={colors.text} />
+            <Icon name="folder-move" size={20} color={colors.text} />
             <Text style={styles.applyText}>
               {busy ? 'Moving…' : `Move ${targeted.length} to albums`}
             </Text>

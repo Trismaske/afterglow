@@ -9,6 +9,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator, type BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { MainTabParamList, RootStackParamList } from './src/navigation';
+import { HeaderTitle } from './src/components/HeaderTitle';
 import { countQueues } from './src/db/actions';
 import { loadBadgePrefs } from './src/lib/badgePrefs';
 import { mountedVolumeSet, onVolumesChanged } from './src/lib/mountedVolumes';
@@ -222,6 +223,8 @@ function ThemedNavigator() {
           headerTintColor: colors.text,
           headerShadowVisible: false,
           contentStyle: { backgroundColor: colors.background },
+          // Our text, so the title scales with the OS font (HeaderTitle.tsx).
+          headerTitle: ({ children }) => <HeaderTitle>{children}</HeaderTitle>,
         }}
       >
         <Stack.Screen name="Main" component={MainTabs} options={{ headerShown: false }} />

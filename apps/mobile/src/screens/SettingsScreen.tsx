@@ -38,7 +38,7 @@ import { useExternalRefresh } from '../components/useExternalRefresh';
 import { useSQLiteContext, type SQLiteDatabase } from 'expo-sqlite';
 import { useReview } from '../review/ReviewContext';
 import Constants from 'expo-constants';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon } from '../components/Icon';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import { resolveSources } from '../lib/sourceCatalog';

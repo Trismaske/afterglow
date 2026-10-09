@@ -15,7 +15,7 @@ import {
   type NativeSyntheticEvent,
   type TextLayoutEventData,
 } from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon, type IconName } from './Icon';
 import { colors, radius, type } from '../theme';
 
 export type ActionChipKind = 'edit' | 'favourite' | 'organize' | 'share';
@@ -23,8 +23,8 @@ export type ActionChipKind = 'edit' | 'favourite' | 'organize' | 'share';
 const META: Record<
   ActionChipKind,
   {
-    icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
-    activeIcon: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
+    icon: IconName;
+    activeIcon: IconName;
     color: string;
     dim: string;
     label: string;
@@ -66,7 +66,7 @@ const META: Record<
 export function ActionChip({
   kind,
   active,
-  wrap = false,
+  iconOnly = false,
   onLabelLayout,
   disabled = false,
   dimmed = false,
@@ -75,9 +75,13 @@ export function ActionChip({
   kind: ActionChipKind;
   /** The action is WAITING on the current photo — chip lights up. */
   active: boolean;
-  /** Large text (lib/textScale.ts): the row wraps two by two, each chip
-   * half the row, instead of breaking its label mid-word. */
-  wrap?: boolean;
+  /** Large text: the label is dropped and the icon carries the meaning
+   * with its accessibility label (Tristan, 2026-10-09: the two-per-row
+   * arrangement put Organize and Share on a second row the deck has no
+   * room for — behind the finish button, unreachable). The row's
+   * measured lever (components/useTextOverflow) sets it once any label
+   * needed a second line. */
+  iconOnly?: boolean;
   /** The label's onTextLayout (the deck's measured chip-row lever). */
   onLabelLayout?: (event: NativeSyntheticEvent<TextLayoutEventData>) => void;
   disabled?: boolean;
@@ -94,27 +98,30 @@ export function ActionChip({
     <Pressable
       style={[
         styles.chip,
-        wrap && styles.chipWrapped,
         active && { backgroundColor: meta.dim, borderColor: meta.color },
         dimmed && styles.chipDimmed,
       ]}
       disabled={disabled}
       onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={meta.label}
+      accessibilityState={{ disabled, selected: active }}
     >
-      <MaterialCommunityIcons
+      <Icon
         name={active ? meta.activeIcon : meta.icon}
         size={18}
         color={active ? meta.color : colors.textDim}
       />
-      <Text style={[styles.text, active && { color: meta.color }]} onTextLayout={onLabelLayout}>
-        {meta.label}
-      </Text>
+      {!iconOnly && (
+        <Text style={[styles.text, active && { color: meta.color }]} onTextLayout={onLabelLayout}>
+          {meta.label}
+        </Text>
+      )}
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  chipWrapped: { flexBasis: '46%', flexGrow: 1 },
   chip: {
     flex: 1,
     minHeight: 44,

@@ -25,7 +25,7 @@ import { formatClockPrecise, millisNeeded } from '../lib/format';
 import { imageCacheKey, versionedUri } from '../lib/imageKeys';
 import { orderByParts } from '../lib/groupParts';
 import { useMembershipVersion } from '../components/useMembershipVersion';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon } from '../components/Icon';
 import { isFavouriteSelected } from '../lib/favouriteState';
 import { ActionChip } from '../components/ActionChip';
 import { useOverlayPrefs } from '../components/useOverlayPrefs';
@@ -860,7 +860,7 @@ export function CompareScreen({ navigation, route }: Props) {
           disabled={busy}
           onPress={() => void cullVisible(visible.id, hidden.id)}
         >
-          <MaterialCommunityIcons name="close" size={21} color={colors.cull} />
+          <Icon name="close" size={21} color={colors.cull} />
           <Text style={styles.actionText}>Cull {visibleLabel}</Text>
         </Pressable>
         <Pressable
@@ -871,7 +871,7 @@ export function CompareScreen({ navigation, route }: Props) {
           disabled={busy}
           onPress={() => void keepVisible(visible.id, hidden.id)}
         >
-          <MaterialCommunityIcons name="check" size={21} color={colors.keep} />
+          <Icon name="check" size={21} color={colors.keep} />
           <Text style={styles.actionText}>Keep {visibleLabel}</Text>
         </Pressable>
       </View>
@@ -911,9 +911,7 @@ export function CompareScreen({ navigation, route }: Props) {
                   rememberAnswer && { backgroundColor: theme.accent, borderColor: theme.accent },
                 ]}
               >
-                {rememberAnswer && (
-                  <MaterialCommunityIcons name="check" size={15} color={theme.onAccent} />
-                )}
+                {rememberAnswer && <Icon name="check" size={15} color={theme.onAccent} />}
               </View>
               <Text style={styles.offerCheckLabel}>Remember this answer</Text>
             </Pressable>

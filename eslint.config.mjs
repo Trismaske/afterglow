@@ -2,6 +2,27 @@ import tseslint from 'typescript-eslint';
 import reactHooks from 'eslint-plugin-react-hooks';
 
 export default [
+  // Icons keep their size (docs/STATE_MODEL.md): every icon goes through
+  // components/Icon, which pins allowFontScaling off; the set itself is
+  // imported nowhere else.
+  {
+    files: ['apps/mobile/**/*.{ts,tsx}'],
+    ignores: ['apps/mobile/src/components/Icon.tsx'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@expo/vector-icons',
+              message:
+                'Import { Icon } from components/Icon — icons keep their size (STATE_MODEL).',
+            },
+          ],
+        },
+      ],
+    },
+  },
   {
     ignores: [
       '**/dist/**',

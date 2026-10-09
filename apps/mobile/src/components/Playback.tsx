@@ -90,7 +90,7 @@ import Animated, {
   useSharedValue,
   type SharedValue,
 } from 'react-native-reanimated';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon } from './Icon';
 import { colors, radius, scrim, useTheme } from '../theme';
 import type { PlaybackMode } from '../lib/playbackPrefs';
 
@@ -327,7 +327,7 @@ export function Playback({
               onPress={onCentre}
               accessibilityLabel={centreLabel}
             >
-              <MaterialCommunityIcons name={centreIcon} size={44} color={colors.text} />
+              <Icon name={centreIcon} size={44} color={colors.text} />
             </Pressable>
           )}
           <SeekTrack
@@ -346,7 +346,7 @@ export function Playback({
               onPress={onStop}
               accessibilityLabel="Stop"
             >
-              <MaterialCommunityIcons name="stop" size={24} color={colors.text} />
+              <Icon name="stop" size={24} color={colors.text} />
             </Pressable>
           )}
           {!scrubbing && (
@@ -357,7 +357,7 @@ export function Playback({
               onPress={onStage}
               accessibilityLabel={immersive ? 'Exit fullscreen' : 'Fullscreen'}
             >
-              <MaterialCommunityIcons
+              <Icon
                 name={immersive ? 'fullscreen-exit' : 'fullscreen'}
                 size={24}
                 color={colors.text}
@@ -372,7 +372,7 @@ export function Playback({
               onPress={onSpeaker}
               accessibilityLabel={playback.muted ? 'Unmute' : 'Mute'}
             >
-              <MaterialCommunityIcons
+              <Icon
                 name={playback.muted ? 'volume-off' : 'volume-high'}
                 size={22}
                 color={colors.text}

@@ -24,7 +24,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useExternalRefresh } from '../components/useExternalRefresh';
 import { useSQLiteContext } from 'expo-sqlite';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon } from '../components/Icon';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
 import {
@@ -379,7 +379,7 @@ export function SourcePickerScreen({ navigation }: Props) {
             </View>
             <Text style={styles.rowCount}>{totalPhotos}</Text>
             <View style={styles.check}>
-              {allFolders && <MaterialCommunityIcons name="check" size={22} color={theme.accent} />}
+              {allFolders && <Icon name="check" size={22} color={theme.accent} />}
             </View>
           </Pressable>
         )}
@@ -432,9 +432,9 @@ export function SourcePickerScreen({ navigation }: Props) {
               {!row.missing && <Text style={styles.rowCount}>{row.itemCount}</Text>}
               <View style={styles.check}>
                 {isSelected ? (
-                  <MaterialCommunityIcons name="check" size={22} color={theme.accent} />
+                  <Icon name="check" size={22} color={theme.accent} />
                 ) : included ? (
-                  <MaterialCommunityIcons name="circle-small" size={22} color={theme.accent} />
+                  <Icon name="circle-small" size={22} color={theme.accent} />
                 ) : null}
               </View>
             </Pressable>

@@ -31,7 +31,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { Image } from 'expo-image';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon } from '../components/Icon';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
 import { invalidateMountedVolumes, mountedVolumeSet } from '../lib/mountedVolumes';
@@ -451,7 +451,7 @@ export function ShareQueueScreen({ navigation }: Props) {
       >
         {item.pass_count > 0 ? (
           <View style={styles.passBadge}>
-            <MaterialCommunityIcons name="check" size={12} color={colors.text} />
+            <Icon name="check" size={12} color={colors.text} />
             {item.pass_count > 1 ? (
               <Text style={styles.passBadgeText}>{item.pass_count}</Text>
             ) : null}
@@ -525,7 +525,7 @@ export function ShareQueueScreen({ navigation }: Props) {
             disabled={busy}
             onPress={() => void runShare()}
           >
-            <MaterialCommunityIcons name="share-variant" size={20} color={colors.text} />
+            <Icon name="share-variant" size={20} color={colors.text} />
             <Text style={styles.shareText}>
               {selectionMode ? `Share ${selected.size} selected` : `Share all ${count}`}
             </Text>

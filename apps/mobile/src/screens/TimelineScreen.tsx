@@ -42,7 +42,7 @@ import {
   type ViewToken,
   useWindowDimensions,
 } from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon } from '../components/Icon';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useIsFocused } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -1048,7 +1048,7 @@ export function TimelineScreen({ navigation }: Props) {
           onPress={backToTop}
           accessibilityLabel="Back to top"
         >
-          <MaterialCommunityIcons name="chevron-up" size={26} color={theme.accent} />
+          <Icon name="chevron-up" size={26} color={theme.accent} />
         </Pressable>
       )}
       <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>

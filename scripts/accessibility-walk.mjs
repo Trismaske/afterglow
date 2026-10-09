@@ -180,7 +180,7 @@ async function relaunch() {
   for (let attempt = 0; ; attempt += 1) {
     shell(`monkey -p ${APP_ID} -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1`);
     try {
-      await d.waitFor(/^Afterglow$|^Daily goal|Allow photo access/, 45000, 'home after relaunch');
+      await d.waitFor(/^Daily goal|Allow photo access/, 45000, 'home after relaunch');
       break;
     } catch (error) {
       if (attempt >= 1) throw error;
@@ -210,9 +210,13 @@ async function home() {
   await d.waitForHome();
 }
 const backHome = async () => {
+  // The app first: BACK pressed while the launcher holds the foreground
+  // (the S23 at 1.3, r18) does nothing, and the app then comes back on
+  // the screen it was left on.
+  await d.ensureForeground();
   for (let i = 0; i < 4; i += 1) {
     const nodes = dumpUi();
-    if (nodes.length > 0 && findNode(nodes, /^Afterglow$|^Daily goal/)) return;
+    if (nodes.length > 0 && d.homeTop(nodes)) return;
     // An empty dump is an unsettled UI (the Progress grid's animated
     // thumbnails), not a screen to back out of: a BACK on it once walked
     // the app out to the launcher (r17 on the S10e and the 480 dp
@@ -371,7 +375,9 @@ const SCREENS = {
     // through Home too, but the tab is what a user taps).
     for (const tab of ['Edit', 'Favourite', 'Organize', 'Share']) {
       await d.waitForHome();
-      await d.tapText(new RegExp(`^${tab}$`), 10000);
+      // The tab's accessibility label carries its count ("Edit, 3 waiting")
+      // and is all that names the tab once the labels have dropped.
+      await d.tapText(new RegExp(`^${tab}(,|$)`), 10000);
       await sleep(1000);
       shot(`tab-${tab.toLowerCase()}`);
       await d.tapText(/^Home$/, 10000);

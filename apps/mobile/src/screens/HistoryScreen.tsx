@@ -26,7 +26,7 @@ import { OsThumbnail } from '../components/OsThumbnail';
 import { thumbBucketPx } from '../lib/thumbnailSize';
 const ROW_THUMB_PX = thumbBucketPx(56, PixelRatio.get());
 import { Image } from 'expo-image';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon } from '../components/Icon';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -367,7 +367,7 @@ export function HistoryScreen({ navigation }: Props) {
               </Text>
               <Text style={styles.rowTime}>{formatDayClock(item.chosen_at)}</Text>
             </View>
-            <MaterialCommunityIcons name="share-variant" size={20} color={colors.share} />
+            <Icon name="share-variant" size={20} color={colors.share} />
           </View>
         );
       }
@@ -392,7 +392,7 @@ export function HistoryScreen({ navigation }: Props) {
         >
           {tombstone ? (
             <View style={[styles.thumb, styles.tombstone]}>
-              <MaterialCommunityIcons name="image-off-outline" size={22} color={colors.textDim} />
+              <Icon name="image-off-outline" size={22} color={colors.textDim} />
             </View>
           ) : (
             <AnimatedThumb

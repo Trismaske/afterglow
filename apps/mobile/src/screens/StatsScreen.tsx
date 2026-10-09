@@ -27,7 +27,7 @@
  */
 import React, { useCallback, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon, type IconName } from '../components/Icon';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useExternalRefresh } from '../components/useExternalRefresh';
@@ -580,7 +580,7 @@ function ProjectionRow({
   bytes,
 }: {
   color: string;
-  icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
+  icon: IconName;
   range: ProjectedRange;
   noun: string;
   bytes?: ProjectedRange;
@@ -591,7 +591,7 @@ function ProjectionRow({
   const empty = range.high <= 0;
   return (
     <View style={styles.projectionRow}>
-      <MaterialCommunityIcons name={icon} size={20} color={empty ? colors.textDim : color} />
+      <Icon name={icon} size={20} color={empty ? colors.textDim : color} />
       <Text style={[styles.projectionText, empty && styles.projectionTextEmpty]}>
         {projectionLine(range.low, range.high, noun, bytes)}
       </Text>
@@ -735,7 +735,7 @@ function HabitsTab({
 
       <View style={styles.card}>
         <View style={styles.lifetimeTitleRow}>
-          <MaterialCommunityIcons name="chart-box-outline" size={21} color={accent} />
+          <Icon name="chart-box-outline" size={21} color={accent} />
           <Text style={styles.cardTitle}>Milestones</Text>
         </View>
         {milestones.map(({ item, hue }) => (
@@ -961,7 +961,7 @@ function QueueRow({
   count,
   onPress,
 }: {
-  icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
+  icon: IconName;
   color: string;
   label: string;
   hint: string;
@@ -970,7 +970,7 @@ function QueueRow({
 }) {
   return (
     <Pressable style={styles.queueRow} onPress={onPress}>
-      <MaterialCommunityIcons name={icon} size={22} color={color} />
+      <Icon name={icon} size={22} color={color} />
       <View style={styles.queueBody}>
         <Text style={styles.queueLabel}>{label}</Text>
         <Text style={styles.queueHint}>{hint}</Text>

@@ -129,6 +129,19 @@ export function createDriver(serial, appId) {
     shell(`input swipe ${x} ${from} ${x} ${to} 300`);
   }
 
+  /** Home's top anchor: the goal line, or the brand title WITH its
+   * Settings button beside it — Settings' About card says "Afterglow"
+   * too, and that word alone passed a scrolled-down Settings as Home
+   * (the r19 walks). Null when the dump is not Home's top. */
+  function homeTop(nodes) {
+    const goal = findNode(nodes, /^Daily goal/);
+    if (goal) return goal;
+    const brand = findNode(nodes, /^Afterglow$/);
+    return brand && findNode(nodes, /^Settings$/) && !findNode(nodes, /^Navigate up$/)
+      ? brand
+      : null;
+  }
+
   /** Wait for the TOP of Home, scrolling back up to find it: the brand
    * title or the goal line (at huge text on a narrow screen only the
    * title and the ring fit the first screen), clear of the status bar
@@ -138,7 +151,7 @@ export function createDriver(serial, appId) {
     const statusBar = screenSize().height * 0.035;
     for (let scrolls = 0; ; scrolls += 1) {
       const nodes = dumpUi();
-      const top = nodes.length > 0 && findNode(nodes, /^Afterglow$|^Daily goal/);
+      const top = nodes.length > 0 && homeTop(nodes);
       if (top && top.y1 > statusBar) return;
       if (Date.now() > deadline) throw new Error('timed out waiting for the top of Home');
       // A downward swipe at the top of Home pulled the S10e's quick
@@ -279,6 +292,7 @@ export function createDriver(serial, appId) {
     matches,
     scrollDown,
     stageRect,
+    homeTop,
     scrollUp,
     waitForHome,
     swipeDeckLeft,

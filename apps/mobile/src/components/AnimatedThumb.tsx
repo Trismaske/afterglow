@@ -23,7 +23,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 import { Image } from 'expo-image';
 import { VideoView, type VideoPlayer } from 'expo-video';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon } from './Icon';
 import { OsThumbnail } from './OsThumbnail';
 import { useCellPlayback, type AnimatedCells, type CellPlayback } from './useAnimatedCells';
 import type { AnimatedKind } from '../lib/animatedCells';
@@ -101,7 +101,7 @@ export const AnimatedThumb = React.memo(function AnimatedThumb({
         ))}
       {row.animated !== null && (
         <View style={styles.mark} pointerEvents="none">
-          <MaterialCommunityIcons name={KIND_ICON[row.animated]} size={markSize} color="#fff" />
+          <Icon name={KIND_ICON[row.animated]} size={markSize} color="#fff" />
         </View>
       )}
     </View>

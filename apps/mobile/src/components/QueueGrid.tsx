@@ -15,7 +15,7 @@ import type { AnimatedCells } from './useAnimatedCells';
 import type { AnimatedThumbRow } from '../lib/animatedThumbRow';
 import { thumbBucketPx } from '../lib/thumbnailSize';
 import { Image } from 'expo-image';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon } from './Icon';
 import { colors, radius, type } from '../theme';
 import { StateDots } from './DecisionBadge';
 import type { QueueDots } from './useQueueBadges';
@@ -70,12 +70,7 @@ export function QueueGridCell({
       />
       {children}
       {selected ? (
-        <MaterialCommunityIcons
-          name="check-circle"
-          size={20}
-          color={accent}
-          style={styles.selectBadge}
-        />
+        <Icon name="check-circle" size={20} color={accent} style={styles.selectBadge} />
       ) : null}
     </Pressable>
   );

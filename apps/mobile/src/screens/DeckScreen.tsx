@@ -91,7 +91,7 @@ import {
   useBadgesHidden,
   isKindChip,
 } from '../components/DecisionBadge';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon } from '../components/Icon';
 import { isFavouriteSelected } from '../lib/favouriteState';
 import { isSdPhoto, photoBadges, type PhotoBadge } from '../lib/photoBadges';
 import { folderAnnotation, stageMetaLines } from '../lib/stageMeta';
@@ -425,7 +425,7 @@ export function DeckScreen({ navigation, route }: DeckProps) {
           hitSlop={12}
           accessibilityLabel={hideBadges ? 'Show photo overlay' : 'Hide photo overlay'}
         >
-          <MaterialCommunityIcons
+          <Icon
             name={hideBadges ? 'eye-off-outline' : 'eye-outline'}
             size={22}
             color={colors.textDim}
@@ -2822,11 +2822,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                             </Text>
                           ))
                         ) : (
-                          <MaterialCommunityIcons
-                            name="information-outline"
-                            size={16}
-                            color={colors.text}
-                          />
+                          <Icon name="information-outline" size={16} color={colors.text} />
                         )}
                       </Pressable>
                     )}
@@ -3044,7 +3040,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               // takes the initial-decision verdict.
               onPress={() => void run(() => decideCurrent('keep'))}
             >
-              <MaterialCommunityIcons name={DECISION_GLYPHS.keep} size={21} color={colors.keep} />
+              <Icon name={DECISION_GLYPHS.keep} size={21} color={colors.keep} />
               <Text style={styles.actionText}>Keep</Text>
             </Pressable>
             <Pressable
@@ -3061,7 +3057,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               disabled={busy || inert || !compareEligible}
               onPress={() => openCompare()}
             >
-              <MaterialCommunityIcons name="compare-horizontal" size={18} color={colors.textDim} />
+              <Icon name="compare-horizontal" size={18} color={colors.textDim} />
               <Text
                 style={[styles.middleText, !compareEligible && styles.actionTextDisabled]}
                 numberOfLines={1}
@@ -3114,7 +3110,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
                 );
               }}
             >
-              <MaterialCommunityIcons name="image-move" size={18} color={colors.textDim} />
+              <Icon name="image-move" size={18} color={colors.textDim} />
               <Text style={styles.middleText} numberOfLines={1} adjustsFontSizeToFit>
                 {view.isGroup || notRelatedCount === 0
                   ? 'Not related'
@@ -3131,12 +3127,12 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               disabled={busy || inert || settling || currentUntracked}
               onPress={() => void run(() => decideCurrent('cull'))}
             >
-              <MaterialCommunityIcons name="close" size={21} color={colors.cull} />
+              <Icon name="close" size={21} color={colors.cull} />
               <Text style={styles.actionText}>Cull</Text>
             </Pressable>
           </View>
 
-          <View style={[styles.secondaryRow, chipRow.overflow && styles.secondaryRowWrapped]}>
+          <View style={styles.secondaryRow}>
             {/* The Edit chip is the block's ONE per-mode behaviour fork:
             live and LIST decks FLAG-toggle (the verdict layer untouched
             — the retired state editor's edit row; the browse re-decide
@@ -3150,7 +3146,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
             first" is the flow; favourite and organize stay disabled
             (decorating a photo you are deleting makes no sense). */}
             <ActionChip
-              wrap={chipRow.overflow}
+              iconOnly={chipRow.overflow}
               onLabelLayout={chipRow.watch('edit')}
               kind="edit"
               active={flagged}
@@ -3168,7 +3164,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               }
             />
             <ActionChip
-              wrap={chipRow.overflow}
+              iconOnly={chipRow.overflow}
               onLabelLayout={chipRow.watch('favourite')}
               kind="favourite"
               active={favourite}
@@ -3177,7 +3173,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               onPress={() => void run(() => toggleFavourite(current.id))}
             />
             <ActionChip
-              wrap={chipRow.overflow}
+              iconOnly={chipRow.overflow}
               onLabelLayout={chipRow.watch('organize')}
               kind="organize"
               active={organizeQueued}
@@ -3186,7 +3182,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               onPress={() => void run(toggleOrganize)}
             />
             <ActionChip
-              wrap={chipRow.overflow}
+              iconOnly={chipRow.overflow}
               onLabelLayout={chipRow.watch('share')}
               kind="share"
               active={shareQueued}
@@ -3440,8 +3436,6 @@ const styles = StyleSheet.create({
   middleText: { color: colors.textDim, ...type.caption, fontWeight: '700' },
   actionTextDisabled: { color: colors.textDim },
   secondaryRow: { flexDirection: 'row', gap: 10 },
-  /** Large text: two chips per row (the walk, 1.5×: labels broke mid-word). */
-  secondaryRowWrapped: { flexWrap: 'wrap' },
   // Bounded by the thumbnail so the dots wrap inside it.
   thumbBadges: { position: 'absolute', left: 3, right: 3, bottom: 3 },
   // Bottom sheet, matching every other modal (the Organize screen's

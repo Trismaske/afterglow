@@ -15,7 +15,7 @@
 import type { StoredMediaKind } from '../lib/mediaIdentity';
 import React, { useEffect, useMemo, useState } from 'react';
 import { FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon } from './Icon';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { VolumeAlbum } from '../../modules/media-store-actions';
 import { listMediaAlbumsCached } from '../lib/sourceCatalog';
@@ -122,7 +122,7 @@ export function AlbumPicker({
             style={{ flexGrow: 0, maxHeight: 320 }}
             renderItem={({ item }) => (
               <Pressable style={styles.albumRow} onPress={() => onChoose(item.relativePath)}>
-                <MaterialCommunityIcons name="folder-image" size={20} color={colors.textDim} />
+                <Icon name="folder-image" size={20} color={colors.textDim} />
                 <View style={styles.albumBody}>
                   <Text style={styles.albumName}>{item.displayName}</Text>
                   {collidingNames.has(item.displayName) && (

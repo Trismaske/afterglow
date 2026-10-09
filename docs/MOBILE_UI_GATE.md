@@ -42,7 +42,7 @@ A read-only companion to the gate: `node scripts/accessibility-walk.mjs --serial
 It taps nothing that decides, so it may run on a phone whose review state matters.
 One walk per phone: a second walk on the same serial is refused (a lock file per serial), because two walks record each other's values as the phone's starting state and restore the wrong ones.
 Launch one invocation per command and wait for its `WALK DONE` before the next.
-`node scripts/accessibility-report.mjs DIR --md` reads the UI dumps saved beside the screenshots and lists, per screen and target, the first scale at which a text node clips, wraps, overlaps another or disappears; `node scripts/text-audit.mjs --md` is the static inventory of every Text site and its container class.
+`node scripts/accessibility-report.mjs DIR --md` reads the UI dumps saved beside the screenshots and lists, per screen and target, the first scale at which a text node clips, wraps, overlaps another or disappears; `node scripts/text-audit.mjs --md` is the static inventory of every Text site and its container class; `node scripts/os-text-baseline.mjs --serial SERIAL` measures the OS Settings app (and Google Photos or YouTube with `--apps`) the same way at each font scale, the reference docs/accessibility-audit.md holds our scaling to.
 Both scripts and the gate share `scripts/lib/ui-driver.mjs`.
 
 ## What it covers

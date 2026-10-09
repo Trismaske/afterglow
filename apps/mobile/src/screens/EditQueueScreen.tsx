@@ -8,7 +8,7 @@ import { OsThumbnail } from '../components/OsThumbnail';
 import { thumbBucketPx } from '../lib/thumbnailSize';
 const ROW_THUMB_PX = thumbBucketPx(84, PixelRatio.get());
 import { Image } from 'expo-image';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon } from '../components/Icon';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
 import { mountedVolumeSet } from '../lib/mountedVolumes';
@@ -19,6 +19,7 @@ import { withUserWritePriority } from '../lib/writePriority';
 import { useReview } from '../review/ReviewContext';
 import { getEditableContentUri, type MediaRef } from '../lib/media';
 import { launchEditor, launchViewer } from '../lib/edit';
+import { useTextOverflow } from '../components/useTextOverflow';
 import { ACTION_EDIT, ACTION_VIEW, launchMimeType } from '../lib/editActions';
 import { describeEditLaunchFailure } from '../lib/editLaunchFailures';
 import type { EditLaunchStage } from '../lib/edit';
@@ -39,10 +40,16 @@ type Props = MainTabScreenProps<'EditQueue'>;
  * The to-edit queue (PLAN.md: Android has no virtual gallery albums, so
  * the queue lives in-app). Every photo flagged "needs edit", across all
  * days. Two explicit launch buttons per row (m0.7 item A, tester
- * decision): **Edit here** fires write-request-first ACTION_EDIT (Google
- * Photos-style editors); **View only** opens the read-only viewer whose
- * own edit button has its own write powers (Samsung Gallery-style). Mark
- * done is always available manually (edit *detection* is m0.3).
+ * decision), named for WHERE the photo opens (Tristan's screenshot
+ * review 2026-10-09: "Edit here" read as editing inside Afterglow and
+ * "View only" as not editing at all, and both wrapped at 1.3): **Editor**
+ * fires write-request-first ACTION_EDIT (Google Photos-style editors);
+ * **Viewer** opens the read-only viewer whose own edit button has its
+ * own write powers (Samsung Gallery-style). Mark done is always
+ * available manually (edit *detection* is m0.3). The three labels share
+ * the space beside the thumbnail: once one needs a second line they
+ * drop and the icons carry the meaning with their accessibility labels
+ * (the deck's chip rule, components/useTextOverflow).
  */
 /** An edit-queue row's extent along the list (the 84 dp thumb, padding, gap). */
 const EDIT_ROW_DP = 110;
@@ -50,6 +57,8 @@ const editThumb = (row: ToEditRow) => thumbRowOf(row.asset_id, row);
 
 export function EditQueueScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
+  // Measured lever: the row buttons' labels, icons only once one wraps.
+  const { overflow: labelsDropped, watch: watchLabel } = useTextOverflow(false);
   const theme = useTheme();
   const db = useSQLiteContext();
   const { refresh } = useReview();
@@ -236,27 +245,45 @@ export function EditQueueScreen({ navigation }: Props) {
               style={[styles.rowButton, styles.editButton]}
               disabled={busyId !== null}
               onPress={() => void openEditor(item)}
+              accessibilityRole="button"
+              accessibilityLabel="Editor"
+              accessibilityHint="Opens an app that can save over the original"
             >
-              <MaterialCommunityIcons name="pencil" size={18} color={colors.edit} />
-              <Text style={styles.rowButtonText}>
-                {busyId === item.asset_id ? 'Opening…' : 'Edit here'}
-              </Text>
+              <Icon name="pencil" size={18} color={colors.edit} />
+              {!labelsDropped && (
+                <Text style={styles.rowButtonText} onTextLayout={watchLabel('editor')}>
+                  {busyId === item.asset_id ? 'Opening…' : 'Editor'}
+                </Text>
+              )}
             </Pressable>
             <Pressable
               style={[styles.rowButton, styles.galleryButton]}
               disabled={busyId !== null}
               onPress={() => void openGallery(item)}
+              accessibilityRole="button"
+              accessibilityLabel="Viewer"
+              accessibilityHint="Opens the item read-only in your viewer"
             >
-              <MaterialCommunityIcons name="image-outline" size={18} color={colors.text} />
-              <Text style={styles.rowButtonText}>View only</Text>
+              <Icon name="image-outline" size={18} color={colors.text} />
+              {!labelsDropped && (
+                <Text style={styles.rowButtonText} onTextLayout={watchLabel('viewer')}>
+                  Viewer
+                </Text>
+              )}
             </Pressable>
             <Pressable
               style={[styles.rowButton, styles.doneButton, { borderColor: theme.accent }]}
               disabled={busyId !== null}
               onPress={() => void markDone(item.asset_id)}
+              accessibilityRole="button"
+              accessibilityLabel="Done"
             >
-              <MaterialCommunityIcons name="check" size={18} color={theme.accent} />
-              <Text style={styles.rowButtonText}>Done</Text>
+              <Icon name="check" size={18} color={theme.accent} />
+              {!labelsDropped && (
+                <Text style={styles.rowButtonText} onTextLayout={watchLabel('done')}>
+                  Done
+                </Text>
+              )}
             </Pressable>
           </View>
         </View>
@@ -264,6 +291,8 @@ export function EditQueueScreen({ navigation }: Props) {
     ),
     [
       busyId,
+      labelsDropped,
+      watchLabel,
       openEditor,
       openGallery,
       markDone,
@@ -288,7 +317,7 @@ export function EditQueueScreen({ navigation }: Props) {
             : 'Loading…'
           : rows.length === 0
             ? 'Nothing queued to edit.'
-            : `${rows.length} queued · “Edit here” opens an editor that can save over the original; “View only” opens the item read-only, with its own edit button`}
+            : `${rows.length} queued · Editor opens an app that can save over the original; Viewer opens the item read-only, with its own edit button`}
       </Text>
       {rows !== null && rows.length > 0 ? (
         <View style={styles.chips}>

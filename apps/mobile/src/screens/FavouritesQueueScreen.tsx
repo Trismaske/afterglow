@@ -18,7 +18,7 @@ import { OsThumbnail } from '../components/OsThumbnail';
 import { thumbBucketPx } from '../lib/thumbnailSize';
 const ROW_THUMB_PX = thumbBucketPx(52, PixelRatio.get());
 import { Image } from 'expo-image';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon } from '../components/Icon';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { PhotoState } from '@afterglow/core';
 import { useNavigation } from '@react-navigation/native';
@@ -381,7 +381,7 @@ export function FavouritesQueueScreen() {
               />
               <StateDots {...dotsFor(item.asset_id)} size={9} style={styles.dots} />
             </Pressable>
-            <MaterialCommunityIcons
+            <Icon
               name={item.favourite_target === 1 ? 'heart-plus' : 'heart-minus'}
               size={24}
               color={colors.fav}

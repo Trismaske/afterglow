@@ -8,7 +8,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon, type IconName } from './Icon';
 import { colors, radius } from '../theme';
 import { badgesHidden, subscribeBadgesHidden } from '../lib/badgePrefs';
 import {
@@ -71,10 +71,7 @@ export const KIND_CHIP_LABELS: Record<'video' | 'motion' | 'gif', string> = {
   gif: 'GIF',
 };
 
-export const DECISION_GLYPHS: Record<
-  DecisionKind,
-  React.ComponentProps<typeof MaterialCommunityIcons>['name']
-> = {
+export const DECISION_GLYPHS: Record<DecisionKind, IconName> = {
   cull: 'close',
   keep: 'check',
   trashed: 'trash-can-outline',
@@ -149,7 +146,7 @@ export function DecisionBadge({
         style,
       ]}
     >
-      <MaterialCommunityIcons
+      <Icon
         name={DECISION_GLYPHS[kind]}
         size={Math.round(size * 0.7)}
         color={carried ? `${fg}${CARRIED_ALPHA}` : fg}

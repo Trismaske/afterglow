@@ -20,7 +20,7 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon } from './Icon';
 import { colors, radius, type, useTheme } from '../theme';
 import { useHugeText } from './useLargeText';
 import { useTextOverflow } from './useTextOverflow';
@@ -35,6 +35,8 @@ export const TAB_ICONS = {
 
 /** Visible bar height (above the system inset). */
 const BAR_HEIGHT = 58;
+/** The count badge's disc: fixed, never scaled (see countFits). */
+const BADGE_DP = 16;
 /** How far the Home circle protrudes above the bar. */
 const RAISE = 18;
 /** Home circle diameter (theme touch.action-sized primary target). */
@@ -47,19 +49,17 @@ export function MainTabBar({ state, descriptors, navigation, insets }: BottomTab
   /** Huge text (lib/textScale.ts): the labels go — a fifth of the bar
    * cannot hold "Favourite" past 1.6× on 360 dp — and the icons carry
    * the tab (the content-desc names it to a screen reader); the badge
-   * grows with its digits instead of overflowing its 16 dp disc. */
+   * keeps its disc; a dot replaces the count once the digit outgrows it. */
   const hugeText = useHugeText();
   /** Measured lever: any label needing a second line drops all five. */
   const labels = useTextOverflow(hugeText);
   const fontScale = useWindowDimensions().fontScale;
-  const badgeSize = Math.round(16 * Math.max(1, fontScale));
-  /** Past 20 dp the disc on the icon's corner would hide the icon (the
-   * walk at 2.0×: the badge covered the pencil and the share glyph); it
-   * moves beside the icon instead, and the icon's pill shrinks to its
-   * glyph so the pair fits a fifth of a 320 dp bar (28 + 2 + 32 dp at
-   * 2.0; a two-digit count spills into the tab's gutters, which the
-   * centred row leaves empty). Computed from the scale, like the disc. */
-  const badgeBeside = badgeSize > 20;
+  /** The badge is a work indicator, not reading text (Tristan, 2026-10-09:
+   * a count grown beside or over its icon wrecked the bar). The 16 dp
+   * corner disc keeps its count while the scaled digit's line fits the
+   * disc; past that the same corner shows a plain dot, and the count
+   * stays in the queue's title and in this tab's accessibility label. */
+  const countFits = type.caption.lineHeight * fontScale <= BADGE_DP;
   const barHeight = BAR_HEIGHT + insets.bottom;
 
   const pressHandlers = (routeKey: string, routeName: string, isFocused: boolean) => ({
@@ -100,7 +100,11 @@ export function MainTabBar({ state, descriptors, navigation, insets }: BottomTab
               style={styles.item}
               accessibilityRole="button"
               accessibilityState={isFocused ? { selected: true } : {}}
-              accessibilityLabel={options.title ?? route.name}
+              accessibilityLabel={
+                badge !== undefined && badge !== 0
+                  ? `${options.title ?? route.name}, ${badge} waiting`
+                  : (options.title ?? route.name)
+              }
               {...pressHandlers(route.key, route.name, isFocused)}
             >
               {/* Active indicator (tester decision): accent-muted pill
@@ -108,29 +112,26 @@ export function MainTabBar({ state, descriptors, navigation, insets }: BottomTab
                   alone was too subtle next to the raised Home circle.
                   The badge anchors to a sibling wrapper so the pill can
                   keep fixed dimensions (fully rounded ends). */}
-              <View style={badgeBeside && styles.iconRow}>
+              <View>
                 <View
                   style={[
                     styles.iconPill,
-                    badgeBeside && styles.iconPillTight,
                     isFocused && { backgroundColor: accentMuted, borderColor: accent },
                   ]}
                 >
-                  <MaterialCommunityIcons
+                  <Icon
                     name={TAB_ICONS[route.name as keyof typeof TAB_ICONS]}
                     size={24}
                     color={tint}
                   />
                 </View>
-                {badge !== undefined && badge !== 0 && (
-                  <View
-                    style={[
-                      badgeBeside ? styles.badgeBeside : styles.badge,
-                      { backgroundColor: accent, minWidth: badgeSize, height: badgeSize },
-                    ]}
-                  >
+                {badge !== undefined && badge !== 0 && countFits && (
+                  <View style={[styles.badge, { backgroundColor: accent }]}>
                     <Text style={styles.badgeText}>{badge}</Text>
                   </View>
+                )}
+                {badge !== undefined && badge !== 0 && !countFits && (
+                  <View style={[styles.dot, { backgroundColor: accent }]} />
                 )}
               </View>
               {!labels.overflow && (
@@ -173,11 +174,7 @@ export function MainTabBar({ state, descriptors, navigation, insets }: BottomTab
               accessibilityLabel="Home"
               {...pressHandlers(route.key, route.name, isFocused)}
             >
-              <MaterialCommunityIcons
-                name={TAB_ICONS.Home}
-                size={32}
-                color={isFocused ? onAccent : colors.textDim}
-              />
+              <Icon name={TAB_ICONS.Home} size={32} color={isFocused ? onAccent : colors.textDim} />
             </Pressable>
           );
         })}
@@ -219,27 +216,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  iconRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  iconPillTight: { width: 28, height: 28, borderRadius: 14 },
-  /** The badge beside its icon (large text): the same disc, in the row. */
-  badgeBeside: {
-    borderRadius: radius.pill,
-    paddingHorizontal: 4,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   badge: {
     // Anchored to the 36 px icon circle — hugs the icon it counts.
     position: 'absolute',
     top: -3,
     right: -7,
-    // minWidth and height follow the font scale (set per render).
+    minWidth: BADGE_DP,
+    height: BADGE_DP,
     borderRadius: radius.pill,
     paddingHorizontal: 4,
     alignItems: 'center',
     justifyContent: 'center',
   },
   badgeText: { color: colors.background, ...type.caption, fontWeight: '700' },
+  /** Large text: the count's place, no number. */
+  dot: { position: 'absolute', top: 0, right: -3, width: 10, height: 10, borderRadius: 5 },
   overlay: {
     position: 'absolute',
     top: 0,

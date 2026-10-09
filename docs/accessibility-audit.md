@@ -19,18 +19,46 @@ What broke, by the first scale it broke at (360 dp; the S23 and the emulator bre
 | Settings Playback and Overlay rows | 1.0 (S23) | Row titles cut at a fixed 118 dp width | The fixed width is the row layout's only; stacked rows past the threshold |
 | Timeline unit cards | 1.5 | The 20 dp header row clipped its title mid-glyph | The header's height is a function of the font scale (`unitCardHeight`), still exact for `getItemLayout` |
 | Timeline filter chips | 1.8 | The third chip left the screen | The row wraps |
-| Deck chip row | 1.5 | "Favourite" and "Organize" broke mid-word in four columns | Two chips per row past the threshold |
+| Deck chip row | 1.3 | "Favourite" broke mid-word in four columns; the two-per-row arrangement then put Organize and Share on a second row the deck has no room for, behind the finish button (Tristan, 2026-10-09) | The labels drop to icons once any chip label wraps; each chip carries its accessibility label |
 | Progress histogram axis | 1.3 | The month and year ticks collided at fixed offsets | The axis rows' offsets and the column height follow the font |
 | Progress chips | 2.0 | "Unreviewed", "Favourite", "Organize" broke mid-word in 3- and 4-column grids | Two per row past the huge-text threshold (1.6) |
-| Tab bar | 1.8 | "Favourite" and "Organize" broke mid-word in a fifth of the bar; badges overflowed their 16 dp disc | Labels drop when one needs a second line; the badge disc grows with the font and moves beside its icon past 20 dp (on the corner it hid the pencil and the share glyph at 2.0) |
+| Tab bar | 1.8 | "Favourite" and "Organize" broke mid-word in a fifth of the bar; badges overflowed their 16 dp disc, and a disc grown with the font hid its icon or sat beside it (Tristan, 2026-10-09: the count is not important) | Labels drop when one needs a second line; the disc stays 16 dp with its count while the digit fits and becomes a dot on the same corner past that |
+| Icons (every site) | 1.3 | Glyphs scaled with the font while their frames did not: the tab icon pressed its 36 dp circle at 1.3 and was clipped at 2.0 (Tristan, 2026-10-09) | `components/Icon` pins every icon's dp size; only text scales with the font setting |
+| Edit queue row buttons | 1.3 | "Edit here" and "View only" wrapped beside the thumbnail, and misdescribed two external launches (Tristan, 2026-10-09) | Editor · Viewer · Done; the labels drop to icons once one wraps |
+| Segmented pills (Settings) | 1.3 | The five-option pills started at three per row from the threshold guess and never came back: short labels stretched across full rows with gaps (Tristan, 2026-10-09) | One row while the labels fit, measured with no guess; a vertical radio list once a label wraps |
 | Goal ring (Home, Stats) | 2.0 | The number and "of 50 today" crossed the ring's stroke | The ring's diameter grows with the font scale (computed) |
-| Native stack header title | every scale | The title does not scale with the font at all (React Navigation's native header) | Observed, not ours to fix in this release; parked in docs/TODO.md |
+| Stack header title | every scale | The native title ignored the font entirely (the same 198 × 81 px box from 0.8 to 2.0 on the S10e) while the subtitle under it scaled: equal at 1.3, larger at 2.0 (Tristan, 2026-10-09) | Our text through `headerTitle` (`components/HeaderTitle`, the `title` token); one line, ellipsized inside the OS toolbar's fixed height |
 | Free text everywhere else | — | Wraps as designed at every scale | None |
 
-How to read the report: its signals come from node bounds alone, so a CLAMPED row also fires for any text that fills a fixed-width parent (a button's label, a tile's caption), which is the parent's width, not a cut; a WRAPPED row is free text doing what free text should; OVERLAP and CLIPPED are the rows to open the screenshot for, and INCOMPLETE rows are missing evidence, never a pass. OVERLAP counts an icon glyph or a one-character badge only when the intersection covers more than half of the smaller node (a corner badge is by design), and any other intersecting pair of texts. What the report cannot see: a text crossing a drawn shape (the goal ring's stroke) or an overlay that is meant to cover the stage; those are the screenshot's.
+How to read the report: its signals come from node bounds alone, so a CLAMPED row also fires for any text that fills a fixed-width parent (a button's label, a tile's caption), which is the parent's width, not a cut; a WRAPPED row is free text doing what free text should; a STATIC row is a text that ignored the font size, which breaks the type scale's one invariant (every text keeps its size relative to every other) for its whole screen, and has no exclusions; OVERLAP and CLIPPED are the rows to open the screenshot for, and INCOMPLETE rows are missing evidence, never a pass. OVERLAP counts an icon glyph or a one-character badge only when the intersection covers more than half of the smaller node (a corner badge is by design), and any other intersecting pair of texts. What the report cannot see: a text crossing a drawn shape (the goal ring's stroke) or an overlay that is meant to cover the stage; those are the screenshot's.
 The table above is what the screenshots showed; the report is where to look.
 
 Walk gaps: at 1.8 and 2.0 on the S10e the walk could not reach the Progress page or the deck (Home's rows grew past its scroll search), so those two screens have screenshots only up to 1.5 there; the S23 and the emulator cover them to 2.0.
+
+## The OS baseline
+
+What the platform's own screens do under the font-size setting, measured with `node scripts/os-text-baseline.mjs --serial SERIAL --fonts 1.0,1.3,2.0 --apps settings,youtube` (the same text's line box at each scale, from `uiautomator` dumps; the raw runs are in `~/.cache/afterglow-review/os-baseline-<serial>.txt`), against ours from the walk's dumps on the same device (2026-10-09, r19).
+
+| Surface | Text | 1.0 → 1.3 | 1.0 → 2.0 |
+|---|---|---|---|
+| Android 16 Settings (emulator, 420 dpi) | row title, ~16 sp (71 px box) | ×1.17 | ×1.68 |
+| Android 16 Settings | row subtitle, ~14 sp (51 px) | ×1.29 | ×1.78 |
+| Android 16 Settings | every icon (63 and 105 px boxes) | ×1.00 | ×1.00 |
+| Afterglow on the same emulator | a Settings row title, "Photo source" (53 px) | ×1.17 | ×1.70 |
+| Afterglow | `body` 15 sp, "DCIM/Camera" (48 px) | ×1.19 | ×1.65 |
+| Afterglow | `heading` 17 sp, "Daily goal" (58 px) | ×1.14 | ×1.59 |
+| Afterglow | `title` 22 sp, the header title (74 px) | ×1.03 | ×1.32 |
+| Afterglow | `display` 28 sp, "Afterglow" (90 px) | ×1.00 | ×1.22 |
+| Android 12 Samsung Settings (S10e) | row title (68 px) | ×1.29 | ×2.00 |
+| Android 12 Samsung Settings | the big "Settings" toolbar title (136 px) | ×1.00 | ×1.00 |
+| Android 12 Samsung Settings | every icon (84 px) | ×1.00 | ×1.00 |
+| YouTube (S10e) | every icon (54–144 px) and its "9+" badge count | ×1.00 | ×1.00 |
+
+What it settles:
+
+- **Icons keep their size under the font setting on the platform and in the reference apps**, on both OS generations. Our rule (`components/Icon`) matches them. The lever that scales icons is the display-size setting, which the walk's `--densities` covers.
+- **Text of the same size grows the same**: the OS's row title and our Settings row title grow identically at both steps on Android 16 (×1.17 and ×1.68 against ×1.17 and ×1.70), and the OS's subtitle and our body within a tenth. Our larger sizes grow less there (×1.22 for 28 sp at the 2.0 setting) because Android 14 and later scale large text less than small; on Android 12 everything is linear (the Samsung row title ×2.00 at 2.0).
+- **The platform has the same defect we fixed**: Samsung's own Settings toolbar title ignores the font size, and YouTube's badge count does too. Our header title scales; our badge count becomes a dot.
 
 ## The static inventory
 

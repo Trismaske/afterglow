@@ -19,7 +19,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon } from '../components/Icon';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useExternalRefresh } from '../components/useExternalRefresh';
@@ -844,7 +844,7 @@ export function HomeScreen({ navigation }: Props) {
             accessibilityLabel="Stats"
             onPress={() => navigation.navigate('Stats')}
           >
-            <MaterialCommunityIcons name="chart-box-outline" size={24} color={colors.textDim} />
+            <Icon name="chart-box-outline" size={24} color={colors.textDim} />
           </Pressable>
           <Pressable
             style={styles.gearButton}
@@ -852,7 +852,7 @@ export function HomeScreen({ navigation }: Props) {
             accessibilityLabel="History"
             onPress={() => navigation.navigate('History')}
           >
-            <MaterialCommunityIcons name="history" size={24} color={colors.textDim} />
+            <Icon name="history" size={24} color={colors.textDim} />
           </Pressable>
           <Pressable
             style={styles.gearButton}
@@ -861,7 +861,7 @@ export function HomeScreen({ navigation }: Props) {
             onPress={() => navigation.navigate('Settings')}
           >
             {/* m0.6: Material gear — the m0.5 emoji read as out of place. */}
-            <MaterialCommunityIcons name="cog-outline" size={24} color={colors.textDim} />
+            <Icon name="cog-outline" size={24} color={colors.textDim} />
           </Pressable>
         </View>
       </View>
@@ -1013,11 +1013,7 @@ export function HomeScreen({ navigation }: Props) {
                           </Text>
                         )}
                       </View>
-                      <MaterialCommunityIcons
-                        name="chevron-right"
-                        size={20}
-                        color={colors.textDim}
-                      />
+                      <Icon name="chevron-right" size={20} color={colors.textDim} />
                     </Pressable>
                   )}
                 </>
@@ -1099,7 +1095,7 @@ export function HomeScreen({ navigation }: Props) {
           style={styles.editQueueRow}
           onPress={() => navigation.navigate('CullList', { fromHome: true })}
         >
-          <MaterialCommunityIcons name="delete-outline" size={22} color={colors.cull} />
+          <Icon name="delete-outline" size={22} color={colors.cull} />
           <View style={styles.editQueueBody}>
             <Text style={styles.editQueueTitle}>Cull list</Text>
             {/* The reclaimable estimate belongs to the deletion it
@@ -1217,7 +1213,7 @@ export function HomeScreen({ navigation }: Props) {
             olderRows.map(renderDayRow)
           ) : olderDays.length > 0 ? (
             <Pressable style={styles.olderRow} onPress={() => void expandOlderDays()}>
-              <MaterialCommunityIcons name="calendar-clock" size={20} color={colors.textDim} />
+              <Icon name="calendar-clock" size={20} color={colors.textDim} />
               <Text style={styles.olderRowText}>
                 {plural(olderDays.length, 'older day')} with items to review
               </Text>

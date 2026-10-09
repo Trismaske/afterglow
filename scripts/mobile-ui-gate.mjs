@@ -118,7 +118,7 @@ const badgeOf = (nodes, label) => {
   // to the label's x. Anchor on text OR content-desc: some devices
   // (S10e) intermittently report the label Text with zero bounds, but
   // the item Pressable's content-desc always has real bounds.
-  const anchor = nodes.find((n) => n.text === label || n.desc === label);
+  const anchor = nodes.find((n) => n.text === label || isTabDesc(n.desc, label));
   if (!anchor) return 0;
   const numeric = nodes.filter((n) => /^\d+$/.test(n.text) && Math.abs(n.y - anchor.y) < 200);
   numeric.sort((a, b) => Math.abs(a.x - anchor.x) - Math.abs(b.x - anchor.x));
@@ -131,7 +131,13 @@ const badgeOf = (nodes, label) => {
  * badgeOf silently reads 0 without this anchor, so every badge read must
  * first prove the anchor is present — a failed/partial dump otherwise
  * satisfies badge assertions with synthetic zeroes. */
-const hasTab = (nodes, label) => nodes.some((n) => n.text === label || n.desc === label);
+const hasTab = (nodes, label) => nodes.some((n) => n.text === label || isTabDesc(n.desc, label));
+/** The tab's accessibility label is its title, with its count after a
+ * comma when work waits ("Edit, 2 waiting" — m0.9.1): both name the tab. */
+const isTabDesc = (desc, label) => desc === label || desc.startsWith(`${label}, `);
+/** A tab by its label text or its counted accessibility label: on the S10e
+ * the label Text intermittently has zero bounds, so the desc is the anchor. */
+const tabPattern = (label) => new RegExp(`^${label}(, \\d+ waiting)?$`);
 
 // ------------------------------------------------------------ the walk
 console.log(`Afterglow UI gate → ${SERIAL}`);
@@ -242,7 +248,7 @@ await step('tab order Edit · Favourite · HOME · Organize · Share', null, asy
   for (;;) {
     const nodes = dumpUi();
     const labels = ['Edit', 'Favourite', 'Organize', 'Share'].map((t) =>
-      nodes.find((n) => n.text === t || n.desc === t),
+      nodes.find((n) => n.text === t || isTabDesc(n.desc, t)),
     );
     const homeBtn = findNode(nodes, /^Home$/);
     if (labels.every(Boolean) && homeBtn) {
@@ -265,7 +271,7 @@ for (const [label, heading] of [
   ['Share', /^Share queue$/],
 ]) {
   await step(`tab ${label} opens with heading`, null, async () => {
-    await tapText(new RegExp(`^${label}$`), 20000);
+    await tapText(tabPattern(label), 20000);
     await waitFor(heading, 20000, `${label} heading`);
   });
 }
@@ -1052,7 +1058,7 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
       );
       return;
     }
-    await tapText(/^Edit$/, 20000); // the TAB
+    await tapText(tabPattern('Edit'), 20000); // the TAB
     await waitFor(/^Edit queue$/, 20000, 'edit queue');
     const done = findNode(dumpUi(), /^Done$/);
     if (!done) throw new Error(`Edit badge says ${start} but the queue lists nothing to finish`);

@@ -3,19 +3,29 @@
  * idiom; m0.9 phase 5, the S23 pass of 2026-09-09: the Playback rows'
  * loose chip rows read as rushed and ate a screen). The selected segment
  * fills with the accent; every segment is a radio to accessibility.
+ *
+ * Large text (Tristan's screenshot review, 2026-10-09): the pill stays
+ * ONE ROW whenever its labels fit, and the measurement decides — it
+ * starts on one row at every scale (no threshold guess: the guess put
+ * five-option pills on three-plus-two rows at 1.3 when one row fit, and
+ * the lever never came back). Once any label needs a second line the
+ * pill becomes a vertical radio LIST, one option per full-width row
+ * with the chosen one filled — the form every platform takes when
+ * choices outgrow a row — never a pill broken across rows (stretched
+ * segments and gaps). The list latches until the font scale or the
+ * width changes (components/useTextOverflow).
  */
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import {
   Pressable,
   StyleSheet,
   Text,
   View,
-  useWindowDimensions,
   type NativeSyntheticEvent,
   type TextLayoutEventData,
 } from 'react-native';
 import { colors, radius, type, useTheme } from '../theme';
-import { useHugeText, useLargeText } from './useLargeText';
+import { useTextOverflow } from './useTextOverflow';
 
 export function SegmentedControl<Id extends string>({
   options,
@@ -31,29 +41,14 @@ export function SegmentedControl<Id extends string>({
   accessibilityLabel: string;
 }) {
   const theme = useTheme();
-  // Measured lever (the close-out grilling): a pill of more than three
-  // segments wraps three to a row when any segment label needs a second
-  // line, and two to a row when it still does; the thresholds are the
-  // first guess (lib/textScale.ts), the labels' own lines the truth. A
-  // scale or width change starts from the guess again.
-  const large = useLargeText();
-  const huge = useHugeText();
-  const { fontScale, width } = useWindowDimensions();
-  const guess = options.length > 3 ? (huge ? 2 : large ? 1 : 0) : 0;
-  const [level, setLevel] = useState(guess);
-  useEffect(() => setLevel(guess), [guess, fontScale, width]);
-  // A report belongs to the arrangement that produced it: two labels
-  // wrapping in the same five-column layout advance the level once,
-  // not twice (codex round 4).
-  const renderedLevel = level;
-  const onLabelLayout = (event: NativeSyntheticEvent<TextLayoutEventData>) => {
-    if (options.length > 3 && event.nativeEvent.lines.length > 1)
-      setLevel((current) => (current === renderedLevel ? Math.min(2, current + 1) : current));
-  };
-  const wrap = level > 0;
+  // Measured lever: no guess, one row until a label reports a second line.
+  const labels = useTextOverflow(false);
+  const list = labels.overflow;
+  const onLabelLayout = (id: string) => (event: NativeSyntheticEvent<TextLayoutEventData>) =>
+    labels.watch(id)(event);
   return (
     <View
-      style={[styles.pill, wrap && styles.pillWrapped]}
+      style={[styles.pill, list && styles.list]}
       accessibilityRole="radiogroup"
       accessibilityLabel={accessibilityLabel}
     >
@@ -67,14 +62,13 @@ export function SegmentedControl<Id extends string>({
             accessibilityState={{ selected: active, checked: active }}
             style={[
               styles.segment,
-              level === 1 && styles.segmentWrapped,
-              level === 2 && styles.segmentWrappedHuge,
+              list && styles.row,
               active && { backgroundColor: theme.accent },
             ]}
           >
             <Text
               style={[styles.label, active && { color: theme.onAccent }]}
-              onTextLayout={onLabelLayout}
+              onTextLayout={onLabelLayout(option.id)}
             >
               {option.label}
             </Text>
@@ -86,20 +80,21 @@ export function SegmentedControl<Id extends string>({
 }
 
 const styles = StyleSheet.create({
-  pillWrapped: { flexWrap: 'wrap' },
-  segmentWrapped: { flexBasis: '32%', flexGrow: 1 },
-  segmentWrappedHuge: { flexBasis: '48%', flexGrow: 1 },
   pill: {
     flexDirection: 'row',
     borderRadius: radius.pill,
     backgroundColor: colors.surfaceRaised,
     padding: 3,
   },
+  /** The list: the same surface, one option per row, card corners. */
+  list: { flexDirection: 'column', borderRadius: radius.card, gap: 2 },
   segment: {
     flex: 1,
     paddingVertical: 8,
     borderRadius: radius.pill,
     alignItems: 'center',
   },
+  /** A list row: full width, the label flush left, chip corners. */
+  row: { flex: 0, alignItems: 'flex-start', paddingHorizontal: 14, borderRadius: radius.chip },
   label: { color: colors.textDim, ...type.label, fontWeight: '600' },
 });

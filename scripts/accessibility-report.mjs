@@ -4,11 +4,16 @@
  * raw UI dumps into the measured half of the per-site audit — for each
  * screen on each target, the first font scale at which something gives.
  *
- * Three signals, all read from `uiautomator` node bounds (no pixels):
+ * The signals, all read from `uiautomator` node bounds (no pixels):
  *
  *   - CLIPPED  — a text node whose bounds leave the screen horizontally.
  *   - WRAPPED  — a text node whose height grew well beyond what the scale
  *                alone explains (a one-line label that now wraps).
+ *   - STATIC   — a text node whose box did not grow with the scale (under
+ *                10 % at a scale of 1.5 or more): it ignored the font
+ *                size, and its screen's texts have lost their relative
+ *                sizes. No exclusions. Judged only at 1.5+ because
+ *                Android 14+ scales large text less than small.
  *   - CLAMPED  — a short label (under half the screen wide at the base
  *                scale) that scaled up but whose width did not grow: it
  *                hit a fixed width and was cut or ellipsized. Container-
@@ -45,10 +50,25 @@ function nodesOf(xml) {
     const [x1, y1, x2, y2] = b.slice(1).map(Number);
     if (x2 <= x1 || y2 <= y1) continue;
     const text = attr('text') || attr('content-desc');
-    if (!text || attr('class') !== 'android.widget.TextView') continue;
+    // A text-bearing node of any class: React Native reports a Text with
+    // accessibilityRole="header" (the stack title) as android.view.View,
+    // and the title is exactly what STATIC must read (codex round 7).
+    // Containers that merely repeat a child's label have no text of
+    // their own; a content-desc alone (an icon button) still counts.
+    if (!text) continue;
+    if (attr('class') !== 'android.widget.TextView' && attr('text') === '') continue;
     nodes.push({ text, x1, y1, x2, y2, w: x2 - x1, h: y2 - y1 });
   }
   return nodes;
+}
+
+/** The app window's box from the dump's root node (the first node, whose
+ * bounds are the window): the bottom edge a clipped node touches. The
+ * text nodes alone cannot give it — the lowest text on a capture is not
+ * the window's edge (codex round 8). */
+function windowOf(xml) {
+  const first = xml.match(/<node [^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);
+  return first ? { x2: Number(first[3]), y2: Number(first[4]) } : null;
 }
 
 const keyOf = (text) => (/\d/.test(text) ? text.split(/\s+/)[0].replace(/\d+/g, '#') : text);
@@ -120,14 +140,43 @@ for (const serial of readdirSync(reportDir)) {
         readFileSync(join(serialDir, base.name, 'geometry.json'), 'utf8'),
       );
       const screenW = geometry.widthDp ? Math.round((geometry.widthDp * geometry.dpi) / 160) : null;
-      const baseNodes = nodesOf(readFileSync(join(serialDir, base.name, screenFile), 'utf8'));
-      const baseByKey = new Map(baseNodes.map((n) => [keyOf(n.text), n]));
+      // A node cut by the app window's top or bottom edge has a box the
+      // window made, not the font: no size verdict on it (the Habits tab's
+      // last queue row and the Progress frontier line at 2.0 read as
+      // STATIC, 2026-10-09). The window is the dump's root box — the
+      // navigation bar sits below it, so the screen height is not it.
+      const cutByWindow = (n, bottom) => bottom !== null && (n.y2 >= bottom - 2 || n.y1 <= 2);
+      const baseXml = readFileSync(join(serialDir, base.name, screenFile), 'utf8');
+      const baseNodes = nodesOf(baseXml);
+      const baseBottom = windowOf(baseXml)?.y2 ?? null;
+      // Every base node per key: the same glyph sits on a screen more than
+      // once (the tab bar's home icon at 32 dp and a 24 dp one elsewhere),
+      // and a node compares with the base node NEAREST its own position,
+      // not the last one keyed (a false size verdict on the 320 dp emulator).
+      const baseByKey = new Map();
+      for (const n of baseNodes) {
+        const key = keyOf(n.text);
+        if (!baseByKey.has(key)) baseByKey.set(key, []);
+        baseByKey.get(key).push(n);
+      }
+      const nearestBase = (n) => {
+        const list = baseByKey.get(keyOf(n.text));
+        if (!list) return undefined;
+        // Nearest by COLUMN first: a scale shifts everything down the
+        // screen but leaves a row's left edge where it was (the cull row's
+        // bin glyph at x=81 at every scale), so the vertical distance only
+        // breaks ties between twins in one column.
+        const distance = (cand) => Math.abs(cand.x1 - n.x1) * 1000 + Math.abs(cand.y1 - n.y1);
+        return list.reduce((best, cand) => (distance(cand) < distance(best) ? cand : best));
+      };
       // CLIPPED and OVERLAP need no comparison: every capture, the base
       // included, is checked on its own; WRAPPED and CLAMPED compare to
       // the base (codex round 4).
       for (const c of withScreen) {
         const path = join(serialDir, c.name, screenFile);
-        const nodes = c === base ? baseNodes : nodesOf(readFileSync(path, 'utf8'));
+        const xml = c === base ? baseXml : readFileSync(path, 'utf8');
+        const nodes = c === base ? baseNodes : nodesOf(xml);
+        const bottom = windowOf(xml)?.y2 ?? null;
         const ratio = c.font / base.font;
         for (const n of nodes) {
           const key = keyOf(n.text);
@@ -141,17 +190,48 @@ for (const serial of readdirSync(reportDir)) {
               detail: `"${n.text}" leaves the screen horizontally`,
             });
           if (c === base) continue;
-          const b = baseByKey.get(key);
-          if (!b || n.text.length < 3 || /^[\d\s.,%/]+$/.test(n.text) || /^&#\d+;$/.test(n.text))
+          const b = nearestBase(n);
+          if (!b || (n.text.length < 3 && !/^&#\d+;$/.test(n.text)) || /^[\d\s.,%/]+$/.test(n.text))
             continue;
-          // The stack header's title does not scale with the font at all (a
-          // platform behaviour, noted in the audit): a node whose box is
-          // the base's box to the pixel at another scale is that title,
-          // not a clamp of ours — every text of ours at least grows in
-          // height.
-          if (n.x1 === b.x1 && n.y1 === b.y1 && n.x2 === b.x2 && n.y2 === b.y2) continue;
+          // A text that did not grow with the scale at all: the type scale's
+          // one invariant is that every text keeps its size relative to
+          // every other, and a static one breaks it for its whole screen
+          // (the native header title did, Tristan's review 2026-10-09;
+          // it is our text now). No exclusions.
+          // Both dimensions unchanged: a text that reflowed onto fewer lines
+          // in a wider slot (a stacked card) grew in width (codex round 7).
+          // Icons are glyph nodes and keep their size by rule (Tristan,
+          // 2026-10-09: only text scales with the font setting; display
+          // size scales icons) — a static glyph is correct. A grown one
+          // cannot be read here: a dump boxes a glyph by its frame, so an
+          // icon that scaled inside a fixed circle shows the circle; the
+          // rule is held by components/Icon and its lint rule, and the
+          // platform's own icons were measured directly
+          // (scripts/os-text-baseline.mjs).
+          // Judged at a scale of 1.5 or more against the base, with a 10 %
+          // floor: Android 14+ scales large text LESS than small (non-linear
+          // font scaling — a 22 sp title grew 3 % at the 1.3 setting and
+          // 32 % at 2.0 on the Android 16 emulator, while 15 sp body grew
+          // the full amount), so a smaller step cannot tell a pinned text
+          // from a large one on the OS curve.
+          if (cutByWindow(n, bottom) || cutByWindow(b, baseBottom)) continue;
+          // A box under a quarter of the other's height is a slice cut by
+          // a scroll view's edge (Home's goal line at the card's bottom, 1 px
+          // of 49), not a text that shrank or grew: no size verdict on it.
+          // A quarter, not a half: an icon that scaled with the font grew
+          // 2.2× at 2.0 (r19), which the rule must still see.
+          if (n.h < b.h * 0.25 || b.h < n.h * 0.25) continue;
+          if (ratio >= 1.5 && n.h <= b.h * 1.1 && n.w <= b.w * 1.1 && !/^&#\d+;$/.test(n.text))
+            findings.push({
+              serial,
+              density,
+              font: c.font,
+              screen,
+              signal: 'STATIC',
+              detail: `"${n.text}" kept its ${b.h} px height at ${ratio.toFixed(2)}× scale`,
+            });
           // One line became two or more: the height outgrew the scale.
-          if (n.h > b.h * ratio * 1.6)
+          else if (n.h > b.h * ratio * 1.6)
             findings.push({
               serial,
               density,

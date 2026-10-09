@@ -24,7 +24,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon, type IconName } from './Icon';
 import { useSQLiteContext } from 'expo-sqlite';
 import { getPhotoFacts, type PhotoFacts } from '../db/store';
 import { isInShareQueue } from '../db/shareStore';
@@ -44,7 +44,7 @@ import { VERDICT_META } from './progress/stateMeta';
 import { colors, scrim, type } from '../theme';
 
 type FactLine = {
-  icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
+  icon: IconName;
   text: string;
 };
 
@@ -265,7 +265,7 @@ export function DeckDetailsOverlay({
             )}
             {lines.map((line) => (
               <View key={line.icon + line.text} style={styles.line}>
-                <MaterialCommunityIcons name={line.icon} size={16} color={colors.textDim} />
+                <Icon name={line.icon} size={16} color={colors.textDim} />
                 <Text style={[styles.lineText, (stale || failed) && styles.staleText]}>
                   {line.text}
                 </Text>

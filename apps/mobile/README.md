@@ -257,8 +257,8 @@ The on-device installer says only "App not installed".
    A video or a motion photo shows its playback controls on a tap; Settings › Playback sets Once, Loop or Off per kind.
 9. **Edit queue**: every photo with an edit waiting, decided or not.
    A finished edit clears from the queue and changes nothing about the verdict, so a photo you flagged before judging returns to the review queue still awaiting your decision.
-   **Edit here** asks Android for write access once, then opens an editor that can save over the original.
-   **View only** opens the photo read-only (your gallery's own edit button takes over from there).
+   **Editor** asks Android for write access once, then opens an app that can save over the original.
+   **Viewer** opens the photo read-only (your gallery's own edit button takes over from there).
    When you return, the app asks whether to mark the edit done.
    **✓ Done** is always available.
 10. **Favourite / Share / Organize queues**.

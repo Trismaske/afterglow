@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Icon } from '../components/Icon';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSQLiteContext } from 'expo-sqlite';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -85,7 +85,7 @@ export function SummaryScreen({ navigation }: Props) {
       contentContainerStyle={{ paddingTop: 24, paddingBottom: insets.bottom + 16 }}
     >
       <View style={styles.titleRow}>
-        <MaterialCommunityIcons name="weather-sunset" size={30} color={theme.accent} />
+        <Icon name="weather-sunset" size={30} color={theme.accent} />
         <Text style={styles.title}>Done for today</Text>
       </View>
       <Text style={styles.subtitle}>{dayKey(Date.now())}</Text>
@@ -99,7 +99,7 @@ export function SummaryScreen({ navigation }: Props) {
       {lifetime && (
         <View style={styles.lifetimeCard}>
           <View style={styles.lifetimeTitleRow}>
-            <MaterialCommunityIcons name="chart-box-outline" size={21} color={theme.accent} />
+            <Icon name="chart-box-outline" size={21} color={theme.accent} />
             <Text style={styles.lifetimeTitle}>All-time</Text>
           </View>
           <View style={styles.lifetimeGrid}>

@@ -85,6 +85,7 @@ import { scanProgressLine } from '../lib/scanProgress';
 import { Ghost } from '../components/Ghost';
 import { GoalRing } from '../components/GoalRing';
 import { useLargeText } from '../components/useLargeText';
+import { useTextOverflow } from '../components/useTextOverflow';
 import { firstPendingUnit, unitDestination } from '../lib/timeline';
 import { deckParamsFor } from '../lib/deckUnit';
 import { useReview } from '../review/ReviewContext';
@@ -119,6 +120,9 @@ interface DayRow {
 export function HomeScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const largeText = useLargeText();
+  /** Measured lever: the goal card stacks when any of its number lines
+   * needs a second line beside the ring; large text is the first guess. */
+  const goalLines = useTextOverflow(largeText);
   const db = useSQLiteContext();
   const theme = useTheme();
   const review = useReview();
@@ -903,7 +907,7 @@ export function HomeScreen({ navigation }: Props) {
 
       {permission?.granted && (
         <View style={styles.card}>
-          <View style={[styles.goalRow, largeText && styles.goalRowStacked]}>
+          <View style={[styles.goalRow, goalLines.overflow && styles.goalRowStacked]}>
             <GoalRing
               size={132}
               strokeWidth={12}
@@ -941,7 +945,9 @@ export function HomeScreen({ navigation }: Props) {
                       Null (either source) drops the line rather than
                       showing a wrong total. */}
                   {libraryTotal !== null && (
-                    <Text style={styles.cardText}>{`${plural(libraryTotal, 'item')} total`}</Text>
+                    <Text style={styles.cardText} onTextLayout={goalLines.watch('total')}>
+                      {`${plural(libraryTotal, 'item')} total`}
+                    </Text>
                   )}
                   {/* m0.8.3 §5 (D5): unmounted ≠ deleted, named with its
                       count. One line per absent volume; the copy carries
@@ -987,14 +993,22 @@ export function HomeScreen({ navigation }: Props) {
                       onPress={() => navigation.navigate('Timeline')}
                     >
                       <View style={styles.queueLinkBody}>
-                        <Text style={styles.cardText}>{`${queueTotal} to review`}</Text>
+                        <Text style={styles.cardText} onTextLayout={goalLines.watch('queue')}>
+                          {`${queueTotal} to review`}
+                        </Text>
                         {review.queueCounts.grouped > 0 && (
-                          <Text style={styles.queueBreakdown}>
+                          <Text
+                            style={styles.queueBreakdown}
+                            onTextLayout={goalLines.watch('groups')}
+                          >
                             {`${review.queueCounts.grouped} in ${plural(review.queueCounts.groups, 'group')}`}
                           </Text>
                         )}
                         {review.queueCounts.singles > 0 && (
-                          <Text style={styles.queueBreakdown}>
+                          <Text
+                            style={styles.queueBreakdown}
+                            onTextLayout={goalLines.watch('singles')}
+                          >
                             {plural(review.queueCounts.singles, 'single')}
                           </Text>
                         )}

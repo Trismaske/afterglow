@@ -23,6 +23,7 @@ import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors, radius, type, useTheme } from '../theme';
 import { useHugeText } from './useLargeText';
+import { useTextOverflow } from './useTextOverflow';
 
 export const TAB_ICONS = {
   Home: 'home-variant',
@@ -48,8 +49,17 @@ export function MainTabBar({ state, descriptors, navigation, insets }: BottomTab
    * the tab (the content-desc names it to a screen reader); the badge
    * grows with its digits instead of overflowing its 16 dp disc. */
   const hugeText = useHugeText();
+  /** Measured lever: any label needing a second line drops all five. */
+  const labels = useTextOverflow(hugeText);
   const fontScale = useWindowDimensions().fontScale;
   const badgeSize = Math.round(16 * Math.max(1, fontScale));
+  /** Past 20 dp the disc on the icon's corner would hide the icon (the
+   * walk at 2.0×: the badge covered the pencil and the share glyph); it
+   * moves beside the icon instead, and the icon's pill shrinks to its
+   * glyph so the pair fits a fifth of a 320 dp bar (28 + 2 + 32 dp at
+   * 2.0; a two-digit count spills into the tab's gutters, which the
+   * centred row leaves empty). Computed from the scale, like the disc. */
+  const badgeBeside = badgeSize > 20;
   const barHeight = BAR_HEIGHT + insets.bottom;
 
   const pressHandlers = (routeKey: string, routeName: string, isFocused: boolean) => ({
@@ -98,10 +108,11 @@ export function MainTabBar({ state, descriptors, navigation, insets }: BottomTab
                   alone was too subtle next to the raised Home circle.
                   The badge anchors to a sibling wrapper so the pill can
                   keep fixed dimensions (fully rounded ends). */}
-              <View>
+              <View style={badgeBeside && styles.iconRow}>
                 <View
                   style={[
                     styles.iconPill,
+                    badgeBeside && styles.iconPillTight,
                     isFocused && { backgroundColor: accentMuted, borderColor: accent },
                   ]}
                 >
@@ -114,7 +125,7 @@ export function MainTabBar({ state, descriptors, navigation, insets }: BottomTab
                 {badge !== undefined && badge !== 0 && (
                   <View
                     style={[
-                      styles.badge,
+                      badgeBeside ? styles.badgeBeside : styles.badge,
                       { backgroundColor: accent, minWidth: badgeSize, height: badgeSize },
                     ]}
                   >
@@ -122,8 +133,11 @@ export function MainTabBar({ state, descriptors, navigation, insets }: BottomTab
                   </View>
                 )}
               </View>
-              {!hugeText && (
-                <Text style={[styles.label, { color: tint }, isFocused && styles.labelFocused]}>
+              {!labels.overflow && (
+                <Text
+                  style={[styles.label, { color: tint }, isFocused && styles.labelFocused]}
+                  onTextLayout={labels.watch(route.name)}
+                >
                   {options.title ?? route.name}
                 </Text>
               )}
@@ -205,13 +219,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  iconRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  iconPillTight: { width: 28, height: 28, borderRadius: 14 },
+  /** The badge beside its icon (large text): the same disc, in the row. */
+  badgeBeside: {
+    borderRadius: radius.pill,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   badge: {
     // Anchored to the 36 px icon circle — hugs the icon it counts.
     position: 'absolute',
     top: -3,
     right: -7,
     // minWidth and height follow the font scale (set per render).
-    borderRadius: radius.thumb,
+    borderRadius: radius.pill,
     paddingHorizontal: 4,
     alignItems: 'center',
     justifyContent: 'center',

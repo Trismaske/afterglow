@@ -29,7 +29,6 @@ import {
   openSync,
   readdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   unlinkSync,
   writeFileSync,
@@ -56,7 +55,7 @@ const ONLY = argOf('--screens')?.split(',') ?? null;
 // window) and released only after the restore has run.
 const LOCK = join(tmpdir(), `afterglow-walk-${SERIAL.replace(/[^\w.-]+/g, '_')}.lock`);
 function acquireLock() {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < 1; attempt += 1) {
     try {
       const fd = openSync(LOCK, 'wx');
       writeFileSync(fd, String(process.pid));
@@ -74,17 +73,12 @@ function acquireLock() {
       }
       if (alive)
         throw new Error(`another walk (pid ${holder}) holds ${SERIAL}; wait for it or stop it`);
-      // A dead holder's lock is taken over by RENAMING it: only one of two
-      // concurrent takers can rename the same path, so the loser sees
-      // ENOENT, retries the exclusive create and finds the winner's lock
-      // (codex round 3). The renamed file is removed by the winner.
-      const stale = `${LOCK}.stale.${process.pid}`;
-      try {
-        renameSync(LOCK, stale);
-        rmSync(stale, { force: true });
-      } catch {
-        /* the other taker renamed it first; the next create tells */
-      }
+      // A dead holder's lock is NOT reclaimed automatically: two takers
+      // reading the same dead pid would race on the reclaim however it is
+      // done (codex rounds 2–4). Removing it is a one-line manual step.
+      throw new Error(
+        `a stale walk lock for ${SERIAL} names pid ${holder}, which is gone: remove ${LOCK} by hand and start again`,
+      );
     }
   }
   throw new Error(`could not take the walk lock for ${SERIAL}`);
@@ -186,7 +180,7 @@ async function relaunch() {
   for (let attempt = 0; ; attempt += 1) {
     shell(`monkey -p ${APP_ID} -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1`);
     try {
-      await d.waitFor(/^Daily goal|Allow photo access/, 45000, 'home after relaunch');
+      await d.waitFor(/^Afterglow$|^Daily goal|Allow photo access/, 45000, 'home after relaunch');
       break;
     } catch (error) {
       if (attempt >= 1) throw error;
@@ -218,10 +212,22 @@ async function home() {
 const backHome = async () => {
   for (let i = 0; i < 4; i += 1) {
     const nodes = dumpUi();
-    if (nodes.length > 0 && findNode(nodes, /^Daily goal/)) return;
+    if (nodes.length > 0 && findNode(nodes, /^Afterglow$|^Daily goal/)) return;
+    // An empty dump is an unsettled UI (the Progress grid's animated
+    // thumbnails), not a screen to back out of: a BACK on it once walked
+    // the app out to the launcher (r17 on the S10e and the 480 dp
+    // emulator). Wait for the dump instead; back out only of a screen
+    // the dump shows.
+    if (nodes.length === 0) {
+      await sleep(800);
+      continue;
+    }
     shell('input keyevent KEYCODE_BACK');
     await sleep(700);
   }
+  // The launcher holds the foreground when a BACK too many left the app:
+  // bring it back before looking for Home.
+  await d.ensureForeground();
   await d.waitForHome();
 };
 
@@ -273,13 +279,15 @@ const SCREENS = {
     await d.waitForHome();
     // The Progress row sits below the fold on a long Home — further
     // down the larger the text: find it.
-    for (let i = 0; i < 10; i += 1) {
+    // Short steps: a whole-screen scroll carried the row under the
+    // status bar at 1.3× on the S10e, where the tap missed it.
+    for (let i = 0; i < 16; i += 1) {
       const node = findNode(dumpUi(), /^◔, Progress, /);
-      if (node) {
+      if (node && node.y > 200) {
         d.tap(node);
         break;
       }
-      d.scrollDown();
+      d.scrollDown(0.25);
       await sleep(400);
     }
     await d.waitFor(/^Unreviewed$/, 20000, 'progress chips');
@@ -292,7 +300,22 @@ const SCREENS = {
   },
   async timeline() {
     await d.waitForHome();
-    await d.tapText(/\d+ to review$/, 20000);
+    // The queue line sits below the fold at huge text on a narrow screen
+    // (320 dp at 2.0: the ring fills the first screen): find it between
+    // the status bar and the tab bar.
+    const { height } = d.screenSize();
+    let row = null;
+    for (let i = 0; i < 12 && !row; i += 1) {
+      const node = findNode(dumpUi(), /\d+ to review$/);
+      if (node && node.y1 > height * 0.05 && node.y2 < height * 0.86 && node.y2 - node.y1 > 20)
+        row = node;
+      else {
+        d.scrollDown(0.25);
+        await sleep(400);
+      }
+    }
+    if (!row) throw new Error('the "to review" line never came into view');
+    d.tap(row);
     await d.waitFor(/^Unfinished$|^Everything$/, 20000, 'timeline filters');
     await sleep(1000);
     shot('timeline');
@@ -301,19 +324,35 @@ const SCREENS = {
   async deck() {
     await d.waitForHome();
     // At huge text the button sits below the fold: scroll to it.
-    for (let i = 0; i < 6; i += 1) {
-      if (findNode(dumpUi(), /^Continue reviewing$/)) break;
-      d.scrollDown();
-      await sleep(400);
+    // The button must sit above the tab bar: the dump lists it behind
+    // the bar too, where the tap lands on the Home tab (320 dp at 1.3).
+    const { height } = d.screenSize();
+    let button = null;
+    for (let i = 0; i < 12 && !button; i += 1) {
+      const node = findNode(dumpUi(), /^Continue reviewing$/);
+      // Whole and above the bar: the dump lists a sliver clipped by the
+      // scroll view's bottom edge too (6 px at 1.3 on 320 dp).
+      if (node && node.y2 < height * 0.86 && node.y2 - node.y1 > 20) button = node;
+      else {
+        d.scrollDown(0.25);
+        await sleep(400);
+      }
     }
-    await d.tapText(/^Continue reviewing$/, 20000);
+    if (!button) throw new Error('Continue reviewing never came above the tab bar');
+    d.tap(button);
     await d.waitFor(/^\d+\/\d+$/, 30000, 'deck position');
     await sleep(1200);
     shot('deck');
+    // A photo's stage tap is the flip; a video's shows its chrome, and
+    // its Fullscreen button is the flip (the S10e's newest single is the
+    // gate's clip).
     d.tapStage();
+    await sleep(900);
+    if (findNode(dumpUi(), /^Fullscreen$/)) await d.tapText(/^Fullscreen$/, 5000);
     await sleep(1400);
     shot('deck-immersive');
-    d.tapStage();
+    if (findNode(dumpUi(), /^Exit fullscreen$/)) await d.tapText(/^Exit fullscreen$/, 5000);
+    else d.tapStage();
     await sleep(1200);
     await backHome();
   },

@@ -89,12 +89,16 @@ export const space = {
 } as const;
 
 /** Corner radii by role: the stage's boxes and badge tags, thumbnails,
- * chips, cards and sheets, and the fully round pill. */
+ * chips, cards, a centred dialog, and the fully round pill. */
 export const radius = {
   box: 6,
   thumb: 8,
   chip: 10,
   card: 14,
+  /** A centred dialog (the custom-goal sheet): rounder than a card,
+   * never a pill — the token pass once mapped its 20 to the pill and the
+   * dialog came out an oval (Tristan, 2026-10-09). */
+  dialog: 20,
   pill: 999,
 } as const;
 

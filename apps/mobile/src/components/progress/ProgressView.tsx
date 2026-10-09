@@ -75,6 +75,7 @@ import type { SourceRoot } from '../../lib/sources';
 import { StateProgressBar } from '../StateProgressBar';
 import { colors, radius, touch, type, useTheme } from '../../theme';
 import { useHugeText } from '../useLargeText';
+import { useTextOverflow } from '../useTextOverflow';
 import {
   ACTION_META,
   ACTION_ORDER,
@@ -362,6 +363,9 @@ export function ProgressView({
   renderCta?: (breakdown: StateBreakdown) => React.ReactNode;
 }) {
   const hugeText = useHugeText();
+  /** Measured lever: the chip grids wrap two per row when any chip label
+   * needs a second line; huge text is the first guess. */
+  const chipLabels = useTextOverflow(hugeText);
   const base = useMemo(() => resolveTarget(target), [target]);
   /** Month filter driven by the histogram ("YYYY-MM", or the undated
    * bucket key). Null = the whole target. */
@@ -700,7 +704,7 @@ export function ProgressView({
           ]}
         />
 
-        <View style={[styles.chips, hugeText && styles.chipsWrapped]}>
+        <View style={[styles.chips, chipLabels.overflow && styles.chipsWrapped]}>
           {VERDICT_ORDER.map((state) => {
             const meta = VERDICT_META[state];
             const active = filter === state;
@@ -709,7 +713,7 @@ export function ProgressView({
                 key={state}
                 style={[
                   styles.chip,
-                  hugeText && styles.chipWrapped,
+                  chipLabels.overflow && styles.chipWrapped,
                   active && [styles.chipActive, { borderColor: accent }],
                 ]}
                 onPress={() => toggleFilter(state)}
@@ -717,7 +721,10 @@ export function ProgressView({
               >
                 <View style={[styles.chipSwatch, { backgroundColor: meta.color }]} />
                 <Text style={styles.chipCount}>{countOf(b, state)}</Text>
-                <Text style={styles.chipLabel} numberOfLines={2}>
+                <Text
+                  style={styles.chipLabel}
+                  onTextLayout={chipLabels.watch(meta.label ?? String(state))}
+                >
                   {meta.label}
                 </Text>
               </Pressable>
@@ -727,7 +734,7 @@ export function ProgressView({
         {/* Row 2: PENDING ACTIONS. A separate row because they are a
             separate layer — a photo can be kept AND queued to share, so
             these never replace a verdict (docs/STATE_MODEL.md). */}
-        <View style={[styles.chips, hugeText && styles.chipsWrapped]}>
+        <View style={[styles.chips, chipLabels.overflow && styles.chipsWrapped]}>
           {ACTION_ORDER.map((kind) => {
             const meta = ACTION_META[kind];
             const value = actionFilterOf(kind);
@@ -737,7 +744,7 @@ export function ProgressView({
                 key={kind}
                 style={[
                   styles.chip,
-                  hugeText && styles.chipWrapped,
+                  chipLabels.overflow && styles.chipWrapped,
                   active && [styles.chipActive, { borderColor: accent }],
                 ]}
                 onPress={() => setFilter((current) => (current === value ? 'all' : value))}
@@ -745,7 +752,10 @@ export function ProgressView({
               >
                 <View style={[styles.chipSwatch, { backgroundColor: meta.color }]} />
                 <Text style={styles.chipCount}>{b.actions[kind]}</Text>
-                <Text style={styles.chipLabel} numberOfLines={2}>
+                <Text
+                  style={styles.chipLabel}
+                  onTextLayout={chipLabels.watch(meta.label ?? String(kind))}
+                >
                   {meta.label}
                 </Text>
               </Pressable>
@@ -820,7 +830,7 @@ export function ProgressView({
     insights,
     month,
     target.kind,
-    hugeText,
+    chipLabels,
   ]);
 
   // First load only. A SCOPE change (a histogram-month tap) deliberately

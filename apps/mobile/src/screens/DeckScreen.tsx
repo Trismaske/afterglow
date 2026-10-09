@@ -50,6 +50,7 @@ import { useMembershipVersion } from '../components/useMembershipVersion';
 import { useImmersiveFlight } from '../components/useImmersiveFlight';
 import { useReduceMotion } from '../components/useReduceMotion';
 import { useLargeText } from '../components/useLargeText';
+import { useTextOverflow } from '../components/useTextOverflow';
 import { useReview, type RedecideTarget } from '../review/ReviewContext';
 import type { ReviewGroupRow, ReviewMemberRow } from '../db/store';
 import { BigButton } from '../components/BigButton';
@@ -572,8 +573,10 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * portrait-locked, so the width changes only under a resize
    * (split-screen): the list is keyed by it and remounts at the cursor. */
   const pageW = useWindowDimensions().width;
-  /** Large text (lib/textScale.ts): the chip row wraps two by two. */
+  /** Measured lever: the chip row wraps two by two when any chip label
+   * needs a second line; large text is the first guess. */
   const largeText = useLargeText();
+  const chipRow = useTextOverflow(largeText);
   const [comparePicker, setComparePicker] = useState(false);
   /** P2-6: the details overlay — the metadata corner's tap target. */
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -3133,7 +3136,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
             </Pressable>
           </View>
 
-          <View style={[styles.secondaryRow, largeText && styles.secondaryRowWrapped]}>
+          <View style={[styles.secondaryRow, chipRow.overflow && styles.secondaryRowWrapped]}>
             {/* The Edit chip is the block's ONE per-mode behaviour fork:
             live and LIST decks FLAG-toggle (the verdict layer untouched
             — the retired state editor's edit row; the browse re-decide
@@ -3147,7 +3150,8 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
             first" is the flow; favourite and organize stay disabled
             (decorating a photo you are deleting makes no sense). */}
             <ActionChip
-              wrap={largeText}
+              wrap={chipRow.overflow}
+              onLabelLayout={chipRow.watch('edit')}
               kind="edit"
               active={flagged}
               disabled={busy || inert || currentUntracked}
@@ -3164,7 +3168,8 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               }
             />
             <ActionChip
-              wrap={largeText}
+              wrap={chipRow.overflow}
+              onLabelLayout={chipRow.watch('favourite')}
               kind="favourite"
               active={favourite}
               disabled={busy || inert || currentState === 'culled' || currentUntracked}
@@ -3172,7 +3177,8 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               onPress={() => void run(() => toggleFavourite(current.id))}
             />
             <ActionChip
-              wrap={largeText}
+              wrap={chipRow.overflow}
+              onLabelLayout={chipRow.watch('organize')}
               kind="organize"
               active={organizeQueued}
               disabled={busy || inert || currentState === 'culled' || currentUntracked}
@@ -3180,7 +3186,8 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
               onPress={() => void run(toggleOrganize)}
             />
             <ActionChip
-              wrap={largeText}
+              wrap={chipRow.overflow}
+              onLabelLayout={chipRow.watch('share')}
               kind="share"
               active={shareQueued}
               disabled={busy || inert || currentUntracked}
@@ -3340,11 +3347,13 @@ const styles = StyleSheet.create({
   /** The cold-open last-photo container — NOT the measured stage (that
    * lives in MediaStageView); just a frameless flex box. */
   coldStage: { flex: 1 },
-  // The top-right box: its lines stack flush right (rule 7).
+  // The top-right box: its lines stack flush right (rule 7); bounded
+  // with the top-left box so the two never meet.
   posBadge: {
     position: 'absolute',
     top: 10,
     right: 10,
+    maxWidth: '36%',
     alignItems: 'flex-end',
     backgroundColor: scrim.mark,
     borderRadius: radius.box,
@@ -3367,9 +3376,10 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 10,
     left: 10,
-    // Wraps its lines before it can reach the position box (the walk at
-    // 2.0× on a 357 dp effective width: the two boxes overlapped).
-    maxWidth: '72%',
+    // Both corner boxes are bounded so they can never meet, whatever
+    // either says (the walk at 2.0× on a 357 dp effective width had them
+    // overlapping): 56% + 36% + the two 10 dp insets stays inside 320 dp.
+    maxWidth: '56%',
     backgroundColor: scrim.mark,
     borderRadius: radius.box,
     paddingHorizontal: 9,

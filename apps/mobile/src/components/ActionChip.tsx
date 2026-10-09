@@ -8,7 +8,13 @@
  * badges are the carried-history view.
  */
 import React from 'react';
-import { Pressable, StyleSheet, Text } from 'react-native';
+import {
+  Pressable,
+  StyleSheet,
+  Text,
+  type NativeSyntheticEvent,
+  type TextLayoutEventData,
+} from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors, radius, type } from '../theme';
 
@@ -61,6 +67,7 @@ export function ActionChip({
   kind,
   active,
   wrap = false,
+  onLabelLayout,
   disabled = false,
   dimmed = false,
   onPress,
@@ -71,6 +78,8 @@ export function ActionChip({
   /** Large text (lib/textScale.ts): the row wraps two by two, each chip
    * half the row, instead of breaking its label mid-word. */
   wrap?: boolean;
+  /** The label's onTextLayout (the deck's measured chip-row lever). */
+  onLabelLayout?: (event: NativeSyntheticEvent<TextLayoutEventData>) => void;
   disabled?: boolean;
   /** The offer is WITHDRAWN (staged cull): render the chip visibly
    * inert. Deliberately separate from `disabled`, which also covers the
@@ -97,7 +106,9 @@ export function ActionChip({
         size={18}
         color={active ? meta.color : colors.textDim}
       />
-      <Text style={[styles.text, active && { color: meta.color }]}>{meta.label}</Text>
+      <Text style={[styles.text, active && { color: meta.color }]} onTextLayout={onLabelLayout}>
+        {meta.label}
+      </Text>
     </Pressable>
   );
 }
@@ -117,6 +128,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 6,
   },
-  text: { color: colors.textDim, ...type.label, fontWeight: '700' },
+  // Shrinkable so the label is measured in the width beside its icon,
+  // not the chip's whole inner width (codex round 4).
+  text: { color: colors.textDim, ...type.label, fontWeight: '700', flexShrink: 1 },
   chipDimmed: { opacity: 0.4 },
 });

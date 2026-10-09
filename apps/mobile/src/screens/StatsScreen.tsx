@@ -78,6 +78,7 @@ import {
 import { perfLog } from '../lib/perfLog';
 import { GoalRing } from '../components/GoalRing';
 import { useLargeText } from '../components/useLargeText';
+import { useTextOverflow } from '../components/useTextOverflow';
 import { useReview } from '../review/ReviewContext';
 import { colors, space, touch, type, useTheme } from '../theme';
 
@@ -281,6 +282,9 @@ export function StatsScreen({ navigation }: Props) {
 
 function ActivityTab({ decisions }: { decisions: DecisionStats | null }) {
   const largeText = useLargeText();
+  /** Measured lever: the Today card stacks when its copy needs a third
+   * line beside the ring; large text is the first guess. */
+  const todayCopy = useTextOverflow(largeText, 2);
   if (!decisions) return <Text style={styles.loading}>Loading stats…</Text>;
 
   const reviewedToday = decisions.reviewedByDay.get(decisions.day) ?? 0;
@@ -305,7 +309,7 @@ function ActivityTab({ decisions }: { decisions: DecisionStats | null }) {
   return (
     <>
       <View style={styles.card}>
-        <View style={[styles.todayRow, largeText && styles.todayRowStacked]}>
+        <View style={[styles.todayRow, todayCopy.overflow && styles.todayRowStacked]}>
           <GoalRing
             size={116}
             strokeWidth={11}
@@ -319,7 +323,7 @@ function ActivityTab({ decisions }: { decisions: DecisionStats | null }) {
             <Text style={styles.cardTitle}>
               {reviewedToday >= decisions.goal ? 'Daily goal reached 🎉' : 'Today'}
             </Text>
-            <Text style={styles.cardText}>
+            <Text style={styles.cardText} onTextLayout={todayCopy.watch('copy')}>
               {reviewedToday === 0
                 ? 'No items decided yet today.'
                 : `${plural(reviewedToday, 'item')} decided today` +

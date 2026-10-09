@@ -34,6 +34,7 @@ Nothing there needs keeping.
 
 ⚠️ **The gate makes real review decisions** (keeps, culls, edit flags, favourite/share intents) on the target's corpus.
 Run it on a test device or emulator, never on a phone whose review state matters.
+It expects the device's default font scale and display size: its Home searches do not scroll, so a control below the fold at a larger scale reads as absent. The accessibility walk below is the surface that covers the scales.
 
 ## The accessibility walk (m0.9.1)
 
@@ -101,6 +102,8 @@ Caveat in a failure: an all-black photo (pocket shot) inside the transition can 
   A generated clip must carry a `creation_time` tag (`ffmpeg … -metadata creation_time=2026-10-08T08:50:11Z`): MediaStore dates an untagged clip NULL, the newest-first grid then sorts it last, and the animated-thumbnails step fails for want of a clip in its first screenful. The step taps each page to reveal the playback chrome (hidden until tapped), and taps a photo page again to leave the immersive mode that tap entered.
   Physical test phones qualify as-is.
 - A **fresh app state** (`adb shell pm clear`, re-grant permission, let the scan finish).
+  The grant is per OS level: `pm grant com.afterglow.companion android.permission.READ_MEDIA_IMAGES` and `READ_MEDIA_VIDEO` from Android 13, `READ_EXTERNAL_STORAGE` and `WRITE_EXTERNAL_STORAGE` on Android 12 and below (the S10e), plus `ACCESS_MEDIA_LOCATION`; then relaunch and wait for the sink's `[scan] done`.
+  A grant the app does not recognise leaves it on its "Allow photo access" screen, where every gate step fails.
   The deck chips are toggles and the F21 badge step asserts exact deltas from the run's start, so a photo carrying queued actions from an earlier run flips chips OFF and inverts the arithmetic — repeat runs on used state fail the step against a healthy app (observed 2026-08-21).
   To seed the bundled emulator (`scripts/run-emulator.sh`):
 

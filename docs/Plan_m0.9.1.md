@@ -35,7 +35,7 @@ Measure before deciding.
 
 Exit: the matrix walked on all three targets, the audit complete, the policy drafted as autonomous defaults in `autowork.md`.
 
-**Status (2026-10-09): walked.** All three targets at 0.8–2.0 and the default display size, the phones at the large display size too; `docs/accessibility-audit.md` carries the measured table and the levers; the policy as built is in docs/STATE_MODEL.md ("Text scales; layouts stack") and `lib/textScale.ts` (1.3 and 1.6 effective, relative to the window width). The native header title not scaling is parked in docs/TODO.md. The two levers phases 2 and 3 needed landed with them.
+**Status (2026-10-09): walked.** All three targets at 0.8–2.0 and the default display size, the phones at the large display size too; `docs/accessibility-audit.md` carries the measured table and the levers; the policy as built is in docs/STATE_MODEL.md ("Text scales; layouts stack") and `lib/textScale.ts` (1.3 and 1.6 effective, relative to the window width). The native header title not scaling is parked in docs/TODO.md. The two levers phases 2 and 3 needed landed with them. The close-out grilling (2026-10-09) then replaced the thresholds as the decider with MEASURED levers (`components/useTextOverflow`: a surface rearranges when its own label needed a line it is not allowed; the thresholds are the first guess; overflow reports latch until the next scale or width change), verified on the S10e and on 320, 411 and 480 dp emulators. The r15 screenshots at 1.3, 1.5 and 2.0 on the S10e (`~/PhoneSync/current-<scale>x-<screen>.png`) found two overlaps the report could not see (the ring's centre text, the tab badges over their icons; fixed in r16 by computed growth, `autowork.md` 36) and the deck squeezed to a sliver of a stage (94 dp at 2.0 on the S10e, about 60 dp at 1.3 on the 320 dp emulator, and none at all there at 2.0: the header, hint and chip rows fill the screen and the chip labels break mid-word) whose time box runs into the kind chip — the deck's vertical budget, the density question (shorter strings, tighter gaps past huge) Tristan decides on those screenshots before the tag.
 
 ### Phase 2 — the type-scale and token pass
 
@@ -61,7 +61,7 @@ The release artifact (clean prebuild plus Gradle) gated on the S10e and on the A
 
 Per phase as in m0.9: codex rounds on gpt-6.1-sol after the adversarial self-review, the S10e gate green on the phase's build, a commit and a push.
 
-**Status (2026-10-09): the Android 16 emulator gate passed on r11** (34 steps, from a fresh app state over the 332-item seeded corpus) — the cross-OS audit's part one, run as a blocking gate for the first time. The S10e gate on r11 passed too (34 steps, fresh state); three codex rounds (2 P1 + 8 P2, 7 P2, 4 P2; all fixed) and the S10e gate on r5 preceded it. The device pass and the close-out grilling over `autowork.md` are Tristan's; the tag waits for them.
+**Status (2026-10-09): the Android 16 emulator gate passed on r18** (34 steps, from a fresh app state over the 332-item seeded corpus, on the driver's proportional gestures; r17 passed it too) — the cross-OS audit's part one, run as a blocking gate for the first time (r11 passed it first). The S10e gate passed on r18 too (34 steps, from a fresh state over its 5 408-item library; r11 before it); six codex rounds (2 P1 + 8 P2, 7 P2, 4 P2, 6 P2, 4 P2, 2 P2; all fixed or settled, `autowork.md` 39) and the S10e gate on r5 preceded it. The device pass and the close-out grilling over `autowork.md` are Tristan's; the tag waits for them.
 
 ---
 

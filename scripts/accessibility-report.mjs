@@ -96,14 +96,15 @@ for (const serial of readdirSync(reportDir)) {
         });
     }
     // The base is the smallest scale that finished; a density whose
-    // combinations all failed has nothing to compare and is already
-    // reported as INCOMPLETE above.
+    // combinations all failed has nothing to read and is already
+    // reported as INCOMPLETE above. One finished capture is enough for
+    // the standalone signals (codex round 5).
     const finished = list.filter(
       (c) =>
         existsSync(join(serialDir, c.name, 'geometry.json')) &&
         readdirSync(join(serialDir, c.name)).some((f) => f.endsWith('.xml')),
     );
-    if (finished.length < 2) continue;
+    if (finished.length === 0) continue;
     // Every screen captured by any finished combination, each compared
     // against ITS OWN earliest capture: a screen the smallest scale missed
     // still gets its later evidence read (codex round 3).
@@ -113,7 +114,7 @@ for (const serial of readdirSync(reportDir)) {
     for (const screenFile of screens) {
       const screen = screenFile.replace(/\.xml$/, '');
       const withScreen = finished.filter((c) => existsSync(join(serialDir, c.name, screenFile)));
-      if (withScreen.length < 2) continue;
+      if (withScreen.length === 0) continue;
       const base = withScreen[0];
       const geometry = JSON.parse(
         readFileSync(join(serialDir, base.name, 'geometry.json'), 'utf8'),
@@ -121,9 +122,12 @@ for (const serial of readdirSync(reportDir)) {
       const screenW = geometry.widthDp ? Math.round((geometry.widthDp * geometry.dpi) / 160) : null;
       const baseNodes = nodesOf(readFileSync(join(serialDir, base.name, screenFile), 'utf8'));
       const baseByKey = new Map(baseNodes.map((n) => [keyOf(n.text), n]));
-      for (const c of withScreen.slice(1)) {
+      // CLIPPED and OVERLAP need no comparison: every capture, the base
+      // included, is checked on its own; WRAPPED and CLAMPED compare to
+      // the base (codex round 4).
+      for (const c of withScreen) {
         const path = join(serialDir, c.name, screenFile);
-        const nodes = nodesOf(readFileSync(path, 'utf8'));
+        const nodes = c === base ? baseNodes : nodesOf(readFileSync(path, 'utf8'));
         const ratio = c.font / base.font;
         for (const n of nodes) {
           const key = keyOf(n.text);
@@ -136,6 +140,7 @@ for (const serial of readdirSync(reportDir)) {
               signal: 'CLIPPED',
               detail: `"${n.text}" leaves the screen horizontally`,
             });
+          if (c === base) continue;
           const b = baseByKey.get(key);
           if (!b || n.text.length < 3 || /^[\d\s.,%/]+$/.test(n.text) || /^&#\d+;$/.test(n.text))
             continue;
@@ -166,14 +171,22 @@ for (const serial of readdirSync(reportDir)) {
               detail: `"${n.text}" kept its ${b.w} px width at ${ratio.toFixed(2)}× scale`,
             });
         }
-        const multi = nodes.filter((n) => n.text.length > 1 && !/^&#\d+;$/.test(n.text));
+        // Icon glyphs count: a badge on an icon's corner is by design, a
+        // badge that hides the icon is not — the rule is COVERAGE: an
+        // intersection over half of the smaller node (Tristan, 2026-10-09,
+        // the tab badges at 2.0×).
+        const multi = nodes.filter((n) => n.text.length > 0);
         for (let i = 0; i < multi.length; i += 1)
           for (let j = i + 1; j < multi.length; j += 1) {
             const a = multi[i];
             const o = multi[j];
             const ix = Math.min(a.x2, o.x2) - Math.max(a.x1, o.x1);
             const iy = Math.min(a.y2, o.y2) - Math.max(a.y1, o.y1);
-            if (ix > 2 && iy > 2)
+            const smaller = Math.min(a.w * a.h, o.w * o.h);
+            // A glyph or a one-character badge may sit on a corner by
+            // design; anything else may not overlap at all.
+            const corner = [a, o].some((n) => /^&#\d+;$/.test(n.text) || n.text.length === 1);
+            if (ix > 2 && iy > 2 && (!corner || ix * iy > smaller * 0.5))
               findings.push({
                 serial,
                 density,

@@ -125,6 +125,10 @@ Media-library permissions and SQLite need a dev build, which is what `expo run:a
 Create an AVD `afterglow-api30` (Pixel 5, `system-images;android-30;google_apis;x86_64`) and run the app on it for any release that touches floor-adjacent or native code.
 Its evidence is asymmetric: the AOSP image lacks Samsung's codecs, so a success there is strong evidence and a failure is ambiguous.
 
+**The width emulators (m0.9.1):** the accessibility walk also runs on two more Android 16 AVDs that differ only in width, `afterglow-320` (720×1280 at 360 dpi, a 320 dp phone) and `afterglow-480` (1080×1920 at 360 dpi, a 480 dp phone).
+Create each with `avdmanager create avd -n <name> -k "system-images;android-36;google_apis;x86_64" -d pixel_7`, then set `hw.lcd.width`, `hw.lcd.height` and `hw.lcd.density` in its `config.ini`; boot a second one on its own port (`emulator -avd afterglow-320 -port 5556`).
+Seed them like the Pixel 7 AVD.
+
 **Physical device instead of emulator:** for a one-off USB run, enable USB debugging, plug the device in, and check that `adb devices` shows it.
 Then run `npx expo run:android` as usual (it prefers a connected device over the emulator).
 For persistent wireless pairing, multiple named devices, screenshots, input automation, and recovery after you reinstall a workstation, follow [ANDROID_DEVICE_TESTING.md](ANDROID_DEVICE_TESTING.md).

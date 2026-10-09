@@ -22,11 +22,12 @@ What broke, by the first scale it broke at (360 dp; the S23 and the emulator bre
 | Deck chip row | 1.5 | "Favourite" and "Organize" broke mid-word in four columns | Two chips per row past the threshold |
 | Progress histogram axis | 1.3 | The month and year ticks collided at fixed offsets | The axis rows' offsets and the column height follow the font |
 | Progress chips | 2.0 | "Unreviewed", "Favourite", "Organize" broke mid-word in 3- and 4-column grids | Two per row past the huge-text threshold (1.6) |
-| Tab bar | 1.8 | "Favourite" and "Organize" broke mid-word in a fifth of the bar; badges overflowed their 16 dp disc | Labels drop past the huge-text threshold; the badge disc grows with the font |
+| Tab bar | 1.8 | "Favourite" and "Organize" broke mid-word in a fifth of the bar; badges overflowed their 16 dp disc | Labels drop when one needs a second line; the badge disc grows with the font and moves beside its icon past 20 dp (on the corner it hid the pencil and the share glyph at 2.0) |
+| Goal ring (Home, Stats) | 2.0 | The number and "of 50 today" crossed the ring's stroke | The ring's diameter grows with the font scale (computed) |
 | Native stack header title | every scale | The title does not scale with the font at all (React Navigation's native header) | Observed, not ours to fix in this release; parked in docs/TODO.md |
 | Free text everywhere else | — | Wraps as designed at every scale | None |
 
-How to read the report: its signals come from node bounds alone, so a CLAMPED row also fires for any text that fills a fixed-width parent (a button's label, a tile's caption), which is the parent's width, not a cut; a WRAPPED row is free text doing what free text should; OVERLAP and CLIPPED are the rows to open the screenshot for, and INCOMPLETE rows are missing evidence, never a pass.
+How to read the report: its signals come from node bounds alone, so a CLAMPED row also fires for any text that fills a fixed-width parent (a button's label, a tile's caption), which is the parent's width, not a cut; a WRAPPED row is free text doing what free text should; OVERLAP and CLIPPED are the rows to open the screenshot for, and INCOMPLETE rows are missing evidence, never a pass. OVERLAP counts an icon glyph or a one-character badge only when the intersection covers more than half of the smaller node (a corner badge is by design), and any other intersecting pair of texts. What the report cannot see: a text crossing a drawn shape (the goal ring's stroke) or an overlay that is meant to cover the stage; those are the screenshot's.
 The table above is what the screenshots showed; the report is where to look.
 
 Walk gaps: at 1.8 and 2.0 on the S10e the walk could not reach the Progress page or the deck (Home's rows grew past its scroll search), so those two screens have screenshots only up to 1.5 there; the S23 and the emulator cover them to 2.0.

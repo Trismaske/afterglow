@@ -4,8 +4,16 @@
  * loose chip rows read as rushed and ate a screen). The selected segment
  * fills with the accent; every segment is a radio to accessibility.
  */
-import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import {
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+  type NativeSyntheticEvent,
+  type TextLayoutEventData,
+} from 'react-native';
 import { colors, radius, type, useTheme } from '../theme';
 import { useHugeText, useLargeText } from './useLargeText';
 
@@ -23,13 +31,26 @@ export function SegmentedControl<Id extends string>({
   accessibilityLabel: string;
 }) {
   const theme = useTheme();
-  // Large text (lib/textScale.ts): more than three segments wrap onto
-  // two rows, three to a row, instead of breaking a label mid-word (the
-  // walk at 1.3×: "Strictes / t").
-  const wrap = useLargeText() && options.length > 3;
-  // Past the huge threshold a third of the pill no longer holds
-  // "Strictest" either: two to a row.
+  // Measured lever (the close-out grilling): a pill of more than three
+  // segments wraps three to a row when any segment label needs a second
+  // line, and two to a row when it still does; the thresholds are the
+  // first guess (lib/textScale.ts), the labels' own lines the truth. A
+  // scale or width change starts from the guess again.
+  const large = useLargeText();
   const huge = useHugeText();
+  const { fontScale, width } = useWindowDimensions();
+  const guess = options.length > 3 ? (huge ? 2 : large ? 1 : 0) : 0;
+  const [level, setLevel] = useState(guess);
+  useEffect(() => setLevel(guess), [guess, fontScale, width]);
+  // A report belongs to the arrangement that produced it: two labels
+  // wrapping in the same five-column layout advance the level once,
+  // not twice (codex round 4).
+  const renderedLevel = level;
+  const onLabelLayout = (event: NativeSyntheticEvent<TextLayoutEventData>) => {
+    if (options.length > 3 && event.nativeEvent.lines.length > 1)
+      setLevel((current) => (current === renderedLevel ? Math.min(2, current + 1) : current));
+  };
+  const wrap = level > 0;
   return (
     <View
       style={[styles.pill, wrap && styles.pillWrapped]}
@@ -46,11 +67,17 @@ export function SegmentedControl<Id extends string>({
             accessibilityState={{ selected: active, checked: active }}
             style={[
               styles.segment,
-              wrap && (huge ? styles.segmentWrappedHuge : styles.segmentWrapped),
+              level === 1 && styles.segmentWrapped,
+              level === 2 && styles.segmentWrappedHuge,
               active && { backgroundColor: theme.accent },
             ]}
           >
-            <Text style={[styles.label, active && { color: theme.onAccent }]}>{option.label}</Text>
+            <Text
+              style={[styles.label, active && { color: theme.onAccent }]}
+              onTextLayout={onLabelLayout}
+            >
+              {option.label}
+            </Text>
           </Pressable>
         );
       })}

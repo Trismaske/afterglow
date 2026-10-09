@@ -774,8 +774,11 @@ const styles = StyleSheet.create({
     // A half disc standing ON the line: its flat side on the track's
     // top edge, so the whole dome reads and takes the finger; no rim —
     // the dome and the fill's front are one shape (the tester,
-    // 2026-09-27/28).
-    bottom: SEEK_LINE * 3,
+    // 2026-09-27/28). It overlaps the fill by 1 dp: at a density that
+    // puts 9 dp on a half pixel (the S23 at 560 dpi) the two edges
+    // otherwise anti-alias into a seam under the dome (Tristan,
+    // 2026-10-09); the fill under the dome is the dome's own colour.
+    bottom: SEEK_LINE * 3 - 1,
     marginLeft: -SEEK_THUMB_R,
     width: SEEK_THUMB_R * 2,
     height: SEEK_THUMB_R,

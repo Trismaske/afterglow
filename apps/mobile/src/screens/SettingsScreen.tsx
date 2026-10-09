@@ -17,6 +17,7 @@ import {
 } from '../lib/animatedCells';
 import { SegmentedControl } from '../components/SegmentedControl';
 import { useLargeText } from '../components/useLargeText';
+import { useTextOverflow } from '../components/useTextOverflow';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { plural } from '../lib/format';
 import {
@@ -136,6 +137,9 @@ export function SettingsScreen({ navigation }: Props) {
   const { refresh } = useReview();
   const theme = useTheme();
   const largeText = useLargeText();
+  /** Measured lever: a pill row stacks when its title needs a second
+   * line in the title column; large text is the first guess. */
+  const pillTitles = useTextOverflow(largeText);
   const systemAvailable = theme.systemAccent !== null;
   const [sourceLabel, setSourceLabel] = useState<string | null>(null);
   const [goal, setGoal] = useState<number | null>(null);
@@ -924,9 +928,15 @@ export function SettingsScreen({ navigation }: Props) {
           ).map((row) => (
             <View
               key={row.kind}
-              style={[styles.playbackRow, largeText && styles.playbackRowStacked]}
+              style={[styles.playbackRow, pillTitles.overflow && styles.playbackRowStacked]}
             >
-              <Text style={[styles.playbackRowTitle, !largeText && styles.playbackRowTitleInline]}>
+              <Text
+                style={[
+                  styles.playbackRowTitle,
+                  !pillTitles.overflow && styles.playbackRowTitleInline,
+                ]}
+                onTextLayout={pillTitles.watch(row.kind)}
+              >
                 {row.title}
               </Text>
               <View style={styles.playbackControl}>
@@ -946,8 +956,14 @@ export function SettingsScreen({ navigation }: Props) {
             Thumbnails play their clips while on screen — all of them, or one at a time; GIFs follow
             this too.
           </Text>
-          <View style={[styles.playbackRow, largeText && styles.playbackRowStacked]}>
-            <Text style={[styles.playbackRowTitle, !largeText && styles.playbackRowTitleInline]}>
+          <View style={[styles.playbackRow, pillTitles.overflow && styles.playbackRowStacked]}>
+            <Text
+              style={[
+                styles.playbackRowTitle,
+                !pillTitles.overflow && styles.playbackRowTitleInline,
+              ]}
+              onTextLayout={pillTitles.watch('animated')}
+            >
               Animated thumbnails
             </Text>
             <View style={styles.playbackControl}>
@@ -1128,7 +1144,7 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 380,
     backgroundColor: colors.surface,
-    borderRadius: radius.pill,
+    borderRadius: radius.dialog,
     borderWidth: 1,
     borderColor: colors.border,
     padding: 20,

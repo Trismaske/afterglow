@@ -209,7 +209,10 @@ const styles = StyleSheet.create({
   iconPill: {
     width: 36,
     height: 36,
-    borderRadius: radius.card,
+    // A circle, as in 0.9 (its 17 dp radius on 36 dp): the token pass
+    // mapped it to the card radius and the pill read as a rounded square
+    // beside the round Home cradle (Tristan's pick, 2026-10-11).
+    borderRadius: radius.pill,
     borderWidth: 1.5,
     borderColor: 'transparent',
     overflow: 'hidden',

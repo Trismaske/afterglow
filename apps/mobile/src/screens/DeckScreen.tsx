@@ -14,6 +14,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   useWindowDimensions,
+  type LayoutChangeEvent,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -99,6 +100,15 @@ import { animatedKindOf } from '../lib/animatedCells';
 import { useOverlayPrefs } from '../components/useOverlayPrefs';
 import { getStageFacts, type StageFactsRow } from '../db/store';
 import { badgesHidden, setBadgesHidden, subscribeBadgesHidden } from '../lib/badgePrefs';
+import {
+  NO_FOLD_CHOICES,
+  foldAfterTap,
+  headerFolded,
+  roomFor,
+  type FoldChoices,
+  type HeaderRoom,
+} from '../lib/deckHeader';
+import { loadFoldChoices, saveFoldChoices } from '../lib/deckHeaderPrefs';
 import { useSQLiteContext } from 'expo-sqlite';
 import { addToShareQueue, removeFromShareQueue } from '../db/shareStore';
 import { queueOrganize, unqueueOrganize } from '../db/organizeStore';
@@ -1533,6 +1543,62 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
   // quiet screen.
   const immersiveRef = useRef(false);
   immersiveRef.current = immersive;
+  // The header fold (lib/deckHeader.ts): the stage's share of the window
+  // in the EXPANDED layout sorts the deck into roomy or tight, measured
+  // once per font scale and width from the first (expanded) layout and
+  // never from a folded one; the chevron flips the fold, remembered per
+  // room. Folded and still tight, the thumbnail strip folds too.
+  const { height: windowH, fontScale, width: windowW } = useWindowDimensions();
+  const [foldChoices, setFoldChoices] = useState<FoldChoices>(NO_FOLD_CHOICES);
+  // The chevron is inert until the row has been read: a tap before it
+  // would write a whole choice pair from the defaults and erase the other
+  // room's remembered choice (codex round 9).
+  const [foldLoaded, setFoldLoaded] = useState(false);
+  const [room, setRoom] = useState<HeaderRoom | null>(null);
+  const [stripFolded, setStripFolded] = useState(false);
+  useEffect(() => {
+    let live = true;
+    void loadFoldChoices(db).then((choices) => {
+      if (!live) return;
+      setFoldChoices(choices);
+      setFoldLoaded(true);
+    });
+    return () => {
+      live = false;
+    };
+  }, [db]);
+  // A new scale, width OR height (a split-screen resize) re-measures.
+  useEffect(() => {
+    setRoom(null);
+    setStripFolded(false);
+  }, [fontScale, windowW, windowH]);
+  const folded = room !== null && headerFolded(foldChoices, room);
+  const foldedRef = useRef(folded);
+  foldedRef.current = folded;
+  const roomRef = useRef(room);
+  roomRef.current = room;
+  const { onHostLayout } = flight;
+  const onStageLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      onHostLayout(event);
+      const stageDp = event.nativeEvent.layout.height;
+      if (roomRef.current === null) {
+        // Only the framed, expanded layout classifies: immersive has no
+        // header and a window-sized stage (codex round 9).
+        if (!foldedRef.current && !immersiveRef.current) setRoom(roomFor(stageDp, windowH));
+        return;
+      }
+      if (foldedRef.current && roomFor(stageDp, windowH) === 'tight') setStripFolded(true);
+    },
+    [onHostLayout, windowH],
+  );
+  const onFoldTap = useCallback(() => {
+    if (room === null || !foldLoaded) return;
+    const next = foldAfterTap(foldChoices, room, folded);
+    setFoldChoices(next);
+    if (folded) setStripFolded(false);
+    void saveFoldChoices(db, next);
+  }, [db, foldChoices, foldLoaded, folded, room]);
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (immersiveFlightRef.current || flight.flyingRef.current) return true;
@@ -1644,13 +1710,13 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
    * content width — and returns null, leaving a half-reviewed unit open
    * with its current thumbnail off-screen (codex r3). */
   const [stripMeasured, setStripMeasured] = useState(0);
-  // A strip that UNMOUNTS (immersive, a flat list) comes back as a new
+  // A strip that UNMOUNTS (immersive, a flat list, the header fold) comes back as a new
   // native scroll view at offset 0 with, usually, the same width and
   // content — so its geometry is forgotten with it, and the layout
   // handlers of the new one re-measure, re-report and re-run the follow
   // (codex 2026-09-19: the old deep offset named off-screen thumbnails
   // visible).
-  const stripHidden = immersive || listMode;
+  const stripHidden = immersive || listMode || stripFolded;
   useLayoutEffect(() => {
     if (!stripHidden) return;
     stripOffsetRef.current = 0;
@@ -2734,9 +2800,29 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
         <View style={styles.header}>
           {/* Truthful numbers only (m0.8.2, F12): the unit's own progress
             over its FIXED membership, plus the library-wide remainder
-            from the DB counts — never a page-position ordinal. */}
-          <Text style={styles.headerTitle}>{view.headerTitle}</Text>
-          <Text style={styles.headerHint}>{view.headerHint}</Text>
+            from the DB counts — never a page-position ordinal. The
+            chevron folds the header (lib/deckHeader.ts): one title line,
+            no hint, the stage gets the room. */}
+          <View style={styles.headerRow}>
+            <Text style={styles.headerTitle} numberOfLines={folded ? 1 : undefined}>
+              {view.headerTitle}
+            </Text>
+            <Pressable
+              onPress={onFoldTap}
+              disabled={room === null || !foldLoaded}
+              hitSlop={8}
+              style={styles.foldButton}
+              accessibilityRole="button"
+              accessibilityLabel={folded ? 'Show the hint' : 'Hide the hint'}
+            >
+              <Icon
+                name={folded ? 'chevron-down' : 'chevron-up'}
+                size={20}
+                color={colors.textDim}
+              />
+            </Pressable>
+          </View>
+          {!folded && <Text style={styles.headerHint}>{view.headerHint}</Text>}
         </View>
       )}
 
@@ -2748,11 +2834,7 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
       {/* The flight wrapper (m0.9.1 phase 4): one always-present view
           around the stage whose transform is empty when idle and, during
           a flip, maps the committed layout onto the gliding path. */}
-      <Reanimated.View
-        ref={flight.hostRef}
-        style={styles.stageWrapper}
-        onLayout={flight.onHostLayout}
-      >
+      <Reanimated.View ref={flight.hostRef} style={styles.stageWrapper} onLayout={onStageLayout}>
         <Reanimated.View style={[styles.stageFlight, flight.flightStyle]}>
           <MediaStageView
             controller={stage}
@@ -2923,8 +3005,9 @@ function ReviewDeck({ navigation, unit, advanceTo, list }: SharedProps) {
           photo of a run the thumbnail you were on sat off-screen while
           the pager tracked the cursor perfectly. Geometry in, offset out
           — the rule and its edge cases live in lib/stripScroll.ts. */}
-      {/* P2: flat lists hide the strip — the stage grows. */}
-      {!view.listMode && !immersive && (
+      {/* P2: flat lists hide the strip — the stage grows. A folded header
+          that still leaves the stage tight folds the strip too. */}
+      {!view.listMode && !immersive && !stripFolded && (
         <StripAnimation
           items={view.items}
           current={inert ? view.cursor : pagerIndex}
@@ -3316,7 +3399,9 @@ const styles = StyleSheet.create({
   stageWrapper: { flex: 1, zIndex: 1 },
   stageFlight: { flex: 1 },
   header: { gap: 2, paddingHorizontal: 4 },
-  headerTitle: { color: colors.text, ...type.body, fontWeight: '700' },
+  headerRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
+  headerTitle: { color: colors.text, ...type.body, fontWeight: '700', flex: 1 },
+  foldButton: { paddingTop: 1 },
   headerHint: { color: colors.textDim, ...type.caption },
   // Inline failure card (SourcePicker's quiet retry language).
   loadFailedRoot: { alignItems: 'center', justifyContent: 'center' },

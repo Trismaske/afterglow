@@ -74,8 +74,6 @@ import {
 import type { SourceRoot } from '../../lib/sources';
 import { StateProgressBar } from '../StateProgressBar';
 import { colors, radius, touch, type, useTheme } from '../../theme';
-import { useHugeText } from '../useLargeText';
-import { useTextOverflow } from '../useTextOverflow';
 import {
   ACTION_META,
   ACTION_ORDER,
@@ -362,10 +360,6 @@ export function ProgressView({
   /** Optional CTA (Day progress: "Review this day"). */
   renderCta?: (breakdown: StateBreakdown) => React.ReactNode;
 }) {
-  const hugeText = useHugeText();
-  /** Measured lever: the chip grids wrap two per row when any chip label
-   * needs a second line; huge text is the first guess. */
-  const chipLabels = useTextOverflow(hugeText);
   const base = useMemo(() => resolveTarget(target), [target]);
   /** Month filter driven by the histogram ("YYYY-MM", or the undated
    * bucket key). Null = the whole target. */
@@ -704,29 +698,20 @@ export function ProgressView({
           ]}
         />
 
-        <View style={[styles.chips, chipLabels.overflow && styles.chipsWrapped]}>
+        <View style={styles.chips}>
           {VERDICT_ORDER.map((state) => {
             const meta = VERDICT_META[state];
             const active = filter === state;
             return (
               <Pressable
                 key={state}
-                style={[
-                  styles.chip,
-                  chipLabels.overflow && styles.chipWrapped,
-                  active && [styles.chipActive, { borderColor: accent }],
-                ]}
+                style={[styles.chip, active && [styles.chipActive, { borderColor: accent }]]}
                 onPress={() => toggleFilter(state)}
                 accessibilityLabel={`${meta.label}: ${countOf(b, state)}`}
               >
                 <View style={[styles.chipSwatch, { backgroundColor: meta.color }]} />
                 <Text style={styles.chipCount}>{countOf(b, state)}</Text>
-                <Text
-                  style={styles.chipLabel}
-                  onTextLayout={chipLabels.watch(meta.label ?? String(state))}
-                >
-                  {meta.label}
-                </Text>
+                <Text style={styles.chipLabel}>{meta.label}</Text>
               </Pressable>
             );
           })}
@@ -734,7 +719,7 @@ export function ProgressView({
         {/* Row 2: PENDING ACTIONS. A separate row because they are a
             separate layer — a photo can be kept AND queued to share, so
             these never replace a verdict (docs/STATE_MODEL.md). */}
-        <View style={[styles.chips, chipLabels.overflow && styles.chipsWrapped]}>
+        <View style={styles.chips}>
           {ACTION_ORDER.map((kind) => {
             const meta = ACTION_META[kind];
             const value = actionFilterOf(kind);
@@ -742,22 +727,13 @@ export function ProgressView({
             return (
               <Pressable
                 key={kind}
-                style={[
-                  styles.chip,
-                  chipLabels.overflow && styles.chipWrapped,
-                  active && [styles.chipActive, { borderColor: accent }],
-                ]}
+                style={[styles.chip, active && [styles.chipActive, { borderColor: accent }]]}
                 onPress={() => setFilter((current) => (current === value ? 'all' : value))}
                 accessibilityLabel={`${meta.label} queued: ${b.actions[kind]}`}
               >
                 <View style={[styles.chipSwatch, { backgroundColor: meta.color }]} />
                 <Text style={styles.chipCount}>{b.actions[kind]}</Text>
-                <Text
-                  style={styles.chipLabel}
-                  onTextLayout={chipLabels.watch(meta.label ?? String(kind))}
-                >
-                  {meta.label}
-                </Text>
+                <Text style={styles.chipLabel}>{meta.label}</Text>
               </Pressable>
             );
           })}
@@ -820,18 +796,7 @@ export function ProgressView({
         </View>
       </View>
     );
-  }, [
-    data,
-    heading,
-    filter,
-    toggleFilter,
-    renderCta,
-    accent,
-    insights,
-    month,
-    target.kind,
-    chipLabels,
-  ]);
+  }, [data, heading, filter, toggleFilter, renderCta, accent, insights, month, target.kind]);
 
   // First load only. A SCOPE change (a histogram-month tap) deliberately
   // does NOT pass through here: unmounting the grid unmounts the header
@@ -899,12 +864,18 @@ const styles = StyleSheet.create({
   // Five columns instead of five rows (m0.8.2): the same filters and
   // counts in ~130 px instead of ~790, which is what buys the histogram
   // and insight lines their space above the grid.
-  chips: { flexDirection: 'row', gap: 6, marginTop: -4 },
+  // The chip rows WRAP, always, from each chip's own width: a control row
+  // never overflows sideways (Tristan, 2026-10-10: at 2.0 a third chip was
+  // cut at the screen's edge, and a user at that scale will not know to
+  // scroll sideways). At 1.0 the five fit one row and grow to fill it;
+  // past that Yoga breaks the row where the chips' content widths say —
+  // a measured lever on the labels could not see it, since the labels
+  // fit inside chips that were themselves too wide for the row.
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: -4 },
   /** Huge text (lib/textScale.ts): two chips per row, whole labels. */
-  chipsWrapped: { flexWrap: 'wrap' },
-  chipWrapped: { flexBasis: '46%' },
   chip: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: 'auto',
     alignItems: 'center',
     gap: 3,
     paddingVertical: 8,

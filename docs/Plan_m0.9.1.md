@@ -61,7 +61,7 @@ The release artifact (clean prebuild plus Gradle) gated on the S10e and on the A
 
 Per phase as in m0.9: codex rounds on gpt-6.1-sol after the adversarial self-review, the S10e gate green on the phase's build, a commit and a push.
 
-**Status (2026-10-11): the Android 16 emulator gate passed on r22** (34 steps, from a fresh app state over the 332-item seeded corpus, on the driver's proportional gestures; r17, r18 and r20 passed it too) — the cross-OS audit's part one, run as a blocking gate for the first time (r11 passed it first). The S10e gate passed on r22 too (34 steps, from a fresh state over its 5 408-item library; r11, r18 and r20 before it); nine codex rounds (2 P1 + 8 P2, 7 P2, 4 P2, 6 P2, 4 P2, 2 P2, 2 P2, 3 P2, 5 P2; all fixed or settled, `autowork.md` 39, 42, 48, 52) and the S10e gate on r5 preceded it. The device pass and the close-out grilling over `autowork.md` are Tristan's; the tag waits for them.
+**Status (2026-10-11): the gate matrix passed on r23** — the Android 16 emulator at font scale 1.0, 1.3 and 2.0 (34 steps each, from a fresh app state over the 332-item seeded corpus; the gate runs at any font scale since the grilling) and the S10e at 1.0 and 2.0 — the cross-OS audit's part one, run as a blocking gate for the first time (r11 passed it first). The S10e gate passed from a fresh state over its 5 408-item library (r11, r18, r20 and r22 before r23); sixteen codex rounds, converging at a clean sixteenth (rounds 1–9 on the app: 2 P1 + 8 P2, 7, 4, 6, 4, 2, 2, 3, 5 P2; rounds 10–15 on the gate's any-scale contract: 1 P1 + 3 P2, 2, 2, 1, 1, 2 P2; all fixed or settled, `autowork.md`) and the S10e gate on r5 preceded it. The device pass and the close-out grilling over `autowork.md` are Tristan's; the tag waits for them.
 
 ---
 

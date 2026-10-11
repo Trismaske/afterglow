@@ -25,6 +25,7 @@ import {
   type TextLayoutEventData,
 } from 'react-native';
 import { colors, radius, type, useTheme } from '../theme';
+import { Icon } from './Icon';
 import { useTextOverflow } from './useTextOverflow';
 
 export function SegmentedControl<Id extends string>({
@@ -72,6 +73,11 @@ export function SegmentedControl<Id extends string>({
             >
               {option.label}
             </Text>
+            {/* The list marks its choice with a check as well as the fill
+                (the grilling, 2026-10-11): a fill alone reads as a pressed
+                row, and the mark holds for a user who cannot tell the two
+                tints apart. */}
+            {list && active && <Icon name="check" size={18} color={theme.onAccent} />}
           </Pressable>
         );
       })}
@@ -95,6 +101,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   /** A list row: full width, the label flush left, chip corners. */
-  row: { flex: 0, alignItems: 'flex-start', paddingHorizontal: 14, borderRadius: radius.chip },
+  row: {
+    flex: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    borderRadius: radius.chip,
+  },
   label: { color: colors.textDim, ...type.label, fontWeight: '600' },
 });

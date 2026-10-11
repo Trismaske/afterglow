@@ -7,6 +7,7 @@ import {
   type LayoutChangeEvent,
   type StyleProp,
   type ViewStyle,
+  useWindowDimensions,
 } from 'react-native';
 import { Icon, type IconName } from './Icon';
 import { colors, radius } from '../theme';
@@ -167,12 +168,20 @@ function KindChip({
   size: number;
   onWidth?: (width: number) => void;
 }) {
+  // The pill's height follows its label's scaled line, never just the
+  // disc size: the label is sp and grew with the font while the pill
+  // stayed 24 dp, and Android clips a rounded view's children to its
+  // outline — at 2.0 "Video" lost its lower half (the grilling,
+  // 2026-10-11). Computed from the scale, like the disc.
+  const { fontScale } = useWindowDimensions();
+  const fontSize = Math.round(size * 0.55);
+  const height = Math.max(size, Math.round(fontSize * Math.max(1, fontScale) * 1.4) + 4);
   return (
     <View
-      style={[styles.pill, { height: size, borderRadius: size / 2 }]}
+      style={[styles.pill, { height, borderRadius: height / 2 }]}
       onLayout={onWidth && ((e: LayoutChangeEvent) => onWidth(e.nativeEvent.layout.width))}
     >
-      <Text style={[styles.pillText, { fontSize: Math.round(size * 0.55) }]} numberOfLines={1}>
+      <Text style={[styles.pillText, { fontSize }]} numberOfLines={1}>
         {KIND_CHIP_LABELS[kind]}
       </Text>
     </View>

@@ -35,8 +35,11 @@ export const TAB_ICONS = {
 
 /** Visible bar height (above the system inset). */
 const BAR_HEIGHT = 58;
-/** The count badge's disc: fixed, never scaled (see countFits). */
+/** The count badge's disc at 1.0, and the most it grows to before the
+ * dot replaces the count (see countFits): past 20 dp the disc covered
+ * the icon on its corner. */
 const BADGE_DP = 16;
+const BADGE_MAX_DP = 20;
 /** How far the Home circle protrudes above the bar. */
 const RAISE = 18;
 /** Home circle diameter (theme touch.action-sized primary target). */
@@ -55,11 +58,16 @@ export function MainTabBar({ state, descriptors, navigation, insets }: BottomTab
   const labels = useTextOverflow(hugeText);
   const fontScale = useWindowDimensions().fontScale;
   /** The badge is a work indicator, not reading text (Tristan, 2026-10-09:
-   * a count grown beside or over its icon wrecked the bar). The 16 dp
-   * corner disc keeps its count while the scaled digit's line fits the
-   * disc; past that the same corner shows a plain dot, and the count
-   * stays in the queue's title and in this tab's accessibility label. */
-  const countFits = type.caption.lineHeight * fontScale <= BADGE_DP;
+   * a count grown beside or over its icon wrecked the bar). The corner
+   * disc keeps its count while the scaled digit's line fits a disc of at
+   * most 20 dp; past that the same corner shows a plain dot, and the
+   * count stays in the queue's title and in this tab's accessibility
+   * label. */
+  // The disc grows with the digit up to 20 dp — the count survives the
+  // 1.15 and 1.3 steps (the grilling, 2026-10-11) — and the dot takes
+  // over once the digit's line would outgrow that (about 1.33).
+  const badgeDp = Math.min(BADGE_MAX_DP, Math.round(BADGE_DP * Math.max(1, fontScale)));
+  const countFits = type.caption.lineHeight * fontScale <= badgeDp;
   const barHeight = BAR_HEIGHT + insets.bottom;
 
   const pressHandlers = (routeKey: string, routeName: string, isFocused: boolean) => ({
@@ -126,7 +134,12 @@ export function MainTabBar({ state, descriptors, navigation, insets }: BottomTab
                   />
                 </View>
                 {badge !== undefined && badge !== 0 && countFits && (
-                  <View style={[styles.badge, { backgroundColor: accent }]}>
+                  <View
+                    style={[
+                      styles.badge,
+                      { backgroundColor: accent, minWidth: badgeDp, height: badgeDp },
+                    ]}
+                  >
                     <Text style={styles.badgeText}>{badge}</Text>
                   </View>
                 )}
@@ -224,8 +237,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: -3,
     right: -7,
-    minWidth: BADGE_DP,
-    height: BADGE_DP,
+    // minWidth and height follow the digit up to BADGE_MAX_DP (per render).
     borderRadius: radius.pill,
     paddingHorizontal: 4,
     alignItems: 'center',

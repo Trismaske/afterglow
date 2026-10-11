@@ -129,13 +129,14 @@ export function createDriver(serial, appId) {
     shell(`input swipe ${x} ${from} ${x} ${to} 300`);
   }
 
-  /** Home's top anchor: the goal line, or the brand title WITH its
-   * Settings button beside it — Settings' About card says "Afterglow"
+  /** Home's top anchor: the brand title WITH its Settings button on
+   * screen and no back button — Settings' About card says "Afterglow"
    * too, and that word alone passed a scrolled-down Settings as Home
-   * (the r19 walks). Null when the dump is not Home's top. */
+   * (the r19 walks). The goal line is NOT the top: at large text it
+   * stays on screen with the brand row scrolled off above it, and the
+   * gate's next tap on History or Settings then found nothing (the
+   * emulator at 2.0, r23). Null when the dump is not Home's top. */
   function homeTop(nodes) {
-    const goal = findNode(nodes, /^Daily goal/);
-    if (goal) return goal;
     const brand = findNode(nodes, /^Afterglow$/);
     return brand && findNode(nodes, /^Settings$/) && !findNode(nodes, /^Navigate up$/)
       ? brand
@@ -154,11 +155,20 @@ export function createDriver(serial, appId) {
       const top = nodes.length > 0 && homeTop(nodes);
       if (top && top.y1 > statusBar) return;
       if (Date.now() > deadline) throw new Error('timed out waiting for the top of Home');
+      // An empty dump is a list still flinging (the S10e at 2.0): let it
+      // settle rather than throw another swipe into the fling, which
+      // never let the dump idle (the r23 gate's History step).
+      if (nodes.length === 0) {
+        await sleep(600);
+        continue;
+      }
       // A downward swipe at the top of Home pulled the S10e's quick
       // panel over the app once (r16 walk): fold it before each scroll.
       shell('cmd statusbar collapse');
-      if (scrolls < 8) scrollUp();
-      await sleep(400);
+      // Long strides, and enough of them for a Home that lists sixty
+      // day cards at 2.0 (the S10e): eight half-screen scrolls fell short.
+      if (scrolls < 24) scrollUp(0.8);
+      await sleep(700);
     }
   }
 
@@ -194,15 +204,44 @@ export function createDriver(serial, appId) {
     return holders.reduce((a, b) => (area(b) < area(a) ? b : a));
   }
   /** A point on the stage no corner box covers: right of the metadata
-   * box's 56 % and below the top boxes, above the bottom marks. Without
-   * a deck dump, the gate's old fixed point (mid-width, 38 % down). */
+   * box's 56 % and below it — at 2.0 on the S10e its four lines reach
+   * 58 % of the stage, and a pager swipe that STARTS on that box (a
+   * sibling above the pager) pages nothing (the r23 gate stuck at 3/5)
+   * — so 70 % down, above the bottom marks at about 88 %. Without a
+   * deck dump, the gate's old fixed point (mid-width, 38 % down). */
   function stagePoint() {
-    const stage = stageRect();
     const { width, height } = screenSize();
+    // A dump that did not idle (the pager still settling) is retried,
+    // not read as "no deck": the fallback point is a guess.
+    let nodes = dumpUi();
+    for (let attempt = 0; attempt < 2 && nodes.length === 0; attempt += 1) nodes = dumpUi();
+    const stage = stageRect(nodes);
     if (!stage) return { x: Math.round(width / 2), y: Math.round(height * 0.38) };
+    // The row of the stage the gestures run on: the first of these
+    // shares, 70 % first, whose span from 12 % to 80 % of the width meets
+    // no overlay node (a text or labelled box inside the stage — the
+    // metadata box, the position, the marks). On a 320 dp window at 2.0
+    // the boxes cover 6 % to 90 % of the stage and the free row is at
+    // its foot (codex round 18); on the phones 70 % is free.
+    const overlays = nodes.filter(
+      (n) =>
+        (n.text || n.desc) &&
+        n !== stage &&
+        n.x1 >= stage.x1 &&
+        n.x2 <= stage.x2 &&
+        n.y1 >= stage.y1 &&
+        n.y2 <= stage.y2 &&
+        n.y2 - n.y1 < (stage.y2 - stage.y1) * 0.9,
+    );
+    const spanX1 = width * 0.12;
+    const spanX2 = width * 0.8;
+    const rowFree = (y) =>
+      !overlays.some((n) => n.y1 <= y && y <= n.y2 && n.x1 < spanX2 && n.x2 > spanX1);
+    const shares = [0.7, 0.8, 0.9, 0.6, 0.5, 0.95, 0.4, 0.3];
+    const share = shares.find((f) => rowFree(stage.y1 + (stage.y2 - stage.y1) * f)) ?? 0.7;
     return {
       x: Math.round(stage.x1 + (stage.x2 - stage.x1) * 0.62),
-      y: Math.round(stage.y1 + (stage.y2 - stage.y1) * 0.55),
+      y: Math.round(stage.y1 + (stage.y2 - stage.y1) * share),
     };
   }
   function tapStage() {

@@ -34,7 +34,7 @@ Nothing there needs keeping.
 
 ⚠️ **The gate makes real review decisions** (keeps, culls, edit flags, favourite/share intents) on the target's corpus.
 Run it on a test device or emulator, never on a phone whose review state matters.
-It expects the device's default font scale and display size: its Home searches do not scroll, so a control below the fold at a larger scale reads as absent. The accessibility walk below is the surface that covers the scales.
+It runs at any OS font scale and display size: its Home searches scroll in short steps for a whole row like the walk's, and a tab's count is read from the tab's accessibility label ("Edit, 3 waiting"), which survives the badge becoming a dot at large text. `--font-scale X` sets the device's font scale for the run and restores the device's own value on every exit path. The release matrix runs it at 1.0 and 2.0 on the S10e and at 1.0, 1.3 and 2.0 on the Android 16 emulator, each from a fresh state; the accessibility walk covers the scales in between and the display sizes.
 
 ## The accessibility walk (m0.9.1)
 

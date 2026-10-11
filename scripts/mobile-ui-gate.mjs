@@ -7,7 +7,7 @@
  * release, after installing the release APK on a test target with a
  * photo corpus.
  *
- *   node scripts/mobile-ui-gate.mjs [--serial SERIAL] [--report-dir DIR]
+ *   node scripts/mobile-ui-gate.mjs [--serial SERIAL] [--report-dir DIR] [--font-scale X]
  *
  * ⚠️ The gate makes REAL review decisions (it keeps/culls/flags photos
  * and queues favourite/share intents) — run it on a test device or a
@@ -54,6 +54,20 @@ for (const entry of readdirSync(REPORT_DIR))
 // accessibility walk (m0.9.1); the rules learnt on the phones are in its
 // header.
 const SERIAL = resolveSerial(argOf('--serial'));
+/** The gate runs at any OS font scale (the grilling, 2026-10-11): its
+ * Home searches scroll like the walk's and a tab's count is read from
+ * its accessibility label, which survives the dot. `--font-scale X`
+ * sets the device's font scale for the run and restores the device's own
+ * value on every exit path, like the walk; without it the run takes the
+ * device as it is. */
+const FONT_SCALE = argOf('--font-scale');
+if (
+  args.includes('--font-scale') &&
+  !(Number(FONT_SCALE) > 0 && Number.isFinite(Number(FONT_SCALE)))
+) {
+  console.error(`--font-scale needs a positive number (got ${JSON.stringify(FONT_SCALE ?? '')})`);
+  process.exit(2);
+}
 const {
   adb,
   shell,
@@ -76,6 +90,26 @@ const {
   dismissPipOverlays,
   ensureForeground,
 } = createDriver(SERIAL, APP_ID);
+const startingFont = FONT_SCALE ? shell('settings get system font_scale').trim() : null;
+const restoreFont = () => {
+  if (startingFont === null) return;
+  shell(
+    startingFont === 'null' || startingFont === ''
+      ? 'settings delete system font_scale'
+      : `settings put system font_scale ${startingFont}`,
+  );
+  console.log(`restored ${SERIAL}: font_scale ${startingFont}`);
+};
+if (FONT_SCALE) {
+  shell(`settings put system font_scale ${FONT_SCALE}`);
+  console.log(`font_scale ${FONT_SCALE} for this run (was ${startingFont})`);
+  for (const signal of ['SIGINT', 'SIGTERM'])
+    process.on(signal, () => {
+      restoreFont();
+      process.exit(130);
+    });
+  process.on('exit', restoreFont);
+}
 
 const results = [];
 let failures = 0;
@@ -113,6 +147,11 @@ async function step(name, budgetMs, fn) {
 }
 
 const badgeOf = (nodes, label) => {
+  // The tab's accessibility label carries the count ("Edit, 3 waiting")
+  // at every font scale, including those where the disc shows a dot.
+  const counted = nodes.find((n) => new RegExp(`^${label}, (\\d+) waiting$`).test(n.desc));
+  if (counted) return Number(/, (\d+) waiting$/.exec(counted.desc)[1]);
+  if (nodes.some((n) => n.desc === label)) return 0;
   // Custom-bar badges render as a small numeric Text near the tab icon;
   // uiautomator has no hierarchy here, so take the numeric node closest
   // to the label's x. Anchor on text OR content-desc: some devices
@@ -131,6 +170,80 @@ const badgeOf = (nodes, label) => {
  * badgeOf silently reads 0 without this anchor, so every badge read must
  * first prove the anchor is present — a failed/partial dump otherwise
  * satisfies badge assertions with synthetic zeroes. */
+/** Find a Home row by its text, scrolling in short steps until it is
+ * whole and clear of the status bar and the tab bar (the walk's rule):
+ * at large text the queue line and the review button sit below the
+ * fold, and the dump lists a sliver clipped by the scroll view's edge. */
+async function findHomeRow(re, timeoutMs = 20000) {
+  const { height } = screenSize();
+  const deadline = Date.now() + timeoutMs;
+  // From the TOP: a step before may have left Home scrolled past the row
+  // (the S10e at 2.0 searched downward for a Cull list card already above
+  // the viewport); the search scrolls down only, so it starts at the top.
+  await waitForHome().catch(() => {});
+  for (;;) {
+    const nodes = dumpUi();
+    const node = findNode(nodes, re);
+    if (node && node.y1 > height * 0.05 && node.y2 < height * 0.86 && node.y2 - node.y1 > 20)
+      return node;
+    if (Date.now() > deadline) return null;
+    // Scroll only while the tab bar is on screen: Home is the only tab
+    // screen with these rows, and a scroll anywhere else (a deck that
+    // opened late after a retried tap) could land the next tap on a
+    // verdict chip. Off a tab screen, wait for Home to come back.
+    if (hasTab(nodes, 'Home')) scrollDown(0.25);
+    await new Promise((r) => setTimeout(r, 400));
+  }
+}
+/** Wait for a marker on the CURRENT screen, scrolling in short steps
+ * when it is below the fold (a Stats card or a Progress chip row at
+ * large text — codex round 12), and returning it whole. Scrolling here
+ * is safe: the screens that use it (Stats, Progress) decide nothing on
+ * a scroll. */
+async function waitOnScreen(re, timeoutMs, label) {
+  const { height } = screenSize();
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const nodes = dumpUi();
+    const node = findNode(nodes, re);
+    if (node && node.y1 > height * 0.05 && node.y2 < height * 0.95 && node.y2 - node.y1 > 20)
+      return { node, ms: 0 };
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+    if (nodes.length > 0) scrollDown(0.25);
+    await new Promise((r) => setTimeout(r, 400));
+  }
+}
+/** Back to the top of the current screen (its tab strip or title row). */
+async function scrollToTop() {
+  for (let i = 0; i < 8; i += 1) {
+    scrollUp(0.6);
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+/** Tap a Home row and wait for what it opens, re-finding and re-tapping
+ * when a tap is eaten (device-observed on the emulator: a tap landing
+ * during Home's settle after a scroll does nothing). Three tries, each
+ * with its own wait; the last failure is the step's. */
+async function openFromHome(rowRe, expectRe, label, waitMs = 8000) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    // A slow screen that opened after the last wait is the result, not a
+    // reason to tap again.
+    if (attempt > 0) {
+      const late = findNode(dumpUi(), expectRe);
+      if (late) return { node: late, ms: 0 };
+    }
+    const row = await findHomeRow(rowRe, 20000);
+    if (!row) throw new Error(`${label} never came into view`);
+    tap(row);
+    try {
+      return await waitFor(expectRe, waitMs, label);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
 const hasTab = (nodes, label) => nodes.some((n) => n.text === label || isTabDesc(n.desc, label));
 /** The tab's accessibility label is its title, with its count after a
  * comma when work waits ("Edit, 2 waiting" — m0.9.1): both name the tab. */
@@ -155,15 +268,25 @@ await new Promise((r) => setTimeout(r, 3000));
 let home = dumpUi();
 await step('home queue copy (to review / everything reviewed)', null, async () => {
   // The card legitimately shows "Loading your queue…" until the first
-  // queue read commits (~7 s on the 27k device) — wait it out.
-  await waitFor(/to review|Everything reviewed/, 30000, 'queue copy');
+  // queue read commits (~7 s on the 27k device) — wait it out; at large
+  // text the line sits below the fold, so the wait scrolls for it
+  // (codex round 11) and Home's top is restored for the steps after.
+  const deadline = Date.now() + 30000;
+  for (;;) {
+    if (await findHomeRow(/to review|Everything reviewed/, 5000)) break;
+    if (Date.now() > deadline) throw new Error('timed out waiting for queue copy');
+  }
   home = dumpUi();
+  await waitForHome();
 });
 await step('home library totals line', null, async () => {
   // Round 4: the card states the corpus total; the scan line below the
   // CTA exists only WHILE a scan runs (or after one failed), so it is
-  // not an unconditional assertion any more.
-  if (!findNode(home, /items? total/)) throw new Error('totals line missing');
+  // not an unconditional assertion any more. At large text the line can
+  // sit below the fold: scroll for it, then restore Home's top.
+  if (!findNode(home, /items? total/) && !(await findHomeRow(/items? total/, 10000)))
+    throw new Error('totals line missing');
+  await waitForHome();
 });
 /** Select `chip` ("Off", "All visible", …) on the Playback row titled
  * `label`, on the Settings screen, and prove it committed. The row's own
@@ -174,12 +297,25 @@ await step('home library totals line', null, async () => {
  * after the optimistic state lands, and a failed write rolls it back,
  * so a selected chip is the durable value. */
 async function selectPlaybackChip(label, chip) {
-  const nearest = (nodes, row, wantSelected) =>
-    nodes
-      .filter((n) => n.text === chip && (!wantSelected || n.selected))
-      .map((n) => ({ n, d: Math.abs(n.y - row.y) }))
-      .filter((c) => c.d < 150)
-      .sort((a, b) => a.d - b.d)[0]?.n ?? null;
+  // The option belongs to the row whose title is the nearest ABOVE it
+  // and before the next Playback title: at large text the pill is a
+  // vertical list and an option sits hundreds of pixels under its title,
+  // so no fixed distance can bind them (codex round 10).
+  const TITLES = /^(Videos|Motion photos|Animated thumbnails)$/;
+  const nearest = (nodes, row, wantSelected) => {
+    const nextTitleY = Math.min(
+      Infinity,
+      ...nodes.filter((n) => TITLES.test(n.text) && n.y > row.y).map((n) => n.y),
+    );
+    return (
+      nodes
+        .filter((n) => n.text === chip && (!wantSelected || n.selected))
+        // At or below the title's centre: a title beside its pill (a
+        // narrow row at a small scale) shares the centre line.
+        .filter((n) => n.y >= row.y - 8 && n.y < nextTitleY)
+        .sort((a, b) => a.y - b.y)[0] ?? null
+    );
+  };
   // The Playback rows sit below the fold, and the cards are taller than
   // a phone screen holds at once — the row is found on its own,
   // scrolling in HALF screens (a full-screen fling overshoots).
@@ -187,7 +323,7 @@ async function selectPlaybackChip(label, chip) {
   for (let i = 0; i < 16; i += 1) {
     nodes = dumpUi();
     if (findNode(nodes, label)) break;
-    shell('input swipe 540 1500 540 900 300');
+    scrollDown(0.45);
     await new Promise((r) => setTimeout(r, 900));
   }
   let row = findNode(nodes, label);
@@ -198,7 +334,7 @@ async function selectPlaybackChip(label, chip) {
   for (let i = 0; i < 4 && !target; i += 1) {
     target = nearest(nodes, row, false);
     if (target) break;
-    shell('input swipe 540 1400 540 1000 300');
+    scrollDown(0.3);
     await new Promise((r) => setTimeout(r, 900));
     nodes = dumpUi();
     row = findNode(nodes, label) ?? row;
@@ -286,7 +422,7 @@ await step('home button returns home', null, async () => {
 // the lazy loading could introduce.
 await step('stats page opens on the Activity tab', null, async () => {
   await tapText(/^Stats$/, 20000);
-  await waitFor(/^Last 30 days$/, 20000, 'stats activity card');
+  await waitOnScreen(/^Last 30 days$/, 20000, 'stats activity card');
   // The intake chart is the LAST card on the tab, so it needs scrolling
   // to: an accessibility dump only carries what is laid out.
   for (let i = 0; i < 4; i += 1) {
@@ -294,18 +430,20 @@ await step('stats page opens on the Activity tab', null, async () => {
     scrollDown();
     await new Promise((r) => setTimeout(r, 600));
   }
-  await waitFor(/^Shooting vs reviewing$/, 8000, 'intake vs review card');
+  await waitOnScreen(/^Shooting vs reviewing$/, 8000, 'intake vs review card');
 });
 await step('stats Forecast tab loads its own numbers', null, async () => {
+  await scrollToTop();
   await tapText(/^Forecast$/, 20000);
   // Either a finish line or an explicit refusal — never a blank card.
-  await waitFor(/^Finish line$/, 20000, 'forecast card');
+  await waitOnScreen(/^Finish line$/, 20000, 'forecast card');
 });
 await step('stats Habits tab loads its own numbers', null, async () => {
+  await scrollToTop();
   await tapText(/^Habits$/, 20000);
-  await waitFor(/^Rhythm$/, 20000, 'rhythm card');
+  await waitOnScreen(/^Rhythm$/, 20000, 'rhythm card');
   // m0.8.2 terminology: the card is "Queues" ("waiting" → "queued").
-  await waitFor(/^Queues$/, 20000, 'queue turnaround rows');
+  await waitOnScreen(/^Queues$/, 20000, 'queue turnaround rows');
 });
 await step('stats returns to Home', null, async () => {
   shell('input keyevent KEYCODE_BACK');
@@ -343,18 +481,22 @@ await step('progress page opens with both chip rows', null, async () => {
       }
       tap(anchor);
       taps += 1;
+    } else if (nodes.length > 0) {
+      // Below the fold at large text: a short step, like findHomeRow.
+      scrollDown(0.25);
+      await new Promise((r) => setTimeout(r, 400));
     }
     if (Date.now() > deadline)
       throw new Error('the Progress row would not open (taps eaten or row occluded)');
     await new Promise((r) => setTimeout(r, 1000));
   }
   await waitFor(/^Unreviewed$/, 20000, 'verdict chips');
-  await waitFor(/^Staged cull$/, 20000, 'verdict chips');
+  await waitOnScreen(/^Staged cull$/, 20000, 'verdict chips');
   // Row 2 is the ACTION layer — its presence is what proves the two
   // layers render as two rows rather than one merged vocabulary.
-  await waitFor(/^To edit$/, 20000, 'action chips');
-  await waitFor(/^Share$/, 20000, 'action chips');
-  await waitFor(/^ITEMS · /, 20000, 'grid header');
+  await waitOnScreen(/^To edit$/, 20000, 'action chips');
+  await waitOnScreen(/^Share$/, 20000, 'action chips');
+  await waitOnScreen(/^ITEMS · /, 20000, 'grid header');
   shell('input keyevent KEYCODE_BACK');
   await waitForHome();
 });
@@ -365,9 +507,7 @@ await ensureForeground();
 // below reports "no unreviewed photos on target — seed the target
 // first", which is a claim about the corpus made from a scroll position.
 await waitForHome().catch(() => {});
-const cta = await waitFor(/^Continue reviewing$|^All reviewed$/, 20000, 'review CTA').catch(
-  () => null,
-);
+const cta = await findHomeRow(/^Continue reviewing$|^All reviewed$/, 20000);
 // The `before` badge snapshot feeds the v18 equality — an unanchored
 // dump would record synthetic zeroes and let that equality pass
 // vacuously, so only a dump showing all four tab labels may be read.
@@ -392,12 +532,11 @@ const before = {
   organize: badgeOf(home, 'Organize'),
   share: badgeOf(home, 'Share'),
 };
-if (cta && findNode(home, /^Continue reviewing$/)) {
+if (cta && (/^Continue reviewing$/.test(cta.text) || /^Continue reviewing$/.test(cta.desc))) {
   await step('continue reviewing → deck (direct, m0.8.2 F8)', null, async () => {
     // The CTA goes STRAIGHT into the next timeline unit — group deck or
     // singles run, both carry the same unified controls.
-    await tapText(/^Continue reviewing$/);
-    await waitFor(/^Keep remaining/, 20000, 'deck');
+    await openFromHome(/^Continue reviewing$/, /^Keep remaining/, 'deck');
   });
   // The deck flow below (toggle chips → cull the toggled photo → assert
   // the badges) needs a unit with a PENDING photo after the one it culls.
@@ -426,8 +565,7 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
     await waitFor(/^\d+\/\d+$/, 20000, 'pager indicator'); // the CTA landed in a deck
     shell('input keyevent KEYCODE_BACK');
     await waitForHome();
-    await tapText(/\d+ to review$/, 20000);
-    await waitFor(/^Timeline$/, 20000, 'overview heading');
+    await openFromHome(/\d+ to review$/, /^Timeline$/, 'overview heading');
     // The walk decides THREE photos in its unit (one cull, one keep, and
     // the finish probe needs one still pending), so the unit must hold
     // at least three — and it is looked for under the Timeline's
@@ -635,7 +773,9 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
     const first = await waitFor(/^\d+\/\d+$/, 20000, 'pager indicator');
     const total = Number(first.node.text.split('/')[1]);
     let pos = Number(first.node.text.split('/')[0]);
-    const backDeadline = Date.now() + 20000;
+    // Generous: at 2.0 on the S10e a swipe, its settle and a dump take
+    // several seconds each, and 20 s ran out two pages short.
+    const backDeadline = Date.now() + 60000;
     while (pos !== deckStart) {
       if (Date.now() > backDeadline)
         throw new Error(`could not return to ${deckStart}/${total} (at ${pos}/${total})`);
@@ -901,7 +1041,8 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
         shell('input keyevent KEYCODE_BACK');
         await new Promise((r) => setTimeout(r, 700));
       }
-      await waitFor(/^Cull list$/, 20000, 'cull list row');
+      if (!(await findHomeRow(/^Cull list$/, 20000)))
+        throw new Error('the Cull list row never came into view');
       // THE LIVE RULE, and the only place it is observable: the first photo
       // was favourited and shared and THEN staged to cull. Per-kind
       // suspension (m0.8.7, F21): favourite and organize SUSPEND — those
@@ -980,8 +1121,7 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
       // takes the kind.
       await ensureForeground();
       await waitForHome();
-      await tapText(/^Continue reviewing$/, 20000);
-      const indicator = await waitFor(/^\d+\/\d+$/, 20000, 'pager indicator');
+      const indicator = await openFromHome(/^Continue reviewing$/, /^\d+\/\d+$/, 'pager indicator');
       const total = Number(indicator.node.text.split('/')[1]);
       let found = null;
       for (let page = 0; page < Math.min(total, 8) && !found; page += 1) {
@@ -1080,8 +1220,7 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
   // The timeline overview is reached through the queue-breakdown link
   // now (m0.8.2 F8) — assert the door works and shows the merged list.
   await step('queue breakdown opens the timeline overview', null, async () => {
-    await tapText(/\d+ to review$/, 20000);
-    await waitFor(/^Timeline$/, 20000, 'overview heading');
+    await openFromHome(/\d+ to review$/, /^Timeline$/, 'overview heading');
     await waitFor(/^(Group|Singles) ·/, 20000, 'timeline cards');
     shell('input keyevent KEYCODE_BACK');
     await waitForHome();
@@ -1092,7 +1231,7 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
   // The queue may legitimately be empty (the toggled photo above was
   // culled away), in which case the empty-state copy is the assertion.
   await step('organize queue hosts the album picker', null, async () => {
-    await tapText(/^Organize$/, 20000); // the TAB
+    await tapText(tabPattern('Organize'), 20000); // the TAB
     await waitFor(/^Organize queue$/, 20000, 'organize queue');
     const nodes = dumpUi();
     if (findNode(nodes, /^Choose album for/)) {
@@ -1108,9 +1247,16 @@ if (cta && findNode(home, /^Continue reviewing$/)) {
   });
 
   await step('cull list opens', null, async () => {
-    await tapText(/^Cull list$/);
+    {
+      const row = await findHomeRow(/^Cull list$/, 20000);
+      if (!row) throw new Error('the Cull list row never came into view');
+      tap(row);
+    }
     await waitFor(/\d+ staged ·/, 20000, 'cull list screen');
     shell('input keyevent KEYCODE_BACK');
+    // Home keeps its scroll position: the next step taps History in the
+    // top action row (codex round 11).
+    await waitForHome();
   });
 
   // The deck's LIST MODE (m0.9 phase 2 — the retired standard viewer's
@@ -1189,6 +1335,29 @@ await step('animated thumbnails play on the Progress grid', null, async () => {
   await ensureForeground();
   await waitFor(/^Daily goal/, 30000, 'home after relaunch');
   await waitForHome();
+  // MEASURE the grid's position while playback is still Off (dumps idle):
+  // how many short scrolls bring the grid header into view on THIS window
+  // (its header and insights wrap at large text and on narrow screens —
+  // codex round 15); the same count replays blind once playback is on.
+  let gridSteps = 0;
+  {
+    const row = await findHomeRow(/^◔, Progress, /, 10000);
+    if (!row) throw new Error('the Progress row never came into view');
+    tap(row);
+    await waitFor(/^Unreviewed$/, 20000, 'verdict chips');
+    const { height } = screenSize();
+    const deadline = Date.now() + 20000;
+    for (;;) {
+      const node = findNode(dumpUi(), /^ITEMS · /);
+      if (node && node.y1 > height * 0.05 && node.y2 < height * 0.95) break;
+      if (Date.now() > deadline) throw new Error('the grid header never came into view');
+      scrollDown(0.3);
+      gridSteps += 1;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    shell('input keyevent KEYCODE_BACK');
+    await waitForHome();
+  }
   await tapText(/^Settings$/, 10000);
   await waitFor(/^Photo source$/, 15000, 'settings screen');
   try {
@@ -1197,7 +1366,18 @@ await step('animated thumbnails play on the Progress grid', null, async () => {
     await waitForHome();
     // The card's subtitle is dynamic ("All items · state browsing" or a
     // pace line): match its title only.
-    await tapText(/^◔, Progress, /, 10000);
+    {
+      const row = await findHomeRow(/^◔, Progress, /, 10000);
+      if (!row) throw new Error('the Progress row never came into view');
+      tap(row);
+    }
+    // Thumbnails play only when viewable: replay the measured scrolls
+    // plus one BLIND — a playing clip keeps the UI from idling and a dump
+    // would wait on it (codex round 14; the step's own rule).
+    for (let i = 0; i < gridSteps + 1; i += 1) {
+      scrollDown(0.3);
+      await new Promise((r) => setTimeout(r, 600));
+    }
     // Let the grid load, its visible set settle (500 ms) and its
     // players borrow; then read the sink.
     await new Promise((r) => setTimeout(r, 6000));
